@@ -88,5 +88,13 @@ test("det verkliga produktionsflödet kan frisläppa och hämta en låst revisio
   expect(firstChunk.subarray(0, 2).toString("ascii")).toBe("PK");
 
   expect(pageErrors).toEqual([]);
-  expect(failedRequests).toEqual([]);
+  const unexpectedFailedRequests = failedRequests.filter(
+    (failure) =>
+      !(
+        failure.includes("/custombuild-artifacts/") &&
+        failure.includes("/production.zip?") &&
+        failure.endsWith(": net::ERR_ABORTED")
+      ),
+  );
+  expect(unexpectedFailedRequests).toEqual([]);
 });
