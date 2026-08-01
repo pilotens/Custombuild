@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from custombuild_domain import (
     BookcaseDesignSpec,
     BookcaseParameters,
@@ -8,6 +10,7 @@ from custombuild_domain import (
     screening_mdf_6,
     screening_mdf_18,
 )
+from custombuild_manufacturing import canonical_json_bytes
 from custombuild_rules import evaluate_design
 from custombuild_worker.documents import (
     ASSEMBLY_PARTS_PER_PAGE,
@@ -54,6 +57,19 @@ def test_production_pdfs_are_real_and_deterministic() -> None:
     )
     assert documents == repeated
     assert all(payload.startswith(b"%PDF-") and len(payload) > 1_000 for payload in documents)
+
+
+def test_construction_report_is_canonical_json_serializable() -> None:
+    report = evaluate_design(design_fixture())
+
+    first = canonical_json_bytes(report)
+    second = canonical_json_bytes(report)
+    decoded = json.loads(first)
+
+    assert first == second
+    assert decoded["design_hash"] == report.design_hash
+    assert decoded["overall_status"] == report.overall_status.value
+    assert decoded["evaluations"][0]["rule_id"].startswith("CB-")
 
 
 def test_hardware_list_is_derived_from_joint_graph() -> None:

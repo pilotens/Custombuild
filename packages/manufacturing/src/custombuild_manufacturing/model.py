@@ -15,6 +15,8 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import StrEnum
 from typing import Any, cast
 
+from pydantic import BaseModel
+
 UM_PER_MM = 1_000
 
 
@@ -485,10 +487,12 @@ def coerce_part_instances(
 
 
 def canonical_data(value: Any) -> Any:
-    """Convert dataclasses and enums into JSON-safe, stably ordered data."""
+    """Convert domain models and enums into JSON-safe, stably ordered data."""
 
     if isinstance(value, StrEnum):
         return value.value
+    if isinstance(value, BaseModel):
+        return canonical_data(value.model_dump(mode="json"))
     if is_dataclass(value) and not isinstance(value, type):
         return canonical_data(asdict(cast(Any, value)))
     if isinstance(value, Mapping):
