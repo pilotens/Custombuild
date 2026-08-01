@@ -33,7 +33,7 @@ test("det verkliga produktionsflödet kan frisläppa och hämta en låst revisio
   }
 
   await expect(page.getByText("Servermodell", { exact: true })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("status-badge").first()).toContainText("Godkänd", {
+  await expect(page.getByTestId("status-badge").first()).toHaveText("PASS", {
     timeout: 30_000,
   });
   await page.getByRole("tab", { name: "Frisläppning" }).click();
