@@ -21,13 +21,13 @@ test("det verkliga produktionsflödet kan frisläppa och hämta en låst revisio
   await expect(page.getByText("Servermodell", { exact: true })).toBeVisible({ timeout: 30_000 });
 
   const dimensions = [
-    ["Bredd", "700"],
-    ["Höjd", "1000"],
-    ["Hyllor", "2"],
-    ["Last / hylla", "10"],
+    ["Bredd mm", "700"],
+    ["Höjd mm", "1000"],
+    ["Hyllor st", "2"],
+    ["Last / hylla kg", "10"],
   ] as const;
   for (const [label, value] of dimensions) {
-    const input = page.getByLabel(label, { exact: true });
+    const input = page.getByRole("spinbutton", { name: label, exact: true });
     await input.fill(value);
     await input.blur();
   }
