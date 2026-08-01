@@ -1,0 +1,102 @@
+[
+  {
+    "name": "compact-pass",
+    "mode": "preview",
+    "input": {"width_mm": 600, "height_mm": 1000, "depth_mm": 320, "shelf_count": 2, "load_per_shelf_kg": 10, "wall_anchor_required": false}
+  },
+  {
+    "name": "standard-overload-block",
+    "mode": "preview",
+    "input": {"width_mm": 900, "height_mm": 2000, "depth_mm": 320, "shelf_count": 5, "load_per_shelf_kg": 30, "wall_anchor_required": false}
+  },
+  {
+    "name": "auto-divider-fix",
+    "mode": "auto",
+    "input": {"width_mm": 900, "height_mm": 1000, "depth_mm": 320, "shelf_count": 3, "load_per_shelf_kg": 31, "reinforcement_mode": "auto", "wall_anchor_required": false}
+  },
+  {
+    "name": "no-shelves",
+    "mode": "preview",
+    "input": {"width_mm": 500, "height_mm": 800, "depth_mm": 300, "shelf_count": 0, "load_per_shelf_kg": 0, "wall_anchor_required": false}
+  },
+  {
+    "name": "wide-two-dividers",
+    "mode": "preview",
+    "input": {"width_mm": 1800, "height_mm": 1100, "depth_mm": 400, "shelf_count": 3, "divider_count": 2, "load_per_shelf_kg": 35, "wall_anchor_required": false}
+  },
+  {
+    "name": "tall-anchor-block",
+    "mode": "preview",
+    "input": {"width_mm": 700, "height_mm": 2200, "depth_mm": 300, "shelf_count": 4, "divider_count": 1, "load_per_shelf_kg": 10, "wall_anchor_required": false}
+  },
+  {
+    "name": "no-back-stability-block",
+    "mode": "preview",
+    "input": {"width_mm": 800, "height_mm": 1400, "depth_mm": 400, "shelf_count": 3, "divider_count": 1, "load_per_shelf_kg": 10, "back_panel": false, "wall_anchor_required": false}
+  },
+  {
+    "name": "surface-back",
+    "mode": "preview",
+    "input": {"width_mm": 700, "height_mm": 1000, "depth_mm": 350, "shelf_count": 2, "load_per_shelf_kg": 10, "back_panel": "surface_mounted", "wall_anchor_required": false}
+  },
+  {
+    "name": "adjustable-shelves",
+    "mode": "preview",
+    "input": {"width_mm": 700, "height_mm": 1000, "depth_mm": 350, "shelf_count": 4, "shelf_mount": "adjustable", "joint_system": "dado", "load_per_shelf_kg": 8, "wall_anchor_required": false}
+  },
+  {
+    "name": "zero-load",
+    "mode": "preview",
+    "input": {"width_mm": 1100, "height_mm": 1000, "depth_mm": 350, "shelf_count": 4, "load_per_shelf_kg": 0, "wall_anchor_required": false}
+  },
+  {
+    "name": "birch-plywood",
+    "mode": "preview",
+    "input": {"width_mm": 800, "height_mm": 1000, "depth_mm": 320, "material_id": "birch-plywood", "shelf_count": 3, "load_per_shelf_kg": 20, "wall_anchor_required": false}
+  },
+  {
+    "name": "measured-17mm",
+    "mode": "preview",
+    "input": {"width_mm": 650, "height_mm": 900, "depth_mm": 320, "measured_thickness_mm": 17, "shelf_count": 2, "load_per_shelf_kg": 8, "wall_anchor_required": false}
+  },
+  {
+    "name": "measured-19mm",
+    "mode": "preview",
+    "input": {"width_mm": 750, "height_mm": 1000, "depth_mm": 320, "measured_thickness_mm": 19, "shelf_count": 2, "load_per_shelf_kg": 15, "wall_anchor_required": false}
+  },
+  {
+    "name": "minimum-envelope",
+    "mode": "preview",
+    "input": {"width_mm": 250, "height_mm": 300, "depth_mm": 100, "shelf_count": 0, "plinth": false, "plinth_height_mm": 0, "load_per_shelf_kg": 0, "back_panel": false, "wall_anchor_required": false}
+  },
+  {
+    "name": "extreme-supported",
+    "mode": "preview",
+    "input": {"width_mm": 3000, "height_mm": 1200, "depth_mm": 600, "shelf_count": 8, "divider_count": 7, "load_per_shelf_kg": 40, "wall_anchor_required": false}
+  },
+  {
+    "name": "invalid-width",
+    "mode": "preview",
+    "input": {"width_mm": 200, "height_mm": 1000, "depth_mm": 320, "shelf_count": 2}
+  },
+  {
+    "name": "invalid-height-opening",
+    "mode": "preview",
+    "input": {"width_mm": 600, "height_mm": 300, "depth_mm": 320, "shelf_count": 6, "plinth_height_mm": 200}
+  },
+  {
+    "name": "invalid-too-many-shelves",
+    "mode": "preview",
+    "input": {"width_mm": 600, "height_mm": 600, "depth_mm": 320, "shelf_count": 30, "plinth": false, "plinth_height_mm": 0}
+  },
+  {
+    "name": "invalid-nominal-material",
+    "mode": "preview",
+    "input": {"width_mm": 600, "height_mm": 1000, "depth_mm": 320, "nominal_thickness_mm": 19}
+  },
+  {
+    "name": "invalid-divider-layout",
+    "mode": "preview",
+    "input": {"width_mm": 300, "height_mm": 1000, "depth_mm": 320, "divider_count": 16, "shelf_count": 1}
+  }
+]
