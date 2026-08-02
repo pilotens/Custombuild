@@ -1,6 +1,6 @@
 [project]
 name = "custombuild"
-version = "0.1.0"
+version = "1.0.0"
 description = "Deterministic parametric furniture design-to-production platform"
 requires-python = ">=3.12,<3.13"
 dependencies = [
