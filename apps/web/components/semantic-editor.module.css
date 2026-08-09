@@ -1,0 +1,231 @@
+.semanticViewerPanel {
+  position: relative;
+}
+
+.palette {
+  position: absolute;
+  z-index: 12;
+  top: 62px;
+  left: 14px;
+  width: 222px;
+  padding: 14px;
+  border: 1px solid rgba(72, 85, 77, 0.2);
+  border-radius: 14px;
+  background: rgba(250, 251, 248, 0.94);
+  box-shadow: 0 16px 38px rgba(29, 39, 33, 0.12);
+  backdrop-filter: blur(14px);
+}
+
+.paletteHeading p {
+  margin: 0 0 3px;
+  color: #65736a;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.paletteHeading h2 {
+  margin: 0;
+  color: #203229;
+  font-size: 14px;
+}
+
+.componentList {
+  display: grid;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.componentButton {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #dce2dc;
+  border-radius: 10px;
+  background: #fff;
+  color: #24342c;
+  text-align: left;
+  cursor: grab;
+}
+
+.componentButton:hover,
+.componentButton:focus-visible {
+  border-color: #66b68f;
+  background: #f2faf6;
+  outline: none;
+}
+
+.componentButton:active {
+  cursor: grabbing;
+}
+
+.componentButton span:last-child {
+  min-width: 0;
+}
+
+.componentButton strong,
+.componentButton small {
+  display: block;
+}
+
+.componentButton strong {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.componentButton small {
+  margin-top: 2px;
+  color: #718077;
+  font-size: 10px;
+}
+
+.componentIcon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #e6f3ec;
+  color: #256c4d;
+}
+
+.paletteFootnote {
+  margin: 11px 2px 0;
+  color: #69766e;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.dropSurface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dropSurface > :global(.canvas-shell) {
+  width: 100%;
+  height: 100%;
+}
+
+.dropSurfaceActive::after {
+  position: absolute;
+  inset: 8px;
+  z-index: 4;
+  border: 2px dashed #43a677;
+  border-radius: 14px;
+  background: rgba(83, 183, 132, 0.06);
+  content: "";
+  pointer-events: none;
+}
+
+.snapPreview {
+  position: absolute;
+  z-index: 5;
+  inset: 8px;
+  pointer-events: none;
+}
+
+.snapLineHorizontal,
+.snapLineVertical,
+.snapBack,
+.snapPlinth {
+  position: absolute;
+  border: 2px solid #2b9c69;
+  background: rgba(64, 177, 121, 0.2);
+  box-shadow: 0 0 0 4px rgba(64, 177, 121, 0.08);
+}
+
+.snapLineHorizontal {
+  right: 14%;
+  left: 14%;
+  height: 8px;
+  transform: translateY(-50%);
+}
+
+.snapLineVertical {
+  top: 12%;
+  bottom: 12%;
+  width: 8px;
+  transform: translateX(-50%);
+}
+
+.snapBack {
+  inset: 11% 14%;
+  border-style: dashed;
+  border-radius: 5px;
+}
+
+.snapPlinth {
+  right: 18%;
+  bottom: 10%;
+  left: 18%;
+  height: 14px;
+}
+
+.snapLabel {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: #174c35;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  transform: translateX(-50%);
+}
+
+.semanticNotice {
+  position: absolute;
+  z-index: 14;
+  right: 14px;
+  bottom: 50px;
+  max-width: min(440px, calc(100% - 28px));
+  padding: 10px 34px 10px 12px;
+  border: 1px solid #b8d8c6;
+  border-radius: 10px;
+  background: #f1faf5;
+  color: #234334;
+  box-shadow: 0 10px 24px rgba(25, 59, 42, 0.1);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.semanticNotice strong,
+.semanticNotice span {
+  display: block;
+}
+
+.semanticNotice span {
+  margin-top: 2px;
+  color: #52675b;
+  font-size: 11px;
+}
+
+.semanticNotice button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+@media (max-width: 1180px) {
+  .palette {
+    width: 190px;
+  }
+
+  .paletteFootnote {
+    display: none;
+  }
+}

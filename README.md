@@ -15,6 +15,12 @@ nesting, CAD/CAM, drawings, assembly data and a checksummed production bundle.
 
 - Swedish desktop-first workbench with deterministic 2D/3D preview, orthographic
   views, exploded/transparent/isolation modes, undo/redo and server validation.
+- Guided semantic editor with draggable shelf rows, vertical dividers, back panel
+  and plinth. Furniture-aware snap targets compile to the canonical `DesignSpec`;
+  visual pointer positions never become CNC coordinates.
+- AI-safe semantic intent contract: AI may propose an attributed furniture change
+  but explicit user confirmation and the full deterministic validation chain are
+  required before it may mutate a design.
 - Versioned 18 mm MDF and birch-plywood bookcase construction with a separate
   versioned 6 mm back material, stable IDs and integer micrometre units.
 - Shelf deflection/stress, stability, tip and wall-anchor screening plus
@@ -33,6 +39,9 @@ nesting, CAD/CAM, drawings, assembly data and a checksummed production bundle.
   features, machine/setup/tool validation and deterministic multi-stock nesting.
 - CadQuery/OpenCascade STEP and GLB, side-separated DXF, SVG detail drawings,
   PDFs, labels, setup sheets, BOM/cut/material/hardware/tool lists and backplot.
+- Optional headless FreeCAD bridge that imports authoritative STEP into a native
+  FCStd derivative. FreeCAD remains hidden, replaceable and explicitly prohibited
+  from becoming the editable or CNC-authoritative source model.
 - AssemblyGraph-derived manual pages use the parts' authoritative box geometry,
   explicit incoming/fixed groups, one- or two-segment motion paths, exact part
   IDs, per-step hardware/tools, checkpoints and conservative lift/pinch warnings.
@@ -77,8 +86,9 @@ non-PostgreSQL database. The supplied `.env.example` is development-only.
 
 ## Product flow
 
-1. Change bookcase dimensions, measured thickness, load, shelves, reinforcement,
-   DADO configuration, stock and reference machine in the workbench.
+1. In guided mode, drag furniture components into compatible snap zones or edit
+   exact bookcase parameters. Custombuild compiles the intent and regenerates the
+   deterministic preview; expert mode keeps the complete parameter controls.
 2. Resolve all blocking construction/DFM findings. Autofix is displayed as a diff.
 3. Save a real server revision and validate it.
 4. Enter a review reason and explicitly approve the design. Every WARNING needs
@@ -120,19 +130,20 @@ labels; geometry-derived assembly manual; and construction, DFM and QA reports.
 
 ## Repository map
 
-- `apps/web` — Next.js/React/Three.js workbench
+- `apps/web` — Next.js/React/Three.js semantic workbench
 - `services/api` — FastAPI, RLS-aware persistence, revisions and approvals
 - `services/worker` — Celery/outbox generation and durable artifacts
-- `packages/domain` — canonical bookcase model, joints and assembly graph
+- `packages/domain` — canonical bookcase model, semantic intents, joints and assembly graph
 - `packages/rule-engine` — construction screening and deterministic correction
 - `packages/manufacturing` — DFM, nesting, exports and package generation
 - `packages/template-sdk` — documented versioned template contract
-- `cad` — CadQuery/OpenCascade authoritative geometry adapter
+- `cad` — authoritative CadQuery/OpenCascade geometry plus optional FreeCAD interchange
 - `cam` — semantic operations, setup validation and backplot
 - `postprocessors` — validation-only LinuxCNC reference postprocessor
 - `docs` — architecture, security, operations, safety and licence gates
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),
+[docs/SEMANTIC_DESIGN_ARCHITECTURE.md](docs/SEMANTIC_DESIGN_ARCHITECTURE.md),
 [docs/PRODUCTION_SAFETY.md](docs/PRODUCTION_SAFETY.md) and
 [docs/LICENSE_REVIEW.md](docs/LICENSE_REVIEW.md) before any commercial or
 workshop evaluation. The repository currently has no application `LICENSE`;
