@@ -49,6 +49,18 @@ def build_production_bundle(*args: Any, **kwargs: Any) -> Any:
 
     from .pipeline import build_production_bundle as build
 
+    # The worker image contains the presentation layer used for supplier handoff.
+    # Keep it optional so the pure manufacturing engine remains independently
+    # importable/testable in API and library contexts.
+    try:
+        from custombuild_worker.supplier_bundle import supplier_artifacts
+    except ImportError:
+        supplier_artifacts = None
+
+    if supplier_artifacts is not None and args:
+        existing = tuple(kwargs.get("additional_artifacts", ()))
+        kwargs["additional_artifacts"] = (*existing, *supplier_artifacts(args[0]))
+
     return build(*args, **kwargs)
 
 
