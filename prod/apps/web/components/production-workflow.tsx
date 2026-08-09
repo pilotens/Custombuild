@@ -188,7 +188,7 @@ export function ProductionWorkflow({
         machine_profile_id: spec.machine_profile_id,
         postprocessor_id: "linuxcnc-validation-1.0.0",
         include_step: true,
-        include_validation_program: true,
+        include_validation_program: false,
       });
       setJob(queued);
       setRelease(undefined);
@@ -273,14 +273,14 @@ export function ProductionWorkflow({
         <span className={`production-state ${stale ? "stale" : "current"}`}>
           {version ? `Rev ${version.revision} · ${stale ? "Ändrad" : statusLabel(version.status)}` : "Ej sparad"}
         </span>
-        <span>Maskinutdata: endast validering</span>
+        <span>Leverans: maskinoberoende CNC-/snickeriunderlag</span>
       </div>
 
       <ol className="production-steps" aria-label="Produktionsgrindar">
         <li className={version ? "done" : "active"}><span>1</span> Frys revision</li>
         <li className={version?.status !== "draft" && current ? "done" : ""}><span>2</span> Designkontroll</li>
-        <li className={job?.status === "succeeded" && current ? "done" : ""}><span>3</span> CAD/CAM-jobb</li>
-        <li className={camApproved && current ? "done" : ""}><span>4</span> CAM-godkännande</li>
+        <li className={job?.status === "succeeded" && current ? "done" : ""}><span>3</span> Tillverkningsunderlag</li>
+        <li className={camApproved && current ? "done" : ""}><span>4</span> Underlagsgranskning</li>
         <li className={release ? "done" : ""}><span>5</span> Frisläpp</li>
       </ol>
 
@@ -342,14 +342,14 @@ export function ProductionWorkflow({
           disabled={Boolean(busy) || !current || !designApproved || job?.status === "succeeded"}
         >
           {busy === "generation" ? <LoaderCircle className="spin" size={14} /> : null}
-          {job && job.status !== "succeeded" ? `Jobb: ${job.status}` : "Generera paket"}
+          {job && job.status !== "succeeded" ? `Jobb: ${job.status}` : "Generera leverantörspaket"}
         </button>
         <label>
-          <span>CAM-granskarens motivering</span>
+          <span>Granskning av tillverkningsunderlag</span>
           <input
             value={camReason}
             onChange={(event) => setCamReason(event.target.value)}
-            placeholder="Beskriv kontroll av setup och backplot…"
+            placeholder="Bekräfta detaljritningar, DXF, BOM, nesting och monteringsunderlag…"
           />
         </label>
         <button
@@ -357,7 +357,7 @@ export function ProductionWorkflow({
           onClick={approveCam}
           disabled={Boolean(busy) || !current || job?.status !== "succeeded" || camApproved || !camReasonValid}
         >
-          Godkänn CAM för detta jobb
+          Godkänn tillverkningsunderlag
         </button>
       </div>
 
