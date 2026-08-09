@@ -107,7 +107,7 @@ function productionApi(): ProductionApi {
 afterEach(() => vi.restoreAllMocks());
 
 describe("ProductionWorkflow", () => {
-  it("runs the real revision gates in order and refreshes the signed ZIP link", async () => {
+  it("runs the real supplier-package revision gates in order and refreshes the signed ZIP link", async () => {
     const api = productionApi();
     const summary = vi.fn();
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
@@ -138,23 +138,23 @@ describe("ProductionWorkflow", () => {
       expect.objectContaining({ approval_type: "design", generation_job_id: null }),
     ));
 
-    fireEvent.click(screen.getByRole("button", { name: "Generera paket" }));
+    fireEvent.click(screen.getByRole("button", { name: "Generera leverantörspaket" }));
     await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(
       project.id,
       1,
       expect.objectContaining({
         machine_profile_id: DEFAULT_DESIGN_SPEC.machine_profile_id,
         stock_width_mm: DEFAULT_DESIGN_SPEC.stock_width_mm,
-        include_validation_program: true,
+        include_validation_program: false,
       }),
     ));
     expect(api.getJob).toHaveBeenCalledWith(queuedJob.id);
-    await screen.findByRole("button", { name: "Godkänn CAM för detta jobb" });
+    await screen.findByRole("button", { name: "Godkänn tillverkningsunderlag" });
 
-    fireEvent.change(screen.getByLabelText("CAM-granskarens motivering"), {
-      target: { value: "Setup, verktyg och backplot granskade." },
+    fireEvent.change(screen.getByLabelText("Granskning av tillverkningsunderlag"), {
+      target: { value: "Detaljritningar, DXF, BOM, nesting och monteringsunderlag granskade." },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Godkänn CAM för detta jobb" }));
+    fireEvent.click(screen.getByRole("button", { name: "Godkänn tillverkningsunderlag" }));
     await waitFor(() => expect(api.approveVersion).toHaveBeenCalledWith(
       project.id,
       1,

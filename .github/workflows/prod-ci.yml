@@ -1,0 +1,141 @@
+name: Prod CI
+
+on:
+  pull_request:
+    paths:
+      - "prod/**"
+      - ".github/workflows/prod-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "prod/**"
+      - ".github/workflows/prod-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  prod-quality:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17.5-alpine
+        env:
+          POSTGRES_DB: custombuild
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d custombuild"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
+      RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:api-test-password@localhost:5432/custombuild
+      UV_CACHE_DIR: /tmp/custombuild-prod-uv-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.8.3"
+          enable-cache: true
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+          cache-dependency-path: prod/pnpm-lock.yaml
+      - name: Install prod dependencies
+        working-directory: prod
+        run: |
+          uv sync --locked --group dev --group cad
+          pnpm install --frozen-lockfile
+      - name: Create least-privilege database roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d custombuild -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE custombuild_api LOGIN PASSWORD 'api-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+          CREATE ROLE custombuild_worker LOGIN PASSWORD 'worker-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS;
+          SQL
+      - name: Migrate prod schema
+        working-directory: prod
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+          PYTHONPATH: services/api
+        run: uv run alembic -c services/api/alembic.ini upgrade head
+      - name: Prod migration schema drift
+        working-directory: prod
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+          PYTHONPATH: services/api
+        run: uv run alembic -c services/api/alembic.ini check
+      - name: Full prod quality gate
+        working-directory: prod
+        run: make check
+
+  prod-compose-acceptance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      COMPOSE_PROJECT_NAME: custombuild-prod-acceptance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.14.0
+          cache: pnpm
+          cache-dependency-path: prod/pnpm-lock.yaml
+      - name: Install prod web dependencies
+        working-directory: prod
+        run: pnpm install --frozen-lockfile
+      - name: Install Chromium
+        working-directory: prod
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Build and start prod stack
+        working-directory: prod
+        run: docker compose --file compose.yml up --build --detach
+      - name: Prod design-to-release acceptance
+        working-directory: prod
+        run: >-
+          python3 scripts/live_acceptance.py
+          --base-url http://127.0.0.1:8000
+          --run-id "prod-${{ github.run_id }}-${{ github.run_attempt }}"
+          --readiness-timeout 180
+          --job-timeout 900
+      - name: Prod browser acceptance
+        working-directory: prod
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+          PLAYWRIGHT_REAL_API: "1"
+          PLAYWRIGHT_RELEASE_NUMBER: PROD-UI-${{ github.run_id }}-${{ github.run_attempt }}
+        run: pnpm --dir apps/web test:e2e
+      - name: Collect prod diagnostics
+        if: failure()
+        working-directory: prod
+        run: |
+          docker compose --file compose.yml ps --all || true
+          docker compose --file compose.yml logs --no-color --timestamps > prod-compose-acceptance.log || true
+          tail --lines=1000 prod-compose-acceptance.log || true
+      - name: Upload prod diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-compose-acceptance-diagnostics
+          path: |
+            prod/prod-compose-acceptance.log
+            prod/apps/web/playwright-report
+            prod/apps/web/test-results
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Stop prod stack
+        if: always()
+        working-directory: prod
+        run: docker compose --file compose.yml down --volumes --remove-orphans --timeout 30

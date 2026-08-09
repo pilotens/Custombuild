@@ -20,6 +20,7 @@ from custombuild_domain import (
     screening_mdf_6,
     screening_mdf_18,
 )
+from custombuild_manufacturing.adapters import adapt_domain_part
 
 
 def _millimetres(value: Any) -> int:
@@ -113,6 +114,7 @@ def _json_value(item: Any) -> Any:
 def _present_part(part: Any) -> dict[str, Any]:
     size = part.finished_size
     placement = part.placement
+    manufacturing_part = adapt_domain_part(part)
     if part.role in {PartRole.LEFT_SIDE, PartRole.RIGHT_SIDE, PartRole.DIVIDER}:
         orientation = "YZ"
         width_um, depth_um, thickness_um = size.height_um, size.depth_um, size.width_um
@@ -144,7 +146,25 @@ def _present_part(part: Any) -> dict[str, Any]:
         "weight_g": part.weight_g,
         "weight_kg": part.weight_g / 1000,
         "weight_basis": WEIGHT_BASIS,
-        "features": [feature.model_dump(mode="json") for feature in part.features],
+        "features": [
+            {
+                "feature_id": feature.feature_id,
+                "kind": feature.kind.value,
+                "side": feature.side.value,
+                "x_um": feature.x_um,
+                "y_um": feature.y_um,
+                "depth_um": feature.depth_um,
+                "diameter_um": feature.diameter_um,
+                "width_um": feature.width_um,
+                "length_um": feature.length_um,
+                "pattern_count": feature.pattern_count,
+                "pitch_um": feature.pitch_um,
+                "through": feature.through,
+                "tolerance_um": feature.tolerance_um,
+                "fit_clearance_um": feature.fit_clearance_um,
+            }
+            for feature in manufacturing_part.features
+        ],
     }
 
 

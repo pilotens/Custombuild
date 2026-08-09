@@ -1,5 +1,6 @@
 """Deterministic manufacturing engine for Custombuild."""
 
+from collections.abc import Callable
 from typing import Any
 
 from .dfm import DFMValidator
@@ -48,6 +49,21 @@ def build_production_bundle(*args: Any, **kwargs: Any) -> Any:
     """Lazily load the cross-package production pipeline."""
 
     from .pipeline import build_production_bundle as build
+
+    # The worker image contains the presentation layer used for supplier handoff.
+    # Keep it optional so the pure manufacturing engine remains independently
+    # importable/testable in API and library contexts.
+    supplier_artifacts_fn: Callable[[Any], tuple[ArtifactFile, ...]] | None = None
+    try:
+        from custombuild_worker.supplier_bundle import supplier_artifacts as _supplier_artifacts
+    except ImportError:
+        pass
+    else:
+        supplier_artifacts_fn = _supplier_artifacts
+
+    if supplier_artifacts_fn is not None and args:
+        existing = tuple(kwargs.get("additional_artifacts", ()))
+        kwargs["additional_artifacts"] = (*existing, *supplier_artifacts_fn(args[0]))
 
     return build(*args, **kwargs)
 

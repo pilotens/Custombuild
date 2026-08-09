@@ -87,26 +87,44 @@ function normalizeFeatures(value: unknown, partId: string, fallback: Manufacturi
   return value.map((raw, index) => {
     const feature = asRecord(raw) ?? {};
     const rawKind = asString(feature.kind, "outline").toLowerCase();
-    const kind: ManufacturingFeature["kind"] = rawKind === "drill" || rawKind === "drill_pattern"
+    const kind: ManufacturingFeature["kind"] = rawKind === "drill" || rawKind === "drill_pattern" || rawKind === "countersink"
       ? "drill"
       : rawKind === "groove" || rawKind === "rabbet"
         ? "groove"
-        : rawKind === "pocket" || rawKind === "tenon"
+        : rawKind === "pocket" || rawKind === "inner_contour"
           ? "pocket"
-          : rawKind === "label"
+          : rawKind === "label" || rawKind === "engrave"
             ? "label"
             : "outline";
-    const rawFace = asString(feature.face, "A").toUpperCase();
+    const rawFace = asString(feature.side ?? feature.face, "A").toUpperCase();
     const face: ManufacturingFeature["face"] = rawFace === "A" || rawFace === "B" ? rawFace : "EDGE";
     const dimensions = asRecord(feature.dimensions);
+    const um = (key: string): number | undefined => typeof feature[key] === "number" ? Number(feature[key]) / 1_000 : undefined;
+    const dimUm = (key: string): number | undefined => dimensions && typeof dimensions[key] === "number" ? Number(dimensions[key]) / 1_000 : undefined;
+    const xMm = um("x_um");
+    const yMm = um("y_um");
+    const diameterMm = um("diameter_um") ?? dimUm("diameter_um");
+    const widthMm = um("width_um") ?? dimUm("width_um");
+    const lengthMm = um("length_um") ?? dimUm("length_um");
+    const pitchMm = um("pitch_um");
+    const toleranceMm = um("tolerance_um");
+    const fitClearanceMm = um("fit_clearance_um");
     return {
       id: asString(feature.id ?? feature.feature_id, `${partId}:feature-${index + 1}`),
       kind,
       face,
-      depth_mm: dimensions && typeof dimensions.depth_um === "number"
-        ? dimensions.depth_um / 1_000
-        : asNumber(feature.depth_mm, 0),
-      description: asString(feature.description, kind),
+      depth_mm: um("depth_um") ?? dimUm("depth_um") ?? asNumber(feature.depth_mm, 0),
+      ...(xMm === undefined ? {} : { x_mm: xMm }),
+      ...(yMm === undefined ? {} : { y_mm: yMm }),
+      ...(diameterMm === undefined ? {} : { diameter_mm: diameterMm }),
+      ...(widthMm === undefined ? {} : { width_mm: widthMm }),
+      ...(lengthMm === undefined ? {} : { length_mm: lengthMm }),
+      ...(typeof feature.pattern_count === "number" ? { pattern_count: Number(feature.pattern_count) } : {}),
+      ...(pitchMm === undefined ? {} : { pitch_mm: pitchMm }),
+      ...(typeof feature.through === "boolean" ? { through: feature.through } : {}),
+      ...(toleranceMm === undefined ? {} : { tolerance_mm: toleranceMm }),
+      ...(fitClearanceMm === undefined ? {} : { fit_clearance_mm: fitClearanceMm }),
+      description: asString(feature.description, `${kind} ${face}`),
       ...(typeof feature.tool_diameter_mm === "number" ? { tool_diameter_mm: feature.tool_diameter_mm } : {}),
     };
   });

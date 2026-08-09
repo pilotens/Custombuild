@@ -5,7 +5,7 @@ test.skip(
   "Requires the complete Compose API, worker, database, queue and object storage.",
 );
 
-test("det verkliga produktionsflödet kan frisläppa och hämta en låst revision", async ({
+test("det verkliga leverantörsflödet kan frisläppa och hämta en låst revision", async ({
   page,
 }, testInfo) => {
   test.setTimeout(6 * 60_000);
@@ -38,7 +38,7 @@ test("det verkliga produktionsflödet kan frisläppa och hämta en låst revisio
   });
   await page.getByRole("tab", { name: "Frisläppning" }).click();
 
-  const save = page.getByRole("button", { name: "Spara revision" });
+  const save = page.getByRole("button", { name: /Spara (ny )?revision/ });
   await expect(save).toBeEnabled({ timeout: 30_000 });
   await save.click();
   await expect(page.getByText(/Rev \d+ · Utkast/)).toBeVisible({ timeout: 30_000 });
@@ -55,16 +55,16 @@ test("det verkliga produktionsflödet kan frisläppa och hämta en låst revisio
   await expect(approveDesign).toBeEnabled();
   await approveDesign.click();
 
-  const generate = page.getByRole("button", { name: "Generera paket" });
+  const generate = page.getByRole("button", { name: "Generera leverantörspaket" });
   await expect(generate).toBeEnabled({ timeout: 30_000 });
   await generate.click();
 
   await page
-    .getByLabel("CAM-granskarens motivering")
-    .fill("Setup, verktyg, valideringskod och backplot granskade för exakt jobb.");
-  const approveCam = page.getByRole("button", { name: "Godkänn CAM för detta jobb" });
-  await expect(approveCam).toBeEnabled({ timeout: 4 * 60_000 });
-  await approveCam.click();
+    .getByLabel("Granskning av tillverkningsunderlag")
+    .fill("Detaljritningar, DXF, BOM, nesting och monteringsunderlag granskade för exakt jobb.");
+  const approveManufacturing = page.getByRole("button", { name: "Godkänn tillverkningsunderlag" });
+  await expect(approveManufacturing).toBeEnabled({ timeout: 4 * 60_000 });
+  await approveManufacturing.click();
 
   const releaseBase = (process.env.PLAYWRIGHT_RELEASE_NUMBER ?? "UI-LIVE-1").toUpperCase();
   const releaseNumber = `${releaseBase.slice(0, 34)}-R${testInfo.retry}`;

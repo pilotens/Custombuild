@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { Bounds, Edges, GizmoHelper, GizmoViewport, Grid, Html, OrbitControls, useBounds } from "@react-three/drei";
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
-import type { ResolvedPart } from "@/lib/design-types";
+import type { ManufacturingFeature, ResolvedPart } from "@/lib/design-types";
 
 export type ViewMode = "perspective" | "front" | "side" | "top";
 
@@ -60,6 +60,71 @@ function CameraRig({ viewMode, signature }: { viewMode: ViewMode; signature: str
   }, [bounds, camera, signature, viewMode]);
 
   return null;
+}
+
+function featureSurfaceTransform(
+  part: ResolvedPart,
+  feature: ManufacturingFeature,
+): { position: [number, number, number]; rotation: [number, number, number] } | undefined {
+  if (feature.face === "EDGE" || feature.x_mm === undefined || feature.y_mm === undefined) return undefined;
+  const sign = feature.face === "A" ? 1 : -1;
+  const epsilon = 0.0008;
+  if (part.orientation === "XY") {
+    return {
+      position: [
+        (feature.x_mm - part.width_mm / 2) / 1_000,
+        sign * (part.thickness_mm / 2_000 + epsilon),
+        (part.depth_mm / 2 - feature.y_mm) / 1_000,
+      ],
+      rotation: [-Math.PI / 2, 0, 0],
+    };
+  }
+  if (part.orientation === "YZ") {
+    return {
+      position: [
+        sign * (part.thickness_mm / 2_000 + epsilon),
+        (feature.y_mm - part.width_mm / 2) / 1_000,
+        (part.depth_mm / 2 - feature.x_mm) / 1_000,
+      ],
+      rotation: [0, Math.PI / 2, 0],
+    };
+  }
+  return {
+    position: [
+      (feature.x_mm - part.width_mm / 2) / 1_000,
+      (feature.y_mm - part.depth_mm / 2) / 1_000,
+      sign * (part.thickness_mm / 2_000 + epsilon),
+    ],
+    rotation: [0, 0, 0],
+  };
+}
+
+function FeatureMarker({ part, feature }: { part: ResolvedPart; feature: ManufacturingFeature }) {
+  const transform = featureSurfaceTransform(part, feature);
+  if (!transform || feature.kind === "outline" || feature.kind === "label") return null;
+  const patternCount = Math.max(1, feature.pattern_count ?? 1);
+  const pitch = (feature.pitch_mm ?? 0) / 1_000;
+  if (feature.kind === "drill") {
+    const diameter = Math.max(0.004, (feature.diameter_mm ?? feature.tool_diameter_mm ?? 5) / 1_000);
+    return (
+      <group position={transform.position} rotation={transform.rotation}>
+        {Array.from({ length: patternCount }, (_, index) => (
+          <mesh key={`${feature.id}-${index}`} position={[index * pitch, 0, 0]}>
+            <ringGeometry args={[diameter * 0.32, diameter * 0.5, 20]} />
+            <meshBasicMaterial color="#2563eb" depthTest={false} />
+          </mesh>
+        ))}
+      </group>
+    );
+  }
+  const width = Math.max(0.003, (feature.width_mm ?? 5) / 1_000);
+  const length = Math.max(0.003, (feature.length_mm ?? feature.width_mm ?? 5) / 1_000);
+  return (
+    <mesh position={transform.position} rotation={transform.rotation}>
+      <planeGeometry args={[width, length]} />
+      <meshBasicMaterial color={feature.kind === "groove" ? "#b45309" : "#2563eb"} transparent opacity={0.6} depthTest={false} />
+    </mesh>
+  );
 }
 
 function PartMesh({
@@ -120,6 +185,7 @@ function PartMesh({
         depthWrite={opacity > 0.25}
       />
       <Edges color={selected ? "#145c42" : dimmed ? "#94a39c" : "#574b3b"} threshold={18} />
+      {selected ? part.features.map((feature) => <FeatureMarker key={feature.id} part={part} feature={feature} />) : null}
       {selected ? (
         <Html center position={[0, partSize(part)[1] / 2 + 0.06, 0]} distanceFactor={7}>
           <div className="canvas-part-label">{part.name}<small>{part.part_id}</small></div>
