@@ -69,6 +69,16 @@ export interface ManufacturingFeature {
   kind: "outline" | "drill" | "groove" | "pocket" | "label";
   face: "A" | "B" | "EDGE";
   depth_mm: number;
+  x_mm?: number;
+  y_mm?: number;
+  diameter_mm?: number;
+  width_mm?: number;
+  length_mm?: number;
+  pattern_count?: number;
+  pitch_mm?: number;
+  through?: boolean;
+  tolerance_mm?: number;
+  fit_clearance_mm?: number;
   tool_diameter_mm?: number;
   description: string;
 }
