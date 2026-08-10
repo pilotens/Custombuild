@@ -1,9 +1,32 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
-import { Bounds, Edges, GizmoHelper, GizmoViewport, Grid, Html, OrbitControls, useBounds } from "@react-three/drei";
+import {
+  Suspense,
+  useEffect,
+  useMemo,
+  useState,
+  type DragEvent,
+} from "react";
+import {
+  Bounds,
+  Edges,
+  GizmoHelper,
+  GizmoViewport,
+  Grid,
+  Html,
+  OrbitControls,
+  useBounds,
+} from "@react-three/drei";
 import { Canvas, type ThreeEvent, useThree } from "@react-three/fiber";
-import type { ResolvedPart } from "@/lib/design-types";
+import type { DesignSpec, ResolvedPart } from "@/lib/design-types";
+import {
+  createSemanticSnapPreview,
+  readSemanticDragPayload,
+  type SemanticComponentKind,
+  type SemanticDropRequest,
+  type SemanticSnapPreview,
+} from "@/lib/semantic-design";
+import styles from "./semantic-editor.module.css";
 
 export type ViewMode = "perspective" | "front" | "side" | "top";
 
@@ -15,7 +38,11 @@ interface FurnitureViewerProps {
   exploded: boolean;
   transparent: boolean;
   isolateSelection: boolean;
+  semanticDropEnabled: boolean;
+  semanticSpec: DesignSpec;
+  semanticDragKind?: SemanticComponentKind;
   onSelectPart: (partId?: string) => void;
+  onSemanticDrop: (request: SemanticDropRequest) => void;
 }
 
 function partSize(part: ResolvedPart): [number, number, number] {
@@ -28,7 +55,10 @@ function partSize(part: ResolvedPart): [number, number, number] {
   return [part.width_mm / 1_000, part.thickness_mm / 1_000, part.depth_mm / 1_000];
 }
 
-function explodedOffset(part: ResolvedPart, designSize: FurnitureViewerProps["designSize"]): [number, number, number] {
+function explodedOffset(
+  part: ResolvedPart,
+  designSize: FurnitureViewerProps["designSize"],
+): [number, number, number] {
   const relativeX = part.position_mm.x - designSize.widthMm / 2;
   if (part.kind === "side") return [Math.sign(relativeX || 1) * 0.18, 0, 0];
   if (part.kind === "top") return [0, 0.2, 0];
@@ -85,7 +115,9 @@ function PartMesh({
     (part.position_mm.z - designSize.heightMm / 2) / 1_000,
     -(part.position_mm.y - designSize.depthMm / 2) / 1_000,
   ];
-  const offset = exploded ? explodedOffset(part, designSize) : [0, 0, 0] as [number, number, number];
+  const offset = exploded
+    ? explodedOffset(part, designSize)
+    : ([0, 0, 0] as [number, number, number]);
   const position: [number, number, number] = [
     basePosition[0] + offset[0],
     basePosition[1] + offset[1],
@@ -104,7 +136,7 @@ function PartMesh({
       castShadow={!transparent && !dimmed}
       receiveShadow
       onClick={handleSelect}
-      onPointerOver={(event) => {
+      onPointerOver={(event: ThreeEvent<PointerEvent>) => {
         event.stopPropagation();
         setHovered(true);
       }}
@@ -119,7 +151,10 @@ function PartMesh({
         opacity={opacity}
         depthWrite={opacity > 0.25}
       />
-      <Edges color={selected ? "#145c42" : dimmed ? "#94a39c" : "#574b3b"} threshold={18} />
+      <Edges
+        color={selected ? "#145c42" : dimmed ? "#94a39c" : "#574b3b"}
+        threshold={18}
+      />
       {selected ? (
         <Html center position={[0, partSize(part)[1] / 2 + 0.06, 0]} distanceFactor={7}>
           <div className="canvas-part-label">{part.name}<small>{part.part_id}</small></div>
@@ -131,14 +166,23 @@ function PartMesh({
 
 function Scene(props: FurnitureViewerProps) {
   const signature = useMemo(
-    () => props.parts.map((part) => `${part.part_id}:${part.width_mm}:${part.depth_mm}:${part.position_mm.x}:${part.position_mm.z}`).join("|"),
+    () => props.parts
+      .map((part) => (
+        `${part.part_id}:${part.width_mm}:${part.depth_mm}:${part.position_mm.x}:${part.position_mm.z}`
+      ))
+      .join("|"),
     [props.parts],
   );
   return (
     <>
       <color attach="background" args={["#eef0ec"]} />
       <ambientLight intensity={1.65} />
-      <directionalLight position={[3, 5, 4]} intensity={2.2} castShadow shadow-mapSize={[1_024, 1_024]} />
+      <directionalLight
+        position={[3, 5, 4]}
+        intensity={2.2}
+        castShadow
+        shadow-mapSize={[1_024, 1_024]}
+      />
       <directionalLight position={[-4, 1, -3]} intensity={0.7} color="#cadfd3" />
       <Bounds fit clip observe margin={1.35}>
         <group>
@@ -183,34 +227,104 @@ function Scene(props: FurnitureViewerProps) {
         panSpeed={0.65}
       />
       <GizmoHelper alignment="bottom-right" margin={[62, 54]}>
-        <GizmoViewport axisColors={["#c85757", "#39845f", "#4774ad"]} labelColor="#eef4f0" />
+        <GizmoViewport
+          axisColors={["#c85757", "#39845f", "#4774ad"]}
+          labelColor="#eef4f0"
+        />
       </GizmoHelper>
     </>
   );
 }
 
+function pointerRequest(
+  event: DragEvent<HTMLDivElement>,
+  kind: SemanticComponentKind,
+): SemanticDropRequest {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return {
+    kind,
+    normalizedX: rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5,
+    normalizedY: rect.height > 0 ? (event.clientY - rect.top) / rect.height : 0.5,
+  };
+}
+
+function SnapPreview({ preview }: { preview: SemanticSnapPreview }) {
+  const style = preview.kind === "shelf_row"
+    ? { top: `${preview.normalizedY * 100}%` }
+    : preview.kind === "divider"
+      ? { left: `${preview.normalizedX * 100}%` }
+      : undefined;
+  const className = preview.kind === "shelf_row"
+    ? styles.snapLineHorizontal
+    : preview.kind === "divider"
+      ? styles.snapLineVertical
+      : preview.kind === "back_panel"
+        ? styles.snapBack
+        : styles.snapPlinth;
+  return (
+    <div className={styles.snapPreview} aria-hidden="true">
+      <span className={styles.snapLabel}>Snap: {preview.label}</span>
+      <span className={className} style={style} />
+    </div>
+  );
+}
+
 export default function FurnitureViewer(props: FurnitureViewerProps) {
   const orthographic = props.viewMode !== "perspective";
+  const [snapPreview, setSnapPreview] = useState<SemanticSnapPreview>();
+
+  const handleDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (!props.semanticDropEnabled || !props.semanticDragKind) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    const request = pointerRequest(event, props.semanticDragKind);
+    setSnapPreview(createSemanticSnapPreview(props.semanticSpec, request));
+  };
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>) => {
+    if (!props.semanticDropEnabled) return;
+    const kind = readSemanticDragPayload(event.dataTransfer) ?? props.semanticDragKind;
+    if (!kind) return;
+    event.preventDefault();
+    props.onSemanticDrop(pointerRequest(event, kind));
+    setSnapPreview(undefined);
+  };
+
   return (
-    <div className="canvas-shell" aria-label="Interaktiv 3D-modell av bokhyllan">
-      <Canvas
-        key={orthographic ? "orthographic" : "perspective"}
-        orthographic={orthographic}
-        camera={orthographic ? { near: 0.01, far: 100, zoom: 150 } : { near: 0.01, far: 100, fov: 38 }}
-        dpr={[1, 1.75]}
-        shadows
-        gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
-        onPointerMissed={() => props.onSelectPart(undefined)}
-      >
-        <Suspense fallback={null}>
-          <Scene {...props} />
-        </Suspense>
-      </Canvas>
-      <div className="canvas-dimensions" aria-label="Aktuella yttermått">
-        <span><small>X</small>{props.designSize.widthMm} mm</span>
-        <span><small>Y</small>{props.designSize.depthMm} mm</span>
-        <span><small>Z</small>{props.designSize.heightMm} mm</span>
+    <div
+      className={`${styles.dropSurface} ${snapPreview ? styles.dropSurfaceActive : ""}`}
+      onDragOver={handleDragOver}
+      onDragLeave={(event: DragEvent<HTMLDivElement>) => {
+        const nextTarget = event.relatedTarget;
+        if (!(nextTarget instanceof Node) || !event.currentTarget.contains(nextTarget)) {
+          setSnapPreview(undefined);
+        }
+      }}
+      onDrop={handleDrop}
+    >
+      <div className="canvas-shell" aria-label="Interaktiv 3D-modell av bokhyllan">
+        <Canvas
+          key={orthographic ? "orthographic" : "perspective"}
+          orthographic={orthographic}
+          camera={orthographic
+            ? { near: 0.01, far: 100, zoom: 150 }
+            : { near: 0.01, far: 100, fov: 38 }}
+          dpr={[1, 1.75]}
+          shadows
+          gl={{ antialias: true, alpha: false, powerPreference: "high-performance" }}
+          onPointerMissed={() => props.onSelectPart(undefined)}
+        >
+          <Suspense fallback={null}>
+            <Scene {...props} />
+          </Suspense>
+        </Canvas>
+        <div className="canvas-dimensions" aria-label="Aktuella yttermått">
+          <span><small>X</small>{props.designSize.widthMm} mm</span>
+          <span><small>Y</small>{props.designSize.depthMm} mm</span>
+          <span><small>Z</small>{props.designSize.heightMm} mm</span>
+        </div>
       </div>
+      {snapPreview ? <SnapPreview preview={snapPreview} /> : null}
     </div>
   );
 }

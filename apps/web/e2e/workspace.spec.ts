@@ -26,6 +26,11 @@ test("den byggda svenska konstruktionsarbetsytan fungerar utan nätverksmockar",
   await expect(page.getByText("Lokalt läge", { exact: true })).toBeVisible();
   await expect(page.locator("canvas").first()).toBeVisible();
 
+  await expect(page.getByRole("heading", { name: "Dra in i modellen" })).toBeVisible();
+  await page.getByRole("button", { name: /Hyllrad/ }).click();
+  await expect(page.getByText("En hyllrad lades till via hyllfack 1.")).toBeVisible();
+  await expect(page.getByText(/shelf_count: 5 → 6/)).toBeVisible();
+
   const width = page.getByRole("spinbutton", { name: "Bredd mm", exact: true });
   await expect(width).toHaveValue("1200");
   await width.fill("1350");

@@ -31,10 +31,17 @@ import {
   type DesignSpec,
   type RuleEvaluation,
 } from "@/lib/design-types";
+import {
+  resolveSemanticDrop,
+  type SemanticComponentKind,
+  type SemanticDropRequest,
+} from "@/lib/semantic-design";
 import type { ViewMode } from "./furniture-viewer";
 import { BottomInspector, type InspectorTabId } from "./bottom-inspector";
+import { ComponentPalette } from "./component-palette";
 import { ParameterPanel } from "./parameter-panel";
 import type { ProductionSummary } from "./production-workflow";
+import styles from "./semantic-editor.module.css";
 import { ValidationPanel } from "./validation-panel";
 
 const FurnitureViewer = dynamic(() => import("./furniture-viewer"), {
@@ -55,6 +62,12 @@ interface ServerPreviewState {
   result: ReturnType<typeof resolveDesign>;
 }
 
+interface SemanticNotice {
+  title: string;
+  detail?: string;
+  error?: boolean;
+}
+
 const navItems = [
   { label: "Projekt", href: "#workspace", icon: FolderKanban, active: true },
   { label: "Mallar", href: "#parameters", icon: LayoutTemplate },
@@ -71,10 +84,20 @@ function isStoredSpec(value: unknown): value is Partial<DesignSpec> {
 
 function ApiIndicator({ state, message }: { state: ApiState; message: string }) {
   const Icon = state === "syncing" ? LoaderCircle : state === "synced" ? Cloud : CloudOff;
-  const label = state === "syncing" ? "Synkar" : state === "synced" ? "Servermodell" : state === "offline" ? "Lokalt läge" : "API-fel";
+  const label = state === "syncing"
+    ? "Synkar"
+    : state === "synced"
+      ? "Servermodell"
+      : state === "offline"
+        ? "Lokalt läge"
+        : "API-fel";
   return (
     <span className={`api-indicator api-${state}`} title={message}>
-      <Icon aria-hidden="true" className={state === "syncing" ? "spin" : ""} size={14} />
+      <Icon
+        aria-hidden="true"
+        className={state === "syncing" ? "spin" : ""}
+        size={14}
+      />
       {label}
     </span>
   );
@@ -95,6 +118,13 @@ function productionStatusLabel(summary: ProductionSummary): string {
   return labels[summary.status] ?? summary.status;
 }
 
+function defaultDropRequest(kind: SemanticComponentKind): SemanticDropRequest {
+  if (kind === "shelf_row") return { kind, normalizedX: 0.5, normalizedY: 0.5 };
+  if (kind === "divider") return { kind, normalizedX: 0.5, normalizedY: 0.5 };
+  if (kind === "back_panel") return { kind, normalizedX: 0.5, normalizedY: 0.5 };
+  return { kind, normalizedX: 0.5, normalizedY: 1 };
+}
+
 export function CustombuildWorkspace() {
   const api = useMemo(() => new CustombuildApiClient(), []);
   const [spec, setSpec] = useState<DesignSpec>(DEFAULT_DESIGN_SPEC);
@@ -106,7 +136,9 @@ export function CustombuildWorkspace() {
   const [exploded, setExploded] = useState(false);
   const [transparent, setTransparent] = useState(false);
   const [isolateSelection, setIsolateSelection] = useState(false);
-  const [mode, setMode] = useState<"guided" | "expert">("expert");
+  const [mode, setMode] = useState<"guided" | "expert">("guided");
+  const [semanticDragKind, setSemanticDragKind] = useState<SemanticComponentKind>();
+  const [semanticNotice, setSemanticNotice] = useState<SemanticNotice>();
   const [apiState, setApiState] = useState<ApiState>(api.configured ? "syncing" : "offline");
   const [apiMessage, setApiMessage] = useState(
     api.configured
@@ -177,7 +209,9 @@ export function CustombuildWorkspace() {
         .catch((error: unknown) => {
           if (controller.signal.aborted) return;
           setApiState("error");
-          setApiMessage(error instanceof Error ? error.message : "Ett okänt API-fel inträffade.");
+          setApiMessage(
+            error instanceof Error ? error.message : "Ett okänt API-fel inträffade.",
+          );
         });
     }, 500);
     return () => {
@@ -186,7 +220,8 @@ export function CustombuildWorkspace() {
     };
   }, [api, spec]);
 
-  const effectiveSelectedPartId = selectedPartId && design.parts.some((part) => part.part_id === selectedPartId)
+  const effectiveSelectedPartId = selectedPartId
+    && design.parts.some((part) => part.part_id === selectedPartId)
     ? selectedPartId
     : undefined;
 
@@ -205,6 +240,21 @@ export function CustombuildWorkspace() {
 
   const updateSpec = useCallback((patch: Partial<DesignSpec>) => {
     replaceSpec({ ...spec, ...patch }, []);
+  }, [replaceSpec, spec]);
+
+  const applySemanticDrop = useCallback((request: SemanticDropRequest) => {
+    try {
+      const outcome = resolveSemanticDrop(spec, request);
+      replaceSpec(outcome.spec, outcome.diff);
+      setSemanticNotice({ title: outcome.message, detail: outcome.warning });
+    } catch (error: unknown) {
+      setSemanticNotice({
+        title: error instanceof Error ? error.message : "Byggdelen kunde inte placeras.",
+        error: true,
+      });
+    } finally {
+      setSemanticDragKind(undefined);
+    }
   }, [replaceSpec, spec]);
 
   const undo = () => {
@@ -241,20 +291,32 @@ export function CustombuildWorkspace() {
         if (localDesignHash(result.spec) === targetHash) {
           setServerPreview({ requestHash: targetHash, result });
           setApiState("synced");
-          setApiMessage("Serverns autokorrigering överensstämmer med den lokala deterministiska ändringen.");
+          setApiMessage(
+            "Serverns autokorrigering överensstämmer med den lokala deterministiska ändringen.",
+          );
         } else {
           setApiState("error");
-          setApiMessage("Serverns autokorrigering avviker från klientpreviewn; ändringen kan inte betraktas som verifierad.");
+          setApiMessage(
+            "Serverns autokorrigering avviker från klientpreviewn; ändringen kan inte betraktas som verifierad.",
+          );
         }
       })
       .catch((error: unknown) => {
         setApiState("error");
-        setApiMessage(error instanceof Error ? error.message : "Autokorrigeringen kunde inte verifieras mot servern.");
+        setApiMessage(
+          error instanceof Error
+            ? error.message
+            : "Autokorrigeringen kunde inte verifieras mot servern.",
+        );
       })
       .finally(() => setApplyingRuleId(undefined));
   };
 
-  const saveLabel = saveState === "saving" ? "Sparar…" : saveState === "error" ? "Kunde inte spara lokalt" : "Sparad";
+  const saveLabel = saveState === "saving"
+    ? "Sparar…"
+    : saveState === "error"
+      ? "Kunde inte spara lokalt"
+      : "Sparad";
 
   return (
     <div className="app-shell">
@@ -268,7 +330,12 @@ export function CustombuildWorkspace() {
           {navItems.map((item) => {
             const Icon = item.icon;
             return (
-              <a key={item.label} href={item.href} className={item.active ? "active" : ""} title={item.label}>
+              <a
+                key={item.label}
+                href={item.href}
+                className={item.active ? "active" : ""}
+                title={item.label}
+              >
                 <Icon aria-hidden="true" size={18} />
                 <span>{item.label}</span>
                 {item.active ? <span className="active-indicator" /> : null}
@@ -308,16 +375,45 @@ export function CustombuildWorkspace() {
           </div>
           <div className="header-actions">
             <div className="save-state" aria-live="polite">
-              {saveState === "saved" ? <Check aria-hidden="true" size={13} /> : <Save aria-hidden="true" size={13} />}
+              {saveState === "saved"
+                ? <Check aria-hidden="true" size={13} />
+                : <Save aria-hidden="true" size={13} />}
               {saveLabel}
             </div>
             <ApiIndicator state={apiState} message={apiMessage} />
             <span className="header-divider" />
-            <button type="button" className="icon-button" aria-label="Ångra" title="Ångra" disabled={past.length === 0} onClick={undo}><Undo2 aria-hidden="true" size={17} /></button>
-            <button type="button" className="icon-button" aria-label="Gör om" title="Gör om" disabled={future.length === 0} onClick={redo}><Redo2 aria-hidden="true" size={17} /></button>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Ångra"
+              title="Ångra"
+              disabled={past.length === 0}
+              onClick={undo}
+            ><Undo2 aria-hidden="true" size={17} /></button>
+            <button
+              type="button"
+              className="icon-button"
+              aria-label="Gör om"
+              title="Gör om"
+              disabled={future.length === 0}
+              onClick={redo}
+            ><Redo2 aria-hidden="true" size={17} /></button>
             <div className="segmented-control mode-toggle" aria-label="Redigeringsläge">
-              <button type="button" className={mode === "guided" ? "active" : ""} aria-pressed={mode === "guided"} onClick={() => setMode("guided")}>Guidad</button>
-              <button type="button" className={mode === "expert" ? "active" : ""} aria-pressed={mode === "expert"} onClick={() => setMode("expert")}>Expert</button>
+              <button
+                type="button"
+                className={mode === "guided" ? "active" : ""}
+                aria-pressed={mode === "guided"}
+                onClick={() => setMode("guided")}
+              >Guidad</button>
+              <button
+                type="button"
+                className={mode === "expert" ? "active" : ""}
+                aria-pressed={mode === "expert"}
+                onClick={() => {
+                  setMode("expert");
+                  setSemanticDragKind(undefined);
+                }}
+              >Expert</button>
             </div>
             <button
               type="button"
@@ -330,7 +426,10 @@ export function CustombuildWorkspace() {
         </header>
 
         <div className="workspace-grid">
-          <section className="viewer-panel" aria-label="Konstruktionsvy">
+          <section
+            className={`viewer-panel ${styles.semanticViewerPanel}`}
+            aria-label="Konstruktionsvy"
+          >
             <div className="viewer-toolbar">
               <div className="view-tabs" aria-label="Vy">
                 {([
@@ -339,50 +438,138 @@ export function CustombuildWorkspace() {
                   ["side", "Sida"],
                   ["top", "Topp"],
                 ] as const).map(([value, label]) => (
-                  <button key={value} type="button" className={viewMode === value ? "active" : ""} aria-pressed={viewMode === value} onClick={() => setViewMode(value)}>{label}</button>
+                  <button
+                    key={value}
+                    type="button"
+                    className={viewMode === value ? "active" : ""}
+                    aria-pressed={viewMode === value}
+                    onClick={() => setViewMode(value)}
+                  >{label}</button>
                 ))}
               </div>
               <span className="toolbar-divider" />
-              <button type="button" className={`tool-button ${exploded ? "active" : ""}`} aria-pressed={exploded} onClick={() => setExploded((value) => !value)}><PackageCheck aria-hidden="true" size={15} /> Exploderad</button>
-              <button type="button" className={`tool-button ${transparent ? "active" : ""}`} aria-pressed={transparent} onClick={() => setTransparent((value) => !value)}>{transparent ? <EyeOff aria-hidden="true" size={15} /> : <Eye aria-hidden="true" size={15} />} Transparent</button>
-              <button type="button" className={`tool-button ${isolateSelection ? "active" : ""}`} aria-pressed={isolateSelection} disabled={!effectiveSelectedPartId} onClick={() => setIsolateSelection((value) => !value)}><Focus aria-hidden="true" size={15} /> Isolera</button>
+              <button
+                type="button"
+                className={`tool-button ${exploded ? "active" : ""}`}
+                aria-pressed={exploded}
+                onClick={() => setExploded((value) => !value)}
+              ><PackageCheck aria-hidden="true" size={15} /> Exploderad</button>
+              <button
+                type="button"
+                className={`tool-button ${transparent ? "active" : ""}`}
+                aria-pressed={transparent}
+                onClick={() => setTransparent((value) => !value)}
+              >
+                {transparent
+                  ? <EyeOff aria-hidden="true" size={15} />
+                  : <Eye aria-hidden="true" size={15} />} Transparent
+              </button>
+              <button
+                type="button"
+                className={`tool-button ${isolateSelection ? "active" : ""}`}
+                aria-pressed={isolateSelection}
+                disabled={!effectiveSelectedPartId}
+                onClick={() => setIsolateSelection((value) => !value)}
+              ><Focus aria-hidden="true" size={15} /> Isolera</button>
               <div className="viewer-toolbar-spacer" />
               {effectiveSelectedPartId ? (
-                <button type="button" className="selection-chip" onClick={() => { setSelectedPartId(undefined); setIsolateSelection(false); }}>
-                  <span className="selection-dot" /> {design.parts.find((part) => part.part_id === effectiveSelectedPartId)?.name ?? effectiveSelectedPartId}
+                <button
+                  type="button"
+                  className="selection-chip"
+                  onClick={() => {
+                    setSelectedPartId(undefined);
+                    setIsolateSelection(false);
+                  }}
+                >
+                  <span className="selection-dot" />
+                  {design.parts.find((part) => part.part_id === effectiveSelectedPartId)?.name
+                    ?? effectiveSelectedPartId}
                   <X aria-hidden="true" size={13} />
                 </button>
               ) : <span className="selection-hint">Klicka på en del för att inspektera</span>}
             </div>
             {apiState === "offline" || apiState === "error" ? (
-              <div className={`offline-banner ${apiState === "error" ? "error" : ""}`} role="status">
+              <div
+                className={`offline-banner ${apiState === "error" ? "error" : ""}`}
+                role="status"
+              >
                 <CloudOff aria-hidden="true" size={14} />
-                <span><strong>{apiState === "error" ? "Servern kan inte nås." : "Lokalt konstruktionsläge."}</strong> Produktionsfiler och serverauktoritativ geometri är inte tillgängliga.</span>
+                <span>
+                  <strong>
+                    {apiState === "error" ? "Servern kan inte nås." : "Lokalt konstruktionsläge."}
+                  </strong> Produktionsfiler och serverauktoritativ geometri är inte tillgängliga.
+                </span>
               </div>
+            ) : null}
+            {mode === "guided" ? (
+              <ComponentPalette
+                onInsert={(kind) => applySemanticDrop(defaultDropRequest(kind))}
+                onDragStartKind={setSemanticDragKind}
+                onDragEnd={() => setSemanticDragKind(undefined)}
+              />
             ) : null}
             <FurnitureViewer
               parts={design.parts}
-              designSize={{ widthMm: spec.width_mm, heightMm: spec.height_mm, depthMm: spec.depth_mm }}
+              designSize={{
+                widthMm: spec.width_mm,
+                heightMm: spec.height_mm,
+                depthMm: spec.depth_mm,
+              }}
               selectedPartId={effectiveSelectedPartId}
               viewMode={viewMode}
               exploded={exploded}
               transparent={transparent}
               isolateSelection={isolateSelection}
+              semanticDropEnabled={mode === "guided"}
+              semanticSpec={spec}
+              semanticDragKind={semanticDragKind}
               onSelectPart={setSelectedPartId}
+              onSemanticDrop={applySemanticDrop}
             />
             <div className="viewer-status-strip">
-              <span><span className="engine-dot" /> {design.source === "server-preview" ? "Servervaliderad konstruktionspreview" : "Deterministisk klientpreview"}</span>
+              <span>
+                <span className="engine-dot" />
+                {design.source === "server-preview"
+                  ? "Servervaliderad konstruktionspreview"
+                  : "Deterministisk klientpreview"}
+              </span>
               <span>Högerhänt · X bredd · Y djup · Z höjd</span>
               <span>{design.parts.length} delar · BOM/nesting/CAM är klientpreview</span>
             </div>
+            {semanticNotice ? (
+              <div
+                className={styles.semanticNotice}
+                role={semanticNotice.error ? "alert" : "status"}
+              >
+                <strong>{semanticNotice.title}</strong>
+                {semanticNotice.detail ? <span>{semanticNotice.detail}</span> : null}
+                <button
+                  type="button"
+                  aria-label="Stäng placeringsmeddelande"
+                  onClick={() => setSemanticNotice(undefined)}
+                ><X aria-hidden="true" size={14} /></button>
+              </div>
+            ) : null}
             {changeDiff.length > 0 ? (
               <div className="change-diff" role="status">
                 <div className="diff-icon"><GitBranch aria-hidden="true" size={16} /></div>
                 <div>
-                  <strong>{changeDiff.length} {changeDiff.length === 1 ? "ändring" : "ändringar"} i utkastet</strong>
-                  <p>{changeDiff.map((diff) => `${String(diff.field)}: ${String(diff.before)} → ${String(diff.after)}`).join(" · ")}</p>
+                  <strong>
+                    {changeDiff.length} {changeDiff.length === 1 ? "ändring" : "ändringar"} i utkastet
+                  </strong>
+                  <p>
+                    {changeDiff
+                      .map((diff) => (
+                        `${String(diff.field)}: ${String(diff.before)} → ${String(diff.after)}`
+                      ))
+                      .join(" · ")}
+                  </p>
                 </div>
-                <button type="button" aria-label="Stäng ändringsöversikt" onClick={() => setChangeDiff([])}><X aria-hidden="true" size={15} /></button>
+                <button
+                  type="button"
+                  aria-label="Stäng ändringsöversikt"
+                  onClick={() => setChangeDiff([])}
+                ><X aria-hidden="true" size={15} /></button>
               </div>
             ) : null}
           </section>
