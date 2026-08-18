@@ -79,13 +79,16 @@ matches furniture relationships:
 | --- | --- | --- |
 | Shelf row | `shelf_in_bay` | One of the current carcass bays |
 | Divider | `divider_in_carcass` | The usable carcass opening |
+| Lower cabinet row | `cabinet_under_shelves` | Lower furniture zone |
 | Back panel | `back_behind_carcass` | Rear carcass plane |
 | Plinth | `plinth_under_carcass` | Carcass base |
 
 The frontend shows a visual snap preview, but the pointer coordinate is not
-promoted to a manufacturing coordinate. `DesignSpec 1.0` still distributes shelf
-rows and divider-created bays equally. This limitation is displayed to users and
-free movement fails closed until a versioned custom-position schema exists.
+promoted directly to a manufacturing coordinate. It becomes a constrained design
+ratio, snapped to the supported envelope and validated by both schema and rule
+engine. `DesignSpec 1.0` now carries ordered shelf-height ratios and normalized
+bay-width ratios. The geometry compiler remains the only layer that derives final
+part and joint coordinates.
 
 ## AI boundary
 
@@ -125,6 +128,8 @@ failure cannot partially replace authoritative geometry.
 - A draggable furniture-component palette is available in the 3D workspace.
 - Dragging provides a semantic snap preview and compiles to the existing
   deterministic `DesignSpec`.
+- Shelf rows and dividers retain constrained custom positions; symmetry creates
+  the matching partner and connected boards regenerate as a unit.
 - Click-to-insert is provided as a keyboard/touch fallback.
 - The Python domain package exposes the equivalent semantic document, targets,
   intents and compiler, including explicit AI confirmation.
@@ -135,8 +140,8 @@ failure cannot partially replace authoritative geometry.
 
 The following require new versioned domain contracts rather than UI-only work:
 
-- arbitrary per-shelf heights and unequal bay widths;
-- moving existing components with persistent constraints;
+- unconstrained free transforms or arbitrary XYZ part placement;
+- generic persistent constraints for components outside shelves and dividers;
 - doors, drawers and hardware drag/drop;
 - supplier-specific connector catalogues;
 - generating TechDraw pages or FreeCAD CAM jobs in the production bundle;

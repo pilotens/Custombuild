@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -107,7 +108,16 @@ class Project(IdMixin, TimestampMixin, TenantMixin, Base):
     description: Mapped[str] = mapped_column(Text, default="")
     furniture_type: Mapped[str] = mapped_column(String(80), default="bookcase")
     current_revision: Mapped[int] = mapped_column(Integer, default=0)
+    draft_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    draft_template_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    draft_design_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    draft_spec_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    draft_workspace_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    draft_result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    draft_updated_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
 
     versions: Mapped[list[DesignVersion]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="DesignVersion.revision"
@@ -116,7 +126,18 @@ class Project(IdMixin, TimestampMixin, TenantMixin, Base):
 
 class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "design_versions"
-    __table_args__ = (UniqueConstraint("project_id", "revision"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "revision"),
+        ForeignKeyConstraint(
+            ["organization_id", "project_id", "source_import_id"],
+            [
+                "imported_assets.organization_id",
+                "imported_assets.project_id",
+                "imported_assets.id",
+            ],
+            ondelete="RESTRICT",
+        ),
+    )
 
     project_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True
@@ -128,9 +149,17 @@ class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     design_hash: Mapped[str] = mapped_column(String(64), index=True)
     context_hash: Mapped[str] = mapped_column(String(64), index=True)
     spec_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    source_provenance_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_import_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
     result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     engine_version: Mapped[str] = mapped_column(String(40), default="0.1.0")
     template_version: Mapped[str] = mapped_column(String(40), default="bookcase@1.0.0")
+    template_id: Mapped[str] = mapped_column(String(80), default="shelving")
+    template_capability_fingerprint: Mapped[str] = mapped_column(
+        String(64), default="0" * 64
+    )
     rule_version: Mapped[str] = mapped_column(String(40), default="unversioned")
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     immutable: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -138,9 +167,33 @@ class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     project: Mapped[Project] = relationship(back_populates="versions")
 
 
+class ImportedAsset(IdMixin, TimestampMixin, TenantMixin, Base):
+    """Immutable reference input owned by one exact tenant project."""
+
+    __tablename__ = "imported_assets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "project_id", "sha256"),
+        UniqueConstraint("organization_id", "project_id", "id"),
+        Index("ix_imported_assets_project_created", "project_id", "created_at"),
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    object_key: Mapped[str] = mapped_column(String(512))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    media_type: Mapped[str] = mapped_column(String(160))
+    original_filename: Mapped[str] = mapped_column(String(255))
+    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+
+
 class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "generation_jobs"
-    __table_args__ = (UniqueConstraint("organization_id", "idempotency_key"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key"),
+        Index("ix_generation_jobs_status_lease_expires_at", "status", "lease_expires_at"),
+    )
 
     design_version_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("design_versions.id", ondelete="CASCADE"), index=True
@@ -154,6 +207,11 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
     request_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -167,6 +225,10 @@ class OutboxEvent(IdMixin, TimestampMixin, TenantMixin, Base):
     topic: Mapped[str] = mapped_column(String(100))
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -182,6 +244,35 @@ class Artifact(IdMixin, TimestampMixin, TenantMixin, Base):
     sha256: Mapped[str] = mapped_column(String(64))
     size_bytes: Mapped[int] = mapped_column(Integer)
     content_type: Mapped[str] = mapped_column(String(160))
+
+
+class ExternalEvidence(IdMixin, TimestampMixin, TenantMixin, Base):
+    """Immutable, checksum-bound evidence for one exact project design hash."""
+
+    __tablename__ = "external_evidence"
+    __table_args__ = (
+        Index("ix_external_evidence_project_type", "project_id", "evidence_type"),
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    evidence_type: Mapped[str] = mapped_column(String(40))
+    rule_id: Mapped[str] = mapped_column(String(40))
+    catalog_id: Mapped[str] = mapped_column(String(160))
+    catalog_version: Mapped[str] = mapped_column(String(80))
+    design_hash: Mapped[str] = mapped_column(String(64), index=True)
+    object_key: Mapped[str] = mapped_column(String(512))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content_type: Mapped[str] = mapped_column(String(160))
+    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class Approval(IdMixin, TimestampMixin, TenantMixin, Base):

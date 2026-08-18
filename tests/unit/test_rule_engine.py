@@ -50,6 +50,91 @@ def evaluation(spec: BookcaseDesignSpec, rule_id: str):
 
 
 class StructuralRuleTests(unittest.TestCase):
+    def test_base_cabinet_validation_names_exact_missing_supports(self) -> None:
+        result = evaluation(
+            make_spec(
+                width_um=mm(4_200),
+                height_um=mm(2_600),
+                vertical_divider_count=4,
+                base_cabinet_count=4,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+            ),
+            "CB-SUPPORT-001",
+        )
+
+        self.assertEqual(result.status, RuleStatus.BLOCK)
+        self.assertGreater(result.calculated_value, 0)
+        self.assertIn("ostödda_centrumlinjer", {item.name for item in result.inputs})
+        action = result.suggested_actions[0]
+        self.assertEqual(action.action_type, ActionType.ALIGN_BASE_CABINETS)
+        self.assertEqual(action.changes[0].after, 5)
+        self.assertIn("fullhöjd underskåpssida", action.description)
+
+    def test_equal_upper_bays_and_base_modules_form_a_direct_load_path(self) -> None:
+        result = evaluation(
+            make_spec(
+                width_um=mm(4_200),
+                height_um=mm(2_600),
+                vertical_divider_count=4,
+                base_cabinet_count=5,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+            ),
+            "CB-SUPPORT-001",
+        )
+
+        self.assertEqual(result.status, RuleStatus.PASS)
+        self.assertEqual(result.calculated_value, 0)
+        self.assertEqual(result.suggested_actions, ())
+
+    def test_sixteen_dividers_recommend_and_accept_seventeen_base_modules(self) -> None:
+        unsupported = evaluation(
+            make_spec(
+                width_um=mm(6000),
+                height_um=mm(2600),
+                shelf_count=1,
+                vertical_divider_count=16,
+                base_cabinet_count=16,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+            ),
+            "CB-SUPPORT-001",
+        )
+        supported = evaluation(
+            make_spec(
+                width_um=mm(6000),
+                height_um=mm(2600),
+                shelf_count=1,
+                vertical_divider_count=16,
+                base_cabinet_count=17,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+            ),
+            "CB-SUPPORT-001",
+        )
+
+        self.assertEqual(unsupported.status, RuleStatus.BLOCK)
+        self.assertEqual(unsupported.suggested_actions[0].changes[0].after, 17)
+        self.assertEqual(supported.status, RuleStatus.PASS)
+        self.assertEqual(supported.calculated_value, 0)
+
+    def test_base_cabinet_hardware_is_a_review_warning_for_validation_only_output(self) -> None:
+        result = evaluation(
+            make_spec(
+                width_um=mm(4_200),
+                height_um=mm(2_600),
+                vertical_divider_count=4,
+                base_cabinet_count=5,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+            ),
+            "CB-HARDWARE-001",
+        )
+
+        self.assertEqual(result.status, RuleStatus.WARNING)
+        self.assertTrue(result.suggested_actions[0].requires_user_evidence)
+
     def test_default_loaded_shelf_blocks_on_deflection(self) -> None:
         result = evaluation(make_spec(), "CB-DEFLECTION-001")
         self.assertEqual(result.status, RuleStatus.BLOCK)
@@ -68,6 +153,24 @@ class StructuralRuleTests(unittest.TestCase):
         narrow = evaluation(make_spec(width_um=mm(650)), "CB-DEFLECTION-001")
         wide = evaluation(make_spec(width_um=mm(1_050)), "CB-DEFLECTION-001")
         self.assertGreater(wide.calculated_value, narrow.calculated_value)
+
+    def test_unequal_bays_assign_load_by_width_and_screen_the_widest_span(self) -> None:
+        equal = evaluation(
+            make_spec(width_um=mm(2000), vertical_divider_count=2),
+            "CB-DEFLECTION-001",
+        )
+        custom = evaluation(
+            make_spec(
+                width_um=mm(2000),
+                vertical_divider_count=2,
+                bay_width_ratios_ppm=(200_000, 600_000, 200_000),
+            ),
+            "CB-DEFLECTION-001",
+        )
+        custom_inputs = {item.name: item.value for item in custom.inputs}
+
+        self.assertGreater(custom.calculated_value, equal.calculated_value)
+        self.assertGreater(custom_inputs["dimensionerande_facklast"], 100)
 
     def test_dado_tongues_are_excluded_from_the_free_structural_span(self) -> None:
         spec = make_spec(width_um=mm(500), shelf_count=1)
@@ -138,19 +241,31 @@ class StructuralRuleTests(unittest.TestCase):
         result = evaluation(make_spec(), "CB-JOINT-001")
         inputs = {item.name: item.value for item in result.inputs}
 
-        self.assertEqual(result.status, RuleStatus.PASS)
+        self.assertEqual(result.status, RuleStatus.WARNING)
         self.assertEqual(result.calculated_value, 150)
-        self.assertEqual(result.allowed_value, 1_600)
+        self.assertEqual(result.allowed_value, 1_589)
         self.assertEqual(inputs["dado_engagement"], mm(6))
-        self.assertEqual(inputs["bärande_längd"], mm(300))
-        self.assertEqual(inputs["bärande_area"], mm(6) * mm(300))
+        self.assertEqual(inputs["bärande_längd"], mm(298))
+        self.assertEqual(inputs["bärande_area"], mm(6) * mm(298))
         self.assertEqual(inputs["skjuvhållfasthet"], 3)
         self.assertEqual(inputs["materialosäkerhet"], 200)
         self.assertEqual(inputs["strukturell_säkerhetsfaktor"], 1_800)
         self.assertEqual(inputs["materialversion"], "birch-plywood@screening-2026.1")
         self.assertEqual(inputs["materialkälla"], "screening-library@2026.1")
+        self.assertIs(inputs["permanent_hållning_verifierad"], False)
         self.assertEqual(len(result.trace), 4)
         self.assertGreater(result.safety_margin_permille, 0)
+        self.assertEqual(result.title, "Lokalt upplag i hyllspår och hyllbärare")
+        self.assertTrue(any("inte självlåsande" in item for item in result.assumptions))
+        self.assertTrue(any("adhesiv låsning är förbjuden" in item for item in result.assumptions))
+        dry_action = next(
+            action
+            for action in result.suggested_actions
+            if action.action_type == ActionType.VERIFY_DRY_JOINING_SYSTEM
+        )
+        self.assertTrue(dry_action.requires_user_evidence)
+        self.assertEqual(dry_action.changes, ())
+        self.assertIn("endast designgranskning", dry_action.description)
 
     def test_measured_thickness_changes_real_dado_engagement_and_capacity(self) -> None:
         thin = evaluation(make_spec(actual_thickness_um=mm(17)), "CB-JOINT-001")
@@ -169,10 +284,14 @@ class StructuralRuleTests(unittest.TestCase):
         self.assertEqual(warning.status, RuleStatus.WARNING)
         self.assertEqual(blocking.status, RuleStatus.BLOCK)
         self.assertEqual(blocking.calculated_value, 1_650)
-        self.assertEqual(blocking.allowed_value, 1_600)
+        self.assertEqual(blocking.allowed_value, 1_589)
         self.assertEqual(
             {action.action_type for action in blocking.suggested_actions},
-            {ActionType.ADD_VERTICAL_DIVIDER, ActionType.REDUCE_LOAD},
+            {
+                ActionType.ADD_VERTICAL_DIVIDER,
+                ActionType.REDUCE_LOAD,
+                ActionType.VERIFY_DRY_JOINING_SYSTEM,
+            },
         )
         reduce_action = next(
             action
@@ -193,7 +312,7 @@ class StructuralRuleTests(unittest.TestCase):
         )
 
         self.assertEqual(unsupported.status, RuleStatus.BLOCK)
-        self.assertEqual(supported.status, RuleStatus.PASS)
+        self.assertEqual(supported.status, RuleStatus.WARNING)
         self.assertEqual(supported.calculated_value, 825)
         self.assertEqual(supported.allowed_value, unsupported.allowed_value)
 
@@ -228,7 +347,7 @@ class StructuralRuleTests(unittest.TestCase):
             ),
             "CB-JOINT-001",
         )
-        self.assertEqual(result.status, RuleStatus.PASS)
+        self.assertEqual(result.status, RuleStatus.WARNING)
         self.assertEqual(result.calculated_value, 0)
         self.assertEqual(result.allowed_value, 0)
         self.assertEqual(result.safety_margin_permille, 0)
@@ -255,9 +374,9 @@ class StructuralRuleTests(unittest.TestCase):
             )
             return evaluation(spec, "CB-JOINT-001").allowed_value
 
-        self.assertEqual(capacity(uncertainty_permille=0, safety_factor_permille=1_000), 5_400)
-        self.assertEqual(capacity(uncertainty_permille=200, safety_factor_permille=1_000), 4_320)
-        self.assertEqual(capacity(uncertainty_permille=0, safety_factor_permille=2_000), 2_700)
+        self.assertEqual(capacity(uncertainty_permille=0, safety_factor_permille=1_000), 5_364)
+        self.assertEqual(capacity(uncertainty_permille=200, safety_factor_permille=1_000), 4_291)
+        self.assertEqual(capacity(uncertainty_permille=0, safety_factor_permille=2_000), 2_682)
 
     def test_missing_canonical_dado_geometry_blocks_without_inventing_area(self) -> None:
         design = build_bookcase(make_spec(shelf_count=1))
@@ -302,7 +421,7 @@ class StabilityAndTipTests(unittest.TestCase):
 
     def test_tall_shallow_case_requires_verified_anchor(self) -> None:
         result = evaluation(make_spec(wall_anchor=WallAnchorSpec(required=False)), "CB-TIP-001")
-        self.assertEqual(result.status, RuleStatus.BLOCK)
+        self.assertEqual(result.status, RuleStatus.WARNING)
         self.assertTrue(result.suggested_actions[0].requires_user_evidence)
 
     def test_verified_anchor_resolves_geometric_anchor_gate(self) -> None:
@@ -324,7 +443,7 @@ class StabilityAndTipTests(unittest.TestCase):
 
     def test_rule_report_exposes_version_trace_and_disclaimer(self) -> None:
         report = evaluate_design(build_bookcase(make_spec()))
-        self.assertEqual(report.rules_version, "1.1.0")
+        self.assertEqual(report.rules_version, "1.3.0")
         self.assertIn("inte produktcertifiering", report.disclaimer)
         self.assertTrue(
             all(item.trace and item.inputs and item.assumptions for item in report.evaluations)
@@ -333,6 +452,47 @@ class StabilityAndTipTests(unittest.TestCase):
 
 
 class AutoCorrectionTests(unittest.TestCase):
+    def test_max_divider_design_suppresses_invalid_action_and_stays_unresolved(self) -> None:
+        spec = make_spec(
+            width_um=mm(6_000),
+            height_um=mm(2_600),
+            shelf_count=1,
+            shelf_load_n=5_000,
+            vertical_divider_count=16,
+            max_deflection_um=1,
+            reinforcement_mode=ReinforcementMode.AUTO,
+            wall_anchor=verified_anchor(),
+        )
+        initial_report = evaluate_design(build_bookcase(spec))
+        initial = next(
+            item for item in initial_report.evaluations if item.rule_id == "CB-DEFLECTION-001"
+        )
+        all_actions = tuple(
+            action for item in initial_report.evaluations for action in item.suggested_actions
+        )
+
+        self.assertEqual(initial.status, RuleStatus.BLOCK)
+        self.assertNotIn(
+            ActionType.ADD_VERTICAL_DIVIDER,
+            {action.action_type for action in all_actions},
+        )
+        self.assertTrue(
+            all(
+                change.after <= 16
+                for action in all_actions
+                for change in action.changes
+                if change.path == "parameters.vertical_divider_count"
+            )
+        )
+
+        result = auto_correct_design(spec)
+
+        self.assertFalse(result.resolved)
+        self.assertEqual(result.corrected_spec, spec)
+        self.assertEqual(result.corrected_design, result.original_design)
+        self.assertEqual(result.diffs, ())
+        self.assertEqual(result.corrected_spec.parameters.vertical_divider_count, 16)
+
     @staticmethod
     def _joint_limited_spec(*, shelf_mount: ShelfMount = ShelfMount.FIXED) -> BookcaseDesignSpec:
         material = screening_birch_plywood_18()
@@ -376,7 +536,7 @@ class AutoCorrectionTests(unittest.TestCase):
         self.assertTrue(result.resolved)
         self.assertEqual(result.diffs[0].action_type, ActionType.ADD_VERTICAL_DIVIDER)
         self.assertEqual(result.corrected_spec.parameters.vertical_divider_count, 1)
-        self.assertEqual(result.final_report.overall_status, RuleStatus.PASS)
+        self.assertEqual(result.final_report.overall_status, RuleStatus.WARNING)
 
     def test_auto_divider_updates_parts_joints_and_assembly(self) -> None:
         spec = make_spec(
@@ -404,7 +564,7 @@ class AutoCorrectionTests(unittest.TestCase):
         self.assertEqual(result.diffs[0].action_type, ActionType.ADD_VERTICAL_DIVIDER)
         self.assertEqual(result.corrected_spec.parameters.vertical_divider_count, 1)
         final = {item.rule_id: item for item in result.final_report.evaluations}
-        self.assertEqual(final["CB-JOINT-001"].status, RuleStatus.PASS)
+        self.assertEqual(final["CB-JOINT-001"].status, RuleStatus.WARNING)
 
     def test_auto_mode_does_not_add_dividers_to_invent_shelf_pin_evidence(self) -> None:
         spec = make_spec(
@@ -476,7 +636,11 @@ class AutoCorrectionTests(unittest.TestCase):
         self.assertEqual(len(anchor_diffs), 1)
         self.assertTrue(result.corrected_spec.parameters.wall_anchor.required)
         self.assertFalse(result.corrected_spec.parameters.wall_anchor.verified)
-        self.assertFalse(result.resolved)
+        self.assertTrue(result.resolved)
+        self.assertEqual(
+            evaluation(result.corrected_spec, "CB-TIP-001").status,
+            RuleStatus.WARNING,
+        )
 
     def test_auto_correction_is_deterministic(self) -> None:
         spec = make_spec(

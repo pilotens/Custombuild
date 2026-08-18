@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Generator
+from collections.abc import Iterator
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException
@@ -16,7 +16,7 @@ from .models import AuditEvent, DesignVersion, Membership, Project
 
 def tenant_session(
     principal: Annotated[Principal, Depends(get_principal)],
-) -> Generator[Session, None, None]:
+) -> Iterator[Session]:
     for session in session_scope():
         set_tenant_context(session, principal.organization_id)
         membership = session.scalar(

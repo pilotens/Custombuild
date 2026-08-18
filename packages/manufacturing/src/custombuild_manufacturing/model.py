@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import StrEnum
@@ -18,6 +19,7 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 UM_PER_MM = 1_000
+_CATALOG_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
 class Side(StrEnum):
@@ -110,6 +112,62 @@ class PanelAxisMapping:
             raise ValueError("panel axes must be a permutation of x, y and z")
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class EdgeBandSpec:
+    """One adhesive-free edge-protection declaration.
+
+    The product policy forbids adhesive attachment. Catalog identity remains
+    unresolved until a supplier-backed mechanical profile is attached to the
+    design; an ``UNRESOLVED`` geometric declaration is never retention or
+    procurement proof.
+    """
+
+    edge: str
+    thickness_um: int
+    source_face: str
+    catalog_id: str | None = None
+    catalog_version: str | None = None
+    attachment_method: str = "UNRESOLVED"
+
+    def __post_init__(self) -> None:
+        if self.edge not in {"U_MIN", "U_MAX", "V_MIN", "V_MAX"}:
+            raise ValueError(f"unsupported local edge-band boundary: {self.edge}")
+        if self.thickness_um <= 0:
+            raise ValueError("edge-band thickness must be positive")
+        if self.attachment_method not in {"UNRESOLVED", "MECHANICAL"}:
+            raise ValueError(
+                "edge protection must be unresolved or use dry mechanical attachment; "
+                "adhesives are prohibited"
+            )
+        supplied = (self.catalog_id, self.catalog_version)
+        for field_name, value in zip(("catalog_id", "catalog_version"), supplied, strict=True):
+            if value is not None and (
+                not isinstance(value, str) or _CATALOG_IDENTITY_PATTERN.fullmatch(value) is None
+            ):
+                raise ValueError(
+                    f"edge-protection {field_name} must be a canonical non-blank identity"
+                )
+        has_catalog_identity = all(value is not None for value in supplied)
+        if any(value is not None for value in supplied) and not has_catalog_identity:
+            raise ValueError("edge-protection catalog ID and version must be supplied together")
+        if has_catalog_identity and self.attachment_method != "MECHANICAL":
+            raise ValueError(
+                "catalog-identified edge protection must declare dry mechanical attachment"
+            )
+        if self.attachment_method == "MECHANICAL" and not has_catalog_identity:
+            raise ValueError(
+                "dry mechanical edge protection requires a canonical catalog ID and version"
+            )
+
+    @property
+    def procurement_status(self) -> str:
+        return (
+            "CATALOG_IDENTIFIED"
+            if self.attachment_method == "MECHANICAL"
+            else "EXTERNAL_SELECTION_REQUIRED"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class ManufacturingFeature:
     feature_id: str
@@ -128,6 +186,7 @@ class ManufacturingFeature:
     through: bool = False
     corner_strategy: str | None = None
     corner_relief_radius_um: int | None = None
+    open_end_reliefs: tuple[str, ...] = ()
     tolerance_um: int = 0
     fit_clearance_um: int = 0
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -146,6 +205,13 @@ class ManufacturingFeature:
                 raise ValueError("feature dimensions must be positive")
         if self.corner_relief_radius_um is not None and self.corner_relief_radius_um <= 0:
             raise ValueError("corner relief radius must be positive")
+        allowed_open_ends = {"u_min", "u_max", "v_min", "v_max"}
+        if len(set(self.open_end_reliefs)) != len(self.open_end_reliefs):
+            raise ValueError("open-end relief declarations must be unique")
+        if not set(self.open_end_reliefs) <= allowed_open_ends:
+            raise ValueError("open-end relief declaration is unsupported")
+        if self.open_end_reliefs and self.corner_strategy != "dogbone-v1":
+            raise ValueError("open-end reliefs require the versioned dogbone-v1 strategy")
         if self.tolerance_um < 0 or self.fit_clearance_um < 0:
             raise ValueError("feature tolerance and fit clearance cannot be negative")
 
@@ -159,7 +225,7 @@ class ManufacturingFeature:
         )
 
     def bounds(self) -> Rect:
-        """Conservative local 2D bounds used for DFM and collision checks."""
+        """Nominal local 2D feature bounds used by operation exporters."""
 
         if self.kind in {
             FeatureKind.DRILL,
@@ -178,6 +244,54 @@ class ManufacturingFeature:
         width = self.width_um or self.diameter_um or 0
         length = self.length_um or width
         return Rect(self.x_um, self.y_um, width, length)
+
+    def machining_bounds(self) -> Rect:
+        """Actual cutter envelope, including the full declared dogbone radius."""
+
+        nominal = self.bounds()
+        circles = self.relief_circles()
+        if not circles:
+            return nominal
+        left = min((point.x_um - radius for point, radius in circles), default=nominal.x_um)
+        right = max(
+            (point.x_um + radius for point, radius in circles),
+            default=nominal.right_um,
+        )
+        bottom = min((point.y_um - radius for point, radius in circles), default=nominal.y_um)
+        top = max(
+            (point.y_um + radius for point, radius in circles),
+            default=nominal.top_um,
+        )
+        return Rect(
+            min(nominal.x_um, left),
+            min(nominal.y_um, bottom),
+            max(nominal.right_um, right) - min(nominal.x_um, left),
+            max(nominal.top_um, top) - min(nominal.y_um, bottom),
+        )
+
+    def relief_circles(self) -> tuple[tuple[Point2D, int], ...]:
+        """Exact local dogbone cutter circles represented by the v1 strategy."""
+
+        if self.corner_strategy != "dogbone-v1" or self.corner_relief_radius_um is None:
+            return ()
+        nominal = self.bounds()
+        declared = set(self.open_end_reliefs)
+        return tuple(
+            (
+                Point2D(
+                    nominal.x_um if u_boundary == "u_min" else nominal.right_um,
+                    nominal.y_um if v_boundary == "v_min" else nominal.top_um,
+                ),
+                self.corner_relief_radius_um,
+            )
+            for u_boundary, v_boundary in (
+                ("u_min", "v_min"),
+                ("u_max", "v_min"),
+                ("u_min", "v_max"),
+                ("u_max", "v_max"),
+            )
+            if not {u_boundary, v_boundary} <= declared
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +312,7 @@ class PartSpec:
     raw_height_um: int | None = None
     axis_mapping: PanelAxisMapping = field(default_factory=PanelAxisMapping)
     edge_bands: tuple[str, ...] = ()
+    edge_band_details: tuple[EdgeBandSpec, ...] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -209,6 +324,11 @@ class PartSpec:
             raise ValueError("quantity must be positive")
         if any(feature.part_id != self.part_id for feature in self.features):
             raise ValueError("all features must belong to the part")
+        if len(set(self.edge_bands)) != len(self.edge_bands):
+            raise ValueError("edge-band boundaries must be unique")
+        detail_edges = tuple(detail.edge for detail in self.edge_band_details)
+        if tuple(self.edge_bands) != detail_edges:
+            raise ValueError("edge-band summary and detailed applications must match exactly")
 
     @property
     def blank_width_um(self) -> int:
@@ -364,7 +484,7 @@ class DFMIssue:
 @dataclass(frozen=True, slots=True)
 class DFMReport:
     issues: tuple[DFMIssue, ...]
-    engine_version: str = "dfm-1.0.0"
+    engine_version: str = "dfm-1.1.0"
 
     @property
     def status(self) -> Severity:
@@ -418,6 +538,10 @@ class CAMOperation:
     diameter_um: int | None = None
     width_um: int | None = None
     length_um: int | None = None
+    cutter_envelope_x_um: int | None = None
+    cutter_envelope_y_um: int | None = None
+    cutter_envelope_width_um: int | None = None
+    cutter_envelope_length_um: int | None = None
     stepdown_um: int | None = None
     stepover_ppm: int | None = None
     through: bool = False
@@ -426,6 +550,7 @@ class CAMOperation:
     holding_strategy: str | None = None
     corner_strategy: str | None = None
     corner_relief_radius_um: int | None = None
+    open_end_reliefs: tuple[str, ...] = ()
     tolerance_um: int = 0
     fit_clearance_um: int = 0
 

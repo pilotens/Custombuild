@@ -1,61 +1,17 @@
-name: Prepare Custombuild prod v1 source
+name: Legacy prod snapshot notice
 
 on:
-  push:
-    branches:
-      - agent/custombuild-v1-prod
-    paths:
-      - .github/workflows/bootstrap-prod-v1.yml
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/workflows/bootstrap-prod-v1.yml
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  prepare:
+  notice:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out release branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/custombuild-v1-prod
-          fetch-depth: 1
-
-      - name: Materialize self-contained prod source tree
-        shell: bash
+      - name: Explain canonical source
         run: |
-          set -euo pipefail
-          rm -rf staging
-          mkdir -p staging/prod
-          rsync -a \
-            --exclude '.git/' \
-            --exclude 'prod/' \
-            --exclude 'staging/' \
-            --exclude '.github/workflows/bootstrap-prod-v1.yml' \
-            ./ staging/prod/
-          printf '1.0.0\n' > staging/prod/VERSION
-          cat > staging/prod/RELEASE.md <<'EOF'
-          # Custombuild 1.0 release candidate
-
-          This directory is the self-contained production candidate. Run commands from
-          `prod/`; the repository root remains the historical MVP/reference line.
-
-          Generated machine programs remain validation-only until a named physical
-          machine, tooling, material batch, calibration, air-cut, reference parts and
-          prototype furniture are approved by an experienced furniture constructor and
-          CNC operator.
-          EOF
-
-      - name: Upload source tree
-        uses: actions/upload-artifact@v4
-        with:
-          name: custombuild-prod-v1-source
-          path: staging/prod
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 3
+          echo "The repository root is the canonical production candidate."
+          echo "The tracked prod/ tree is a historical snapshot and is not materialized or deployed."
+          echo "Use Production Candidate CI for current release evidence."

@@ -12,6 +12,10 @@ class PartRole(StrEnum):
     BACK = "back"
     PLINTH = "plinth"
     DIVIDER = "divider"
+    BASE_SIDE = "base_side"
+    BASE_BOTTOM = "base_bottom"
+    BASE_TOP = "base_top"
+    CABINET_FRONT = "cabinet_front"
 
 
 class FeatureKind(StrEnum):
@@ -25,6 +29,15 @@ class FeatureKind(StrEnum):
     EDGE_RELIEF = "edge_relief"
     OUTER_CONTOUR = "outer_contour"
     MARK = "mark"
+
+
+class OpenEndRelief(StrEnum):
+    """A cutter exit that is intentionally open at a nominal feature boundary."""
+
+    U_MIN = "u_min"
+    U_MAX = "u_max"
+    V_MIN = "v_min"
+    V_MAX = "v_max"
 
 
 class JointType(StrEnum):

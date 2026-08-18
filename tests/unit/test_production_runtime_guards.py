@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess  # noqa: S404
 from pathlib import Path
@@ -7,9 +8,10 @@ from pathlib import Path
 import pytest
 from app.config_guards import (
     validate_production_database_url,
+    validate_production_redis_url,
     validate_production_s3_credentials,
 )
-from custombuild_worker.config import WorkerSettings
+from custombuild_worker.config import DEPENDENCY_LOCK_PATH, WorkerSettings
 from pydantic import ValidationError
 
 from scripts.run_migrations import validate_migration_environment
@@ -18,10 +20,17 @@ from scripts.run_migrations import validate_migration_environment
 def production_worker_settings(**overrides: object) -> WorkerSettings:
     values: dict[str, object] = {
         "app_env": "production",
+        "app_version": "1.4.0",
+        "vcs_ref": "a" * 40,
+        "build_date": "2026-08-11T12:00:00+02:00",
+        "source_url": "https://github.com/pilotens/Custombuild",
+        "source_manifest_sha256": "c" * 64,
+        "dependency_lock_sha256": hashlib.sha256(DEPENDENCY_LOCK_PATH.read_bytes()).hexdigest(),
         "database_url": (
             "postgresql+psycopg://custombuild_worker:strong-worker-db-password"
             "@postgres:5432/custombuild"
         ),
+        "redis_url": "redis://:strong-worker-redis-password@redis:6379/0",
         "s3_access_key": "production-worker-access",
         "s3_secret_key": "strong-production-object-secret",
     }
@@ -34,13 +43,34 @@ def test_worker_accepts_secure_production_and_development_defaults() -> None:
     development = WorkerSettings(_env_file=None)
 
     assert production.app_env == "production"
+    assert production.build_identity["vcs_ref"] == "a" * 40
+    assert production.build_identity["source_manifest_sha256"] == "c" * 64
+    assert production.build_identity["dependency_lock_sha256"] == hashlib.sha256(
+        DEPENDENCY_LOCK_PATH.read_bytes()
+    ).hexdigest()
     assert development.database_url.startswith("sqlite")
     assert development.s3_access_key == "custombuild"
+
+
+def test_worker_lock_verification_is_independent_of_celery_workdir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert production_worker_settings().dependency_lock_sha256
 
 
 @pytest.mark.parametrize(
     ("overrides", "message"),
     (
+        ({"app_version": "0.1.0-local"}, "APP_VERSION"),
+        ({"vcs_ref": "uncommitted"}, "VCS_REF"),
+        ({"build_date": "unknown"}, "BUILD_DATE"),
+        ({"source_url": "http://github.com/pilotens/Custombuild"}, "SOURCE_URL"),
+        ({"source_manifest_sha256": "unknown"}, "SOURCE_MANIFEST_SHA256"),
+        ({"dependency_lock_sha256": "unknown"}, "DEPENDENCY_LOCK_SHA256"),
+        ({"dependency_lock_sha256": "b" * 64}, "does not match uv.lock"),
         ({"database_url": "sqlite+pysqlite:///worker.db"}, "PostgreSQL"),
         (
             {"database_url": "postgresql+psycopg://custombuild_worker@postgres/custombuild"},
@@ -54,6 +84,8 @@ def test_worker_accepts_secure_production_and_development_defaults() -> None:
             },
             "database password",
         ),
+        ({"redis_url": "redis://redis:6379/0"}, "Redis password"),
+        ({"redis_url": "redis://:change-me-redis@redis:6379/0"}, "Redis password"),
         ({"s3_access_key": "minioadmin"}, "access key"),
         ({"s3_secret_key": "development-only-object-secret"}, "object-storage secret"),
     ),
@@ -75,6 +107,8 @@ def test_shared_guards_reject_malformed_urls_and_blank_credentials() -> None:
         validate_production_s3_credentials("  ", "strong-production-object-secret")
     with pytest.raises(ValueError, match="object-storage secret"):
         validate_production_s3_credentials("production-access", "  ")
+    with pytest.raises(ValueError, match="REDIS_URL is invalid"):
+        validate_production_redis_url("redis://:secret@redis:invalid/0")
 
 
 @pytest.mark.parametrize(
@@ -180,5 +214,5 @@ def test_postgres_init_accepts_replaced_production_passwords(tmp_path: Path) -> 
 def test_compose_routes_production_mode_through_every_startup_guard() -> None:
     compose = Path("compose.yml").read_text(encoding="utf-8")
 
-    assert compose.count("APP_ENV: ${APP_ENV:-development}") == 4
+    assert compose.count("APP_ENV: ${APP_ENV:-development}") == 5
     assert 'command: ["python", "-m", "scripts.run_migrations"]' in compose

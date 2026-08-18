@@ -2,21 +2,22 @@
 name = "custombuild"
 version = "0.1.0"
 description = "Deterministic parametric furniture design-to-production platform"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
   "alembic==1.16.4",
   "boto3==1.39.16",
   "celery==5.5.3",
-  "fastapi==0.116.1",
-  "httpx==0.28.1",
+  "fastapi==0.139.2",
+  "httpx2==2.7.0",
   "psycopg[binary]==3.2.9",
   "pydantic==2.13.4",
   "pydantic-settings==2.10.1",
-  "pyjwt[crypto]==2.10.1",
-  "python-multipart==0.0.20",
+  "pyjwt[crypto]==2.13.0",
+  "python-multipart==0.0.32",
   "redis==6.2.0",
   "reportlab==4.4.9",
   "sqlalchemy==2.0.41",
+  "starlette==1.6.0",
   "uvicorn[standard]==0.35.0",
 ]
 
@@ -30,7 +31,7 @@ dev = [
   "ruff==0.12.7",
 ]
 cad = [
-  "cadquery==2.5.2",
+  "cadquery==2.8.0",
 ]
 
 [tool.pytest.ini_options]
@@ -65,18 +66,15 @@ skip_covered = true
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py313"
+extend-exclude = ["prod"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "S"]
 ignore = ["S101"]
 
-[tool.ruff.lint.per-file-ignores]
-"prod/services/worker/custombuild_worker/simple_assembly.py" = ["E501"]
-"prod/services/worker/custombuild_worker/supplier_documents.py" = ["E501", "F401"]
-
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
 mypy_path = "packages/domain/src:packages/rule-engine/src:packages/manufacturing/src:packages/template-sdk/src:cad/src:cam/src:postprocessors/src:services/api:services/worker"

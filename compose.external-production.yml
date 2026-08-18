@@ -1,0 +1,112 @@
+name: ${COMPOSE_PROJECT_NAME:?Set a unique production COMPOSE_PROJECT_NAME}
+
+# Fail-closed override for an externally reachable deployment.  Keep host
+# publishes on loopback and terminate TLS in a reviewed reverse proxy.
+services:
+  postgres:
+    environment:
+      APP_ENV: production
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      API_DATABASE_PASSWORD: ${API_DATABASE_PASSWORD:?Set API_DATABASE_PASSWORD}
+      WORKER_DATABASE_PASSWORD: ${WORKER_DATABASE_PASSWORD:?Set WORKER_DATABASE_PASSWORD}
+
+  redis:
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+
+  object-storage:
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+
+  migrate:
+    build:
+      args:
+        APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}
+        VCS_REF: ${VCS_REF:?Set the exact source commit SHA}
+        BUILD_DATE: ${BUILD_DATE:?Set the source commit timestamp}
+        SOURCE_URL: ${SOURCE_URL:?Set the canonical source URL}
+        SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
+        DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL}
+
+  api:
+    build:
+      args:
+        APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}
+        VCS_REF: ${VCS_REF:?Set the exact source commit SHA}
+        BUILD_DATE: ${BUILD_DATE:?Set the source commit timestamp}
+        SOURCE_URL: ${SOURCE_URL:?Set the canonical source URL}
+        SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
+        DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
+    environment:
+      APP_ENV: production
+      AUTH_MODE: oidc
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set the HTTPS OIDC issuer}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:?Set the private CIDR of the reviewed TLS proxy}
+      OIDC_AUDIENCE: ${OIDC_AUDIENCE:?Set OIDC_AUDIENCE}
+      CORS_ORIGINS: ${CORS_ORIGINS:?Set the HTTPS public web origin}
+      ARTIFACT_SIGNING_SECRET: ${ARTIFACT_SIGNING_SECRET:?Set ARTIFACT_SIGNING_SECRET}
+      S3_ENDPOINT: http://object-storage:8333
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:?Set the HTTPS public artifact origin}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+
+  worker:
+    build:
+      args:
+        APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}
+        VCS_REF: ${VCS_REF:?Set the exact source commit SHA}
+        BUILD_DATE: ${BUILD_DATE:?Set the source commit timestamp}
+        SOURCE_URL: ${SOURCE_URL:?Set the canonical source URL}
+        SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
+        DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+
+  scheduler:
+    build:
+      args:
+        APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}
+        VCS_REF: ${VCS_REF:?Set the exact source commit SHA}
+        BUILD_DATE: ${BUILD_DATE:?Set the source commit timestamp}
+        SOURCE_URL: ${SOURCE_URL:?Set the canonical source URL}
+        SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
+        DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+
+  web:
+    build:
+      args:
+        APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}
+        VCS_REF: ${VCS_REF:?Set the exact source commit SHA}
+        BUILD_DATE: ${BUILD_DATE:?Set the source commit timestamp}
+        SOURCE_URL: ${SOURCE_URL:?Set the canonical source URL}
+        SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
+        FRONTEND_LOCK_SHA256: ${FRONTEND_LOCK_SHA256:?Set the pnpm-lock.yaml SHA-256}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:?Set the HTTPS public API origin}
+        NEXT_PUBLIC_DEMO_TOKEN: ""
+        NEXT_PUBLIC_OIDC_ISSUER: ${OIDC_ISSUER:?Set the HTTPS OIDC issuer}
+        NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:?Set the OIDC client id}
+        NEXT_PUBLIC_OIDC_REDIRECT_URI: ${NEXT_PUBLIC_OIDC_REDIRECT_URI:?Set the HTTPS redirect URI}

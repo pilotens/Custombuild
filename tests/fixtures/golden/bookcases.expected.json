@@ -4,7 +4,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "52e5cf9c612f30377d0f8951d175199910cf0e65516f1ca34c03734da2fddc33",
+        "design_hash": "24c4e28b0a0a789c002def4eba82819c6cf5690f1ae615cc31a3381fcc8ff251",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -12,18 +12,18 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "compact-pass"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "6b3d8cd737ae490bf22a716fd792b81224ad9ee7e58f123db9fd0f3852b51521",
+        "design_hash": "9ce6452f6e2dcdcf51fd0ab75253c0cbac2b9bba64d662b33497b6ba3d035ab4",
         "divider_count": 0,
         "joint_count": 19,
         "outcome": "result",
@@ -31,9 +31,9 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "BLOCK",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
-          "CB-TIP-001": "BLOCK"
+          "CB-TIP-001": "WARNING"
         },
         "status": "BLOCK"
       },
@@ -44,7 +44,7 @@
         "change_paths": [
           "parameters.vertical_divider_count"
         ],
-        "design_hash": "5b865c653eac2c5cce88f9af29c1550a9a22c03823a17309c891f6e188f61227",
+        "design_hash": "301a0acbf0dadb8ee1865f97bd8cd763ab9fce08c1e18ca1cea43bef713bf64f",
         "divider_count": 1,
         "joint_count": 23,
         "outcome": "result",
@@ -52,18 +52,18 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "auto-divider-fix"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "a88f7c4d4bba5e1e3fdbd8216645a93c8a8873b6a621651b084ed867139718c8",
+        "design_hash": "330232780d09f9a77f42dfeefaa42008e4cea1e40da0cd26aecfc25df1d93b3b",
         "divider_count": 0,
         "joint_count": 9,
         "outcome": "result",
@@ -71,7 +71,7 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "BLOCK"
         },
@@ -82,7 +82,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "358eb58ed959dc4f1b8e464acc19b9bb530b1215147d16dbbed6d56298fd9ef0",
+        "design_hash": "bb885e64abb035f7e0b4eb720d947dcfd449ab0686e43624fbdbabf2ad44da68",
         "divider_count": 2,
         "joint_count": 31,
         "outcome": "result",
@@ -90,18 +90,18 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "wide-two-dividers"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "281e9347ae7ee1d50344b80bc6cda902cf3280b18ba5e3ed0285e65c429aaa1a",
+        "design_hash": "d185bd34a5181a8fcb7f39ac730ddf188fac30aedee0e9f1df6eb4eb3a03ff9b",
         "divider_count": 1,
         "joint_count": 27,
         "outcome": "result",
@@ -109,18 +109,18 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "WARNING",
-          "CB-TIP-001": "BLOCK"
+          "CB-TIP-001": "WARNING"
         },
-        "status": "BLOCK"
+        "status": "WARNING"
       },
       "name": "tall-anchor-block"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "37af1238c5de832cd0ab972c184557b400c918b339da342c49f2a4e65a7fc321",
+        "design_hash": "d3ed94ce35885fdc692843a666a50f59c640fc67439fc530a736f8efff5792de",
         "divider_count": 1,
         "joint_count": 19,
         "outcome": "result",
@@ -128,7 +128,7 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "BLOCK",
           "CB-TIP-001": "PASS"
         },
@@ -139,7 +139,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "86c213994e4ef285950f9d63a159d7d82170e9ed70d4e83759f41f012a8642b9",
+        "design_hash": "8795b26a489164a1d031377186f87bed1624db29db2d0bc1dc84577c35b71f6a",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -147,18 +147,18 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "surface-back"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "6155dfb4641ecd978a63e3ddac3c6d26c6c7667edf935e53ea0ac0497a32f6d7",
+        "design_hash": "968de69b482f10d7de7d272db64db127378d758da3823ce04a99cb81a2699bec",
         "divider_count": 0,
         "joint_count": 17,
         "outcome": "result",
@@ -177,7 +177,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "d4fe1d0eaecb203e790812a4455b1c5db48086e26e928213ed01842d4d2105c1",
+        "design_hash": "239b37beb63560fdd55f4bbde7196efcc711805962eeebd29c450011e04ff994",
         "divider_count": 0,
         "joint_count": 17,
         "outcome": "result",
@@ -185,18 +185,18 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "zero-load"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "1c93817dd4823a12ee9bcfa4936d808805d1e2cb3cf11facff8749a58d9c5420",
+        "design_hash": "a4536ee07ee9557f04e836654500e1832e22327faa40ccceee07532e2a20618f",
         "divider_count": 0,
         "joint_count": 15,
         "outcome": "result",
@@ -204,18 +204,19 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
-          "CB-TIP-001": "PASS"
+          "CB-TIP-001": "PASS",
+          "DFM-GRAIN-001": "WARNING"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "birch-plywood"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "a8722d855853169d60f29d7c304fdaa109fc93621f8a9922149a89520c1740c9",
+        "design_hash": "d1236165e96ae0d3cf74500556e5e2f4920c4816ed0d74c182553cfb42a7a154",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -223,18 +224,18 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "measured-17mm"
     },
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "fae08648965a42c67dd3a2e5ab3693b6b943e3ffe07b65aef209eb1649f7601f",
+        "design_hash": "8a003b6b5dd5e7c462bb0823262580dbd28e2bdd838c7b557d99f203738971e3",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -242,7 +243,7 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "BLOCK",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
@@ -253,7 +254,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "7f0ba6b3f879dac6192a53a195a46de9bbd2d23589c016301f603b5594e000ad",
+        "design_hash": "497052099a35c19c89c90c930c4b3ba7d75476f688cea1bfcd842b133e2cd35b",
         "divider_count": 0,
         "joint_count": 4,
         "outcome": "result",
@@ -261,7 +262,7 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "BLOCK"
         },
@@ -272,7 +273,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "37053ad3d9132a2e605202de5c3821c76c3a1996244bf2ead1999d232f08b0d2",
+        "design_hash": "e91d28f3ac4adea9eb8d4911b295695dc031581eb04e6a7bb8deba2a89ec9f8c",
         "divider_count": 7,
         "joint_count": 151,
         "outcome": "result",
@@ -280,19 +281,21 @@
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
-          "CB-JOINT-001": "PASS",
+          "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "PASS"
+        "status": "WARNING"
       },
       "name": "extreme-supported"
     },
     {
       "expected": {
-        "error_type": "value_error",
-        "location": [],
-        "message": "Value error, bookcase dimensions are below the supported template minimum",
+        "error_type": "greater_than_equal",
+        "location": [
+          "width_um"
+        ],
+        "message": "Input should be greater than or equal to 250000",
         "outcome": "error"
       },
       "name": "invalid-width"

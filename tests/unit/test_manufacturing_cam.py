@@ -11,12 +11,14 @@ from custombuild_manufacturing import (
     FeatureKind,
     ManufacturingFeature,
     PartSpec,
+    Point2D,
     Severity,
     Side,
     StockSheet,
     generate_operations_document,
     linuxcnc_reference_router_1325,
 )
+from custombuild_manufacturing.operations import TwoSidedRegistration
 
 
 def test_rotated_a_and_b_features_are_transformed_into_machine_coordinates() -> None:
@@ -70,6 +72,12 @@ def test_rotated_a_and_b_features_are_transformed_into_machine_coordinates() -> 
         parts=(panel,),
         layout=layout,
         machine=linuxcnc_reference_router_1325(),
+        two_sided_registration_by_sheet={
+            0: TwoSidedRegistration(
+                method_id="fixture-registration-v1",
+                points=(Point2D(20_000, 20_000), Point2D(900_000, 20_000)),
+            )
+        },
     )
 
     operations = {operation.feature_id: operation for operation in document.operations}

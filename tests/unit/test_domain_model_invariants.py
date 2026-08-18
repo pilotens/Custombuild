@@ -5,6 +5,7 @@ from custombuild_domain import (
     AssemblyGraph,
     BookcaseDesignSpec,
     BookcaseParameters,
+    DesignResult,
     MaterialVersion,
     build_bookcase,
     screening_birch_plywood_18,
@@ -52,6 +53,50 @@ def assembly_graph_payload() -> dict[str, object]:
         )
     )
     return design.assembly_graph.model_dump(mode="python")
+
+
+def design_result_payload() -> dict[str, object]:
+    return build_bookcase(
+        BookcaseDesignSpec(
+            design_id="design-result-invariant-fixture",
+            parameters=BookcaseParameters(),
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    ).model_dump(mode="python")
+
+
+def test_design_result_binds_joint_features_to_their_declared_member() -> None:
+    payload = design_result_payload()
+    joints = payload["joints"]
+    parts = payload["parts"]
+    assert isinstance(joints, tuple)
+    assert isinstance(parts, tuple)
+    first_joint = joints[0]
+    cut_member = first_joint["members"][0]
+    foreign_feature = next(
+        feature
+        for part in parts
+        if part["part_id"] != cut_member["part_id"]
+        for feature in part["features"]
+    )
+    cut_member["feature_ids"] = (foreign_feature["feature_id"],)
+
+    with pytest.raises(ValidationError, match="another part's feature"):
+        DesignResult.model_validate(payload)
+
+
+def test_design_result_rejects_orphaned_joint_owned_feature() -> None:
+    payload = design_result_payload()
+    joints = payload["joints"]
+    assert isinstance(joints, tuple)
+    first_joint = joints[0]
+    cut_member = first_joint["members"][0]
+    assert cut_member["feature_ids"]
+    cut_member["feature_ids"] = ()
+
+    with pytest.raises(ValidationError, match="absent from its joint"):
+        DesignResult.model_validate(payload)
 
 
 def test_assembly_graph_rejects_a_joint_installed_twice() -> None:

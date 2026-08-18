@@ -1,8 +1,19 @@
-name: custombuild
+name: ${COMPOSE_PROJECT_NAME:-custombuild-prod}
+
+x-release-build-args: &release-build-args
+  APP_VERSION: ${APP_VERSION:-0.1.0-local}
+  VCS_REF: ${VCS_REF:-uncommitted}
+  BUILD_DATE: ${BUILD_DATE:-unknown}
+  SOURCE_URL: ${SOURCE_URL:-unknown}
+  SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:-unknown}
+
+x-python-release-build-args: &python-release-build-args
+  <<: *release-build-args
+  DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:-unknown}
 
 services:
   postgres:
-    image: postgres:17.5-alpine
+    image: postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     environment:
       APP_ENV: ${APP_ENV:-development}
       POSTGRES_DB: ${POSTGRES_DB:-custombuild}
@@ -19,40 +30,62 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
+    restart: unless-stopped
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    networks: [backend]
 
   redis:
-    image: redis:7.2.5-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-redis}
+    command:
+      - /bin/sh
+      - -ec
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 20
-
-  minio:
-    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    command: server /data --console-address :9001
-    environment:
-      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-custombuild}
-      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-change-me-object-storage}
-    volumes:
-      - minio-data:/data
-    ports:
-      - "127.0.0.1:9000:9000"
-      - "127.0.0.1:9001:9001"
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD}\" redis-cli ping"]
       interval: 5s
       timeout: 3s
       retries: 20
       start_period: 5s
+    restart: unless-stopped
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.5
+    networks: [backend]
+
+  object-storage:
+    image: chrislusf/seaweedfs:4.41@sha256:43b768cd62b00d132439cda881b93fd1adebf1b315e996e794087743821d771d
+    command: ["mini", "-dir=/data", "-master.telemetry=false"]
+    environment:
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-custombuild}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
+      S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
+    volumes:
+      - object-storage-data:/data
+    ports:
+      - "127.0.0.1:${S3_BIND_PORT:-9000}:8333"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9333/dir/status"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    networks: [backend, artifact-ingress]
 
   migrate:
     build:
       context: .
       dockerfile: services/api/Dockerfile
+      args: *python-release-build-args
     command: ["python", "-m", "scripts.run_migrations"]
     environment:
       APP_ENV: ${APP_ENV:-development}
@@ -60,28 +93,42 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    networks: [backend]
+    mem_limit: 1g
+    cpus: 1.0
 
   api:
     build:
       context: .
       dockerfile: services/api/Dockerfile
+      args: *python-release-build-args
     environment:
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://custombuild_api:change-me-api@postgres:5432/custombuild}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
+      READINESS_TIMEOUT_SECONDS: ${READINESS_TIMEOUT_SECONDS:-2}
+      RATE_LIMIT_REQUESTS: ${RATE_LIMIT_REQUESTS:-180}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
       AUTH_MODE: ${AUTH_MODE:-development}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-custombuild-api}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:${WEB_BIND_PORT:-3000}}
       ARTIFACT_SIGNING_SECRET: ${ARTIFACT_SIGNING_SECRET:-change-me-signing-secret-at-least-32-bytes}
       ARTIFACT_URL_TTL_SECONDS: ${ARTIFACT_URL_TTL_SECONDS:-300}
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
-      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:9000}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
+      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:-http://localhost:${S3_BIND_PORT:-9000}}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-custombuild}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
       S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${API_BIND_PORT:-8000}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=8).read()"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 10s
     read_only: true
     tmpfs:
       - /tmp:size=128m,mode=1777
@@ -89,23 +136,31 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    restart: unless-stopped
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-      minio:
+      object-storage:
         condition: service_healthy
+    networks: [edge, backend]
 
   worker:
     build:
       context: .
       dockerfile: services/worker/Dockerfile
+      args:
+        <<: *python-release-build-args
+        INSTALL_FREECAD: ${INSTALL_FREECAD:-true}
     environment:
+      HOME: /tmp/custombuild
       APP_ENV: ${APP_ENV:-development}
       DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://custombuild_worker:change-me-worker@postgres:5432/custombuild}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-custombuild}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
       S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
@@ -116,34 +171,108 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 512
+    mem_limit: 4g
+    cpus: 2.0
+    healthcheck:
+      test: ["CMD", "python", "-m", "custombuild_worker.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
-      minio:
+      object-storage:
         condition: service_healthy
+    networks: [backend]
 
-  web:
+  scheduler:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: services/worker/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
-        NEXT_PUBLIC_DEMO_TOKEN: ${NEXT_PUBLIC_DEMO_TOKEN:-demo-nordic-owner}
-    ports:
-      - "127.0.0.1:3000:3000"
+        <<: *python-release-build-args
+        INSTALL_FREECAD: "false"
+    command: ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "beat", "--schedule=/tmp/celerybeat-schedule", "--loglevel=WARNING"]
+    environment:
+      HOME: /tmp/custombuild
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://custombuild_worker:change-me-worker@postgres:5432/custombuild}
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-custombuild}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
+      S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
     read_only: true
     tmpfs:
       - /tmp:size=128m,mode=1777
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true
-    pids_limit: 256
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD-SHELL", "find /tmp -maxdepth 1 -type f -name 'celerybeat-schedule*' -mmin -5 -print -quit | grep -q ."]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
     depends_on:
-      - api
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      object-storage:
+        condition: service_healthy
+    networks: [backend]
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        <<: *release-build-args
+        FRONTEND_LOCK_SHA256: ${FRONTEND_LOCK_SHA256:-unknown}
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:${API_BIND_PORT:-8000}}
+        # Explicitly set NEXT_PUBLIC_DEMO_TOKEN= in production; '-' preserves that empty value.
+        NEXT_PUBLIC_DEMO_TOKEN: ${NEXT_PUBLIC_DEMO_TOKEN-demo-nordic-owner}
+        NEXT_PUBLIC_OIDC_ISSUER: ${NEXT_PUBLIC_OIDC_ISSUER:-}
+        NEXT_PUBLIC_OIDC_CLIENT_ID: ${NEXT_PUBLIC_OIDC_CLIENT_ID:-}
+        NEXT_PUBLIC_OIDC_REDIRECT_URI: ${NEXT_PUBLIC_OIDC_REDIRECT_URI:-}
+    ports:
+      - "127.0.0.1:${WEB_BIND_PORT:-3000}:3000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=128m,mode=1777
+      # Next's image optimizer writes only ephemeral derived images here.
+      # Keep the root filesystem read-only while allowing the cache to work.
+      - /app/apps/web/.next/cache:size=128m,uid=1001,gid=1001,mode=0750
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
 
 volumes:
   postgres-data:
   redis-data:
-  minio-data:
+  object-storage-data:
+
+networks:
+  edge:
+  backend:
+    internal: true
+  # SeaweedFS needs a non-internal network for its loopback-only published S3
+  # port. Web is deliberately not attached to this network.
+  artifact-ingress:

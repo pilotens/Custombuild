@@ -1,15 +1,10 @@
-name: Prod CI
+name: Production Candidate CI
 
 on:
   pull_request:
-    paths:
-      - "prod/**"
-      - ".github/workflows/prod-ci.yml"
   push:
     branches: [main]
-    paths:
-      - "prod/**"
-      - ".github/workflows/prod-ci.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:17.5-alpine
+        image: postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -36,24 +31,25 @@ jobs:
       RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:api-test-password@localhost:5432/custombuild
       UV_CACHE_DIR: /tmp/custombuild-prod-uv-cache
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          version: "0.8.3"
+          version: "0.12.0"
           enable-cache: true
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.7.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.14.0
+          node-version: 24.18.1
           cache: pnpm
-          cache-dependency-path: prod/pnpm-lock.yaml
-      - name: Install prod dependencies
-        working-directory: prod
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install production-candidate dependencies
         run: |
           uv sync --locked --group dev --group cad
           pnpm install --frozen-lockfile
+      - name: Audit production frontend dependencies
+        run: pnpm audit --prod --audit-level high
       - name: Create least-privilege database roles
         env:
           PGPASSWORD: postgres
@@ -63,20 +59,45 @@ jobs:
           CREATE ROLE custombuild_worker LOGIN PASSWORD 'worker-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS;
           SQL
       - name: Migrate prod schema
-        working-directory: prod
         env:
           DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
           PYTHONPATH: services/api
         run: uv run alembic -c services/api/alembic.ini upgrade head
       - name: Prod migration schema drift
-        working-directory: prod
         env:
           DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
           PYTHONPATH: services/api
         run: uv run alembic -c services/api/alembic.ini check
-      - name: Full prod quality gate
-        working-directory: prod
+      - name: Full production-candidate quality gate
         run: make check
+      - name: Machine-readable release readiness
+        run: uv run python scripts/release_readiness.py --require-clean --output release-readiness.json
+      - name: Upload release readiness
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-readiness
+          path: release-readiness.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Install Chromium for isolated WCAG evidence
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Prod WCAG 2.2 AA against the offline production build
+        id: prod_wcag
+        env:
+          PLAYWRIGHT_REAL_API: "0"
+          PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-wcag
+        run: pnpm --dir apps/web test:e2e:a11y -- --output=wcag-test-results
+      - name: Upload isolated prod WCAG evidence
+        if: always() && steps.prod_wcag.outcome != 'skipped'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: prod-offline-wcag-evidence
+          path: |
+            apps/web/playwright-report-wcag
+            apps/web/wcag-test-results
+          if-no-files-found: error
+          retention-days: 30
 
   prod-compose-acceptance:
     runs-on: ubuntu-24.04
@@ -84,26 +105,36 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: custombuild-prod-acceptance
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Export immutable Compose build identity
+        run: |
+          source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
+          {
+            echo "APP_VERSION=0.1.0+${GITHUB_SHA}"
+            echo "VCS_REF=${GITHUB_SHA}"
+            echo "BUILD_DATE=$(git show -s --format=%cI "${GITHUB_SHA}")"
+            echo "SOURCE_URL=${{ github.server_url }}/${{ github.repository }}"
+            echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
+            echo "DEPENDENCY_LOCK_SHA256=$(sha256sum uv.lock | awk '{print $1}')"
+            echo "FRONTEND_LOCK_SHA256=$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+          } >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.7.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.14.0
+          node-version: 24.18.1
           cache: pnpm
-          cache-dependency-path: prod/pnpm-lock.yaml
+          cache-dependency-path: pnpm-lock.yaml
       - name: Install prod web dependencies
-        working-directory: prod
         run: pnpm install --frozen-lockfile
       - name: Install Chromium
-        working-directory: prod
         run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Verify source freeze before prod build
+        run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
       - name: Build and start prod stack
-        working-directory: prod
         run: docker compose --file compose.yml up --build --detach
       - name: Prod design-to-release acceptance
-        working-directory: prod
         run: >-
           python3 scripts/live_acceptance.py
           --base-url http://127.0.0.1:8000
@@ -111,31 +142,30 @@ jobs:
           --readiness-timeout 180
           --job-timeout 900
       - name: Prod browser acceptance
-        working-directory: prod
         env:
           PLAYWRIGHT_BASE_URL: http://localhost:3000
+          PLAYWRIGHT_API_URL: http://127.0.0.1:8000
+          PLAYWRIGHT_ENVIRONMENT: prod
           PLAYWRIGHT_REAL_API: "1"
-          PLAYWRIGHT_RELEASE_NUMBER: PROD-UI-${{ github.run_id }}-${{ github.run_attempt }}
-        run: pnpm --dir apps/web test:e2e
+          PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+        run: pnpm --dir apps/web test:e2e -- --project=chromium-desktop
       - name: Collect prod diagnostics
         if: failure()
-        working-directory: prod
         run: |
           docker compose --file compose.yml ps --all || true
           docker compose --file compose.yml logs --no-color --timestamps > prod-compose-acceptance.log || true
           tail --lines=1000 prod-compose-acceptance.log || true
       - name: Upload prod diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: prod-compose-acceptance-diagnostics
           path: |
-            prod/prod-compose-acceptance.log
-            prod/apps/web/playwright-report
-            prod/apps/web/test-results
-          if-no-files-found: ignore
+            prod-compose-acceptance.log
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: error
           retention-days: 14
       - name: Stop prod stack
         if: always()
-        working-directory: prod
         run: docker compose --file compose.yml down --volumes --remove-orphans --timeout 30

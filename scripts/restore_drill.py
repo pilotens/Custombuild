@@ -1,0 +1,491 @@
+"""Restore a coordinated backup into disposable, isolated Docker resources."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import shutil
+import subprocess
+import time
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
+
+from alembic.config import Config as AlembicConfig
+from alembic.script import ScriptDirectory
+
+try:
+    from scripts.compose_backup import (
+        ALPINE_IMAGE,
+        POSTGRES_IMAGE,
+        SEAWEEDFS_IMAGE,
+        BackupError,
+        inventory_s3,
+        verify_manifest,
+    )
+except ModuleNotFoundError:
+    from compose_backup import (  # type: ignore[import-not-found,no-redef]  # noqa: I001
+        ALPINE_IMAGE,
+        POSTGRES_IMAGE,
+        SEAWEEDFS_IMAGE,
+        BackupError,
+        inventory_s3,
+        verify_manifest,
+    )
+
+
+SAFE_NAME = re.compile(r"^custombuild-restore-[a-f0-9]{8}(?:-(?:postgres|seaweed|extract))?$")
+RESTORE_ACCESS_KEY = "custombuild-restore"
+RESTORE_SECRET_KEY = "restore-drill-only-object-secret"  # noqa: S105 - disposable local drill
+POSTGRES_INIT_COMPLETE_MARKER = "PostgreSQL init process complete"
+DOCKER_COMMAND_TIMEOUT_SECONDS = 120
+DOCKER_PAYLOAD_TIMEOUT_SECONDS = 2 * 60 * 60
+DOCKER_INSPECT_TIMEOUT_SECONDS = 30
+DOCKER_PROBE_TIMEOUT_SECONDS = 5.0
+DOCKER_CLEANUP_TIMEOUT_SECONDS = 30
+
+
+def docker_executable() -> str:
+    executable = shutil.which("docker")
+    if not executable:
+        raise BackupError("Docker CLI is not available")
+    return executable
+
+
+def docker(
+    *arguments: str,
+    capture: bool = False,
+    timeout_seconds: int = DOCKER_COMMAND_TIMEOUT_SECONDS,
+) -> str:
+    if timeout_seconds <= 0:
+        raise BackupError("Docker commands require a positive timeout")
+    try:
+        process = subprocess.run(  # noqa: S603 - explicit Docker argv, without a shell.
+            [docker_executable(), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise BackupError(
+            f"Docker operation timed out after {timeout_seconds} seconds; inspect the "
+            "container runtime, remove only the named restore-drill resources and retry"
+        ) from exc
+    except OSError as exc:
+        raise BackupError(
+            "Docker operation could not start; verify the container runtime and retry"
+        ) from exc
+    if process.returncode:
+        detail = process.stderr.strip() or process.stdout.strip() or "Docker command failed"
+        raise BackupError(detail)
+    return process.stdout.strip() if capture else ""
+
+
+def docker_resource_exists(
+    *arguments: str,
+    timeout_seconds: int = DOCKER_INSPECT_TIMEOUT_SECONDS,
+) -> bool:
+    if timeout_seconds <= 0:
+        raise BackupError("Docker resource inspection requires a positive timeout")
+    try:
+        process = subprocess.run(  # noqa: S603 - explicit Docker argv, without a shell.
+            [docker_executable(), *arguments],
+            check=False,
+            capture_output=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise BackupError(
+            f"Docker resource inspection timed out after {timeout_seconds} seconds; "
+            "inspect the container runtime and retry"
+        ) from exc
+    except OSError as exc:
+        raise BackupError(
+            "Docker resource inspection could not start; verify the container runtime"
+        ) from exc
+    return process.returncode == 0
+
+
+def validate_temporary_name(name: str) -> None:
+    if not SAFE_NAME.fullmatch(name):
+        raise BackupError(f"Unsafe restore-drill resource name: {name}")
+
+
+def ensure_targets_absent(container_names: tuple[str, ...], volume_name: str) -> None:
+    for name in container_names:
+        validate_temporary_name(name)
+        if docker_resource_exists("container", "inspect", name):
+            raise BackupError(f"Refusing to reuse existing restore-drill container: {name}")
+    validate_temporary_name(volume_name)
+    if docker_resource_exists("volume", "inspect", volume_name):
+        raise BackupError(f"Refusing to reuse existing restore-drill volume: {volume_name}")
+
+
+def wait_for_postgres(container: str, timeout_seconds: int = 60) -> None:
+    if timeout_seconds <= 0:
+        raise BackupError("Disposable PostgreSQL readiness requires a positive timeout")
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        probe_timeout = max(0.05, min(DOCKER_PROBE_TIMEOUT_SECONDS, remaining))
+        try:
+            logs = subprocess.run(  # noqa: S603 - validated container and fixed Docker argv.
+                [docker_executable(), "logs", container],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=probe_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise BackupError(
+                "Disposable PostgreSQL log probe timed out; inspect and remove the exact "
+                "restore-drill container, then retry"
+            ) from exc
+        except OSError as exc:
+            raise BackupError(
+                "Disposable PostgreSQL log probe could not start; verify Docker and retry"
+            ) from exc
+        combined_logs = f"{logs.stdout}\n{logs.stderr}"
+        if logs.returncode != 0 or POSTGRES_INIT_COMPLETE_MARKER not in combined_logs:
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+            continue
+        remaining = deadline - time.monotonic()
+        probe_timeout = max(0.05, min(DOCKER_PROBE_TIMEOUT_SECONDS, remaining))
+        try:
+            process = subprocess.run(  # noqa: S603 - validated container, fixed Docker argv.
+                [
+                    docker_executable(),
+                    "exec",
+                    container,
+                    "pg_isready",
+                    "-U",
+                    "postgres",
+                    "-d",
+                    "custombuild",
+                ],
+                check=False,
+                capture_output=True,
+                timeout=probe_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise BackupError(
+                "Disposable PostgreSQL readiness probe timed out; inspect and remove the "
+                "exact restore-drill container, then retry"
+            ) from exc
+        except OSError as exc:
+            raise BackupError(
+                "Disposable PostgreSQL readiness probe could not start; verify Docker and retry"
+            ) from exc
+        if process.returncode == 0:
+            return
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+    raise BackupError(
+        "Disposable PostgreSQL did not become ready; inspect its logs, remove the exact "
+        "restore-drill resources and retry"
+    )
+
+
+def wait_for_seaweed_inventory(
+    endpoint: str,
+    bucket: str,
+    *,
+    timeout_seconds: int = 90,
+) -> list[dict[str, Any]]:
+    deadline = time.monotonic() + timeout_seconds
+    last_error: BackupError | None = None
+    while time.monotonic() < deadline:
+        try:
+            return inventory_s3(
+                endpoint,
+                RESTORE_ACCESS_KEY,
+                RESTORE_SECRET_KEY,
+                bucket,
+            )
+        except BackupError as exc:
+            last_error = exc
+            time.sleep(1)
+    raise BackupError(f"Restored SeaweedFS did not become ready: {last_error}")
+
+
+def current_alembic_heads(repo: Path) -> list[str]:
+    ini_path = (repo / "services" / "api" / "alembic.ini").resolve()
+    versions_path = (repo / "services" / "api" / "alembic").resolve()
+    if not ini_path.is_file() or not versions_path.is_dir():
+        raise BackupError("Could not locate the repository Alembic configuration")
+    config = AlembicConfig(str(ini_path))
+    config.set_main_option("script_location", str(versions_path))
+    config.set_main_option("path_separator", "os")
+    heads = sorted(ScriptDirectory.from_config(config).get_heads())
+    if not heads:
+        raise BackupError("Repository Alembic history has no head revision")
+    return heads
+
+
+def _published_s3_endpoint(container: str) -> str:
+    binding = docker("port", container, "8333/tcp", capture=True)
+    matches = re.findall(r"(?:127\.0\.0\.1|0\.0\.0\.0|\[::\]):([0-9]+)", binding)
+    if not matches:
+        raise BackupError(f"Could not resolve restored SeaweedFS S3 port: {binding}")
+    return f"http://127.0.0.1:{matches[-1]}"
+
+
+def _restored_database_probe(container: str) -> dict[str, Any]:
+    query = (
+        "SELECT json_build_object("
+        "'alembic_heads', COALESCE((SELECT json_agg(version_num ORDER BY version_num) "
+        "FROM alembic_version), '[]'::json), "
+        "'project_rows', (SELECT count(*) FROM projects))::text;"
+    )
+    raw = docker(
+        "exec",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "custombuild",
+        "--tuples-only",
+        "--no-align",
+        "--command",
+        query,
+        capture=True,
+    )
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BackupError("Restored database probe returned invalid JSON") from exc
+    if not isinstance(result, dict):
+        raise BackupError("Restored database probe did not return an object")
+    return {str(key): value for key, value in result.items()}
+
+
+def _cleanup_resource(kind: str, name: str, errors: list[str]) -> None:
+    validate_temporary_name(name)
+    exists: bool | None = None
+    try:
+        exists = docker_resource_exists(
+            kind,
+            "inspect",
+            name,
+            timeout_seconds=DOCKER_INSPECT_TIMEOUT_SECONDS,
+        )
+    except BackupError as exc:
+        errors.append(f"{kind} {name} inspection: {exc}")
+    if exists is False:
+        return
+    # If inspection itself timed out, the exact narrowly validated resource may
+    # still exist.  Make one independent bounded delete attempt before moving on
+    # to the remaining cleanup targets.
+    try:
+        if kind == "container":
+            docker(
+                "rm",
+                "--force",
+                name,
+                timeout_seconds=DOCKER_CLEANUP_TIMEOUT_SECONDS,
+            )
+        elif kind == "volume":
+            docker(
+                "volume",
+                "rm",
+                name,
+                timeout_seconds=DOCKER_CLEANUP_TIMEOUT_SECONDS,
+            )
+        else:
+            raise BackupError(f"Unsupported restore-drill resource kind: {kind}")
+    except BackupError as exc:
+        errors.append(f"{kind} {name} removal: {exc}")
+
+
+def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, object]:
+    backup = backup.resolve()
+    repo = (repo or Path.cwd()).resolve()
+    manifest = verify_manifest(backup)
+    suffix = uuid4().hex[:8]
+    base = f"custombuild-restore-{suffix}"
+    postgres_container = f"{base}-postgres"
+    seaweed_container = f"{base}-seaweed"
+    extract_container = f"{base}-extract"
+    object_volume = base
+    container_names = (postgres_container, seaweed_container, extract_container)
+    ensure_targets_absent(container_names, object_volume)
+
+    object_store = manifest["object_store"]
+    if not isinstance(object_store, dict):
+        raise BackupError("Backup manifest has no object-store evidence")
+    bucket = str(object_store["bucket"])
+    expected_inventory = object_store["objects"]
+    if not isinstance(expected_inventory, list):
+        raise BackupError("Backup manifest has no S3 object inventory")
+    database_snapshot = manifest["database_snapshot"]
+    if not isinstance(database_snapshot, dict):
+        raise BackupError("Backup manifest has no PostgreSQL recovery point")
+    expected_heads = sorted(str(value) for value in database_snapshot["alembic_heads"])
+    repository_heads = current_alembic_heads(repo)
+
+    cleanup_errors: list[str] = []
+    operation_error: BaseException | None = None
+    result: dict[str, object] | None = None
+    try:
+        docker(
+            "run",
+            "--detach",
+            "--name",
+            postgres_container,
+            "--env",
+            "POSTGRES_PASSWORD=restore-drill-only",
+            "--env",
+            "POSTGRES_DB=custombuild",
+            POSTGRES_IMAGE,
+        )
+        wait_for_postgres(postgres_container)
+        docker(
+            "exec",
+            postgres_container,
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "custombuild",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            "CREATE ROLE custombuild_api; CREATE ROLE custombuild_worker;",
+        )
+        restore_path = "/database.dump"
+        docker(
+            "cp",
+            str(backup / "database.dump"),
+            f"{postgres_container}:{restore_path}",
+            timeout_seconds=DOCKER_PAYLOAD_TIMEOUT_SECONDS,
+        )
+        docker(
+            "exec",
+            postgres_container,
+            "pg_restore",
+            "--exit-on-error",
+            "--no-owner",
+            "--no-acl",
+            "--username",
+            "postgres",
+            "--dbname",
+            "custombuild",
+            restore_path,
+            timeout_seconds=DOCKER_PAYLOAD_TIMEOUT_SECONDS,
+        )
+        database_probe = _restored_database_probe(postgres_container)
+        restored_heads = sorted(str(value) for value in database_probe.get("alembic_heads", []))
+        project_rows = int(database_probe.get("project_rows", -1))
+        if restored_heads != expected_heads:
+            raise BackupError(
+                f"Restored Alembic heads {restored_heads} do not match backup {expected_heads}"
+            )
+        if restored_heads != repository_heads:
+            raise BackupError(
+                "Restored Alembic heads "
+                f"{restored_heads} do not match repository {repository_heads}"
+            )
+        if project_rows < 1:
+            raise BackupError(f"Restored database contains no projects: {project_rows}")
+
+        docker("volume", "create", "--label", "custombuild.restore-drill=true", object_volume)
+        docker(
+            "run",
+            "--name",
+            extract_container,
+            "--rm",
+            "--mount",
+            f"type=bind,source={backup},target=/backup,readonly",
+            "--mount",
+            f"type=volume,source={object_volume},target=/restore",
+            ALPINE_IMAGE,
+            "tar",
+            "-C",
+            "/restore",
+            "-xf",
+            "/backup/artifacts.tar",
+            timeout_seconds=DOCKER_PAYLOAD_TIMEOUT_SECONDS,
+        )
+        docker(
+            "run",
+            "--detach",
+            "--name",
+            seaweed_container,
+            "--env",
+            f"AWS_ACCESS_KEY_ID={RESTORE_ACCESS_KEY}",
+            "--env",
+            f"AWS_SECRET_ACCESS_KEY={RESTORE_SECRET_KEY}",
+            "--env",
+            f"S3_BUCKET={bucket}",
+            "--mount",
+            f"type=volume,source={object_volume},target=/data",
+            "--publish",
+            "127.0.0.1::8333",
+            SEAWEEDFS_IMAGE,
+            "mini",
+            "-dir=/data",
+            "-master.telemetry=false",
+        )
+        endpoint = _published_s3_endpoint(seaweed_container)
+        restored_inventory = wait_for_seaweed_inventory(endpoint, bucket)
+        if restored_inventory != expected_inventory:
+            raise BackupError("Restored S3 inventory does not match the backup manifest")
+
+        result = {
+            "schema_version": "custombuild.restore-drill.v2",
+            "backup_created_at": manifest["created_at"],
+            "database_snapshot": database_snapshot,
+            "database_alembic_heads": restored_heads,
+            "database_project_rows": project_rows,
+            "object_store_image": SEAWEEDFS_IMAGE,
+            "object_store_bucket": bucket,
+            "object_store_object_count": len(restored_inventory),
+            "object_store_total_size_bytes": sum(
+                int(item["size_bytes"]) for item in restored_inventory
+            ),
+            "object_store_hashes_verified": True,
+            "tenant_acceptance_required_before_traffic": True,
+            "status": "PASS",
+        }
+    except BaseException as exc:
+        operation_error = exc
+    finally:
+        for name in (seaweed_container, postgres_container, extract_container):
+            _cleanup_resource("container", name, cleanup_errors)
+        _cleanup_resource("volume", object_volume, cleanup_errors)
+
+    if cleanup_errors:
+        detail = "; ".join(cleanup_errors)
+        if operation_error is not None:
+            raise BackupError(
+                f"Restore drill failed ({operation_error}); cleanup also failed: {detail}"
+            ) from operation_error
+        raise BackupError(f"Restore drill cleanup failed: {detail}")
+    if operation_error is not None:
+        raise operation_error
+    if result is None:
+        raise BackupError("Restore drill produced no result")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--backup", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
+    args = parser.parse_args()
+    result = run_restore_drill(args.backup)
+    payload = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
+    if args.output:
+        args.output.write_text(payload, encoding="utf-8")
+    print(payload, end="")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BackupError as exc:
+        print(f"Restore drill: FAIL - {exc}")
+        raise SystemExit(1) from exc

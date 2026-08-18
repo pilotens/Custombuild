@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from itertools import combinations
 from types import SimpleNamespace
 
 import pytest
 from custombuild_cad import (
+    CADAssemblyCollisionError,
     CADDependencyUnavailable,
     CADExportError,
     CadQueryAdapter,
@@ -16,7 +18,9 @@ from custombuild_domain import (
     BookcaseParameters,
     JointType,
     ShelfMount,
+    TemplateProductionLevel,
     build_bookcase,
+    resolve_template_capability,
     screening_mdf_6,
     screening_mdf_18,
 )
@@ -84,6 +88,7 @@ def feature(
     through: bool = False,
     corner_strategy: str | None = None,
     requires_square_corners: bool = False,
+    open_end_reliefs: tuple[str, ...] = (),
 ):
     return SimpleNamespace(
         feature_id=feature_id,
@@ -98,6 +103,7 @@ def feature(
         through=through,
         corner_strategy=corner_strategy,
         requires_square_corners=requires_square_corners,
+        open_end_reliefs=open_end_reliefs,
         tolerance_um=0,
         fit_clearance_um=0,
     )
@@ -276,8 +282,11 @@ def test_authoritative_cad_dado_members_have_no_remaining_solid_overlap() -> Non
         )
     )
     adapter = CadQueryAdapter()
+    crossing_part = next(part for part in design.parts if part.semantic_key == "left-side")
+    with pytest.raises(CADExportError, match="does not intersect remaining material"):
+        adapter._part_shape(cq, crossing_part)
     shapes = {
-        part.part_id: adapter._apply_placement(adapter._part_shape(cq, part), part)
+        part.part_id: adapter._apply_placement(adapter._part_shape(cq, part, design), part)
         for part in design.parts
     }
     dado_joints = [joint for joint in design.joints if joint.joint_type == JointType.DADO]
@@ -290,6 +299,187 @@ def test_authoritative_cad_dado_members_have_no_remaining_solid_overlap() -> Non
         assert shapes[first_part.part_id].intersect(
             shapes[second_part.part_id]
         ).Volume() == pytest.approx(0, abs=1e-7)
+
+
+@pytest.mark.cad
+def test_exact_assembly_gate_blocks_injected_undeclared_collision_before_export(
+    monkeypatch,
+) -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+    import cadquery as cq
+
+    design = build_bookcase(
+        BookcaseDesignSpec(
+            design_id="assembly-collision-injection",
+            template_id="shelving",
+            parameters=BookcaseParameters(
+                width_um=700_000,
+                height_um=1_000_000,
+                depth_um=300_000,
+                shelf_count=2,
+            ),
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    )
+    shelves = sorted(
+        (part for part in design.parts if part.semantic_key.startswith("shelf-")),
+        key=lambda part: part.semantic_key,
+    )
+    assert len(shelves) == 2
+    moved = shelves[1].model_copy(update={"placement": shelves[0].placement})
+    injected = design.model_copy(
+        update={
+            "parts": tuple(
+                moved if part.part_id == moved.part_id else part for part in design.parts
+            )
+        }
+    )
+    monkeypatch.setattr(
+        cq.Assembly,
+        "export",
+        lambda *args, **kwargs: pytest.fail("collision gate must run before file export"),
+    )
+
+    with pytest.raises(CADAssemblyCollisionError) as blocked:
+        CadQueryAdapter().export_design(injected)
+
+    report = blocked.value.report
+    collided_shelf_ids = tuple(sorted(part.part_id for part in shelves))
+    collision = next(
+        item for item in report.collisions if item.part_ids == collided_shelf_ids
+    )
+    first = shelves[0]
+    expected_bounds = (
+        first.placement.x_um / 1_000,
+        first.placement.y_um / 1_000,
+        first.placement.z_um / 1_000,
+        (first.placement.x_um + first.finished_size.width_um) / 1_000,
+        (first.placement.y_um + first.finished_size.depth_um) / 1_000,
+        (first.placement.z_um + first.finished_size.height_um) / 1_000,
+    )
+    expected_volume = (
+        first.finished_size.width_um
+        * first.finished_size.depth_um
+        * first.finished_size.height_um
+        / 1_000**3
+    )
+    assert collision.reason == "UNDECLARED_PART_OVERLAP"
+    assert collision.declared_joint_ids == ()
+    assert collision.verified_joint_ids == ()
+    assert collision.overlap_volume_mm3 == pytest.approx(expected_volume)
+    assert collision.overlap_aabb_mm == pytest.approx(expected_bounds)
+    serialised = report.to_json()
+    assert serialised == json.dumps(
+        report.as_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+    assert (
+        f'"part_ids":["{collision.part_ids[0]}","{collision.part_ids[1]}"]'
+        in serialised
+    )
+
+
+@pytest.mark.cad
+def test_exact_assembly_gate_does_not_treat_a_declared_joint_as_a_collision_waiver() -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+
+    design = build_bookcase(
+        BookcaseDesignSpec(
+            design_id="declared-joint-collision-injection",
+            template_id="shelving",
+            parameters=BookcaseParameters(
+                width_um=700_000,
+                height_um=1_000_000,
+                depth_um=300_000,
+                shelf_count=1,
+            ),
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    )
+    shelf = next(part for part in design.parts if part.semantic_key.startswith("shelf-"))
+    left_side = next(part for part in design.parts if part.semantic_key == "left-side")
+    shifted_placement = shelf.placement.model_copy(
+        update={"x_um": shelf.placement.x_um - 2_000}
+    )
+    shifted_shelf = shelf.model_copy(update={"placement": shifted_placement})
+    injected = design.model_copy(
+        update={
+            "parts": tuple(
+                shifted_shelf if part.part_id == shelf.part_id else part
+                for part in design.parts
+            )
+        }
+    )
+
+    with pytest.raises(CADAssemblyCollisionError) as blocked:
+        CadQueryAdapter().validate_assembly(injected)
+
+    pair = tuple(sorted((left_side.part_id, shelf.part_id)))
+    collision = next(item for item in blocked.value.report.collisions if item.part_ids == pair)
+    assert collision.reason == "VERIFIED_JOINT_GEOMETRY_MISMATCH"
+    assert collision.declared_joint_ids
+    assert collision.verified_joint_ids == collision.declared_joint_ids
+    assert collision.overlap_volume_mm3 > 0
+
+
+@pytest.mark.cad
+@pytest.mark.parametrize(
+    ("template_id", "expected_level"),
+    (
+        ("shelving", TemplateProductionLevel.SCREENED),
+        ("wall-library", TemplateProductionLevel.SCREENED),
+        ("sideboard", TemplateProductionLevel.CONCEPT),
+        ("room-divider", TemplateProductionLevel.CONCEPT),
+        ("hanging-shelf", TemplateProductionLevel.CONCEPT),
+        ("cupboard", TemplateProductionLevel.CONCEPT),
+    ),
+)
+def test_exact_assembly_geometry_covers_all_templates_without_promoting_concepts(
+    template_id: str,
+    expected_level: TemplateProductionLevel,
+) -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+
+    capability = resolve_template_capability(template_id)
+    parameters = (
+        BookcaseParameters(
+            width_um=1_200_000,
+            height_um=1_600_000,
+            depth_um=340_000,
+            shelf_count=2,
+            vertical_divider_count=1,
+            base_cabinet_height_um=450_000,
+            base_cabinet_depth_um=340_000,
+            base_cabinet_count=2,
+        )
+        if capability.archetype == "wall_library"
+        else BookcaseParameters(
+            width_um=700_000,
+            height_um=1_000_000,
+            depth_um=300_000,
+            shelf_count=2,
+        )
+    )
+    design = build_bookcase(
+        BookcaseDesignSpec(
+            design_id=f"collision-gate-{template_id}",
+            template_id=template_id,
+            parameters=parameters,
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    )
+
+    report = CadQueryAdapter().validate_assembly(design)
+
+    assert report.passed is True
+    assert report.collisions == ()
+    assert report.checked_pair_count == len(design.parts) * (len(design.parts) - 1) // 2
+    assert resolve_template_capability(template_id).production_level is expected_level
 
 
 @pytest.mark.cad
@@ -329,6 +519,94 @@ def test_cadquery_materially_cuts_versioned_dogbone_reliefs() -> None:
     dogbone_shape = adapter._part_shape(cq, namespace_part(features=(dogbone,)))
 
     assert dogbone_shape.Volume() < rectangular_shape.Volume()
+
+
+@pytest.mark.cad
+def test_cadquery_blocks_noop_split_and_edge_near_cutters() -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+    import cadquery as cq
+
+    duplicate = feature("duplicate", "drill", x_um=30_000, y_um=30_000)
+    with pytest.raises(CADExportError, match="does not intersect remaining material"):
+        CadQueryAdapter()._part_shape(
+            cq,
+            namespace_part(
+                features=(
+                    feature("first", "drill", x_um=30_000, y_um=30_000),
+                    duplicate,
+                )
+            ),
+        )
+
+    splitter = feature(
+        "splitter",
+        "groove",
+        x_um=0,
+        y_um=95_000,
+        through=True,
+        feature_dimensions=dimensions(width_um=300_000, length_um=10_000, depth_um=18_000),
+    )
+    with pytest.raises(CADExportError, match="one connected solid"):
+        CadQueryAdapter()._part_shape(cq, namespace_part(features=(splitter,)))
+
+    edge_near = feature(
+        "edge-near",
+        "groove",
+        x_um=2_000,
+        y_um=50_000,
+        feature_dimensions=dimensions(
+            width_um=20_000,
+            length_um=80_000,
+            depth_um=6_000,
+            radius_um=3_000,
+        ),
+        corner_strategy="dogbone-v1",
+    )
+    with pytest.raises(CADExportError, match="cutter envelope extends beyond"):
+        CadQueryAdapter()._part_shape(cq, namespace_part(features=(edge_near,)))
+
+
+@pytest.mark.cad
+def test_cadquery_accepts_only_exact_declared_open_end_relief() -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+    import cadquery as cq
+
+    declared_but_offset = feature(
+        "offset-open-end",
+        "groove",
+        x_um=2_000,
+        y_um=50_000,
+        feature_dimensions=dimensions(
+            width_um=20_000,
+            length_um=80_000,
+            depth_um=6_000,
+            radius_um=3_000,
+        ),
+        corner_strategy="dogbone-v1",
+        open_end_reliefs=("u_min",),
+    )
+    with pytest.raises(CADExportError, match="not exactly edge-flush"):
+        CadQueryAdapter()._part_shape(cq, namespace_part(features=(declared_but_offset,)))
+
+    exact_open_end = feature(
+        "exact-open-end",
+        "groove",
+        x_um=0,
+        y_um=50_000,
+        feature_dimensions=dimensions(
+            width_um=20_000,
+            length_um=80_000,
+            depth_um=6_000,
+            radius_um=3_000,
+        ),
+        corner_strategy="dogbone-v1",
+        open_end_reliefs=("u_min",),
+    )
+    result = CadQueryAdapter()._part_shape(cq, namespace_part(features=(exact_open_end,)))
+    assert result.isValid()
+    assert result.Volume() > 0
 
 
 @pytest.mark.cad
@@ -411,7 +689,7 @@ def test_cadquery_dependency_empty_invalid_and_atomic_export_failures(monkeypatc
     import cadquery as cq
 
     monkeypatch.setattr(
-        cq.Assembly, "save", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk"))
+        cq.Assembly, "export", lambda *args, **kwargs: (_ for _ in ()).throw(OSError("disk"))
     )
     with pytest.raises(CADExportError, match="atomically"):
         CadQueryAdapter().export_design(

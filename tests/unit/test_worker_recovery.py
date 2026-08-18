@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
+import custombuild_worker.tasks as worker_tasks
 from app.models import GenerationJob, JobStatus
 from custombuild_worker.tasks import (
     MAX_GENERATION_ATTEMPTS,
@@ -21,7 +23,9 @@ def stale_job(*, attempts: int) -> GenerationJob:
         production_engine_context_json={"schema_version": "test-production-context.v1"},
         request_json={},
         attempts=attempts,
+        lease_token=str(uuid4()),
         started_at=datetime(2026, 1, 1, tzinfo=UTC),
+        lease_expires_at=datetime(2026, 1, 1, 0, 2, tzinfo=UTC),
     )
 
 
@@ -32,6 +36,8 @@ def test_stale_job_before_final_attempt_is_requeued_through_outbox() -> None:
     event = _recover_stale_job(job, now=now)
 
     assert job.status == JobStatus.queued
+    assert job.lease_token is None
+    assert job.lease_expires_at is None
     assert job.started_at is None
     assert job.finished_at is None
     assert event is not None
@@ -50,15 +56,50 @@ def test_stale_job_after_final_attempt_becomes_terminal() -> None:
 
     assert event is None
     assert job.status == JobStatus.failed
+    assert job.lease_token is None
+    assert job.lease_expires_at is None
     assert job.finished_at == now
     assert "maximum of 4 generation attempts" in (job.error or "")
     assert job.started_at == datetime(2026, 1, 1, tzinfo=UTC)
 
 
-def test_stale_lease_threshold_is_longer_than_retry_backoff() -> None:
-    # Documents the operational invariant behind the recovery task: it only
-    # handles leases far older than the normal retry delay.
-    assert timedelta(minutes=30) > timedelta(seconds=5)
+def test_live_lease_is_not_recovered() -> None:
+    now = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+    job = stale_job(attempts=1)
+    token = job.lease_token
+
+    event = _recover_stale_job(job, now=now)
+
+    assert event is None
+    assert job.status == JobStatus.running
+    assert job.lease_token == token
+    assert job.lease_expires_at == datetime(2026, 1, 1, 0, 2, tzinfo=UTC)
+
+
+def test_server_deadline_invalidates_even_a_live_worker_lease() -> None:
+    now = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+    job = stale_job(attempts=1)
+    job.lease_expires_at = now + timedelta(minutes=1)
+    job.deadline_at = now
+
+    event = _recover_stale_job(job, now=now)
+
+    assert event is None
+    assert job.status == JobStatus.failed
+    assert job.lease_token is None
+    assert job.lease_expires_at is None
+    assert job.finished_at == now
+    assert "server deadline of 120 minutes" in (job.error or "")
+
+
+def test_heartbeat_interval_is_safely_inside_the_lease_window() -> None:
+    assert timedelta(seconds=5) < timedelta(
+        seconds=worker_tasks.GENERATION_HEARTBEAT_INTERVAL_SECONDS
+    )
+    assert timedelta(
+        seconds=worker_tasks.GENERATION_HEARTBEAT_INTERVAL_SECONDS
+    ) < worker_tasks.GENERATION_LEASE_TTL
+    assert worker_tasks.GENERATION_LEASE_TTL < worker_tasks.LEGACY_STALE_LEASE_THRESHOLD
 
 
 def test_duplicate_delivery_cannot_resurrect_any_terminal_state() -> None:

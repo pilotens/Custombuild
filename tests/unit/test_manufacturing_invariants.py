@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import copy
+import io
 from dataclasses import replace
 
+import ezdxf
 import pytest
 from custombuild_manufacturing import (
     DeterministicNester,
     DFMIssue,
     DFMReport,
     DFMValidator,
+    EdgeBandSpec,
     FeatureKind,
     MachineProfile,
     ManufacturingFeature,
@@ -84,6 +87,18 @@ def base_part(*features: ManufacturingFeature) -> PartSpec:
             "f", "p", FeatureKind.DRILL_PATTERN, Side.A, 1, 1, 1, pattern_count=2
         ),
         lambda: ManufacturingFeature("f", "p", FeatureKind.DRILL, Side.A, 1, 1, 1, diameter_um=-1),
+        lambda: ManufacturingFeature(
+            "f",
+            "p",
+            FeatureKind.GROOVE,
+            Side.A,
+            1,
+            1,
+            1,
+            width_um=1,
+            length_um=1,
+            open_end_reliefs=("u_min",),
+        ),
         lambda: PartSpec("p", "P", 0, 1, 1, "m", "v"),
         lambda: PartSpec("p", "P", 1, 1, 1, "m", "v", quantity=0),
         lambda: PartSpec(
@@ -128,6 +143,134 @@ def test_canonical_units_status_and_instance_coercion() -> None:
     blocking = DFMIssue("B", Severity.BLOCK, "blocking")
     assert DFMReport((warning,)).status == Severity.WARNING
     assert DFMReport((warning, blocking)).blocking_issues == (blocking,)
+
+
+def test_dfm_deduplication_preserves_distinct_instances_and_collapses_exact_issues() -> None:
+    missing_diameter = ManufacturingFeature(
+        "missing-diameter",
+        "panel",
+        FeatureKind.DRILL,
+        Side.A,
+        50_000,
+        50_000,
+        5_000,
+    )
+    part = replace(base_part(missing_diameter), quantity=2)
+    stock = base_stock(width_um=250_000, height_um=150_000)
+    layout = DeterministicNester().nest((part,), stock)
+
+    report = DFMValidator().validate((part,), layout, linuxcnc_reference_router_1325())
+
+    unplaced = [issue for issue in report.issues if issue.code == "NESTING_UNPLACED"]
+    assert [issue.inputs["instance_id"] for issue in unplaced] == [
+        "panel:001",
+        "panel:002",
+    ]
+    assert sum(issue.code == "DRILL_DIAMETER_MISSING" for issue in report.issues) == 1
+    assert sum(issue.code == "COMPATIBLE_TOOL_MISSING" for issue in report.issues) == 1
+    assert report.engine_version == "dfm-1.3.0"
+
+
+def test_dogbone_actual_envelope_drives_boundary_and_collision_validation() -> None:
+    edge_near = ManufacturingFeature(
+        "edge-near",
+        "panel",
+        FeatureKind.GROOVE,
+        Side.A,
+        2_000,
+        50_000,
+        5_000,
+        width_um=20_000,
+        length_um=80_000,
+        corner_strategy="dogbone-v1",
+        corner_relief_radius_um=3_000,
+    )
+    assert edge_near.bounds() == Rect(2_000, 50_000, 20_000, 80_000)
+    assert edge_near.machining_bounds() == Rect(-1_000, 47_000, 26_000, 86_000)
+
+    edge_part = base_part(edge_near)
+    edge_layout = DeterministicNester().nest((edge_part,), base_stock())
+    edge_report = DFMValidator().validate(
+        (edge_part,), edge_layout, linuxcnc_reference_router_1325()
+    )
+    assert "FEATURE_OUTSIDE_PART" in {issue.code for issue in edge_report.blocking_issues}
+
+    exact_open = replace(edge_near, x_um=0, open_end_reliefs=("u_min",))
+    open_part = base_part(exact_open)
+    open_layout = DeterministicNester().nest((open_part,), base_stock())
+    open_report = DFMValidator().validate(
+        (open_part,), open_layout, linuxcnc_reference_router_1325()
+    )
+    assert "FEATURE_OUTSIDE_PART" not in {issue.code for issue in open_report.blocking_issues}
+
+    nearby = ManufacturingFeature(
+        "nearby",
+        "panel",
+        FeatureKind.POCKET,
+        Side.A,
+        42_000,
+        49_000,
+        5_000,
+        width_um=10_000,
+        length_um=10_000,
+    )
+    collision_part = base_part(
+        replace(edge_near, x_um=20_000, y_um=50_000),
+        nearby,
+    )
+    collision_layout = DeterministicNester().nest((collision_part,), base_stock())
+    collision_report = DFMValidator().validate(
+        (collision_part,), collision_layout, linuxcnc_reference_router_1325()
+    )
+    assert "FEATURE_COLLISION" in {issue.code for issue in collision_report.blocking_issues}
+
+    broad_bounds_only = base_part(
+        replace(edge_near, x_um=20_000, y_um=50_000),
+        replace(nearby, y_um=60_000),
+    )
+    broad_bounds_layout = DeterministicNester().nest((broad_bounds_only,), base_stock())
+    broad_bounds_report = DFMValidator().validate(
+        (broad_bounds_only,), broad_bounds_layout, linuxcnc_reference_router_1325()
+    )
+    assert "FEATURE_COLLISION" not in {issue.code for issue in broad_bounds_report.blocking_issues}
+
+
+def test_open_end_relief_envelope_blocks_insufficient_nesting_spacing() -> None:
+    exit_feature = ManufacturingFeature(
+        "open-exit",
+        "a-exit",
+        FeatureKind.GROOVE,
+        Side.A,
+        290_000,
+        50_000,
+        5_000,
+        width_um=10_000,
+        length_um=80_000,
+        corner_strategy="dogbone-v1",
+        corner_relief_radius_um=3_000,
+        open_end_reliefs=("u_max",),
+    )
+    first = PartSpec(
+        "a-exit",
+        "Exit panel",
+        300_000,
+        200_000,
+        18_000,
+        "mdf",
+        "v1",
+        features=(exit_feature,),
+    )
+    second = PartSpec("b-neighbor", "Neighbor", 300_000, 200_000, 18_000, "mdf", "v1")
+    stock = base_stock(kerf_um=1_000)
+    layout = DeterministicNester().nest((first, second), stock)
+
+    report = DFMValidator().validate((first, second), layout, linuxcnc_reference_router_1325())
+
+    clearance_issue = next(
+        issue for issue in report.blocking_issues if issue.code == "OPEN_END_RELIEF_PART_CLEARANCE"
+    )
+    assert clearance_issue.feature_id == "open-exit"
+    assert clearance_issue.inputs["other_instance_id"] == "b-neighbor:001"
 
 
 def test_dfm_reports_machine_feature_tool_depth_keepout_and_collision_failures() -> None:
@@ -516,16 +659,27 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
             length_um=5_000,
         ),
     )
+    edge_band_details = tuple(
+        EdgeBandSpec(edge=edge, thickness_um=1_000, source_face=source_face)
+        for edge, source_face in (
+            ("V_MAX", "TOP"),
+            ("V_MIN", "BOTTOM"),
+            ("U_MIN", "LEFT"),
+            ("U_MAX", "RIGHT"),
+        )
+    )
     part = replace(
         base_part(*features),
-        edge_bands=("TOP", "BOTTOM", "LEFT", "RIGHT", "unknown"),
+        edge_bands=tuple(detail.edge for detail in edge_band_details),
+        edge_band_details=edge_band_details,
     )
     dxf = dxf_for_part(part, Side.A).decode("utf-8")
     svg = svg_for_part(part, Side.A).decode("utf-8")
 
     assert all(layer in dxf for layer in ("DRILL", "POCKET", "GROOVE", "EDGE_BAND", "LABEL"))
     assert 'data-feature-id="pattern"' in svg
-    assert dxf.count("\nCIRCLE\n8\nGROOVE\n") == 4
+    dxf_document = ezdxf.read(io.StringIO(dxf))
+    assert len(dxf_document.modelspace().query('CIRCLE[layer=="GROOVE"]')) == 4
     assert 'data-corner-strategy="dogbone-v1"' in svg
     assert b"finished_width_mm" in bom_csv((part,))
     assert b"instance_id" in cut_list_csv((part,))

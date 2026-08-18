@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 
+from .grain import stock_grain_binding_issues
 from .model import (
     DFMIssue,
     DFMReport,
@@ -16,10 +17,12 @@ from .model import (
     PartInstance,
     PartSpec,
     Placement,
+    Point2D,
     Rect,
     Severity,
     Side,
     ToolSpec,
+    canonical_json_bytes,
     coerce_part_instances,
 )
 from .nesting import validate_layout
@@ -37,7 +40,71 @@ FEATURE_TO_OPERATION: dict[FeatureKind, OperationKind] = {
     FeatureKind.LABEL: OperationKind.ENGRAVE,
 }
 
-DFM_ENGINE_VERSION = "dfm-1.0.0"
+DFM_ENGINE_VERSION = "dfm-1.3.0"
+STOCK_PROFILE_MISSING_CODE = "STOCK_PROFILE_MISSING"
+STOCK_PROFILE_MISSING_MESSAGE = (
+    "No selected stock profile matches the part material, thickness and size."
+)
+STOCK_PROFILE_MISSING_REQUIRED_ACTION = (
+    "Select matching stock whose usable area fits one part exemplar; "
+    "total quantity is checked by nesting."
+)
+_STOCK_PROFILE_MISSING_INPUT_KEYS = frozenset(
+    {"material_id", "material_version", "thickness_um", "blank_um"}
+)
+
+
+def stock_profile_missing_issue(part: PartSpec) -> DFMIssue:
+    """Build the sole canonical missing-stock fact for one unmatched part."""
+
+    issue = DFMIssue(
+        STOCK_PROFILE_MISSING_CODE,
+        Severity.BLOCK,
+        STOCK_PROFILE_MISSING_MESSAGE,
+        part_id=part.part_id,
+        inputs={
+            "material_id": part.material_id,
+            "material_version": part.material_version,
+            "thickness_um": part.thickness_um,
+            "blank_um": (part.blank_width_um, part.blank_height_um),
+        },
+        suggestion=STOCK_PROFILE_MISSING_REQUIRED_ACTION,
+    )
+    validate_stock_profile_missing_issue(issue)
+    return issue
+
+
+def validate_stock_profile_missing_issue(issue: DFMIssue) -> None:
+    """Reject free-text or incomplete representations of missing stock."""
+
+    if (
+        issue.code != STOCK_PROFILE_MISSING_CODE
+        or issue.severity is not Severity.BLOCK
+        or issue.message != STOCK_PROFILE_MISSING_MESSAGE
+        or issue.suggestion != STOCK_PROFILE_MISSING_REQUIRED_ACTION
+        or not isinstance(issue.part_id, str)
+        or not issue.part_id
+        or issue.part_id != issue.part_id.strip()
+        or issue.feature_id is not None
+        or issue.setup_id is not None
+        or frozenset(issue.inputs) != _STOCK_PROFILE_MISSING_INPUT_KEYS
+    ):
+        raise ValueError("canonical missing-stock issue identity is invalid")
+    for field in ("material_id", "material_version"):
+        value = issue.inputs.get(field)
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError(f"canonical missing-stock issue {field} is invalid")
+    thickness_um = issue.inputs.get("thickness_um")
+    if type(thickness_um) is not int or thickness_um <= 0:
+        raise ValueError("canonical missing-stock issue thickness is invalid")
+    blank_um = issue.inputs.get("blank_um")
+    if (
+        not isinstance(blank_um, Sequence)
+        or isinstance(blank_um, str | bytes)
+        or len(blank_um) != 2
+        or any(type(value) is not int or value <= 0 for value in blank_um)
+    ):
+        raise ValueError("canonical missing-stock issue blank dimensions are invalid")
 
 
 class DFMValidator:
@@ -51,7 +118,8 @@ class DFMValidator:
     ) -> DFMReport:
         instances = coerce_part_instances(parts)
 
-        issues = list(validate_layout(layout, instances))
+        issues = list(stock_grain_binding_issues(instances, layout.stock))
+        issues.extend(validate_layout(layout, instances))
         issues.extend(self._validate_machine_envelope(layout, machine))
 
         placement_by_instance = {item.instance_id: item for item in layout.placements}
@@ -138,7 +206,7 @@ class DFMValidator:
     ) -> list[DFMIssue]:
         issues: list[DFMIssue] = []
         operation_kind = FEATURE_TO_OPERATION[feature.kind]
-        bounds = feature.bounds()
+        bounds = feature.machining_bounds()
         panel = Rect(0, 0, part.width_um, part.height_um)
 
         if bounds.width_um <= 0 or bounds.height_um <= 0:
@@ -151,7 +219,7 @@ class DFMValidator:
                     feature_id=feature.feature_id,
                 )
             )
-        elif not panel.contains(bounds):
+        elif not _feature_envelope_is_declared(part, feature, panel):
             issues.append(
                 DFMIssue(
                     "FEATURE_OUTSIDE_PART",
@@ -159,7 +227,16 @@ class DFMValidator:
                     "Feature extends beyond the finished part boundary.",
                     part_id=part.part_id,
                     feature_id=feature.feature_id,
-                    inputs={"feature_bounds": bounds, "part_um": (part.width_um, part.height_um)},
+                    inputs={
+                        "feature_bounds": bounds,
+                        "nominal_bounds": feature.bounds(),
+                        "open_end_reliefs": feature.open_end_reliefs,
+                        "part_um": (part.width_um, part.height_um),
+                    },
+                    suggestion=(
+                        "Move the relief inside the part, or declare only an exact edge-flush "
+                        "open cutter exit."
+                    ),
                 )
             )
 
@@ -440,7 +517,7 @@ class DFMValidator:
         )
         for first in side_a:
             for second in side_b:
-                if not first.bounds().intersects(second.bounds()):
+                if not first.machining_bounds().intersects(second.machining_bounds()):
                     continue
                 remaining_um = part.thickness_um - first.depth_um - second.depth_um
                 minimum_um = max(
@@ -478,7 +555,7 @@ class DFMValidator:
             if feature.side == Side.EDGE:
                 continue
             transformed = transform_rect_to_machine(
-                feature.bounds(),
+                feature.machining_bounds(),
                 placement,
                 layout.stock.height_um,
                 feature.side,
@@ -495,6 +572,51 @@ class DFMValidator:
                         suggestion="Re-nest the part or revise the fixture plan.",
                     )
                 )
+            if feature.open_end_reliefs:
+                stock_bounds = Rect(0, 0, layout.stock.width_um, layout.stock.height_um)
+                if not stock_bounds.contains(transformed):
+                    issues.append(
+                        DFMIssue(
+                            "OPEN_END_RELIEF_STOCK_CLEARANCE",
+                            Severity.BLOCK,
+                            "Declared open-end cutter exit leaves the physical stock boundary.",
+                            part_id=part.part_id,
+                            feature_id=feature.feature_id,
+                            inputs={"machine_bounds": transformed, "stock_bounds": stock_bounds},
+                            suggestion="Re-nest the part farther from the sheet edge.",
+                        )
+                    )
+                colliding = next(
+                    (
+                        other
+                        for other in layout.placements
+                        if other.instance_id != placement.instance_id
+                        and other.sheet_index == placement.sheet_index
+                        and transformed.intersects(
+                            _placement_rect_to_machine(
+                                other,
+                                layout.stock.height_um,
+                                feature.side,
+                            )
+                        )
+                    ),
+                    None,
+                )
+                if colliding is not None:
+                    issues.append(
+                        DFMIssue(
+                            "OPEN_END_RELIEF_PART_CLEARANCE",
+                            Severity.BLOCK,
+                            "Declared open-end cutter exit intersects another nested part.",
+                            part_id=part.part_id,
+                            feature_id=feature.feature_id,
+                            inputs={
+                                "machine_bounds": transformed,
+                                "other_instance_id": colliding.instance_id,
+                            },
+                            suggestion="Increase nesting spacing or move one of the parts.",
+                        )
+                    )
         return issues
 
     def _validate_feature_collisions(
@@ -521,7 +643,7 @@ class DFMValidator:
                         second_allowed = set(second.metadata.get("allow_overlap_with", ()))
                         if second.feature_id in first_allowed or first.feature_id in second_allowed:
                             continue
-                        if first.bounds().intersects(second.bounds()):
+                        if _machining_features_intersect(first, second):
                             issues.append(
                                 DFMIssue(
                                     "FEATURE_COLLISION",
@@ -536,6 +658,76 @@ class DFMValidator:
                                 )
                             )
         return issues
+
+
+def _feature_envelope_is_declared(
+    part: PartSpec,
+    feature: ManufacturingFeature,
+    panel: Rect,
+) -> bool:
+    """Allow cutter overhang only at an explicitly declared, exactly flush dado end."""
+
+    nominal = feature.bounds()
+    actual = feature.machining_bounds()
+    declared = set(feature.open_end_reliefs)
+    flush = {
+        "u_min": nominal.x_um == panel.x_um,
+        "u_max": nominal.right_um == panel.right_um,
+        "v_min": nominal.y_um == panel.y_um,
+        "v_max": nominal.top_um == panel.top_um,
+    }
+    if any(not flush.get(edge, False) for edge in declared):
+        return False
+    return (
+        (actual.x_um >= panel.x_um or "u_min" in declared)
+        and (actual.right_um <= panel.right_um or "u_max" in declared)
+        and (actual.y_um >= panel.y_um or "v_min" in declared)
+        and (actual.top_um <= panel.top_um or "v_max" in declared)
+    )
+
+
+def _machining_features_intersect(
+    first: ManufacturingFeature,
+    second: ManufacturingFeature,
+) -> bool:
+    """Check nominal cuts and exact dogbone circles, not only their broad AABBs."""
+
+    first_bounds = first.bounds()
+    second_bounds = second.bounds()
+    if first_bounds.intersects(second_bounds):
+        return True
+    first_circles = first.relief_circles()
+    second_circles = second.relief_circles()
+    if any(
+        _circle_intersects_rect(point, radius, second_bounds) for point, radius in first_circles
+    ):
+        return True
+    if any(
+        _circle_intersects_rect(point, radius, first_bounds) for point, radius in second_circles
+    ):
+        return True
+    return any(
+        _circles_intersect(first_point, first_radius, second_point, second_radius)
+        for first_point, first_radius in first_circles
+        for second_point, second_radius in second_circles
+    )
+
+
+def _circle_intersects_rect(point: Point2D, radius_um: int, rect: Rect) -> bool:
+    nearest_x = min(max(point.x_um, rect.x_um), rect.right_um)
+    nearest_y = min(max(point.y_um, rect.y_um), rect.top_um)
+    return (point.x_um - nearest_x) ** 2 + (point.y_um - nearest_y) ** 2 < radius_um**2
+
+
+def _circles_intersect(
+    first_point: Point2D,
+    first_radius_um: int,
+    second_point: Point2D,
+    second_radius_um: int,
+) -> bool:
+    return (first_point.x_um - second_point.x_um) ** 2 + (
+        first_point.y_um - second_point.y_um
+    ) ** 2 < (first_radius_um + second_radius_um) ** 2
 
 
 def select_tool(feature: ManufacturingFeature, machine: MachineProfile) -> ToolSpec | None:
@@ -615,9 +807,26 @@ def transform_rect_to_machine(
     return Rect(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
 
 
+def _placement_rect_to_machine(
+    placement: Placement,
+    stock_height_um: int,
+    side: Side,
+) -> Rect:
+    """Express an already nested part envelope in the active setup coordinates."""
+
+    if side != Side.B:
+        return placement.rect
+    return Rect(
+        placement.x_um,
+        stock_height_um - placement.rect.top_um,
+        placement.width_um,
+        placement.height_um,
+    )
+
+
 def _deduplicate(issues: Iterable[DFMIssue]) -> list[DFMIssue]:
-    unique: dict[tuple[str, str | None, str | None, str | None], DFMIssue] = {}
+    unique: dict[bytes, DFMIssue] = {}
     for issue in issues:
-        key = (issue.code, issue.part_id, issue.feature_id, issue.setup_id)
+        key = canonical_json_bytes(issue)
         unique.setdefault(key, issue)
     return list(unique.values())

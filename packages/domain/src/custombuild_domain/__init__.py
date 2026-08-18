@@ -10,6 +10,7 @@ from .enums import (
     GrainDirection,
     JointType,
     MaterialType,
+    OpenEndRelief,
     PartRole,
     ReinforcementMode,
     ShelfMount,
@@ -73,6 +74,17 @@ from .support import (
     WEIGHT_BASIS,
     joint_support_payload,
 )
+from .template_capabilities import (
+    TEMPLATE_CAPABILITIES,
+    TEMPLATE_CAPABILITY_REGISTRY_FINGERPRINT,
+    TEMPLATE_CAPABILITY_REGISTRY_VERSION,
+    TemplateCapability,
+    TemplateCapabilityError,
+    TemplateProductionLevel,
+    require_template_for_revision,
+    resolve_template_capability,
+    template_capability_registry_payload,
+)
 from .units import UM_PER_M, UM_PER_MM, metres, mm, to_mm
 
 __all__ = [
@@ -106,6 +118,7 @@ __all__ = [
     "ManufacturingFeature",
     "MaterialType",
     "MaterialVersion",
+    "OpenEndRelief",
     "PartInstance",
     "PartRole",
     "Placement",
@@ -129,6 +142,12 @@ __all__ = [
     "SemanticSnapTarget",
     "ShelfMount",
     "SUPPORTED_BOOKCASE_PRIMARY_JOINTS",
+    "TEMPLATE_CAPABILITIES",
+    "TEMPLATE_CAPABILITY_REGISTRY_FINGERPRINT",
+    "TEMPLATE_CAPABILITY_REGISTRY_VERSION",
+    "TemplateCapability",
+    "TemplateCapabilityError",
+    "TemplateProductionLevel",
     "UnsupportedSemanticOperation",
     "WEIGHT_BASIS",
     "WallAnchorSpec",
@@ -138,6 +157,9 @@ __all__ = [
     "content_hash",
     "derive_bookcase_snap_targets",
     "joint_support_payload",
+    "require_template_for_revision",
+    "resolve_template_capability",
+    "template_capability_registry_payload",
     "metres",
     "mm",
     "screening_birch_plywood_18",

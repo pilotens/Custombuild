@@ -1,9 +1,13 @@
 packages:
   - apps/*
   - packages/*
+overrides:
+  "nanoid@<3.3.17": "3.3.17"
 onlyBuiltDependencies:
   - sharp
   - unrs-resolver
 allowBuilds:
   sharp: true
   unrs-resolver: true
+minimumReleaseAgeExclude:
+  - '@axe-core/playwright@4.13.0'

@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "fixture": {
+    "id": "b1-full-ceiling-wall-library",
+    "width_mm": 6000,
+    "height_mm": 4000,
+    "depth_mm": 1200,
+    "shelf_count": 40,
+    "divider_count": 16,
+    "bay_count": 17,
+    "base_cabinet_count": 17,
+    "base_cabinet_height_mm": 680,
+    "base_cabinet_depth_mm": 1200,
+    "expected_rendered_part_count": 752
+  },
+  "sampling": {
+    "warm_frame_count": 120,
+    "interaction_sample_count": 7,
+    "frame_collection_timeout_ms": 60000
+  },
+  "budgets": {
+    "cold_webgl_ready_ms": 20000,
+    "warm_frame_interval_p95_ms": 100,
+    "warm_frame_interval_max_ms": 500,
+    "selection_p95_ms": 750,
+    "view_switch_p95_ms": 1500,
+    "transparency_toggle_p95_ms": 1500,
+    "warm_long_task_max_ms": 1000
+  },
+  "scope": {
+    "browser": "chromium",
+    "network_and_server_preview_included": false,
+    "physical_cutting_authorized": false,
+    "reason": "Bounds the current-source WebGL viewer and local interactions at the canonical B1 design ceiling without granting production authority."
+  }
+}

@@ -1,0 +1,151 @@
+{
+  "schema_version": "custombuild.design-constraints.v1",
+  "contract_version": "1.0.0",
+  "status": "published",
+  "purpose": "Versioned design-envelope metadata shared by parity checks. This document does not authorize manufacturing or physical cutting.",
+  "units": {
+    "dimensions": "mm",
+    "load_per_shelf": "kg",
+    "quantities": "count",
+    "ratios": "unitless"
+  },
+  "envelope": {
+    "width_mm": {
+      "type": "number",
+      "minimum": 250,
+      "maximum": 6000
+    },
+    "height_mm": {
+      "type": "number",
+      "minimum": 300,
+      "maximum": 4000
+    },
+    "depth_mm": {
+      "type": "number",
+      "minimum": 100,
+      "maximum": 1200
+    },
+    "shelf_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 40
+    },
+    "divider_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 16
+    },
+    "load_per_shelf_kg": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 500
+    },
+    "base_cabinet_count": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 17
+    },
+    "base_cabinet_height_mm": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 2000
+    },
+    "base_cabinet_depth_mm": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1200
+    }
+  },
+  "derived_fields": {
+    "bay_count": {
+      "type": "integer",
+      "expression": "divider_count + 1",
+      "minimum": 1,
+      "maximum": 17
+    }
+  },
+  "dynamic_invariants": [
+    {
+      "id": "basic-width-clearance",
+      "expression": "width_mm > 2 * measured_thickness_mm"
+    },
+    {
+      "id": "basic-height-clearance",
+      "expression": "height_mm > plinth_height_mm + 2 * measured_thickness_mm"
+    },
+    {
+      "id": "basic-depth-clearance",
+      "expression": "depth_mm > measured_thickness_mm"
+    },
+    {
+      "id": "positive-inner-width",
+      "expression": "width_mm - (2 + divider_count) * measured_thickness_mm > 0"
+    },
+    {
+      "id": "custom-bay-ratios",
+      "when": "bay_width_ratios is non-empty",
+      "expression": "length(bay_width_ratios) == bay_count and every ratio > 0 and every ratio / sum(bay_width_ratios) >= 0.08"
+    },
+    {
+      "id": "custom-shelf-levels",
+      "when": "shelf_height_ratios is non-empty",
+      "expression": "length(shelf_height_ratios) == shelf_count and every ratio is in [0.05, 0.95] and adjacent ratios are separated by at least 0.05"
+    },
+    {
+      "id": "manufacturable-shelf-width",
+      "expression": "every shelf width is at least 40 mm plus its declared side clearances"
+    },
+    {
+      "id": "manufacturable-opening-height",
+      "expression": "every shelf opening height is at least 40 mm"
+    },
+    {
+      "id": "manufacturable-base-opening",
+      "when": "base_cabinet_count > 0",
+      "expression": "every base cabinet opening width is at least 200 mm"
+    }
+  ],
+  "family_invariants": {
+    "bookcase": [
+      "base_cabinet_count == 0",
+      "base_cabinet_height_mm == 0",
+      "base_cabinet_depth_mm == 0"
+    ],
+    "wall_library": [
+      "base_cabinet_count is in [1, 17]",
+      "base_cabinet_height_mm is in [300, 2000]",
+      "base_cabinet_height_mm < height_mm - measured_thickness_mm - 200",
+      "base_cabinet_depth_mm == depth_mm"
+    ],
+    "base_depth_state": [
+      "base_cabinet_count == 0 implies base_cabinet_depth_mm == 0",
+      "base_cabinet_count > 0 implies base_cabinet_depth_mm == depth_mm"
+    ]
+  },
+  "representations": {
+    "template_manifest": {
+      "dimension_scale": {
+        "source_unit": "mm",
+        "target_unit": "um",
+        "factor": 1000
+      },
+      "load_per_shelf": {
+        "api_field": "load_per_shelf_kg",
+        "template_field": "shelf_load_n",
+        "template_minimum": 0,
+        "template_maximum": 5000,
+        "note": "The template's 0..5000 N field is the current approximate runtime representation of the 0..500 kg API envelope. It is not a certified load class, a certified conversion, or manufacturing evidence."
+      }
+    }
+  },
+  "safety": {
+    "physical_cutting_authorized": false,
+    "design_review_required": true,
+    "statement": "Constraint parity does not establish material class, hardware, anchoring, joinery, machine, fixture, prototype, load-test, operator, or engineering approval evidence."
+  },
+  "fingerprint": {
+    "algorithm": "sha256",
+    "canonicalization": "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
+    "value": "b529bca5e98a0c434ba34c545173b0e793c4d53015340997de64053e039ea789"
+  }
+}

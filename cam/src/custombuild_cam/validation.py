@@ -18,7 +18,7 @@ from custombuild_manufacturing.model import (
 
 from .model import MoveKind, RemovalEnvelope, ValidationBackplot, ValidationMove
 
-CAM_VALIDATION_VERSION = "cam-validation-1.0.0"
+CAM_VALIDATION_VERSION = "cam-validation-1.1.0"
 CAM_BACKPLOT_VERSION = "validation-backplot-1.0.0"
 
 
@@ -207,7 +207,7 @@ def parse_operations_json(payload: bytes | str) -> dict[str, Any]:
         raise CAMValidationError("invalid UTF-8 operations JSON") from exc
     if not isinstance(value, dict):
         raise CAMValidationError("operations document must be a JSON object")
-    if value.get("schema_version") != "custombuild.operations.v1":
+    if value.get("schema_version") != "custombuild.operations.v2":
         raise CAMValidationError("unsupported operations schema_version")
     if value.get("mode") != "VALIDATION":
         raise CAMValidationError("operations JSON is not validation-only")
@@ -256,11 +256,28 @@ def _validate_operation(operation: CAMOperation, setup: Setup) -> list[str]:
     else:
         if not operation.width_um or not operation.length_um:
             errors.append(f"area operation missing extent: {operation.operation_id}")
-        elif (
-            operation.x_um + operation.width_um > setup.stock_width_um
-            or operation.y_um + operation.length_um > setup.stock_height_um
-        ):
-            errors.append(f"operation envelope outside stock: {operation.operation_id}")
+        envelope = (
+            operation.cutter_envelope_x_um,
+            operation.cutter_envelope_y_um,
+            operation.cutter_envelope_width_um,
+            operation.cutter_envelope_length_um,
+        )
+        if any(value is None for value in envelope):
+            errors.append(f"area operation missing cutter envelope: {operation.operation_id}")
+        else:
+            envelope_x, envelope_y, envelope_width, envelope_length = envelope
+            assert envelope_x is not None
+            assert envelope_y is not None
+            assert envelope_width is not None
+            assert envelope_length is not None
+            if (
+                min(envelope_x, envelope_y, envelope_width, envelope_length) < 0
+                or envelope_width == 0
+                or envelope_length == 0
+                or envelope_x + envelope_width > setup.stock_width_um
+                or envelope_y + envelope_length > setup.stock_height_um
+            ):
+                errors.append(f"operation cutter envelope outside stock: {operation.operation_id}")
     return errors
 
 

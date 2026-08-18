@@ -16,12 +16,14 @@ class RuleStatus(StrEnum):
 
 class ActionType(StrEnum):
     ADD_VERTICAL_DIVIDER = "add_vertical_divider"
+    ALIGN_BASE_CABINETS = "align_base_cabinets"
     ADD_BACK_PANEL = "add_back_panel"
     VERIFY_WALL_ANCHOR = "verify_wall_anchor"
     USE_STRONGER_MATERIAL = "use_stronger_material"
     INCREASE_THICKNESS = "increase_thickness"
     REDUCE_LOAD = "reduce_load"
     VERIFY_HARDWARE_CAPACITY = "verify_hardware_capacity"
+    VERIFY_DRY_JOINING_SYSTEM = "verify_dry_joining_system"
     REGENERATE_JOINT_GEOMETRY = "regenerate_joint_geometry"
 
 
