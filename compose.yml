@@ -13,7 +13,7 @@ x-python-release-build-args: &python-release-build-args
 
 services:
   postgres:
-    image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
     environment:
       APP_ENV: ${APP_ENV:-development}
       POSTGRES_DB: ${POSTGRES_DB:-custombuild}
@@ -25,7 +25,7 @@ services:
       WORKER_DATABASE_PASSWORD: ${WORKER_DATABASE_PASSWORD:-change-me-worker}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./infra/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro
+      - ./infra/postgres/init-roles.sh:/var/lib/postgres/initdb/10-init-roles.sh:ro
       - ./infra/postgres/healthcheck.sh:/usr/local/bin/custombuild-postgres-healthcheck:ro
     healthcheck:
       test: ["CMD", "/bin/sh", "/usr/local/bin/custombuild-postgres-healthcheck"]
@@ -62,7 +62,8 @@ services:
     networks: [backend]
 
   object-storage-init:
-    image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+    user: "0:0"
     command: ["/bin/sh", "-ec", "chown -R 1000:1000 /data"]
     volumes:
       - object-storage-data:/data
@@ -88,6 +89,8 @@ services:
       S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
     volumes:
       - object-storage-data:/data
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     ports:
       - "127.0.0.1:${S3_BIND_PORT:-9000}:8333"
     healthcheck:
@@ -181,9 +184,7 @@ services:
     build:
       context: .
       dockerfile: services/worker/Dockerfile
-      args:
-        <<: *python-release-build-args
-        INSTALL_FREECAD: ${INSTALL_FREECAD:-true}
+      args: *python-release-build-args
     environment:
       HOME: /tmp/custombuild
       APP_ENV: ${APP_ENV:-development}
@@ -224,9 +225,7 @@ services:
     build:
       context: .
       dockerfile: services/worker/Dockerfile
-      args:
-        <<: *python-release-build-args
-        INSTALL_FREECAD: ${INSTALL_FREECAD:-true}
+      args: *python-release-build-args
     command: ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "beat", "--schedule=/tmp/celerybeat-schedule", "--loglevel=WARNING"]
     environment:
       HOME: /tmp/custombuild
@@ -248,7 +247,11 @@ services:
     mem_limit: 512m
     cpus: 0.5
     healthcheck:
-      test: ["CMD-SHELL", "find /tmp -maxdepth 1 -type f -name 'celerybeat-schedule*' -mmin -5 -print -quit | grep -q ."]
+      test:
+        - CMD
+        - /opt/custombuild-venv/bin/python
+        - -c
+        - "import pathlib,time; now=time.time(); assert any(path.is_file() and 0 <= now-path.stat().st_mtime <= 300 for path in pathlib.Path('/tmp').glob('celerybeat-schedule*'))"
       interval: 30s
       timeout: 5s
       retries: 5
@@ -284,7 +287,7 @@ services:
       - /tmp:size=128m,mode=1777
       # Next's image optimizer writes only ephemeral derived images here.
       # Keep the root filesystem read-only while allowing the cache to work.
-      - /app/apps/web/.next/cache:size=128m,uid=1001,gid=1001,mode=0750
+      - /app/apps/web/.next/cache:size=128m,uid=65532,gid=65532,mode=0750
     cap_drop: ["ALL"]
     security_opt:
       - no-new-privileges:true

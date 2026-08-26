@@ -593,8 +593,13 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
   });
 
   await installFullCeilingDraft(page);
-  const response = await page.goto("/", { waitUntil: "domcontentloaded" });
+  // A persisted local draft never overrides an explicit navigation intent.
+  // Request Studio through the public URL contract so this concept-only
+  // wall-library fixture exercises rendering without gaining production
+  // authority from its template id or from local storage.
+  const response = await page.goto("/?mode=studio", { waitUntil: "domcontentloaded" });
   expect(response?.status()).toBe(200);
+  await expect(page).toHaveURL(/\?mode=studio$/);
 
   const model = page.getByLabel("Interaktiv 3D-modell av möbeln");
   const canvas = model.locator("canvas");

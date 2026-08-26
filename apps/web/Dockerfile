@@ -3,14 +3,17 @@
 ARG NODE_VERSION=24.19.0
 ARG PNPM_VERSION=11.7.0
 
-FROM node:${NODE_VERSION}-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS base
+FROM node:24.19.0-trixie-slim@sha256:ab3eebe934147fee049b5eb83c570f68c849a13c930bdfa482de99fcdfa3b3de AS base
 
+ARG NODE_VERSION
 ARG PNPM_VERSION
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:${PATH} \
     NEXT_TELEMETRY_DISABLED=1
 
-RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
+RUN test "${NODE_VERSION}" = "24.19.0" \
+    && corepack enable \
+    && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 WORKDIR /workspace
 
 
@@ -47,7 +50,37 @@ COPY packages/contracts packages/contracts
 RUN mkdir -p apps/web/public && pnpm --dir apps/web build
 
 
-FROM node:${NODE_VERSION}-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS runner
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b AS runtime-base
+
+
+FROM cgr.dev/chainguard/python:latest-dev@sha256:f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd AS runtime-assembler
+
+USER root
+COPY --from=runtime-base / /base-chroot
+RUN apk add --no-cache --no-scripts --root /base-chroot \
+      c-ares=1.34.8-r1 \
+      libbrotlicommon1=1.2.0-r3 \
+      libbrotlidec1=1.2.0-r3 \
+      libbrotlienc1=1.2.0-r3 \
+      libcrypto3=3.6.4-r0 \
+      icu78-data-full=78.3-r2 \
+      libicu78=78.3-r2 \
+      libnghttp2-14=1.70.0-r2 \
+      libssl3=3.6.4-r0 \
+      libuv=1.52.1-r1 \
+      zlib=1.3.2-r4 \
+      nodejs-24-minimal=24.19.0-r0 \
+    && ldconfig -r /base-chroot \
+    && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
+      /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
+    && test "$(wc -l < /tmp/runtime-package-closure)" = "19" \
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "c1dd3f34a4e609705a82320975cb9bbac035fd9969f592d52fe58158689d4b4c" \
+    && PATH=/usr/bin:/usr/sbin:/sbin:/bin \
+      chroot /base-chroot /usr/bin/node -e \
+      "const fs = require('node:fs'); if (process.version !== 'v24.19.0') process.exit(1); for (const path of ['/usr/local/bin/node', '/usr/bin/npm', '/usr/bin/pnpm', '/usr/bin/corepack']) if (fs.existsSync(path)) process.exit(1)"
+
+
+FROM runtime-base AS runner
 
 ARG APP_VERSION=0.1.0-local
 ARG VCS_REF=uncommitted
@@ -55,7 +88,6 @@ ARG BUILD_DATE=unknown
 ARG SOURCE_URL=unknown
 ARG SOURCE_MANIFEST_SHA256=unknown
 ARG FRONTEND_LOCK_SHA256=unknown
-ARG DEBIAN_SNAPSHOT=20260825T000000Z
 LABEL org.opencontainers.image.title="Custombuild Web" \
       org.opencontainers.image.description="Swedish parametric furniture production workspace" \
       org.opencontainers.image.version="${APP_VERSION}" \
@@ -77,41 +109,18 @@ ENV NODE_ENV=production \
     HOSTNAME=0.0.0.0 \
     PORT=3000
 
-RUN printf '%s\n' \
-      'Types: deb' \
-      "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
-      'Suites: bookworm bookworm-updates' \
-      'Components: main' \
-      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
-      '' \
-      'Types: deb' \
-      "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
-      'Suites: bookworm-security' \
-      'Components: main' \
-      'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
-      > /etc/apt/sources.list.d/debian.sources && \
-    printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot && \
-    apt-get update && \
-    apt-get upgrade --yes && \
-    apt-get install --yes --no-install-recommends dumb-init && \
-    rm -rf /var/lib/apt/lists/* && \
-    rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack && \
-    rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
-      /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg && \
-    groupadd --system --gid 1001 nodejs && \
-    useradd --system --uid 1001 --gid nodejs --home-dir /app nextjs
-
 WORKDIR /app
 
-COPY --from=builder --chown=nextjs:nodejs /workspace/apps/web/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /workspace/apps/web/.next/static ./apps/web/.next/static
-COPY --from=builder --chown=nextjs:nodejs /workspace/apps/web/public ./apps/web/public
+COPY --link --from=runtime-assembler /base-chroot /
+COPY --from=builder --chown=65532:65532 /workspace/apps/web/.next/standalone ./
+COPY --from=builder --chown=65532:65532 /workspace/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder --chown=65532:65532 /workspace/apps/web/public ./apps/web/public
 
-USER nextjs
+USER 65532:65532
 EXPOSE 3000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:' + process.env.PORT + '/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+  CMD ["/usr/bin/node", "-e", "fetch('http://127.0.0.1:' + process.env.PORT + '/').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
 
-ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "apps/web/server.js"]
+ENTRYPOINT ["/usr/bin/node"]
+CMD ["apps/web/server.js"]

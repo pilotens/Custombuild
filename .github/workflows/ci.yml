@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -238,7 +238,9 @@ jobs:
       - name: Verify source freeze before Compose build
         run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
       - name: Build and start complete Compose stack
-        run: docker compose --file compose.yml up --build --detach
+        run: >-
+          docker compose --file compose.yml up --build --detach
+          --wait --wait-timeout 900
       - name: Live design-review and blocked CAM/release acceptance
         run: >-
           python3 scripts/live_acceptance.py

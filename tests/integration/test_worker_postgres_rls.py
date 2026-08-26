@@ -76,6 +76,11 @@ def test_worker_role_is_rls_scoped_and_schedulers_process_two_tenants(
                         email=f"worker-rls-b-{suffix}@example.test",
                         name="Worker RLS user B",
                     ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
                     Project(
                         id=project_a,
                         organization_id=organization_a,
@@ -86,6 +91,11 @@ def test_worker_role_is_rls_scoped_and_schedulers_process_two_tenants(
                         organization_id=organization_b,
                         name="Worker RLS project B",
                     ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
                     DesignVersion(
                         id=version_a,
                         organization_id=organization_a,
@@ -122,6 +132,11 @@ def test_worker_role_is_rls_scoped_and_schedulers_process_two_tenants(
                         rule_version="test-rules",
                         created_by=user_b,
                     ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
                     GenerationJob(
                         id=job_a,
                         organization_id=organization_a,
@@ -144,6 +159,11 @@ def test_worker_role_is_rls_scoped_and_schedulers_process_two_tenants(
                         request_json={},
                         attempts=0,
                     ),
+                ]
+            )
+            session.flush()
+            session.add_all(
+                [
                     OutboxEvent(
                         organization_id=organization_a,
                         event_key=f"worker-rls-valid-a-{suffix}",

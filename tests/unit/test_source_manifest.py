@@ -189,6 +189,7 @@ def test_manifest_rejects_the_retired_duplicate_prod_source(tmp_path: Path) -> N
         "compose.external-production.yml",
         "infra/postgres/init-roles.sh",
         "infra/seaweedfs/Dockerfile",
+        "infra/seaweedfs/security-overrides.sum",
         ".github/workflows/prod-ci.yml",
         ".grype.yaml",
         "security/vulnerability-exceptions.json",

@@ -1611,16 +1611,28 @@ def supply_chain_issues(repo: Path) -> list[str]:
     if seaweed_dockerfile.is_file():
         seaweed_source = seaweed_dockerfile.read_text(encoding="utf-8")
         required_seaweed_contract = (
-            "golang:1.25.14-alpine3.24@sha256:",
+            (
+                "golang:1.26.6-alpine3.24@sha256:"
+                "3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83"
+            ),
             "ENV GOTOOLCHAIN=local",
             (
                 "ADD --checksum=sha256:"
                 "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
             ),
             "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd",
+            "1a96843ba71c16cee5c7e396a3082ab3ae0327ab429956db51d0d1b07f6508e5",
+            "go.etcd.io/etcd/client/pkg/v3@v3.6.14",
+            "golang.org/x/image@v0.45.0",
+            "golang.org/x/text@v0.41.0",
             "-mod=readonly",
             "FROM scratch AS runtime",
-            'io.custombuild.go.version="1.25.14"',
+            'io.custombuild.security-overrides.sha256="${SEAWEEDFS_SECURITY_OVERRIDES_SHA256}"',
+            'io.custombuild.go.version="1.26.6"',
+            'io.custombuild.go-etcd-client-pkg.version="3.6.14"',
+            'io.custombuild.go-x-image.version="0.45.0"',
+            'io.custombuild.go-x-text.version="0.41.0"',
+            "ENV TMPDIR=/tmp",
         )
         if any(value not in seaweed_source for value in required_seaweed_contract):
             issues.append("infra/seaweedfs/Dockerfile is not reproducibly source-bound")

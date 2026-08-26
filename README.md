@@ -128,9 +128,10 @@ non-PostgreSQL database. The supplied `.env.example` is development-only.
    the individual operations, setup sheet and validation backplot evidence. If a
    fail-closed CAM prerequisite is missing, the downloadable design-review package
    identifies that blocker and deliberately omits every CAM, nesting and controller
-   artifact. An optional checkbox also creates a checksum-linked,
-   non-authoritative FCStd review derivative when the worker was built with
-   `INSTALL_FREECAD=true`.
+   artifact. An optional API flag can also create a checksum-linked,
+   non-authoritative FCStd review derivative when a separately reviewed worker
+   runtime provides a compatible headless FreeCAD executable. The supplied web
+   client leaves that flag disabled.
    `STOCK_PROFILE_MISSING` preserves the requested blank requirements and selected
    production context; it never invents or applies replacement sheet dimensions or
    a machine profile. Directional sheet material without an exact structured X/Y

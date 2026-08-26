@@ -29,13 +29,13 @@ try:
 except ModuleNotFoundError:  # Direct script execution.
     from source_manifest import build_source_manifest  # type: ignore[import-not-found,no-redef]
 
-ALPINE_IMAGE = (
-    "alpine:3.24.1@sha256:"
-    "28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
+VOLUME_INIT_IMAGE = (
+    "cgr.dev/chainguard/busybox:latest@sha256:"
+    "928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
 )
 POSTGRES_IMAGE = (
-    "postgres:17.11-alpine3.24@sha256:"
-    "18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
+    "cgr.dev/chainguard/postgres:latest@sha256:"
+    "3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
 )
 SEAWEEDFS_IMAGE = "custombuild-seaweedfs:uncommitted"
 SEAWEEDFS_IMAGE_PATTERN = re.compile(
@@ -514,9 +514,7 @@ def _verify_object_store(value: Any) -> None:
         if not isinstance(content_type, str) or not content_type:
             raise BackupError(f"Backup manifest contains an invalid media type for {key!r}")
         if not isinstance(metadata, dict) or not all(
-            isinstance(name, str)
-            and name
-            and isinstance(metadata_value, str)
+            isinstance(name, str) and name and isinstance(metadata_value, str)
             for name, metadata_value in metadata.items()
         ):
             raise BackupError(f"Backup manifest contains invalid metadata for {key!r}")
@@ -585,9 +583,8 @@ def verify_manifest(directory: Path) -> dict[str, Any]:
     source_manifest_sha256 = manifest.get("source_manifest_sha256")
     if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{40}", revision):
         raise BackupError("Backup manifest has no exact Git revision")
-    if (
-        not isinstance(source_manifest_sha256, str)
-        or not SHA256_PATTERN.fullmatch(source_manifest_sha256)
+    if not isinstance(source_manifest_sha256, str) or not SHA256_PATTERN.fullmatch(
+        source_manifest_sha256
     ):
         raise BackupError("Backup manifest has no exact source manifest SHA-256")
     return manifest
@@ -681,9 +678,11 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
                     docker,
                     "run",
                     "--rm",
+                    "--user",
+                    "0:0",
                     "--mount",
                     f"type=volume,source={object_volume},target=/source,readonly",
-                    ALPINE_IMAGE,
+                    VOLUME_INIT_IMAGE,
                     "tar",
                     "-C",
                     "/source",

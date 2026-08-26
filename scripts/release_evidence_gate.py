@@ -10,6 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, unquote, urlsplit
 
 try:
     from scripts.compose_backup import MANIFEST_SCHEMA, BackupError, verify_manifest
@@ -24,12 +25,103 @@ except ModuleNotFoundError:  # Direct ``python scripts/release_evidence_gate.py`
 
 STATIC_SCHEMA = "custombuild.release-readiness-static.v2"
 RESTORE_SCHEMA = "custombuild.restore-drill.v3"
-RUNTIME_SCHEMA = "custombuild.runtime-release-evidence.v1"
+RUNTIME_SCHEMA = "custombuild.runtime-release-evidence.v3"
 FINAL_SCHEMA = "custombuild.release-readiness-evidence.v1"
-REQUIRED_IMAGES = frozenset({"api", "worker", "web", "seaweedfs", "postgres", "redis", "alpine"})
+REQUIRED_IMAGES = frozenset(
+    {"api", "worker", "web", "seaweedfs", "postgres", "redis", "volume-init"}
+)
+REQUIRED_NATIVE_PACKAGES = {
+    "api": frozenset(
+        {
+            ("python-3.13", "3.13.15-r2"),
+            ("python-3.13-base", "3.13.15-r2"),
+        }
+    ),
+    "worker": frozenset(
+        {
+            ("ca-certificates-bundle", "20260611-r0"),
+            ("glibc-2.44-locale-posix", "2.44-r1"),
+            ("glibc-2.44", "2.44-r1"),
+            ("ld-linux-2.44", "2.44-r1"),
+            ("libgcc", "16.2.0-r0"),
+            ("libstdc++", "16.2.0-r0"),
+            ("wolfi-baselayout", "20230201-r29"),
+            ("py3-pip-wheel", "26.2.1-r0"),
+            ("libbz2-1", "1.0.8-r23"),
+            ("libcrypto3", "3.6.4-r0"),
+            ("libexpat1", "2.8.3-r0"),
+            ("libffi", "3.8.0-r0"),
+            ("gdbm", "1.26-r5"),
+            ("xz", "5.8.3-r2"),
+            ("mpdecimal", "4.0.1-r3"),
+            ("ncurses-terminfo-base", "6.6.20260822-r0"),
+            ("ncurses", "6.6.20260822-r0"),
+            ("readline", "8.3-r2"),
+            ("sqlite-libs", "3.53.4-r0"),
+            ("libssl3", "3.6.4-r0"),
+            ("libuuid", "2.42.2-r3"),
+            ("zlib", "1.3.2-r4"),
+            ("python-3.13", "3.13.15-r2"),
+            ("python-3.13-base", "3.13.15-r2"),
+            ("mesa-gl", "26.2.1-r0"),
+            ("libx11", "1.8.13-r5"),
+            ("libxau", "1.0.12-r7"),
+            ("libxdmcp", "1.1.5-r9"),
+            ("libbsd", "0.12.2-r7"),
+            ("libmd", "1.2.0-r2"),
+            ("libgomp", "16.2.0-r1"),
+            ("libxcb", "1.17.0-r15"),
+            ("libglvnd", "1.7.0-r10"),
+            ("libxml2", "2.15.0-r0"),
+            ("libLLVM-22", "22.1.8-r2"),
+            ("libpciaccess", "0.19-r2"),
+            ("libdrm", "2.4.134-r0"),
+            ("libzstd1", "1.5.7-r8"),
+            ("libelf", "0.195-r2"),
+            ("libxshmfence", "1.3.3-r2"),
+            ("mesa-libgallium", "26.2.1-r0"),
+            ("mesa-gbm", "26.2.1-r0"),
+            ("libudev", "261.2-r1"),
+            ("wayland-libs-client", "1.26.0-r0"),
+            ("wayland-protocols", "1.49-r0"),
+            ("mesa", "26.2.1-r0"),
+            ("libxext", "1.3.7-r0"),
+            ("libxxf86vm", "1.1.7-r2"),
+            ("mesa-glx", "26.2.1-r0"),
+        }
+    ),
+    "web": frozenset({("nodejs-24-minimal", "24.19.0-r0")}),
+}
+BUILT_IMAGE_NAMES = {
+    "api": "custombuild-api",
+    "worker": "custombuild-worker",
+    "web": "custombuild-web",
+    "seaweedfs": "custombuild-seaweedfs",
+}
+EXTERNAL_IMAGE_REFERENCES = {
+    "postgres": (
+        "cgr.dev/chainguard/postgres:latest@"
+        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+    ),
+    "redis": (
+        "redis:7.2.15-alpine@"
+        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
+    ),
+    "volume-init": (
+        "cgr.dev/chainguard/busybox:latest@"
+        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+    ),
+}
+EXTERNAL_SCAN_INPUTS = {
+    "postgres": "cgr.dev/chainguard/postgres:latest",
+    "redis": "redis:7.2.15-alpine",
+    "volume-init": "cgr.dev/chainguard/busybox:latest",
+}
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
 IMAGE_ID = re.compile(r"^sha256:[a-f0-9]{64}$")
 REVISION = re.compile(r"^[a-f0-9]{40}$")
+SYFT_CREATOR = re.compile(r"^Tool: syft-[^\s]+$")
+GRYPE_VERSION = "0.110.0"
 
 
 class EvidenceError(RuntimeError):
@@ -82,16 +174,26 @@ def _assert_clean_repository(repo: Path) -> None:
         raise EvidenceError("repository changed after static release controls were captured")
 
 
+def _expected_image_reference(component: str, revision: str) -> str:
+    if component in BUILT_IMAGE_NAMES:
+        return f"{BUILT_IMAGE_NAMES[component]}:{revision}"
+    return EXTERNAL_IMAGE_REFERENCES[component]
+
+
+def _expected_scan_input(component: str, revision: str) -> str:
+    if component in BUILT_IMAGE_NAMES:
+        return f"{BUILT_IMAGE_NAMES[component]}:{revision}"
+    return EXTERNAL_SCAN_INPUTS[component]
+
+
 def _verify_sboms(
     directory: Path,
     images: list[dict[str, Any]],
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     expected_names = {f"sbom-{component}.spdx.json" for component in REQUIRED_IMAGES}
     try:
         candidates = {
-            path.name: path
-            for path in directory.iterdir()
-            if path.name.startswith("sbom-")
+            path.name: path for path in directory.iterdir() if path.name.startswith("sbom-")
         }
     except OSError as exc:
         raise EvidenceError("runtime SBOM directory is missing or unreadable") from exc
@@ -99,6 +201,7 @@ def _verify_sboms(
         raise EvidenceError("runtime SBOM directory does not contain the exact required set")
     runtime_by_component = {str(item["component"]): item for item in images}
     digests: dict[str, str] = {}
+    identities: dict[str, dict[str, Any]] = {}
     for component in sorted(REQUIRED_IMAGES):
         path = candidates[f"sbom-{component}.spdx.json"]
         if path.is_symlink() or not path.is_file():
@@ -114,9 +217,219 @@ def _verify_sboms(
             or document.get("SPDXID") != "SPDXRef-DOCUMENT"
         ):
             raise EvidenceError(f"runtime SBOM {component} is not an SPDX JSON document")
+        creation_info = document.get("creationInfo")
+        creators = creation_info.get("creators") if isinstance(creation_info, dict) else None
+        if (
+            not isinstance(creators, list)
+            or not creators
+            or not all(isinstance(creator, str) for creator in creators)
+            or not any(SYFT_CREATOR.fullmatch(creator) for creator in creators)
+        ):
+            raise EvidenceError(f"runtime SBOM {component} has no exact Syft creator")
+        packages = document.get("packages")
+        if not isinstance(packages, list) or not packages:
+            raise EvidenceError(f"runtime SBOM {component} has no packages")
+        package_versions: set[tuple[str, str]] = set()
+        package_identities: dict[str, tuple[str, str]] = {}
+        for package in packages:
+            if not isinstance(package, dict):
+                raise EvidenceError(f"runtime SBOM {component} has an invalid package")
+            name = package.get("name")
+            version = package.get("versionInfo")
+            if not isinstance(name, str) or not name:
+                raise EvidenceError(f"runtime SBOM {component} has an unnamed package")
+            spdx_id = package.get("SPDXID")
+            if not isinstance(spdx_id, str) or not spdx_id.startswith("SPDXRef-"):
+                raise EvidenceError(f"runtime SBOM {component} has a package without an SPDX ID")
+            if spdx_id in package_identities:
+                raise EvidenceError(f"runtime SBOM {component} has a duplicate package SPDX ID")
+            package_identities[spdx_id] = (name, version if isinstance(version, str) else "")
+            if isinstance(version, str) and version:
+                package_versions.add((name, version))
+        required_packages = REQUIRED_NATIVE_PACKAGES.get(component, frozenset())
+        if not required_packages.issubset(package_versions):
+            raise EvidenceError(
+                f"runtime SBOM {component} does not contain its exact native runtime closure"
+            )
+        required_package_names = {name for name, _version in required_packages}
+        if component in {"api", "worker"} and any(
+            name.startswith("python-3.") and name not in required_package_names
+            for name, _version in package_versions
+        ):
+            raise EvidenceError(f"runtime SBOM {component} contains another Python runtime")
+        if component == "web" and any(
+            name.startswith("nodejs-") and (name, version) not in required_packages
+            for name, version in package_versions
+        ):
+            raise EvidenceError("runtime SBOM web contains another Node.js runtime")
+        relationships = document.get("relationships")
+        if not isinstance(relationships, list):
+            raise EvidenceError(f"runtime SBOM {component} has no relationship graph")
+        described_roots = [
+            relationship.get("relatedSpdxElement")
+            for relationship in relationships
+            if isinstance(relationship, dict)
+            and relationship.get("spdxElementId") == "SPDXRef-DOCUMENT"
+            and relationship.get("relationshipType") == "DESCRIBES"
+        ]
+        if (
+            len(described_roots) != 1
+            or not isinstance(described_roots[0], str)
+            or described_roots[0] not in package_identities
+        ):
+            raise EvidenceError(f"runtime SBOM {component} has no exact described image root")
+        root_spdx_id = described_roots[0]
+        root = next(package for package in packages if package.get("SPDXID") == root_spdx_id)
+        if root.get("primaryPackagePurpose") != "CONTAINER":
+            raise EvidenceError(f"runtime SBOM {component} root is not a container")
+        expected_input = str(runtime_by_component[component]["scan_input"])
+        expected_name, expected_tag = expected_input.rsplit(":", 1)
+        expected_name = expected_name.rsplit("/", 1)[-1]
+        if root.get("name") != expected_name or root.get("versionInfo") != expected_tag:
+            raise EvidenceError(f"runtime SBOM {component} has another image root identity")
+        checksums = root.get("checksums")
+        sha256_checksums = (
+            [
+                checksum.get("checksumValue")
+                for checksum in checksums
+                if isinstance(checksum, dict) and checksum.get("algorithm") == "SHA256"
+            ]
+            if isinstance(checksums, list)
+            else []
+        )
+        if (
+            len(sha256_checksums) != 1
+            or not isinstance(sha256_checksums[0], str)
+            or not SHA256.fullmatch(sha256_checksums[0])
+        ):
+            raise EvidenceError(f"runtime SBOM {component} has no exact image manifest checksum")
+        manifest_digest = f"sha256:{sha256_checksums[0]}"
+        external_refs = root.get("externalRefs")
+        oci_purls = (
+            [
+                reference.get("referenceLocator")
+                for reference in external_refs
+                if isinstance(reference, dict)
+                and reference.get("referenceCategory") == "PACKAGE-MANAGER"
+                and reference.get("referenceType") == "purl"
+                and isinstance(reference.get("referenceLocator"), str)
+                and str(reference["referenceLocator"]).startswith("pkg:oci/")
+            ]
+            if isinstance(external_refs, list)
+            else []
+        )
+        if len(oci_purls) != 1:
+            raise EvidenceError(f"runtime SBOM {component} has no exact OCI identity")
+        decoded_purl = unquote(str(oci_purls[0]))
+        parsed_purl = urlsplit(decoded_purl)
+        purl_tags = parse_qs(parsed_purl.query, strict_parsing=False).get("tag")
+        if (
+            parsed_purl.scheme != "pkg"
+            or parsed_purl.path != f"oci/{expected_name}@{manifest_digest}"
+            or purl_tags != [expected_tag]
+        ):
+            raise EvidenceError(f"runtime SBOM {component} OCI identity differs from its root")
+        if runtime_by_component[component].get("manifest_digest") != manifest_digest:
+            raise EvidenceError(f"runtime SBOM {component} manifest differs from runtime evidence")
         digest = hashlib.sha256(payload).hexdigest()
         if runtime_by_component[component].get("sbom_sha256") != digest:
             raise EvidenceError(f"runtime SBOM {component} differs from runtime evidence")
+        digests[component] = digest
+        identities[component] = {
+            "scan_image_id": root_spdx_id.removeprefix("SPDXRef-"),
+            "manifest_digest": manifest_digest,
+            "scan_input": expected_input,
+            "packages": package_identities,
+        }
+    return digests, identities
+
+
+def _verify_scans(
+    directory: Path,
+    images: list[dict[str, Any]],
+    sbom_identities: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    expected_names = {f"scan-{component}.json" for component in REQUIRED_IMAGES}
+    try:
+        candidates = {
+            path.name: path for path in directory.iterdir() if path.name.startswith("scan-")
+        }
+    except OSError as exc:
+        raise EvidenceError("runtime scan directory is missing or unreadable") from exc
+    if set(candidates) != expected_names:
+        raise EvidenceError("runtime scan directory does not contain the exact required set")
+    runtime_by_component = {str(item["component"]): item for item in images}
+    digests: dict[str, str] = {}
+    for component in sorted(REQUIRED_IMAGES):
+        path = candidates[f"scan-{component}.json"]
+        if path.is_symlink() or not path.is_file():
+            raise EvidenceError(f"runtime scan {component} is not a regular file")
+        try:
+            payload = path.read_bytes()
+            document = json.loads(payload)
+        except (OSError, json.JSONDecodeError) as exc:
+            raise EvidenceError(f"runtime scan {component} is missing or invalid JSON") from exc
+        if not isinstance(document, dict):
+            raise EvidenceError(f"runtime scan {component} must be a JSON object")
+        descriptor = document.get("descriptor")
+        configuration = descriptor.get("configuration") if isinstance(descriptor, dict) else None
+        database = descriptor.get("db") if isinstance(descriptor, dict) else None
+        database_status = database.get("status") if isinstance(database, dict) else None
+        if (
+            not isinstance(descriptor, dict)
+            or descriptor.get("name") != "grype"
+            or descriptor.get("version") != GRYPE_VERSION
+            or not isinstance(configuration, dict)
+            or configuration.get("fail-on-severity") != "high"
+            or configuration.get("output") != ["json"]
+            or not isinstance(database_status, dict)
+            or database_status.get("valid") is not True
+        ):
+            raise EvidenceError(f"runtime scan {component} has no valid pinned Grype proof")
+        source = document.get("source")
+        target = source.get("target") if isinstance(source, dict) else None
+        sbom_identity = sbom_identities[component]
+        if (
+            not isinstance(source, dict)
+            or source.get("type") != "image"
+            or not isinstance(target, dict)
+            or target.get("userInput") != sbom_identity["scan_input"]
+            or target.get("imageID") != sbom_identity["scan_image_id"]
+            or target.get("manifestDigest") != sbom_identity["manifest_digest"]
+        ):
+            raise EvidenceError(f"runtime scan {component} is not bound to its exact SBOM target")
+        matches = document.get("matches")
+        if not isinstance(matches, list):
+            raise EvidenceError(f"runtime scan {component} has no valid match list")
+        for match in matches:
+            vulnerability = match.get("vulnerability") if isinstance(match, dict) else None
+            severity = vulnerability.get("severity") if isinstance(vulnerability, dict) else None
+            if not isinstance(severity, str) or not severity:
+                raise EvidenceError(f"runtime scan {component} has an invalid vulnerability")
+            if severity.casefold() in {"high", "critical"}:
+                raise EvidenceError(
+                    f"runtime scan {component} contains a High or Critical vulnerability"
+                )
+            artifact = match.get("artifact") if isinstance(match, dict) else None
+            artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
+            sbom_package = (
+                sbom_identity["packages"].get(f"SPDXRef-{artifact_id}")
+                if isinstance(artifact_id, str)
+                else None
+            )
+            if not isinstance(artifact, dict) or sbom_package != (
+                artifact.get("name"),
+                artifact.get("version"),
+            ):
+                raise EvidenceError(f"runtime scan {component} contains a match from another SBOM")
+        ignored_matches = document.get("ignoredMatches")
+        if ignored_matches is not None and not isinstance(ignored_matches, list):
+            raise EvidenceError(f"runtime scan {component} has invalid ignored matches")
+        if isinstance(ignored_matches, list) and ignored_matches:
+            raise EvidenceError(f"runtime scan {component} contains ignored vulnerabilities")
+        digest = hashlib.sha256(payload).hexdigest()
+        if runtime_by_component[component].get("scan_sha256") != digest:
+            raise EvidenceError(f"runtime scan {component} differs from runtime evidence")
         digests[component] = digest
     return digests
 
@@ -174,8 +487,7 @@ def build_final_report(
         or restore.get("object_store_image_id") != object_store.get("image_id")
         or restore.get("object_store_bucket") != object_store.get("bucket")
         or restore.get("object_store_object_count") != object_store.get("object_count")
-        or restore.get("object_store_total_size_bytes")
-        != object_store.get("total_size_bytes")
+        or restore.get("object_store_total_size_bytes") != object_store.get("total_size_bytes")
         or restore.get("database_snapshot") != backup.get("database_snapshot")
     ):
         raise EvidenceError("restore evidence differs from the coordinated backup identity")
@@ -235,12 +547,25 @@ def build_final_report(
             raise EvidenceError("runtime image evidence contains an invalid entry")
         component = item.get("component")
         image_id = item.get("image_id")
+        image_reference = item.get("image_reference")
+        manifest_digest = item.get("manifest_digest")
+        scan_input = item.get("scan_input")
         scan_sha256 = item.get("scan_sha256")
         sbom_sha256 = item.get("sbom_sha256")
-        if not isinstance(component, str) or component in components:
+        if (
+            not isinstance(component, str)
+            or component not in REQUIRED_IMAGES
+            or component in components
+        ):
             raise EvidenceError("runtime image evidence has a duplicate component")
         if not isinstance(image_id, str) or not IMAGE_ID.fullmatch(image_id):
             raise EvidenceError(f"runtime image {component} has no exact image ID")
+        if image_reference != _expected_image_reference(component, revision):
+            raise EvidenceError(f"runtime image {component} has another image reference")
+        if scan_input != _expected_scan_input(component, revision):
+            raise EvidenceError(f"runtime image {component} has another scan input")
+        if not isinstance(manifest_digest, str) or not IMAGE_ID.fullmatch(manifest_digest):
+            raise EvidenceError(f"runtime image {component} has no exact manifest digest")
         if not isinstance(scan_sha256, str) or not SHA256.fullmatch(scan_sha256):
             raise EvidenceError(f"runtime image {component} has no scan digest")
         if not isinstance(sbom_sha256, str) or not SHA256.fullmatch(sbom_sha256):
@@ -250,7 +575,8 @@ def build_final_report(
         components.add(component)
     if components != REQUIRED_IMAGES:
         raise EvidenceError("runtime evidence does not cover the exact required image set")
-    sbom_sha256 = _verify_sboms(sbom_directory, images)
+    sbom_sha256, sbom_identities = _verify_sboms(sbom_directory, images)
+    scan_sha256 = _verify_scans(sbom_directory, images, sbom_identities)
     seaweed = next(item for item in images if item.get("component") == "seaweedfs")
     if seaweed.get("image_id") != object_store.get("image_id"):
         raise EvidenceError("scanned SeaweedFS image differs from backup and restore")
@@ -270,7 +596,20 @@ def build_final_report(
             str(item["component"]): str(item["image_id"])
             for item in sorted(images, key=lambda entry: str(entry["component"]))
         },
+        "runtime_image_references": {
+            str(item["component"]): str(item["image_reference"])
+            for item in sorted(images, key=lambda entry: str(entry["component"]))
+        },
+        "runtime_scan_inputs": {
+            str(item["component"]): str(item["scan_input"])
+            for item in sorted(images, key=lambda entry: str(entry["component"]))
+        },
         "runtime_sbom_sha256": sbom_sha256,
+        "runtime_scan_sha256": scan_sha256,
+        "runtime_manifest_digests": {
+            component: str(identity["manifest_digest"])
+            for component, identity in sorted(sbom_identities.items())
+        },
     }
 
 

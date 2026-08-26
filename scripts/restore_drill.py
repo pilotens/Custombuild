@@ -17,16 +17,16 @@ from alembic.script import ScriptDirectory
 
 try:
     from scripts.compose_backup import (
-        ALPINE_IMAGE,
         POSTGRES_IMAGE,
+        VOLUME_INIT_IMAGE,
         BackupError,
         inventory_s3,
         verify_manifest,
     )
 except ModuleNotFoundError:
     from compose_backup import (  # type: ignore[import-not-found,no-redef]  # noqa: I001
-        ALPINE_IMAGE,
         POSTGRES_IMAGE,
+        VOLUME_INIT_IMAGE,
         BackupError,
         inventory_s3,
         verify_manifest,
@@ -378,22 +378,26 @@ SELECT organization_id FROM projects
 WHERE organization_id <> 'ffffffff-ffff-ffff-ffff-ffffffffffff'
 ORDER BY id LIMIT 1;
 """
-    original_tenant = docker(
-        "exec",
-        container,
-        "psql",
-        "-U",
-        "postgres",
-        "-d",
-        "custombuild",
-        "--tuples-only",
-        "--no-align",
-        "-v",
-        "ON_ERROR_STOP=1",
-        "-c",
-        setup_query,
-        capture=True,
-    ).splitlines()[-1].strip()
+    original_tenant = (
+        docker(
+            "exec",
+            container,
+            "psql",
+            "-U",
+            "postgres",
+            "-d",
+            "custombuild",
+            "--tuples-only",
+            "--no-align",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            setup_query,
+            capture=True,
+        )
+        .splitlines()[-1]
+        .strip()
+    )
     if not original_tenant:
         raise BackupError("Restore drill could not select a tenant for the RLS probe")
 
@@ -653,11 +657,13 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             "--name",
             extract_container,
             "--rm",
+            "--user",
+            "0:0",
             "--mount",
             f"type=bind,source={backup},target=/backup,readonly",
             "--mount",
             f"type=volume,source={object_volume},target=/restore",
-            ALPINE_IMAGE,
+            VOLUME_INIT_IMAGE,
             "tar",
             "-C",
             "/restore",

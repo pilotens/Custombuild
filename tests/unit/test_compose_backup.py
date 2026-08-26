@@ -6,11 +6,13 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+import yaml
 
 from scripts import compose_backup
 from scripts.compose_backup import (
-    ALPINE_IMAGE,
+    POSTGRES_IMAGE,
     SEAWEEDFS_IMAGE,
+    VOLUME_INIT_IMAGE,
     BackupError,
     build_manifest,
     create_backup,
@@ -28,6 +30,19 @@ OBJECT_ENTRY = {
 IMAGE_ID = "sha256:" + "1" * 64
 SOURCE_MANIFEST_SHA256 = "2" * 64
 GIT_REVISION = "3" * 40
+
+
+def test_backup_runtime_images_match_the_compose_volume_contract() -> None:
+    compose = yaml.safe_load(Path("compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+
+    assert services["postgres"]["image"] == POSTGRES_IMAGE
+    assert (
+        "./infra/postgres/init-roles.sh:/var/lib/postgres/initdb/10-init-roles.sh:ro"
+        in services["postgres"]["volumes"]
+    )
+    assert services["object-storage-init"]["image"] == VOLUME_INIT_IMAGE
+    assert services["object-storage-init"]["user"] == "0:0"
 
 
 def identity_capture(command: list[str], **_kwargs: object) -> str:
@@ -390,7 +405,12 @@ def test_backup_quiesces_storage_and_restores_writers(
     )
     assert stop_command in commands
     assert any(command.endswith("pause scheduler") for command in commands)
-    archive_index = next(index for index, command in enumerate(calls) if ALPINE_IMAGE in command)
+    archive_index = next(
+        index for index, command in enumerate(calls) if VOLUME_INIT_IMAGE in command
+    )
+    archive_command = calls[archive_index]
+    user_index = archive_command.index("--user")
+    assert archive_command[user_index + 1] == "0:0"
     restart_index = next(
         index for index, command in enumerate(commands) if command.endswith("start object-storage")
     )
@@ -408,7 +428,7 @@ def test_backup_quiesces_storage_and_restores_writers(
     payload_budgets = [
         timeout
         for command, timeout, _operation in call_metadata
-        if "pg_dump" in command or ALPINE_IMAGE in command
+        if "pg_dump" in command or VOLUME_INIT_IMAGE in command
     ]
     recovery_budgets = [
         timeout
@@ -560,7 +580,7 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     ) -> None:
         del cwd
         calls.append((command, timeout_seconds, operation))
-        if ALPINE_IMAGE in command:
+        if VOLUME_INIT_IMAGE in command:
             raise BackupError(
                 f"{operation} timed out after {timeout_seconds} seconds; retry safely"
             )
@@ -599,7 +619,7 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
         index for index, command in enumerate(commands) if command.endswith("unpause worker")
     )
     assert restart_index < unpause_index
-    archive = next(item for item in calls if ALPINE_IMAGE in item[0])
+    archive = next(item for item in calls if VOLUME_INIT_IMAGE in item[0])
     assert archive[1:] == (
         compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS,
         "Object-storage archive",

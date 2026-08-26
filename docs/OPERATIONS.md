@@ -56,6 +56,14 @@ scheduling, encryption, off-site replication or alert delivery.
 
 ## Restore
 
+The digest-pinned database runtime is PostgreSQL 18. Never attach it to a
+PostgreSQL 17 data volume. For an upgrade, freeze the PostgreSQL 17 deployment
+and create its logical custom-format backup before changing the image. Restore
+that backup into a fresh PostgreSQL 18 volume, where indexes and collation data
+are rebuilt by the logical restore, then require the complete restore drill and
+tenant acceptance probes before traffic resumes. Keep the old volume read-only
+until the new recovery point has been independently accepted.
+
 1. Stop API and workers.
 2. Restore PostgreSQL into an isolated environment.
 3. Restore the matching object-store snapshot.
@@ -215,18 +223,14 @@ artifacts. A locked review package must still be treated as validation-only unde
 ## Optional FreeCAD worker
 
 FreeCAD is not required for the authoritative CadQuery/OpenCascade production path.
-To let reviewers request a native, non-authoritative `.FCStd` derivative, build the
-worker with the optional runtime and recreate that service:
+The hardened supplied worker deliberately excludes FreeCAD's operating-system package
+graph. If a reviewer requests an FCStd derivative on that runtime, the generation job
+fails closed with an actionable dependency error.
 
-```bash
-INSTALL_FREECAD=true docker compose build worker
-INSTALL_FREECAD=true docker compose up -d worker
-```
-
-The supplied Compose stack enables it by default. Set `INSTALL_FREECAD=false` for
-smaller workers that do not offer FCStd export. If a
-reviewer requests FreeCAD on such a worker, the generation job deliberately fails with
-an actionable dependency error. A successful request must expose `design_fcstd` and a
+An organization that needs native, non-authoritative `.FCStd` derivatives must build
+and vulnerability-scan a separate worker variant that provides a compatible headless
+FreeCAD executable, then promote that exact image through the same SBOM and release
+evidence gates. A successful request must expose `design_fcstd` and a
 `validation/cad-interchange-status.json` document whose status is `GENERATED`; CAM
 approval is rejected when either evidence item is absent. The status document must pin
 the runtime version and source STEP checksum. Never feed an edited FCStd back into

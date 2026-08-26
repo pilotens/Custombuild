@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+        image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -160,7 +160,67 @@ jobs:
       - name: Verify source freeze before prod build
         run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
       - name: Build and start prod stack
-        run: docker compose --file compose.yml up --build --detach
+        run: >-
+          docker compose --file compose.yml up --build --detach
+          --wait --wait-timeout 900
+      - name: Verify exact native runtimes and excluded tooling
+        run: |
+          set -euo pipefail
+          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.19.0"
+          docker compose --file compose.yml exec -T web /usr/bin/node -e \
+            "if (process.execPath !== '/usr/bin/node' || process.getuid() !== 65532) throw new Error(process.execPath + ':' + process.getuid())"
+          docker compose --file compose.yml exec -T api /opt/custombuild-venv/bin/python - <<'PY'
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+
+          import uvicorn
+          from app.main import app
+
+          assert sys.version_info[:3] == (3, 13, 15), sys.version
+          assert os.getuid() == 65532, os.getuid()
+          assert Path(sys.executable).resolve() == Path("/usr/bin/python3.13").resolve()
+          assert callable(app)
+          assert uvicorn.__version__
+          for executable in ("pip", "pip3", "pip3.13", "uv", "uvx"):
+              assert shutil.which(executable) is None, executable
+          PY
+          docker compose --file compose.yml exec -T worker /opt/custombuild-venv/bin/python - <<'PY'
+          import importlib.util
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+
+          import OCP
+          import cadquery as cq
+          import vtkmodules.vtkCommonCore
+          from custombuild_worker.tasks import celery_app
+
+          assert sys.version_info[:3] == (3, 13, 15), sys.version
+          assert os.getuid() == 65532, os.getuid()
+          assert Path(sys.executable).resolve() == Path("/usr/bin/python3.13").resolve()
+          assert celery_app is not None
+          solid = cq.Workplane("XY").box(10, 20, 30).val()
+          assert solid.Volume() > 0
+          assert importlib.util.find_spec("FreeCAD") is None
+          for executable in (
+              "pip",
+              "pip3",
+              "pip3.13",
+              "uv",
+              "uvx",
+              "FreeCAD",
+              "FreeCADCmd",
+              "freecad",
+              "freecadcmd",
+          ):
+              assert shutil.which(executable) is None, executable
+          PY
+          docker compose --file compose.yml exec -T scheduler \
+            /opt/custombuild-venv/bin/python -c \
+            "import os; assert os.getuid() == 65532, os.getuid()"
       - name: Prod design-review and blocked CAM/release acceptance
         run: >-
           python3 scripts/live_acceptance.py
@@ -220,7 +280,7 @@ jobs:
       - name: Generate exact PostgreSQL runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
           format: spdx-json
           output-file: artifacts/release-evidence/sbom-postgres.spdx.json
           upload-artifact: false
@@ -236,11 +296,69 @@ jobs:
       - name: Generate exact volume-init runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+          image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
           format: spdx-json
-          output-file: artifacts/release-evidence/sbom-alpine.spdx.json
+          output-file: artifacts/release-evidence/sbom-volume-init.spdx.json
           upload-artifact: false
           upload-release-assets: false
+      - name: Verify native interpreter packages in exact runtime SBOMs
+        run: |
+          set -euo pipefail
+          require_exact_package() {
+            sbom="$1"
+            package="$2"
+            version="$3"
+            jq -e --arg package "$package" --arg version "$version" \
+              '([.packages[]? | select(.name == $package and .versionInfo == $version)] | length) == 1' \
+              "$sbom" >/dev/null
+          }
+          reject_package_prefix() {
+            sbom="$1"
+            prefix="$2"
+            jq -e --arg prefix "$prefix" \
+              '([.packages[]? | select((.name // "") | startswith($prefix))] | length) == 0' \
+              "$sbom" >/dev/null
+          }
+          require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" \
+            nodejs-24-minimal 24.19.0-r0
+          reject_package_prefix "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" nodejs-26
+          for component in api worker; do
+            require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" \
+              python-3.13 3.13.15-r2
+            require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" \
+              python-3.13-base 3.13.15-r2
+            reject_package_prefix "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" python-3.14
+          done
+          while read -r package version; do
+            require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-worker.spdx.json" \
+              "$package" "$version"
+          done <<'PACKAGES'
+          mesa-gl 26.2.1-r0
+          libx11 1.8.13-r5
+          libxau 1.0.12-r7
+          libxdmcp 1.1.5-r9
+          libbsd 0.12.2-r7
+          libmd 1.2.0-r2
+          libgomp 16.2.0-r1
+          libxcb 1.17.0-r15
+          libglvnd 1.7.0-r10
+          libxml2 2.15.0-r0
+          libLLVM-22 22.1.8-r2
+          libpciaccess 0.19-r2
+          libdrm 2.4.134-r0
+          libzstd1 1.5.7-r8
+          libelf 0.195-r2
+          libxshmfence 1.3.3-r2
+          mesa-libgallium 26.2.1-r0
+          mesa-gbm 26.2.1-r0
+          libudev 261.2-r1
+          wayland-libs-client 1.26.0-r0
+          wayland-protocols 1.49-r0
+          mesa 26.2.1-r0
+          libxext 1.3.7-r0
+          libxxf86vm 1.1.7-r2
+          mesa-glx 26.2.1-r0
+          PACKAGES
       - name: Scan exact API runtime image
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
@@ -280,7 +398,7 @@ jobs:
       - name: Scan exact PostgreSQL runtime image
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
-          image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
@@ -298,12 +416,12 @@ jobs:
       - name: Scan exact volume-init runtime image
         uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
         with:
-          image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+          image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
           output-format: json
-          output-file: artifacts/release-evidence/scan-alpine.json
+          output-file: artifacts/release-evidence/scan-volume-init.json
       - name: Bind scans to the exact images run by Compose
         run: |
           set -euo pipefail
@@ -315,13 +433,30 @@ jobs:
             test -n "$container_id"
             docker container inspect "$container_id" --format '{{.Image}}'
           }
-          api_id="$(image_id "custombuild-api:${GITHUB_SHA}")"
-          worker_id="$(image_id "custombuild-worker:${GITHUB_SHA}")"
-          web_id="$(image_id "custombuild-web:${GITHUB_SHA}")"
-          seaweedfs_id="$(image_id "custombuild-seaweedfs:${GITHUB_SHA}")"
-          postgres_id="$(image_id 'postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73')"
-          redis_id="$(image_id 'redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6')"
-          alpine_id="$(image_id 'alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b')"
+          scan_input() {
+            jq --exit-status --raw-output \
+              '.source.target.userInput | strings | select(length > 0)' \
+              "$RELEASE_EVIDENCE_DIR/scan-$1.json"
+          }
+          manifest_digest() {
+            jq --exit-status --raw-output \
+              '.source.target.manifestDigest | strings | select(test("^sha256:[a-f0-9]{64}$"))' \
+              "$RELEASE_EVIDENCE_DIR/scan-$1.json"
+          }
+          api_ref="custombuild-api:${GITHUB_SHA}"
+          worker_ref="custombuild-worker:${GITHUB_SHA}"
+          web_ref="custombuild-web:${GITHUB_SHA}"
+          seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
+          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060'
+          redis_ref='redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6'
+          volume_init_ref='cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6'
+          api_id="$(image_id "$api_ref")"
+          worker_id="$(image_id "$worker_ref")"
+          web_id="$(image_id "$web_ref")"
+          seaweedfs_id="$(image_id "$seaweedfs_ref")"
+          postgres_id="$(image_id "$postgres_ref")"
+          redis_id="$(image_id "$redis_ref")"
+          volume_init_id="$(image_id "$volume_init_ref")"
           test "$api_id" = "$(runtime_id api)"
           test "$api_id" = "$(runtime_id migrate)"
           test "$worker_id" = "$(runtime_id worker)"
@@ -330,13 +465,13 @@ jobs:
           test "$seaweedfs_id" = "$(runtime_id object-storage)"
           test "$postgres_id" = "$(runtime_id postgres)"
           test "$redis_id" = "$(runtime_id redis)"
-          test "$alpine_id" = "$(runtime_id object-storage-init)"
-          for component in api worker web seaweedfs postgres redis alpine; do
+          test "$volume_init_id" = "$(runtime_id object-storage-init)"
+          for component in api worker web seaweedfs postgres redis volume-init; do
             test -s "$RELEASE_EVIDENCE_DIR/scan-${component}.json"
             test -s "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json"
           done
           jq -n \
-            --arg schema_version "custombuild.runtime-release-evidence.v1" \
+            --arg schema_version "custombuild.runtime-release-evidence.v3" \
             --arg git_revision "$GITHUB_SHA" \
             --arg source_manifest_sha256 "$SOURCE_MANIFEST_SHA256" \
             --arg api_id "$api_id" \
@@ -345,22 +480,43 @@ jobs:
             --arg seaweedfs_id "$seaweedfs_id" \
             --arg postgres_id "$postgres_id" \
             --arg redis_id "$redis_id" \
-            --arg alpine_id "$alpine_id" \
+            --arg volume_init_id "$volume_init_id" \
+            --arg api_ref "$api_ref" \
+            --arg worker_ref "$worker_ref" \
+            --arg web_ref "$web_ref" \
+            --arg seaweedfs_ref "$seaweedfs_ref" \
+            --arg postgres_ref "$postgres_ref" \
+            --arg redis_ref "$redis_ref" \
+            --arg volume_init_ref "$volume_init_ref" \
+            --arg api_scan_input "$(scan_input api)" \
+            --arg worker_scan_input "$(scan_input worker)" \
+            --arg web_scan_input "$(scan_input web)" \
+            --arg seaweedfs_scan_input "$(scan_input seaweedfs)" \
+            --arg postgres_scan_input "$(scan_input postgres)" \
+            --arg redis_scan_input "$(scan_input redis)" \
+            --arg volume_init_scan_input "$(scan_input volume-init)" \
+            --arg api_manifest "$(manifest_digest api)" \
+            --arg worker_manifest "$(manifest_digest worker)" \
+            --arg web_manifest "$(manifest_digest web)" \
+            --arg seaweedfs_manifest "$(manifest_digest seaweedfs)" \
+            --arg postgres_manifest "$(manifest_digest postgres)" \
+            --arg redis_manifest "$(manifest_digest redis)" \
+            --arg volume_init_manifest "$(manifest_digest volume-init)" \
             --arg api_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-api.spdx.json" | awk '{print $1}')" \
             --arg worker_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-worker.spdx.json" | awk '{print $1}')" \
             --arg web_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" | awk '{print $1}')" \
             --arg seaweedfs_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-seaweedfs.spdx.json" | awk '{print $1}')" \
             --arg postgres_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" | awk '{print $1}')" \
             --arg redis_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-redis.spdx.json" | awk '{print $1}')" \
-            --arg alpine_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-alpine.spdx.json" | awk '{print $1}')" \
+            --arg volume_init_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-volume-init.spdx.json" | awk '{print $1}')" \
             --arg api_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-api.json" | awk '{print $1}')" \
             --arg worker_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-worker.json" | awk '{print $1}')" \
             --arg web_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-web.json" | awk '{print $1}')" \
             --arg seaweedfs_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-seaweedfs.json" | awk '{print $1}')" \
             --arg postgres_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-postgres.json" | awk '{print $1}')" \
             --arg redis_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-redis.json" | awk '{print $1}')" \
-            --arg alpine_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-alpine.json" | awk '{print $1}')" \
-            '{schema_version:$schema_version,git_revision:$git_revision,source_manifest_sha256:$source_manifest_sha256,status:"PASS",images:[{component:"api",image_id:$api_id,sbom_sha256:$api_sbom,scan_status:"PASS",scan_sha256:$api_scan},{component:"worker",image_id:$worker_id,sbom_sha256:$worker_sbom,scan_status:"PASS",scan_sha256:$worker_scan},{component:"web",image_id:$web_id,sbom_sha256:$web_sbom,scan_status:"PASS",scan_sha256:$web_scan},{component:"seaweedfs",image_id:$seaweedfs_id,sbom_sha256:$seaweedfs_sbom,scan_status:"PASS",scan_sha256:$seaweedfs_scan},{component:"postgres",image_id:$postgres_id,sbom_sha256:$postgres_sbom,scan_status:"PASS",scan_sha256:$postgres_scan},{component:"redis",image_id:$redis_id,sbom_sha256:$redis_sbom,scan_status:"PASS",scan_sha256:$redis_scan},{component:"alpine",image_id:$alpine_id,sbom_sha256:$alpine_sbom,scan_status:"PASS",scan_sha256:$alpine_scan}]}' \
+            --arg volume_init_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-volume-init.json" | awk '{print $1}')" \
+            '{schema_version:$schema_version,git_revision:$git_revision,source_manifest_sha256:$source_manifest_sha256,status:"PASS",images:[{component:"api",image_id:$api_id,image_reference:$api_ref,scan_input:$api_scan_input,manifest_digest:$api_manifest,sbom_sha256:$api_sbom,scan_status:"PASS",scan_sha256:$api_scan},{component:"worker",image_id:$worker_id,image_reference:$worker_ref,scan_input:$worker_scan_input,manifest_digest:$worker_manifest,sbom_sha256:$worker_sbom,scan_status:"PASS",scan_sha256:$worker_scan},{component:"web",image_id:$web_id,image_reference:$web_ref,scan_input:$web_scan_input,manifest_digest:$web_manifest,sbom_sha256:$web_sbom,scan_status:"PASS",scan_sha256:$web_scan},{component:"seaweedfs",image_id:$seaweedfs_id,image_reference:$seaweedfs_ref,scan_input:$seaweedfs_scan_input,manifest_digest:$seaweedfs_manifest,sbom_sha256:$seaweedfs_sbom,scan_status:"PASS",scan_sha256:$seaweedfs_scan},{component:"postgres",image_id:$postgres_id,image_reference:$postgres_ref,scan_input:$postgres_scan_input,manifest_digest:$postgres_manifest,sbom_sha256:$postgres_sbom,scan_status:"PASS",scan_sha256:$postgres_scan},{component:"redis",image_id:$redis_id,image_reference:$redis_ref,scan_input:$redis_scan_input,manifest_digest:$redis_manifest,sbom_sha256:$redis_sbom,scan_status:"PASS",scan_sha256:$redis_scan},{component:"volume-init",image_id:$volume_init_id,image_reference:$volume_init_ref,scan_input:$volume_init_scan_input,manifest_digest:$volume_init_manifest,sbom_sha256:$volume_init_sbom,scan_status:"PASS",scan_sha256:$volume_init_scan}]}' \
             > "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"
       - name: Produce final release readiness after all required evidence
         run: >-

@@ -600,4 +600,8 @@
   .componentCopy small { display: none; }
   .componentAction { padding-top: 2px; font-size: 9px; }
   .inspectorActions { grid-template-columns: 1fr; }
+
+  .dropSurface :global(.webgl-fallback) {
+    padding: 48px 24px 40px;
+  }
 }

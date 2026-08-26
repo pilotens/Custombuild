@@ -91,8 +91,12 @@ test("mallbilder och dynamisk 3D-vy passerar den visuella kvalitetskontrollen", 
   const targetBayWidth = page.getByRole("spinbutton", { name: "Minsta fria fackbredd" });
   await targetBayWidth.fill("300");
   await targetBayWidth.press("Enter");
-  await expect(page.locator(".cb-context-panel").getByRole("status")).toContainText(/\d+ fack/);
-  await expect(page.locator(".cb-context-panel").getByRole("status")).toContainText(/Cirka .* mm fri bredd per fack/);
+  const gridResult = page.locator(".cb-context-panel")
+    .getByRole("status")
+    .filter({ hasText: /Cirka .* mm fri bredd per fack/ });
+  await expect(gridResult).toHaveCount(1);
+  await expect(gridResult).toContainText(/\d+ fack/);
+  await expect(gridResult).toContainText(/Cirka .* mm fri bredd per fack/);
 
   const readabilityTargets = [
     [".cb-workspace-navigation button", 14],

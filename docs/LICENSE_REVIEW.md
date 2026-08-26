@@ -16,10 +16,10 @@ to their own licences and the release gates documented below.
 
 | Component | Pinned image | Upstream licence | Engineering decision |
 | --- | --- | --- | --- |
-| PostgreSQL | `postgres:17.11-alpine3.24` | PostgreSQL License | Permissive; retain copyright and licence notices. |
+| PostgreSQL | Chainguard PostgreSQL 18.6, digest pinned | PostgreSQL License plus package-specific notices | Minimal non-root runtime; retain copyright and licence notices. |
 | Redis | `redis:7.2.15-alpine` | BSD-3-Clause | Redis states that 7.2.x and earlier remain BSD-3-Clause. Do not upgrade this image across the 7.4 or 8.x licence boundaries without a new review. |
-| SeaweedFS | repository-built `4.41` from a checksum-pinned source archive | Apache-2.0 | Permissive, actively maintained S3-compatible runtime; retain the Apache-2.0 licence and notices. The minimal image is built with pinned Go 1.25.14 and scanned before release. |
-| Volume init | `alpine:3.24.1` | MIT plus package-specific notices | Digest-pinned one-shot ownership initialization; scan and retain its notices. |
+| SeaweedFS | repository-built `4.41` from a checksum-pinned source archive | Apache-2.0 | Permissive, actively maintained S3-compatible runtime; retain the Apache-2.0 licence and notices. The minimal image is built with pinned Go 1.26.6 plus checksum-locked security overrides and scanned before release. |
+| Volume init | Chainguard BusyBox, digest pinned | GPL-2.0-only plus package-specific notices | Minimal one-shot ownership initialization; run only with the explicit root UID and `CHOWN` capability, then exit. |
 
 Authoritative upstream references:
 
@@ -79,15 +79,17 @@ floating action tags. The scheduled run also catches newly published
 vulnerability data without waiting for a source change. These artifacts are
 engineering evidence, not a legal approval.
 
-Application base images are digest-pinned. Every application Dockerfile also
-resolves operating-system updates and packages from an explicit dated Debian
-snapshot whose metadata remains verified by Debian's archive keyring, and release
-readiness rejects a return to a floating APT index. Update
-that snapshot date only in a reviewed change that rebuilds all three images and
-reruns their SBOM and vulnerability gates. This narrows rebuild drift; it does
-not make a source revision itself a deployable immutable artifact. Production
-must promote and record the exact built image digest and archive the associated
-SBOM and scan evidence.
+Application base images are digest-pinned. The Python and Node build stages use
+exact upstream release digests; the Python builders resolve operating-system
+updates from an explicit dated Debian snapshot whose metadata remains verified by
+Debian's archive keyring. Final application runtimes use pinned minimal Chainguard
+images, and the worker adds exact Wolfi packages into a scanner-visible chroot.
+Release readiness rejects a return to floating base images or APT indexes. Update
+any base digest, snapshot date or Wolfi package pin only in a reviewed change that
+rebuilds all three images and reruns their SBOM and vulnerability gates. This
+narrows rebuild drift; it does not make a source revision itself a deployable
+immutable artifact. Production must promote and record the exact built image
+digest and archive the associated SBOM and scan evidence.
 
 - [x] Generate SPDX SBOM artifacts for application and pinned runtime images in CI.
 - [x] Scan image layers and language packages; block all high/critical findings.

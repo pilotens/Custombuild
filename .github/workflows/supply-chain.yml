@@ -22,13 +22,10 @@ jobs:
         include:
           - component: api
             dockerfile: services/api/Dockerfile
-            build_args: ""
           - component: worker
             dockerfile: services/worker/Dockerfile
-            build_args: "--build-arg INSTALL_FREECAD=true"
           - component: web
             dockerfile: apps/web/Dockerfile
-            build_args: ""
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -51,7 +48,6 @@ jobs:
             --expect-sha256 "$source_manifest_sha256"
           docker build \
             --file "${{ matrix.dockerfile }}" \
-            ${{ matrix.build_args }} \
             --build-arg "APP_VERSION=0.1.0+${{ github.sha }}" \
             --build-arg "VCS_REF=${{ github.sha }}" \
             --build-arg "BUILD_DATE=${build_date}" \
@@ -147,11 +143,11 @@ jobs:
       matrix:
         include:
           - component: postgres
-            image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+            image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
           - component: redis
             image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
           - component: volume-init
-            image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+            image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -193,17 +189,29 @@ jobs:
           set -euo pipefail
           image="custombuild-seaweedfs:${{ github.sha }}"
           source_sha256="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.upstream-source.sha256" }}')"
+          security_overrides_sha256="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.security-overrides.sha256" }}')"
           go_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go.version" }}')"
+          etcd_client_pkg_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-etcd-client-pkg.version" }}')"
+          x_image_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-x-image.version" }}')"
+          x_text_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-x-text.version" }}')"
           image_id="$(docker image inspect "$image" --format '{{.Id}}')"
           test "$source_sha256" = "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
-          test "$go_version" = "1.25.14"
+          test "$security_overrides_sha256" = "1a96843ba71c16cee5c7e396a3082ab3ae0327ab429956db51d0d1b07f6508e5"
+          test "$go_version" = "1.26.6"
+          test "$etcd_client_pkg_version" = "3.6.14"
+          test "$x_image_version" = "0.45.0"
+          test "$x_text_version" = "0.41.0"
           jq -n \
-            --arg schema_version "custombuild.seaweedfs-release.v1" \
+            --arg schema_version "custombuild.seaweedfs-release.v2" \
             --arg revision "${{ github.sha }}" \
             --arg source_sha256 "$source_sha256" \
+            --arg security_overrides_sha256 "$security_overrides_sha256" \
             --arg go_version "$go_version" \
+            --arg etcd_client_pkg_version "$etcd_client_pkg_version" \
+            --arg x_image_version "$x_image_version" \
+            --arg x_text_version "$x_text_version" \
             --arg image_id "$image_id" \
-            '{schema_version:$schema_version,revision:$revision,source_sha256:$source_sha256,go_version:$go_version,image_id:$image_id}' \
+            '{schema_version:$schema_version,revision:$revision,source_sha256:$source_sha256,security_overrides_sha256:$security_overrides_sha256,go_version:$go_version,etcd_client_pkg_version:$etcd_client_pkg_version,x_image_version:$x_image_version,x_text_version:$x_text_version,image_id:$image_id}' \
             > "custombuild-seaweedfs-${{ github.sha }}.release.json"
       - name: Generate SeaweedFS SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
