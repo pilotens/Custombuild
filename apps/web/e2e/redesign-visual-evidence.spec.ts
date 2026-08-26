@@ -20,6 +20,8 @@ const screenshotOptions = {
 };
 
 const persistentViewerIdentity = "p19-shared-furniture-viewer";
+const viewerRenderCommitAttribute = "data-custombuild-render-commit";
+const viewerRenderQuietWindowMs = 300;
 
 interface ProjectedModelMetrics {
   heightRatio: number;
@@ -40,6 +42,42 @@ function renderedModelSurface(page: Page) {
     .first();
 }
 
+async function waitForRenderedModelToSettle(surface: Locator): Promise<void> {
+  const tagName = await surface.evaluate((element) => element.tagName);
+  if (tagName !== "CANVAS") return;
+
+  await expect(surface).toHaveAttribute(viewerRenderCommitAttribute, /^[1-9]\d*$/);
+  // Drei Bounds invalidates the demand renderer while its camera fit is still
+  // interpolating. Wait on the renderer's commit contract so a view switch
+  // cannot preserve a load-dependent intermediate OrbitControls target.
+  await surface.evaluate((element, { attribute, quietWindowMs }) => new Promise<void>((resolve, reject) => {
+    let quietTimer = 0;
+    const timeoutTimer = window.setTimeout(() => {
+      observer.disconnect();
+      window.clearTimeout(quietTimer);
+      reject(new Error(`The WebGL renderer did not settle within 5 seconds (${attribute}).`));
+    }, 5_000);
+
+    const finish = () => {
+      observer.disconnect();
+      window.clearTimeout(timeoutTimer);
+      resolve();
+    };
+    const scheduleFinish = () => {
+      window.clearTimeout(quietTimer);
+      quietTimer = window.setTimeout(finish, quietWindowMs);
+    };
+    const observer = new MutationObserver((mutations) => {
+      if (mutations.some((mutation) => mutation.attributeName === attribute)) scheduleFinish();
+    });
+    observer.observe(element, { attributeFilter: [attribute], attributes: true });
+    scheduleFinish();
+  }), {
+    attribute: viewerRenderCommitAttribute,
+    quietWindowMs: viewerRenderQuietWindowMs,
+  });
+}
+
 async function settleViewport(page: Page, width: number, withModel = false): Promise<void> {
   await expect(page.locator(".save-state")).toContainText("Sparad lokalt");
   await page.evaluate(async () => document.fonts.ready);
@@ -56,6 +94,7 @@ async function settleViewport(page: Page, width: number, withModel = false): Pro
       const bounds = element.getBoundingClientRect();
       return bounds.height * bounds.width;
     })).toBeGreaterThan(0);
+    await waitForRenderedModelToSettle(surface);
   }
 
   await page.evaluate(() => new Promise<void>((resolve) => {
@@ -179,6 +218,10 @@ async function openDeterministicWallLibrary(page: Page): Promise<void> {
 async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 820) return;
 
+  const surface = renderedModelSurface(page);
+  await expect(surface).toBeVisible();
+  await waitForRenderedModelToSettle(surface);
+
   const toolbar = page.getByRole("toolbar", { name: "Visningsverktyg" });
   const controls = page.getByLabel("Visningskontroller, horisontellt rullningsbara");
   const buttons = controls.getByRole("button");
@@ -232,9 +275,11 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   expect(frontPointerTarget).toBe("Front");
   await front.click();
   await expect(front).toHaveAttribute("aria-pressed", "true");
+  await waitForRenderedModelToSettle(surface);
   const perspective = controls.getByRole("button", { name: "3D", exact: true });
   await perspective.click();
   await expect(perspective).toHaveAttribute("aria-pressed", "true");
+  await waitForRenderedModelToSettle(surface);
 
   await controls.evaluate((element) => {
     (element as HTMLElement).style.scrollBehavior = "auto";
