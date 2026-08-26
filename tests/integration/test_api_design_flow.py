@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import app.api as api_module
+import app.auth as auth_module
 import app.design_service as design_service_module
 import app.storage as storage_module
 import pytest
@@ -29,13 +30,17 @@ from app.models import (
     GenerationJob,
     ImportedAsset,
     JobStatus,
+    Membership,
     OutboxEvent,
     Project,
     Release,
+    Role,
+    User,
 )
 from app.schemas import BookcasePreviewInput, WorkspaceIntentV1
 from botocore.exceptions import ClientError
 from custombuild_manufacturing import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DFM_ENGINE_VERSION,
@@ -62,6 +67,11 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
 HEADERS = {"Authorization": "Bearer demo-nordic-owner"}
+FOUR_EYES_REVIEWER_HEADERS = {
+    "Authorization": "Bearer demo-nordic-four-eyes-reviewer"
+}
+FOUR_EYES_REVIEWER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+_REAL_DADO_RETENTION_GATE = api_module._require_resolved_dado_retention
 
 
 @pytest.fixture(autouse=True)
@@ -79,6 +89,14 @@ def _avoid_external_object_storage(monkeypatch: pytest.MonkeyPatch) -> None:
         _simulated_verified_review_document,
     )
     monkeypatch.setattr(api_module, "store_immutable_object", lambda *_args: None)
+    # Most integration cases exercise deeper approval, tamper and release
+    # invariants under an explicit future structured-retention premise.  The
+    # real plain-DADO gate has dedicated negative regressions below.
+    monkeypatch.setattr(
+        api_module,
+        "_require_resolved_dado_retention",
+        lambda _version: None,
+    )
 
 
 def valid_spec() -> dict[str, object]:
@@ -294,6 +312,7 @@ def test_template_capabilities_are_server_owned_and_concepts_are_blocked() -> No
         assert capabilities.status_code == 200
         catalog = {item["template_id"]: item for item in capabilities.json()["templates"]}
         assert catalog["shelving"]["production_level"] == "screened"
+        assert catalog["wall-library"]["production_level"] == "concept"
         assert catalog["sideboard"]["production_level"] == "concept"
 
         project = client.post(
@@ -308,6 +327,39 @@ def test_template_capabilities_are_server_owned_and_concepts_are_blocked() -> No
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "TEMPLATE_CAPABILITY_BLOCKED"
     assert response.json()["detail"]["solution"]
+
+
+def test_wall_library_may_preview_but_cannot_create_a_server_revision() -> None:
+    wall_spec = valid_spec() | {
+        "furniture_type": "wall_library",
+        "base_cabinet_height_mm": 400,
+        "base_cabinet_depth_mm": 320,
+        "base_cabinet_count": 2,
+    }
+    with TestClient(app) as client:
+        preview_response = client.post(
+            "/v1/designs/preview",
+            headers=HEADERS,
+            json=wall_spec,
+        )
+        assert preview_response.status_code == 200
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": "Wall library concept boundary"},
+        ).json()
+        revision = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(
+                project["id"],
+                spec=wall_spec,
+                template_id="wall-library",
+            ),
+        )
+
+    assert revision.status_code == 409
+    assert revision.json()["detail"]["code"] == "TEMPLATE_CAPABILITY_BLOCKED"
 
 
 def test_external_evidence_is_server_hashed_and_bound_to_exact_design(
@@ -580,6 +632,53 @@ def approve_design(client: TestClient, base: str) -> None:
         json=design_approval_payload(client, base),
     )
     assert response.status_code == 200
+
+
+def _enable_production_four_eyes(monkeypatch: pytest.MonkeyPatch) -> None:
+    configured = get_settings().model_copy(
+        update={"production_four_eyes_required": True}
+    )
+    monkeypatch.setattr(api_module, "get_settings", lambda: configured)
+
+
+def _provision_four_eyes_reviewer(monkeypatch: pytest.MonkeyPatch) -> None:
+    with get_session_factory().begin() as session:
+        if session.get(User, FOUR_EYES_REVIEWER_ID) is None:
+            session.add(
+                User(
+                    id=FOUR_EYES_REVIEWER_ID,
+                    oidc_sub="demo:nordic-four-eyes-reviewer",
+                    email="four-eyes-reviewer@nordic.example",
+                    name="Nordic Four Eyes Reviewer",
+                )
+            )
+            session.flush()
+        membership = session.scalar(
+            select(Membership).where(
+                Membership.organization_id == DEV_ORG_NORDIC,
+                Membership.user_id == FOUR_EYES_REVIEWER_ID,
+            )
+        )
+        if membership is None:
+            session.add(
+                Membership(
+                    organization_id=DEV_ORG_NORDIC,
+                    user_id=FOUR_EYES_REVIEWER_ID,
+                    role=Role.reviewer,
+                )
+            )
+    monkeypatch.setitem(
+        auth_module._DEV_TOKENS,
+        "demo-nordic-four-eyes-reviewer",
+        auth_module.Principal(
+            user_id=FOUR_EYES_REVIEWER_ID,
+            organization_id=DEV_ORG_NORDIC,
+            role=Role.reviewer,
+            subject="demo:nordic-four-eyes-reviewer",
+            email="four-eyes-reviewer@nordic.example",
+            name="Nordic Four Eyes Reviewer",
+        ),
+    )
 
 
 REFERENCE_IMAGE_BYTES = b"\x89PNG\r\n\x1a\nimmutable-reference-image"
@@ -2183,8 +2282,8 @@ def _manifest_document_for_job(
             "design_hash": version.design_hash,
             "app_version": engine_context["app_version"],
             "engine_version": version.engine_version,
-            "template_version": version.template_version,
-            "domain_template_version": version.template_version,
+            "template_version": version.result_json["template_version"],
+            "domain_template_version": version.result_json["template_version"],
             "template_capability_version": capability["template_version"],
             "template_capability_registry_version": engine_context[
                 "template_capability_registry_version"
@@ -3174,6 +3273,213 @@ def _review_mutation_snapshot(version_id: str) -> tuple[Any, ...]:
         return approvals, releases, version.status, version.immutable
 
 
+def test_four_eyes_rejects_same_user_cam_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name="Four eyes same reviewer CAM guard",
+        )
+        before = _review_mutation_snapshot(version["id"])
+        _enable_production_four_eyes(monkeypatch)
+
+        rejected = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "The design reviewer must not self-approve CAM",
+                "generation_job_id": generated["id"],
+            },
+        )
+
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == (
+        api_module.FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE
+    )
+    assert _review_mutation_snapshot(version["id"]) == before
+
+
+def test_four_eyes_accepts_two_users_and_rechecks_manipulated_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name="Four eyes distinct reviewer release guard",
+        )
+        _provision_four_eyes_reviewer(monkeypatch)
+        _enable_production_four_eyes(monkeypatch)
+
+        cam = client.post(
+            f"{base}/approve",
+            headers=FOUR_EYES_REVIEWER_HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Independent CAM review",
+                "generation_job_id": generated["id"],
+            },
+        )
+        released = client.post(
+            f"{base}/release",
+            headers=HEADERS,
+            json={"release_number": "FOUR-EYES-R1", "confirmation": "RELEASE"},
+        )
+
+        assert cam.status_code == 200, cam.json()
+        assert released.status_code == 200, released.json()
+        with get_session_factory().begin() as session:
+            approvals = {
+                approval.approval_type: approval
+                for approval in session.scalars(
+                    select(Approval).where(
+                        Approval.design_version_id == version["id"]
+                    )
+                )
+            }
+            assert approvals["design"].approved_by == DEV_USER_NORDIC
+            assert approvals["cam"].approved_by == FOUR_EYES_REVIEWER_ID
+            # Simulate a pre-policy or directly manipulated row after release.
+            approvals["cam"].approved_by = DEV_USER_NORDIC
+
+        replay = client.post(
+            f"{base}/release",
+            headers=HEADERS,
+            json={"release_number": "IGNORED-R2", "confirmation": "RELEASE"},
+        )
+
+    assert replay.status_code == 409
+    assert replay.json()["detail"]["code"] == (
+        api_module.FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE
+    )
+    with get_session_factory()() as session:
+        persisted = session.get(DesignVersion, version["id"])
+        releases = list(
+            session.scalars(
+                select(Release).where(Release.design_version_id == version["id"])
+            )
+        )
+    assert persisted is not None
+    assert persisted.status == DesignStatus.released
+    assert persisted.immutable is True
+    assert len(releases) == 1
+
+
+def test_manifest_context_uses_unprefixed_domain_template_version() -> None:
+    with TestClient(app) as client:
+        version, generated, _base = _create_strict_review_job(
+            client,
+            name="Domain template version manifest binding",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+
+    with get_session_factory()() as session:
+        job = session.get(GenerationJob, generated["id"])
+        stored_version = session.get(DesignVersion, version["id"])
+        assert job is not None and isinstance(job.result_json, dict)
+        assert stored_version is not None and isinstance(stored_version.result_json, dict)
+        manifest = json.loads(documents[str(job.result_json["manifest_object_key"])])
+        domain_version = stored_version.result_json["template_version"]
+
+        assert stored_version.template_version == f"bookcase@{domain_version}"
+        assert manifest["template_version"] == domain_version
+        assert manifest["domain_template_version"] == domain_version
+        assert api_module._manifest_context_matches_frozen_job(
+            manifest,
+            job,
+            stored_version,
+        )
+
+        prefixed_manifest = deepcopy(manifest)
+        prefixed_manifest["template_version"] = stored_version.template_version
+        prefixed_manifest["domain_template_version"] = stored_version.template_version
+        assert not api_module._manifest_context_matches_frozen_job(
+            prefixed_manifest,
+            job,
+            stored_version,
+        )
+
+
+def test_artifact_access_revalidates_current_bound_external_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(api_module, "store_evidence_object", lambda *_args: None)
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": "Current artifact evidence binding"},
+        ).json()
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"]),
+        ).json()
+        uploaded = client.post(
+            f"/v1/projects/{project['id']}/evidence",
+            headers=HEADERS,
+            data={
+                "evidence_type": "hardware",
+                "rule_id": "CB-HARDWARE-001",
+                "catalog_id": "hardware-current-at-generation",
+                "catalog_version": "2026.1",
+                "design_hash": version["design_hash"],
+            },
+            files={
+                "document": (
+                    "hardware.png",
+                    b"\x89PNG\r\n\x1a\ncurrent-bound-evidence",
+                    "image/png",
+                )
+            },
+        )
+        assert uploaded.status_code == 201
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+        generated = client.post(
+            f"{base}/generate",
+            headers=HEADERS,
+            json=valid_production_context()
+            | {"external_evidence_ids": [uploaded.json()["id"]]},
+        )
+        assert generated.status_code == 202
+        job = generated.json()
+        _complete_generation(job["id"], "7" * 64)
+        with get_session_factory()() as session:
+            stored_job = session.get(GenerationJob, job["id"])
+            assert stored_job is not None
+            readiness = build_workshop_readiness_report(
+                authoritative_cad=True,
+                dfm_passed=True,
+                operation_count=36,
+                setup_count=2,
+                validation_backplot=True,
+                validation_program=True,
+                edge_band_selection_required=True,
+                material_grain_binding_required=False,
+                external_evidence=tuple(stored_job.request_json["external_evidence"]),
+            ).as_dict()
+        documents = _persist_strict_review_documents(job["id"], readiness=readiness)
+        calls: list[tuple[str, int]] = []
+        _install_strict_review_reader(monkeypatch, documents, calls)
+
+        current = client.get(f"/v1/jobs/{job['id']}/artifacts", headers=HEADERS)
+        assert current.status_code == 200, current.json()
+
+        with get_session_factory().begin() as session:
+            evidence = session.get(ExternalEvidence, uploaded.json()["id"])
+            assert evidence is not None
+            evidence.revoked_at = datetime.now(UTC)
+
+        stale = client.get(f"/v1/jobs/{job['id']}/artifacts", headers=HEADERS)
+
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "EXTERNAL_EVIDENCE_STALE"
+    assert calls
+
+
 def test_stock_selection_and_generation_plan_are_exact_downloadable_review_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3651,6 +3957,56 @@ def test_blocked_cam_review_package_is_downloadable_but_cannot_be_cam_approved(
             },
         )
         assert release.status_code == 409
+
+
+@pytest.mark.parametrize("endpoint", ("cam", "release"))
+def test_plain_dado_retention_is_a_non_overridable_cam_and_release_gate(
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"Plain DADO retention gate {endpoint}",
+        )
+        if endpoint == "release":
+            approved = client.post(
+                f"{base}/approve",
+                headers=HEADERS,
+                json={
+                    "approval_type": "cam",
+                    "reason": "Legacy fixture approval before enforcing retention",
+                    "generation_job_id": generated["id"],
+                },
+            )
+            assert approved.status_code == 200, approved.json()
+
+        monkeypatch.setattr(
+            api_module,
+            "_require_resolved_dado_retention",
+            _REAL_DADO_RETENTION_GATE,
+        )
+        before = _review_mutation_snapshot(version["id"])
+        if endpoint == "cam":
+            rejected = client.post(
+                f"{base}/approve",
+                headers=HEADERS,
+                json={
+                    "approval_type": "cam",
+                    "reason": "A review reason cannot provide physical retention",
+                    "generation_job_id": generated["id"],
+                },
+            )
+        else:
+            rejected = client.post(
+                f"{base}/release",
+                headers=HEADERS,
+                json={"release_number": "NO-RETENTION", "confirmation": "RELEASE"},
+            )
+
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    assert _review_mutation_snapshot(version["id"]) == before
 
 
 def test_grain_review_package_records_opaque_evidence_but_remains_cam_blocked(

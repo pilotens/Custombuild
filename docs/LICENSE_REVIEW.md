@@ -16,9 +16,10 @@ to their own licences and the release gates documented below.
 
 | Component | Pinned image | Upstream licence | Engineering decision |
 | --- | --- | --- | --- |
-| PostgreSQL | `postgres:17.10-alpine` | PostgreSQL License | Permissive; retain copyright and licence notices. |
+| PostgreSQL | `postgres:17.11-alpine3.24` | PostgreSQL License | Permissive; retain copyright and licence notices. |
 | Redis | `redis:7.2.15-alpine` | BSD-3-Clause | Redis states that 7.2.x and earlier remain BSD-3-Clause. Do not upgrade this image across the 7.4 or 8.x licence boundaries without a new review. |
-| SeaweedFS | `chrislusf/seaweedfs:4.41` | Apache-2.0 | Permissive, actively maintained S3-compatible runtime; retain the Apache-2.0 licence and notices. The image is digest-pinned and vulnerability-scanned before release. |
+| SeaweedFS | repository-built `4.41` from a checksum-pinned source archive | Apache-2.0 | Permissive, actively maintained S3-compatible runtime; retain the Apache-2.0 licence and notices. The minimal image is built with pinned Go 1.25.14 and scanned before release. |
+| Volume init | `alpine:3.24.1` | MIT plus package-specific notices | Digest-pinned one-shot ownership initialization; scan and retain its notices. |
 
 Authoritative upstream references:
 
@@ -69,9 +70,10 @@ deployment must pin reviewed image digests.
 
 ## Automated evidence and release checklist
 
-`.github/workflows/supply-chain.yml` builds the three application images and
-pulls the three pinned runtime images. It emits a uniquely named SPDX JSON SBOM
-for every image and blocks fixed high/critical vulnerabilities. Every external
+`.github/workflows/supply-chain.yml` builds the three application images and the
+checksum-bound SeaweedFS image, and pulls PostgreSQL, Redis and the volume-init
+image by digest. It emits a uniquely named SPDX JSON SBOM for every image and
+blocks every High/Critical vulnerability without an `only-fixed` filter. Every external
 workflow action is pinned to an immutable commit, and release readiness rejects
 floating action tags. The scheduled run also catches newly published
 vulnerability data without waiting for a source change. These artifacts are
@@ -88,7 +90,7 @@ must promote and record the exact built image digest and archive the associated
 SBOM and scan evidence.
 
 - [x] Generate SPDX SBOM artifacts for application and pinned runtime images in CI.
-- [x] Scan image layers and language packages; block fixed high/critical findings.
+- [x] Scan image layers and language packages; block all high/critical findings.
 - [ ] Archive the successful candidate run's SBOMs and vulnerability reports with the release.
 - [ ] Resolve every `UNKNOWN`, custom, copyleft or source-available licence.
 - [x] Replace the unmaintained AGPL MinIO runtime with digest-pinned Apache-2.0 SeaweedFS.

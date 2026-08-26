@@ -9,6 +9,7 @@ from custombuild_manufacturing.readiness import build_workshop_readiness_report
 
 from scripts.live_acceptance import (
     CONTEXT_HASH_FIELDS,
+    DADO_RETENTION_EVIDENCE_MISSING,
     DESIGN_REVIEW_PACKAGE_STATUS_PATH,
     GENERATION_PLAN_PATH,
     GENERATION_PLAN_ROLE,
@@ -18,10 +19,12 @@ from scripts.live_acceptance import (
     STOCK_SELECTION_PATH,
     STOCK_SELECTION_ROLE,
     AcceptanceFailure,
+    HttpResult,
     _safe_zip_path,
     blocked_cam_artifact_violation,
     blocked_cam_evidence_kind_is_forbidden,
     manifest_context,
+    verify_blocked_cam_endpoint_rejection,
     verify_design_review_dfm_report,
     verify_design_review_package_status,
     verify_explicit_two_sided_registration,
@@ -302,6 +305,17 @@ def _grain_package_status() -> dict[str, object]:
     return payload
 
 
+def _retention_package_status() -> dict[str, object]:
+    payload = _package_status(blocked=True)
+    payload["blocker_codes"] = [DADO_RETENTION_EVIDENCE_MISSING]
+    payload["required_action"] = (
+        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
+        "retention system for every DADO joint; a review acknowledgement, adhesive or "
+        "geometric bearing check is not retention evidence."
+    )
+    return payload
+
+
 def test_live_acceptance_requires_and_verifies_the_v2_readiness_artifact() -> None:
     assert "validation/workshop-readiness.json" in REQUIRED_PACKAGE_PATHS
     assert DESIGN_REVIEW_PACKAGE_STATUS_PATH in REQUIRED_PACKAGE_PATHS
@@ -367,7 +381,12 @@ def test_live_acceptance_rejects_edge_flag_without_edge_requirement() -> None:
 
 @pytest.mark.parametrize(
     "payload",
-    (_package_status(), _package_status(blocked=True), _stock_package_status()),
+    (
+        _package_status(),
+        _package_status(blocked=True),
+        _stock_package_status(),
+        _retention_package_status(),
+    ),
 )
 def test_live_acceptance_verifies_canonical_package_statuses(
     payload: dict[str, object],
@@ -496,6 +515,30 @@ def test_live_acceptance_accepts_truthful_grain_blocked_review_package() -> None
     )
 
 
+@pytest.mark.parametrize("dfm_status", ("PASS", "WARNING"))
+def test_live_acceptance_accepts_truthful_dado_retention_block(
+    dfm_status: str,
+) -> None:
+    readiness = _blocked_readiness_payload()
+
+    assert (
+        verify_generation_result_safety(
+            {
+                "authoritative_geometry": True,
+                "dfm_status": dfm_status,
+                "machine_program_mode": "CAM_BLOCKED",
+                "production_machine_program": False,
+                "nesting_utilization_ppm": None,
+                "used_sheet_count": 0,
+                "nesting_layouts": [],
+                "design_review_package_status": _retention_package_status(),
+                "workshop_readiness": readiness,
+            }
+        )
+        == readiness
+    )
+
+
 def test_live_acceptance_rejects_grain_blocked_readiness_claiming_bound_grain() -> None:
     readiness = _blocked_readiness_payload(dfm_blocked=True)
     grain = next(
@@ -598,6 +641,11 @@ def test_live_acceptance_binds_package_status_to_readiness_matrix() -> None:
         _blocked_readiness_payload(dfm_blocked=True),
         label="grain-blocked review contract",
     )
+    verify_status_readiness_alignment(
+        _retention_package_status(),
+        _blocked_readiness_payload(),
+        label="DADO-retention review contract",
+    )
     with pytest.raises(AcceptanceFailure, match="status and readiness disagree"):
         verify_status_readiness_alignment(
             _stock_package_status(),
@@ -664,6 +712,52 @@ def test_live_acceptance_binds_grain_status_to_raw_dfm_report() -> None:
 
 
 @pytest.mark.parametrize(
+    ("payload", "expected_status"),
+    ((_dfm_report(), "PASS"), (_dfm_report(grain_severity="WARNING"), "WARNING")),
+)
+def test_live_acceptance_keeps_dado_retention_separate_from_dfm(
+    payload: dict[str, object],
+    expected_status: str,
+) -> None:
+    assert (
+        verify_design_review_dfm_report(
+            payload,
+            package_status=_retention_package_status(),
+            expected_status=expected_status,
+            label="DFM report",
+        )
+        == payload
+    )
+
+
+def test_live_acceptance_requires_exact_dado_cam_and_release_rejection() -> None:
+    canonical = HttpResult(
+        409,
+        "http://api.test/review",
+        {"content-type": "application/json"},
+        b'{"detail":{"code":"DADO_RETENTION_EVIDENCE_MISSING"}}',
+    )
+    verify_blocked_cam_endpoint_rejection(
+        canonical,
+        [DADO_RETENTION_EVIDENCE_MISSING],
+        label="CAM approval",
+    )
+
+    generic = HttpResult(
+        409,
+        "http://api.test/review",
+        {"content-type": "application/json"},
+        b'{"detail":"Production evidence is blocked"}',
+    )
+    with pytest.raises(AcceptanceFailure, match="detail"):
+        verify_blocked_cam_endpoint_rejection(
+            generic,
+            [DADO_RETENTION_EVIDENCE_MISSING],
+            label="release",
+        )
+
+
+@pytest.mark.parametrize(
     ("payload", "package_status", "expected_status"),
     (
         (_dfm_report(), _stock_package_status(), "PASS"),
@@ -671,6 +765,7 @@ def test_live_acceptance_binds_grain_status_to_raw_dfm_report() -> None:
         (_dfm_report(stock_blocked=True), _stock_package_status(), "PASS"),
         (_dfm_report(grain_severity="WARNING"), _grain_package_status(), "WARNING"),
         (_dfm_report(grain_severity="BLOCK"), _stock_package_status(), "BLOCK"),
+        (_dfm_report(stock_blocked=True), _retention_package_status(), "BLOCK"),
     ),
 )
 def test_live_acceptance_rejects_dfm_status_or_blocker_drift(

@@ -1,5 +1,11 @@
 # Codex final checkpoint — 2026-08-11
 
+> **Historical evidence only:** Every runtime health, PASS, commit, image and
+> package statement below describes the 2026-08-11 environment. It is not
+> evidence for the current commit and cannot satisfy the current release gate.
+> Current evidence must be generated after static controls, Compose acceptance,
+> vulnerability scans and backup/restore all pass for the same SHA and image IDs.
+
 This is the final local handoff state after the resumed implementation and
 acceptance run. No Git commit or push was made.
 

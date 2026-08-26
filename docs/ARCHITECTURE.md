@@ -113,8 +113,10 @@ the exact joint ID, material ID/version and property-source revision used.
 The authenticated token determines `organization_id`; no request schema contains
 a trusted tenant field. Every application query includes the tenant, and
 PostgreSQL RLS binds the transaction to `app.current_organization_id`. The API
-role is a non-superuser without `BYPASSRLS`. The worker has `BYPASSRLS` only to
-discover global outbox work and still verifies the job tenant before every write.
+and worker roles are non-superusers without `BYPASSRLS`. Each worker transaction
+sets the persisted organization context before reading or writing tenant data;
+global outbox discovery uses a separately bounded claim path rather than a
+database-role bypass.
 
 Review-locked design revisions are immutable. A relevant edit always creates a
 new revision and therefore cannot reuse old approvals, CAM or artifacts. The API

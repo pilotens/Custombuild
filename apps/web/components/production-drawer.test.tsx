@@ -64,10 +64,7 @@ describe("ProductionDrawer", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("opens the production workflow for the server-backed wall library", () => {
-    // This assertion targets the explicit offline branch and must not inherit
-    // the API URL baked into a TEST or PROD verification image.
-    vi.stubEnv("NEXT_PUBLIC_API_URL", "");
+  it("keeps the wall library as a previewable concept without revision controls", () => {
     const template = furnitureTemplate("wall-library");
     const spec = { ...DEFAULT_DESIGN_SPEC, ...template.patch };
     render(
@@ -81,9 +78,31 @@ describe("ProductionDrawer", () => {
       />,
     );
 
-    expect(screen.getByText(/Redo för kontroll/)).toBeVisible();
-    expect(screen.getByText(/Underlag är inte tillgängligt i lokalt previewläge/)).toBeVisible();
-    expect(screen.queryByText(/Den här mallen är fortfarande en konceptmodell/)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Den här mallen är fortfarande en konceptmodell" })).toBeVisible();
+    expect(screen.getByText(/gångjärn, beslag, borrbilder, frontspel/)).toBeVisible();
+    expect(screen.getByText(/inget designgranskningspaket skapas/i)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Spara.*revision/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Skapa underlag/i })).not.toBeInTheDocument();
+  });
+
+  it("cannot promote wall-library geometry by pairing it with a screened template id", () => {
+    const screenedTemplate = furnitureTemplate("shelving");
+    const wallLibrary = furnitureTemplate("wall-library");
+    const spec = { ...DEFAULT_DESIGN_SPEC, ...wallLibrary.patch };
+    render(
+      <ProductionDrawer
+        open
+        spec={spec}
+        design={resolveDesign(spec)}
+        template={screenedTemplate}
+        onClose={vi.fn()}
+        onOpenTemplates={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Den här mallen är fortfarande en konceptmodell" })).toBeVisible();
+    expect(screen.getByText(/Väggbibliotekets gångjärn, beslag, borrbilder/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Skapa underlag/i })).not.toBeInTheDocument();
   });
 
   it("renders the same real workflow inline without modal chrome", () => {

@@ -21,33 +21,45 @@ def valid_config() -> dict:
             "postgres": {
                 "environment": {
                     "APP_ENV": "production",
-                    "POSTGRES_PASSWORD": "strong-postgres-secret",
+                    "POSTGRES_USER": "custombuild_bootstrap",
+                    "POSTGRES_PASSWORD": "strong-postgres-bootstrap-secret",
+                    "MIGRATOR_DATABASE_USER": "custombuild_migrator",
+                    "MIGRATOR_DATABASE_PASSWORD": "strong-postgres-migrator-secret",
+                    "API_DATABASE_PASSWORD": "strong-postgres-api-secret",
+                    "WORKER_DATABASE_PASSWORD": "strong-postgres-worker-secret",
                 }
             },
-            "redis": {"environment": {"REDIS_PASSWORD": "strong-redis-secret"}},
+            "redis": {"environment": {"REDIS_PASSWORD": "strong-production-redis-secret"}},
             "object-storage": {
-                "environment": {"AWS_SECRET_ACCESS_KEY": "strong-s3-secret"},
+                "environment": {"AWS_SECRET_ACCESS_KEY": "strong-production-s3-secret"},
                 "ports": [{"host_ip": "127.0.0.1", "published": "9000", "target": 8333}],
             },
             "migrate": {
                 "build": common_build,
                 "environment": {
                     "APP_ENV": "production",
-                    "DATABASE_URL": "postgresql://migrator:strong@postgres/db",
+                    "PRODUCTION_FOUR_EYES_REQUIRED": "true",
+                    "DATABASE_URL": (
+                        "postgresql://custombuild_migrator:strong-migrator-database-secret"
+                        "@postgres/db"
+                    ),
                 },
             },
             "api": {
                 "build": common_build,
                 "environment": {
                     "APP_ENV": "production",
+                    "PRODUCTION_FOUR_EYES_REQUIRED": "true",
                     "AUTH_MODE": "oidc",
                     "OIDC_ISSUER": "https://identity.example.test/",
                     "TRUSTED_PROXY_CIDRS": "172.20.0.0/24",
                     "CORS_ORIGINS": "https://app.example.test",
                     "S3_PUBLIC_ENDPOINT": "https://files.example.test",
-                    "DATABASE_URL": "postgresql://api:strong@postgres/db",
-                    "REDIS_URL": "redis://:strong@redis:6379/0",
-                    "S3_SECRET_KEY": "strong-s3-secret",
+                    "DATABASE_URL": (
+                        "postgresql://custombuild_api:strong-api-database-secret@postgres/db"
+                    ),
+                    "REDIS_URL": "redis://:strong-production-redis-secret@redis:6379/0",
+                    "S3_SECRET_KEY": "strong-production-s3-secret",
                     "ARTIFACT_SIGNING_SECRET": "strong-signing-secret-over-32-bytes",
                 },
                 "ports": [{"host_ip": "127.0.0.1", "published": "8000", "target": 8000}],
@@ -56,18 +68,26 @@ def valid_config() -> dict:
                 "build": common_build,
                 "environment": {
                     "APP_ENV": "production",
-                    "DATABASE_URL": "postgresql://worker:strong@postgres/db",
-                    "REDIS_URL": "redis://:strong@redis:6379/0",
-                    "S3_SECRET_KEY": "strong-s3-secret",
+                    "PRODUCTION_FOUR_EYES_REQUIRED": "true",
+                    "DATABASE_URL": (
+                        "postgresql://custombuild_worker:strong-worker-database-secret"
+                        "@postgres/db"
+                    ),
+                    "REDIS_URL": "redis://:strong-production-redis-secret@redis:6379/0",
+                    "S3_SECRET_KEY": "strong-production-s3-secret",
                 },
             },
             "scheduler": {
                 "build": common_build,
                 "environment": {
                     "APP_ENV": "production",
-                    "DATABASE_URL": "postgresql://worker:strong@postgres/db",
-                    "REDIS_URL": "redis://:strong@redis:6379/0",
-                    "S3_SECRET_KEY": "strong-s3-secret",
+                    "PRODUCTION_FOUR_EYES_REQUIRED": "true",
+                    "DATABASE_URL": (
+                        "postgresql://custombuild_worker:strong-worker-database-secret"
+                        "@postgres/db"
+                    ),
+                    "REDIS_URL": "redis://:strong-production-redis-secret@redis:6379/0",
+                    "S3_SECRET_KEY": "strong-production-s3-secret",
                 },
             },
             "web": {
@@ -130,7 +150,10 @@ def test_rejects_demo_auth_insecure_origins_and_public_datastores() -> None:
     assert "api does not require OIDC authentication" in issues
     assert "api OIDC_ISSUER must contain only HTTPS origins" in issues
     assert "api CORS_ORIGINS must contain only HTTPS origins" in issues
-    assert "api.ARTIFACT_SIGNING_SECRET is missing or uses an insecure default" in issues
+    assert (
+        "api.ARTIFACT_SIGNING_SECRET is missing, too short, or uses an insecure default"
+        in issues
+    )
     assert "web embeds a development demo token" in issues
     assert "api has no exact source revision" in issues
     assert "api has no timezone-aware build timestamp" in issues
@@ -209,7 +232,7 @@ def test_rejects_a_well_formed_but_wrong_lock_hash() -> None:
 
     assert "api uv.lock SHA-256 does not match the checked source tree" in issues
     assert "web pnpm-lock.yaml SHA-256 does not match the checked source tree" in issues
-    assert "api source manifest does not match the checked build context" in issues
+    assert "api source manifest does not match the checked build/control set" in issues
     assert "api source revision does not match the checked Git HEAD" in issues
 
 
@@ -221,3 +244,37 @@ def test_rejects_non_loopback_publication_and_missing_service() -> None:
     issues = external_production_issues(config)
 
     assert issues == ["required services are missing: scheduler"]
+
+
+def test_rejects_short_secrets_and_role_substitution() -> None:
+    config = deepcopy(valid_config())
+    config["services"]["postgres"]["environment"]["POSTGRES_USER"] = (
+        "custombuild_migrator"
+    )
+    config["services"]["api"]["environment"]["DATABASE_URL"] = (
+        "postgresql://custombuild_worker:short@postgres/db"
+    )
+    config["services"]["worker"]["environment"]["REDIS_URL"] = (
+        "redis://:x@redis-with-a-very-long-hostname:6379/0"
+    )
+    config["services"]["object-storage"]["environment"]["AWS_SECRET_ACCESS_KEY"] = (
+        "x"  # noqa: S105 - intentionally insecure negative fixture.
+    )
+
+    issues = external_production_issues(config)
+
+    assert "postgres.POSTGRES_USER must be custombuild_bootstrap" in issues
+    assert "api.DATABASE_URL must use the fixed custombuild_api role" in issues
+    assert "worker.REDIS_URL password is missing, too short, or insecure" in issues
+    assert any("object-storage.AWS_SECRET_ACCESS_KEY" in issue for issue in issues)
+
+
+def test_rejects_disabled_or_missing_four_eyes_production_approval() -> None:
+    config = deepcopy(valid_config())
+    config["services"]["api"]["environment"]["PRODUCTION_FOUR_EYES_REQUIRED"] = "false"
+    del config["services"]["worker"]["environment"]["PRODUCTION_FOUR_EYES_REQUIRED"]
+
+    issues = external_production_issues(config)
+
+    assert "api does not require four-eyes production approval" in issues
+    assert "worker does not require four-eyes production approval" in issues

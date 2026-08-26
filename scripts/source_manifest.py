@@ -1,9 +1,11 @@
-"""Create a deterministic manifest for the Docker build context.
+"""Create a deterministic manifest for image inputs and release workflows.
 
 The manifest deliberately contains no clock, host, Git, or filesystem timestamp
-metadata.  It records the paths and content that Docker can see after applying
-the repository's ``.dockerignore``.  ``VCS_REF`` can therefore remain the Git
-commit while this manifest identifies an exact dirty or clean source snapshot.
+metadata. It records Docker-visible application inputs after applying
+``.dockerignore`` plus explicitly named release-control inputs (currently the
+GitHub workflows) that govern how those images are built and accepted.
+``VCS_REF`` and the final clean-tree gate bind the remainder of the repository;
+this manifest identifies the exact build-and-workflow source subset.
 """
 
 from __future__ import annotations
@@ -20,12 +22,18 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-SCHEMA_VERSION = "custombuild.source-manifest.v1"
+SCHEMA_VERSION = "custombuild.build-control-source-manifest.v2"
 APPLICATION_BUILD_INPUTS = (
+    ".github/workflows",
     ".dockerignore",
+    ".grype.yaml",
+    "Makefile",
     "apps/web",
     "cad",
     "cam",
+    "compose.external-production.yml",
+    "compose.yml",
+    "infra",
     "package.json",
     "packages",
     "pnpm-lock.yaml",
@@ -33,14 +41,18 @@ APPLICATION_BUILD_INPUTS = (
     "postprocessors",
     "pyproject.toml",
     "scripts",
+    "security",
     "services",
     "uv.lock",
 )
 APPLICATION_DOCKERFILES = (
     "apps/web/Dockerfile",
+    "infra/seaweedfs/Dockerfile",
     "services/api/Dockerfile",
     "services/worker/Dockerfile",
 )
+RELEASE_CONTROL_INPUTS = (".github/workflows",)
+LEGACY_SOURCE_ROOT = "prod"
 
 
 class SourceManifestError(RuntimeError):
@@ -164,10 +176,25 @@ def _relative_posix(root: Path, path: Path) -> str:
     return path.relative_to(root).as_posix()
 
 
+def _normalised_file_mode(mode: int) -> int:
+    """Preserve Docker-relevant executability without host-specific write bits."""
+
+    return 0o755 if mode & 0o111 else 0o644
+
+
 def _is_application_build_input(relative: str) -> bool:
     return any(
         relative == input_path or relative.startswith(f"{input_path}/")
         for input_path in APPLICATION_BUILD_INPUTS
+    )
+
+
+def _is_release_control_path_or_ancestor(relative: str) -> bool:
+    return any(
+        relative == input_path
+        or relative.startswith(f"{input_path}/")
+        or input_path.startswith(f"{relative}/")
+        for input_path in RELEASE_CONTROL_INPUTS
     )
 
 
@@ -234,7 +261,9 @@ def _discover_paths(root: Path, dockerignore: DockerIgnore) -> list[tuple[str, s
     discovered: list[tuple[str, str, Path]] = []
 
     def fail_walk(error: OSError) -> None:
-        raise SourceManifestError(f"cannot enumerate Docker build context: {error}") from error
+        raise SourceManifestError(
+            f"cannot enumerate build/control source inputs: {error}"
+        ) from error
 
     for current, directory_names, file_names in os.walk(
         root,
@@ -250,9 +279,10 @@ def _discover_paths(root: Path, dockerignore: DockerIgnore) -> list[tuple[str, s
             is_junction = bool(getattr(path, "is_junction", lambda: False)())
             is_link = path.is_symlink() or is_junction
             ignored = dockerignore.is_ignored(relative, is_dir=not is_link)
-            if ignored and not dockerignore.has_negation:
+            release_control = _is_release_control_path_or_ancestor(relative)
+            if ignored and not dockerignore.has_negation and not release_control:
                 continue
-            if not ignored:
+            if not ignored or release_control:
                 discovered.append((relative, "symlink" if is_link else "directory", path))
             if not is_link:
                 visible_directories.append(name)
@@ -261,7 +291,9 @@ def _discover_paths(root: Path, dockerignore: DockerIgnore) -> list[tuple[str, s
         for name in sorted(file_names):
             path = current_path / name
             relative = _relative_posix(root, path)
-            if dockerignore.is_ignored(relative, is_dir=False):
+            if dockerignore.is_ignored(
+                relative, is_dir=False
+            ) and not _is_release_control_path_or_ancestor(relative):
                 continue
             discovered.append((relative, "symlink" if path.is_symlink() else "file", path))
     try:
@@ -275,6 +307,12 @@ def build_source_manifest(repo: Path) -> tuple[dict[str, Any], bytes, str]:
     """Return the manifest object, canonical bytes, and SHA-256 digest."""
 
     root = repo.resolve()
+    legacy_root = root / LEGACY_SOURCE_ROOT
+    if legacy_root.exists():
+        raise SourceManifestError(
+            "legacy prod/ source tree is present; the repository root must be the only "
+            "release source"
+        )
     dockerignore_path = root / ".dockerignore"
     if not dockerignore_path.is_file():
         raise SourceManifestError(f"missing Docker ignore contract: {dockerignore_path}")
@@ -311,7 +349,7 @@ def build_source_manifest(repo: Path) -> tuple[dict[str, Any], bytes, str]:
             raise SourceManifestError(f"cannot read build input: {relative}") from exc
         entries.append(
             {
-                "mode": 0o644,
+                "mode": _normalised_file_mode(mode),
                 "path": relative,
                 "sha256": digest,
                 "size": size,
@@ -331,6 +369,7 @@ def build_source_manifest(repo: Path) -> tuple[dict[str, Any], bytes, str]:
         "dockerignore_sha256": hashlib.sha256(dockerignore_bytes).hexdigest(),
         "entries": entries,
         "input_roots": list(APPLICATION_BUILD_INPUTS),
+        "release_control_roots": list(RELEASE_CONTROL_INPUTS),
         "schema_version": SCHEMA_VERSION,
     }
     canonical = json.dumps(
@@ -342,7 +381,7 @@ def build_source_manifest(repo: Path) -> tuple[dict[str, Any], bytes, str]:
     try:
         canonical_bytes = canonical.encode("utf-8")
     except UnicodeEncodeError as exc:
-        raise SourceManifestError("Docker build input paths must be valid UTF-8") from exc
+        raise SourceManifestError("build/control input paths must be valid UTF-8") from exc
     return manifest, canonical_bytes, hashlib.sha256(canonical_bytes).hexdigest()
 
 
@@ -357,9 +396,11 @@ def _ensure_output_is_not_a_build_input(
         relative = resolved.relative_to(repo.resolve()).as_posix()
     except ValueError:
         return resolved
-    if not dockerignore.is_ignored(relative, is_dir=False):
+    if not dockerignore.is_ignored(
+        relative, is_dir=False
+    ) or _is_release_control_path_or_ancestor(relative):
         raise SourceManifestError(
-            f"manifest output would change the Docker build context: {relative}; "
+            f"manifest output would change the build/control source set: {relative}; "
             "write it outside the repository or under an ignored path such as artifacts/"
         )
     return resolved

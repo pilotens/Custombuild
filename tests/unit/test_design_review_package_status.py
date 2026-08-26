@@ -4,11 +4,13 @@ from dataclasses import replace
 
 import pytest
 from custombuild_manufacturing import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DFM_GRAIN_BLOCKER_CODE,
     DFM_GRAIN_REQUIRED_ACTION,
     CAMStageStatus,
     DesignReviewPackageStatus,
     blocked_design_review_package_status,
+    dado_retention_evidence_missing,
     generated_design_review_package_status,
     normalize_design_review_package_status,
 )
@@ -20,6 +22,7 @@ from custombuild_manufacturing import (
         "TWO_SIDED_REGISTRATION_MISSING",
         "STOCK_PROFILE_MISSING",
         DFM_GRAIN_BLOCKER_CODE,
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     ),
 )
 def test_blocked_cam_status_is_review_ready_but_never_machine_ready(
@@ -115,6 +118,9 @@ def test_status_dataclass_cannot_be_normalized_after_unknown_schema() -> None:
         blocked_design_review_package_status(("TWO_SIDED_REGISTRATION_MISSING",)),
         blocked_design_review_package_status(("STOCK_PROFILE_MISSING",)),
         blocked_design_review_package_status((DFM_GRAIN_BLOCKER_CODE,)),
+        blocked_design_review_package_status(
+            (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+        ),
         generated_design_review_package_status(validation_program_included=True),
     ),
 )
@@ -133,3 +139,98 @@ def test_grain_blocker_status_uses_the_single_canonical_required_action() -> Non
 
     assert status.blocker_codes == (DFM_GRAIN_BLOCKER_CODE,)
     assert status.required_action == DFM_GRAIN_REQUIRED_ACTION
+
+
+def test_dado_retention_blocker_cannot_be_replaced_by_review_text() -> None:
+    status = blocked_design_review_package_status(
+        (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+    )
+
+    assert status.blocker_codes == (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+    assert "checksum-addressed" in status.required_action
+    assert "review acknowledgement" in status.required_action
+
+
+class _JointType:
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+
+class _Joint:
+    def __init__(self, joint_type: object) -> None:
+        self.joint_type = joint_type
+
+
+class _DesignResult:
+    def __init__(self, joints: tuple[object, ...]) -> None:
+        self.joints = joints
+
+
+def test_retention_detection_is_case_insensitive_but_does_not_infer_other_joints() -> None:
+    assert dado_retention_evidence_missing(_DesignResult((_Joint(_JointType("DaDo")),)))
+    assert not dado_retention_evidence_missing(_DesignResult((_Joint("RABBET"),)))
+    assert not dado_retention_evidence_missing(object())
+
+
+@pytest.mark.parametrize("value", (None, 0, 1, "false"))
+def test_generated_status_requires_an_actual_boolean(value: object) -> None:
+    with pytest.raises(ValueError, match="must be a boolean"):
+        generated_design_review_package_status(validation_program_included=value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("blocker_codes", ((), ("",), (None,)))
+def test_blocked_status_rejects_empty_or_non_string_codes(
+    blocker_codes: tuple[object, ...],
+) -> None:
+    with pytest.raises(ValueError, match="non-empty blocker codes"):
+        blocked_design_review_package_status(blocker_codes)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("schema_version", "custombuild.design-review-package-status.v2", "schema"),
+        ("package_status", "RELEASED", "not ready"),
+        ("operations_included", 1, "must be booleans"),
+        ("cam_status", None, "CAM status"),
+        ("cam_status", "RELEASED", "CAM status"),
+    ),
+)
+def test_status_parser_rejects_unsupported_identity_and_typed_claims(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    payload = generated_design_review_package_status(
+        validation_program_included=True
+    ).as_dict()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        normalize_design_review_package_status(payload)
+
+
+@pytest.mark.parametrize("mutation", ({"unexpected": True}, {"schema_version": None}))
+def test_status_parser_rejects_missing_or_extra_fields(
+    mutation: dict[str, object],
+) -> None:
+    payload = generated_design_review_package_status(
+        validation_program_included=True
+    ).as_dict()
+    if mutation == {"schema_version": None}:
+        del payload["schema_version"]
+    else:
+        payload.update(mutation)
+
+    with pytest.raises(ValueError, match="unexpected structure"):
+        normalize_design_review_package_status(payload)
+
+
+def test_generated_status_cannot_omit_a_manufacturing_artifact() -> None:
+    payload = generated_design_review_package_status(
+        validation_program_included=True
+    ).as_dict()
+    payload["nesting_included"] = False
+
+    with pytest.raises(ValueError, match="does not match"):
+        normalize_design_review_package_status(payload)

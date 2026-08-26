@@ -13,19 +13,22 @@ x-python-release-build-args: &python-release-build-args
 
 services:
   postgres:
-    image: postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+    image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
     environment:
       APP_ENV: ${APP_ENV:-development}
       POSTGRES_DB: ${POSTGRES_DB:-custombuild}
-      POSTGRES_USER: ${POSTGRES_USER:-custombuild_migrator}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-migrator}
+      POSTGRES_USER: ${POSTGRES_BOOTSTRAP_USER:-custombuild_bootstrap}
+      POSTGRES_PASSWORD: ${POSTGRES_BOOTSTRAP_PASSWORD:-change-me-bootstrap}
+      MIGRATOR_DATABASE_USER: ${MIGRATOR_DATABASE_USER:-custombuild_migrator}
+      MIGRATOR_DATABASE_PASSWORD: ${MIGRATOR_DATABASE_PASSWORD:-change-me-migrator}
       API_DATABASE_PASSWORD: ${API_DATABASE_PASSWORD:-change-me-api}
       WORKER_DATABASE_PASSWORD: ${WORKER_DATABASE_PASSWORD:-change-me-worker}
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./infra/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro
+      - ./infra/postgres/healthcheck.sh:/usr/local/bin/custombuild-postgres-healthcheck:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-custombuild_migrator} -d ${POSTGRES_DB:-custombuild}"]
+      test: ["CMD", "/bin/sh", "/usr/local/bin/custombuild-postgres-healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -58,8 +61,26 @@ services:
     cpus: 0.5
     networks: [backend]
 
+  object-storage-init:
+    image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+    command: ["/bin/sh", "-ec", "chown -R 1000:1000 /data"]
+    volumes:
+      - object-storage-data:/data
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.25
+    networks: [backend]
+
   object-storage:
-    image: chrislusf/seaweedfs:4.41@sha256:43b768cd62b00d132439cda881b93fd1adebf1b315e996e794087743821d771d
+    image: custombuild-seaweedfs:${VCS_REF:-uncommitted}
+    build:
+      context: .
+      dockerfile: infra/seaweedfs/Dockerfile
     command: ["mini", "-dir=/data", "-master.telemetry=false"]
     environment:
       AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-custombuild}
@@ -70,7 +91,7 @@ services:
     ports:
       - "127.0.0.1:${S3_BIND_PORT:-9000}:8333"
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:9333/dir/status"]
+      test: ["CMD", "/usr/local/bin/healthcheck"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -79,9 +100,13 @@ services:
     pids_limit: 256
     mem_limit: 1g
     cpus: 1.0
+    depends_on:
+      object-storage-init:
+        condition: service_completed_successfully
     networks: [backend, artifact-ingress]
 
   migrate:
+    image: custombuild-api:${VCS_REF:-uncommitted}
     build:
       context: .
       dockerfile: services/api/Dockerfile
@@ -89,6 +114,7 @@ services:
     command: ["python", "-m", "scripts.run_migrations"]
     environment:
       APP_ENV: ${APP_ENV:-development}
+      PRODUCTION_FOUR_EYES_REQUIRED: ${PRODUCTION_FOUR_EYES_REQUIRED:-false}
       DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgresql+psycopg://custombuild_migrator:change-me-migrator@postgres:5432/custombuild}
     depends_on:
       postgres:
@@ -98,12 +124,14 @@ services:
     cpus: 1.0
 
   api:
+    image: custombuild-api:${VCS_REF:-uncommitted}
     build:
       context: .
       dockerfile: services/api/Dockerfile
       args: *python-release-build-args
     environment:
       APP_ENV: ${APP_ENV:-development}
+      PRODUCTION_FOUR_EYES_REQUIRED: ${PRODUCTION_FOUR_EYES_REQUIRED:-false}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://custombuild_api:change-me-api@postgres:5432/custombuild}
       REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
       READINESS_TIMEOUT_SECONDS: ${READINESS_TIMEOUT_SECONDS:-2}
@@ -149,6 +177,7 @@ services:
     networks: [edge, backend]
 
   worker:
+    image: custombuild-worker:${VCS_REF:-uncommitted}
     build:
       context: .
       dockerfile: services/worker/Dockerfile
@@ -158,6 +187,7 @@ services:
     environment:
       HOME: /tmp/custombuild
       APP_ENV: ${APP_ENV:-development}
+      PRODUCTION_FOUR_EYES_REQUIRED: ${PRODUCTION_FOUR_EYES_REQUIRED:-false}
       DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://custombuild_worker:change-me-worker@postgres:5432/custombuild}
       REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
       S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
@@ -190,16 +220,18 @@ services:
     networks: [backend]
 
   scheduler:
+    image: custombuild-worker:${VCS_REF:-uncommitted}
     build:
       context: .
       dockerfile: services/worker/Dockerfile
       args:
         <<: *python-release-build-args
-        INSTALL_FREECAD: "false"
+        INSTALL_FREECAD: ${INSTALL_FREECAD:-true}
     command: ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "beat", "--schedule=/tmp/celerybeat-schedule", "--loglevel=WARNING"]
     environment:
       HOME: /tmp/custombuild
       APP_ENV: ${APP_ENV:-development}
+      PRODUCTION_FOUR_EYES_REQUIRED: ${PRODUCTION_FOUR_EYES_REQUIRED:-false}
       DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://custombuild_worker:change-me-worker@postgres:5432/custombuild}
       REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
       S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
@@ -232,6 +264,7 @@ services:
     networks: [backend]
 
   web:
+    image: custombuild-web:${VCS_REF:-uncommitted}
     build:
       context: .
       dockerfile: apps/web/Dockerfile

@@ -162,3 +162,96 @@ def test_projection_rejects_noncanonical_grain_issue() -> None:
 
     with pytest.raises(ValueError):
         grain_control_projection((forged,))
+
+
+def test_unknown_part_axis_remains_fail_closed_until_stock_binding_is_resolved() -> None:
+    issue = stock_grain_binding_issues(
+        (part(grain_direction="diagonal"),),
+        stock(grain_direction="UNSPECIFIED"),
+    )[0]
+
+    assert issue.inputs["required_part_grain_directions"] == ("UNKNOWN",)
+    assert issue.severity is Severity.BLOCK
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        {"code": "DFM-GRAIN-FORGED"},
+        {"severity": Severity.PASS},
+        {"inputs": {"binding_status": "VERIFIED"}},
+        {"inputs": {"assessment_phase": "AFTER_REVIEW"}},
+        {"inputs": {"material_id": " birch-plywood"}},
+        {"inputs": {"affected_part_ids": ()}},
+        {"inputs": {"unrecognized_evidence": "plausible"}},
+        {"inputs": {"stock_grain_direction": "X"}},
+    ),
+)
+def test_grain_issue_rejects_noncanonical_identity_and_evidence_shape(
+    mutation: dict[str, object],
+) -> None:
+    canonical = stock_grain_binding_issues((part(),), stock())[0]
+    changes = dict(mutation)
+    if "inputs" in changes:
+        changes["inputs"] = {**canonical.inputs, **changes["inputs"]}
+
+    with pytest.raises(ValueError):
+        validate_stock_grain_binding_issue(replace(canonical, **changes))
+
+
+def test_grain_issue_rejects_package_phase_severity_drift() -> None:
+    canonical = stock_grain_binding_issues((part(),), stock())[0]
+
+    with pytest.raises(ValueError, match="package phase"):
+        validate_stock_grain_binding_issue(
+            canonical,
+            expected_severity=Severity.WARNING,
+        )
+
+    with pytest.raises(ValueError, match="package status"):
+        validate_stock_grain_binding_issue(
+            canonical,
+            expected_phase=DFM_GRAIN_STOCK_SELECTION_INCOMPLETE_PHASE,
+        )
+
+
+@pytest.mark.parametrize(
+    ("stock_id", "stock_axis"),
+    (("forged-stock", "UNAVAILABLE"), (None, "X")),
+)
+def test_stock_selection_warning_cannot_claim_matched_stock_evidence(
+    stock_id: object,
+    stock_axis: object,
+) -> None:
+    canonical = stock_grain_binding_issues(
+        (part(),),
+        None,
+        severity=Severity.WARNING,
+    )[0]
+    forged = replace(
+        canonical,
+        inputs={
+            **canonical.inputs,
+            "stock_id": stock_id,
+            "stock_grain_direction": stock_axis,
+        },
+    )
+
+    with pytest.raises(ValueError, match="cannot claim a matched stock"):
+        validate_stock_grain_binding_issue(forged)
+
+
+def test_stock_selection_warning_cannot_be_promoted_to_a_block() -> None:
+    canonical = stock_grain_binding_issues(
+        (part(),),
+        None,
+        severity=Severity.WARNING,
+    )[0]
+
+    with pytest.raises(ValueError, match="must be a warning"):
+        validate_stock_grain_binding_issue(replace(canonical, severity=Severity.BLOCK))
+
+
+def test_stock_grain_assessment_rejects_pass_severity() -> None:
+    with pytest.raises(ValueError, match="BLOCK or WARNING"):
+        stock_grain_binding_issues((part(),), stock(), severity=Severity.PASS)

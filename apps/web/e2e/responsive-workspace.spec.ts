@@ -99,12 +99,11 @@ test("embedded Explore and all persistent workspace modes reflow without documen
       await expectPanelsDoNotOverlap(page);
     }
 
-    if (viewport.width <= 820) {
-      await expect(page.getByRole("navigation", { name: "Mobil huvudnavigering" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "Huvudnavigering" })).toBeHidden();
-    } else {
-      await expect(page.getByRole("navigation", { name: "Mobil huvudnavigering" })).toBeHidden();
-      await expect(page.getByRole("complementary", { name: "Huvudnavigering" })).toBeVisible();
-    }
+    // The redesigned workspace keeps one persistent, horizontally scrollable
+    // product-mode navigation on every viewport instead of duplicating mobile
+    // and desktop navigation trees.
+    await expect(modes).toBeVisible();
+    await expect(modes.getByRole("button")).toHaveCount(4);
+    await expect(page.locator(".side-nav nav, .mobile-nav")).toHaveCount(0);
   }
 });

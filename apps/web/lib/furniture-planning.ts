@@ -16,6 +16,15 @@ export interface FurniturePlanningBrief {
   width_mm: number;
   height_mm: number;
   depth_mm: number;
+  /**
+   * True only after the user has submitted the measurement form.
+   *
+   * The default brief contains useful recommendation values, but those values
+   * must never silently replace a gallery template's advertised dimensions.
+   * Optional keeps version-1 drafts backwards compatible; an absent value is
+   * treated as an unconfirmed default.
+   */
+  dimensionsConfirmed?: boolean;
   space: PlanningSpace;
   primaryUse: PlanningUse;
   priority: PlanningPriority;
@@ -64,6 +73,7 @@ export function isFurniturePlanningBrief(value: unknown): value is FurniturePlan
     && typeof candidate.depth_mm === "number"
     && candidate.depth_mm >= PLANNING_DIMENSION_LIMITS.depth_mm.minimum
     && candidate.depth_mm <= PLANNING_DIMENSION_LIMITS.depth_mm.maximum
+    && (candidate.dimensionsConfirmed === undefined || typeof candidate.dimensionsConfirmed === "boolean")
     && ["wall", "alcove", "freestanding", "unsure"].includes(candidate.space ?? "")
     && ["books", "display", "mixed", "concealed", "unsure"].includes(candidate.primaryUse ?? "")
     && ["balanced", "capacity", "flexibility", "budget", "unsure"].includes(candidate.priority ?? "")

@@ -22,34 +22,6 @@
           }
         }
       }
-    },
-    "wall-library": {
-      "registrations_by_stock": {
-        "gate-wall-library-mdf-18": {
-          "0": {
-            "method_id": "automated-design-review:wall-library:mdf-18:sheet-001",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          },
-          "1": {
-            "method_id": "automated-design-review:wall-library:mdf-18:sheet-002",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          },
-          "2": {
-            "method_id": "automated-design-review:wall-library:mdf-18:sheet-003",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          },
-          "3": {
-            "method_id": "automated-design-review:wall-library:mdf-18:sheet-004",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          }
-        },
-        "gate-wall-library-mdf-6": {
-          "0": {
-            "method_id": "automated-design-review:wall-library:mdf-6:sheet-001",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          }
-        }
-      }
     }
   }
 }

@@ -1,6 +1,6 @@
-FROM python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS runtime
+FROM python:3.13.15-slim-trixie@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4 AS runtime
 
-ARG DEBIAN_SNAPSHOT=20260803T000000Z
+ARG DEBIAN_SNAPSHOT=20260825T000000Z
 ARG APP_VERSION=0.1.0-local
 ARG VCS_REF=uncommitted
 ARG BUILD_DATE=unknown
@@ -23,13 +23,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 RUN printf '%s\n' \
       'Types: deb' \
       "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
-      'Suites: bookworm bookworm-updates' \
+      'Suites: trixie trixie-updates' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       '' \
       'Types: deb' \
       "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
-      'Suites: bookworm-security' \
+      'Suites: trixie-security' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       > /etc/apt/sources.list.d/debian.sources \

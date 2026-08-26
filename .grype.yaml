@@ -1,22 +1,3 @@
-# Temporary, exact-version suppressions for Anchore issue #2852: Grype treats a
-# fix in another Python minor/pre-release branch as actionable for 3.13. These
-# entries are bound by exact CVE/package/version/type tuples to
-# security/vulnerability-exceptions.json. The release gate rejects missing,
-# mismatched or expired review records. High/Critical scans include findings
-# whether or not an upstream fix exists.
-ignore:
-  - vulnerability: CVE-2026-11940
-    package:
-      name: python
-      version: 3.13.14
-      type: binary
-  - vulnerability: CVE-2026-15308
-    package:
-      name: python
-      version: 3.13.14
-      type: binary
-  - vulnerability: CVE-2026-11972
-    package:
-      name: python
-      version: 3.13.14
-      type: binary
+# Candidate images are scanned without vulnerability suppressions. A future
+# exception must be exact, time-bounded and mirrored in the reviewed ledger.
+ignore: []

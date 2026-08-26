@@ -12,7 +12,6 @@ function imageHash(image: Buffer): string {
 }
 
 test("mallbilder och dynamisk 3D-vy passerar den visuella kvalitetskontrollen", async ({
-  browserName,
   page,
 }, testInfo) => {
   // Software-rendered WebGL in the isolated Linux acceptance container is
@@ -56,9 +55,9 @@ test("mallbilder och dynamisk 3D-vy passerar den visuella kvalitetskontrollen", 
   await planner.getByRole("button", { name: "Öppna Väggbibliotek i Studio" }).click();
   await expect(page.getByRole("heading", { name: "Möbel", exact: true })).toBeVisible();
   await expect(page.getByText("Dra även måtthandtagen direkt i modellen.", { exact: true })).toBeVisible();
-  const renderedModel = browserName === "firefox"
-    ? page.getByTestId("front-projection-fallback")
-    : page.locator("canvas").first();
+  const viewer = page.getByTestId("furniture-viewer");
+  await expect(viewer).toHaveAttribute("data-renderer", /^(webgl|front-projection)$/);
+  const renderedModel = viewer.locator("canvas, [data-testid='front-projection-fallback']").first();
   await expect(renderedModel).toBeVisible();
   await expect(page.getByRole("button", { name: "Anpassa vy" })).toBeVisible();
 
@@ -96,7 +95,7 @@ test("mallbilder och dynamisk 3D-vy passerar den visuella kvalitetskontrollen", 
   await expect(page.locator(".cb-context-panel").getByRole("status")).toContainText(/Cirka .* mm fri bredd per fack/);
 
   const readabilityTargets = [
-    [".side-nav nav button", 14],
+    [".cb-workspace-navigation button", 14],
     [".cb-context-panel__header h2", 20],
     [".cb-workspace-navigation button small", 10],
     [".cb-dimension-input > label", 12],

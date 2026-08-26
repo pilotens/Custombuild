@@ -17,17 +17,19 @@ uv run python scripts/compose_backup.py \
 ```
 
 Use a new empty directory for every run. The command pauses API, worker and the
-singleton scheduler, lists and downloads every S3 object to produce a key/size/SHA-256
-inventory, records the PostgreSQL timestamp, WAL LSN and Alembic head, and makes
+singleton scheduler, lists and downloads every S3 object to produce a
+key/size/SHA-256/media-type/immutable-metadata inventory, records the PostgreSQL
+timestamp, WAL LSN, exact per-table row counts and Alembic head, and makes
 a custom-format database dump. It then stops SeaweedFS cleanly, archives its
 quiescent volume using a digest-pinned helper image, restarts SeaweedFS and
 confirms that its complete inventory is unchanged before application writers
 are resumed. Restart and unpause operations run across failure paths and report
 any recovery error explicitly.
 
-The v2 manifest pins the exact SeaweedFS image and contains checksums for both
-backup payloads and every S3 object. Legacy v1/MinIO manifests deliberately fail
-verification because they do not contain sufficient recovery evidence.
+The v4 manifest binds the exact repository-built SeaweedFS tag and image ID,
+source-manifest SHA, Git revision, database counts and checksums for both backup
+payloads and every S3 object. Legacy manifests deliberately fail verification
+because they do not contain sufficient recovery evidence.
 Existing backup directories and source volumes are never overwritten or
 deleted. Run this during a maintenance window that also prevents use of
 previously issued direct S3 upload URLs. This local mechanism is not a substitute
@@ -61,8 +63,8 @@ scheduling, encryption, off-site replication or alert delivery.
    head; run an explicitly reviewed migration only when restoring an older
    compatible backup.
 5. Boot the exact manifest-pinned SeaweedFS image against the restored volume,
-   then list and download every object and verify key, size and SHA-256 against
-   the manifest.
+   then list and download every object and verify key, size, SHA-256, media type
+   and immutable metadata against the manifest.
 6. Start one worker, let queued/idempotent jobs settle, then scale workers.
 7. Run tenant-isolation and seeded acceptance probes before reopening traffic.
 
@@ -74,10 +76,13 @@ uv run python scripts/restore_drill.py \
   --output test-results/backups/2026-08-11T1200/restore-drill.json
 ```
 
-It verifies the v2 manifest, performs a real `pg_restore`, checks the restored
-and repository Alembic heads and project rows, extracts the object snapshot,
-boots the pinned SeaweedFS image on a random loopback-only port and verifies the
-full S3 inventory by downloading it. It removes only narrowly named
+It verifies the v4 manifest and restores as the non-superuser
+`custombuild_migrator`, so public tables, sequences and Alembic state retain the
+correct owner. It requires exact per-table row counts, a real schema mutation,
+safe role attributes and tenant RLS through both API and worker logins. It then
+boots the manifest's exact SeaweedFS image ID on a random loopback-only port and
+verifies the full S3 inventory by downloading it. The v3 restore evidence cannot
+report `PASS` before these probes succeed. It removes only narrowly named
 `custombuild-restore-<8 hex>` containers and volumes, including on failure. It
 does not reopen traffic; tenant and HTTP acceptance remain mandatory after a
 platform restore. Every Docker invocation, log/readiness probe, large payload
@@ -98,7 +103,8 @@ python scripts/check_external_production.py --repo .
 ```
 
 `compose.external-production.yml` refuses missing OIDC settings, release
-identity and secrets. API, web and artifact ports remain loopback-only so a
+identity, four-eyes approval enforcement and secrets. API, web and artifact
+ports remain loopback-only so a
 separately reviewed HTTPS reverse proxy can expose them; PostgreSQL and Redis
 remain unpublished. The checker validates the rendered configuration without
 printing secret values. IdP configuration, certificates, secret rotation and
@@ -188,10 +194,12 @@ the exact candidate digest in the image manifest. Promotion must deploy that dig
 not rebuild or resolve a mutable tag, and the deployment platform must compare the
 running container digest with the approved manifest before accepting runtime traffic.
 
-Before promotion, require a clean reviewed commit, the release-readiness report,
-the three image manifests, SBOMs, vulnerability results and environment-specific
-configuration approval. Signature and platform provenance remain deployment-platform
-responsibilities until a registry and trust root have been selected.
+Before promotion, require a clean reviewed commit and the final readiness report
+that binds static controls, Compose design-review acceptance, the exact running
+image IDs and their scans, coordinated backup v4 and restore evidence v3 to the
+same Git/source-manifest identity. Also retain SBOMs and environment-specific
+configuration approval. Signature and platform provenance remain
+deployment-platform responsibilities until a registry and trust root have been selected.
 
 Register the web application as an OIDC public client with Authorization Code and
 PKCE (`S256`). The callback URI must be the public web origin's exact root (for

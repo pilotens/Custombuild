@@ -14,6 +14,7 @@ from app.models import (
     DesignVersion,
     GenerationJob,
     JobStatus,
+    Organization,
     OutboxEvent,
 )
 from celery.exceptions import SoftTimeLimitExceeded
@@ -35,19 +36,35 @@ def worker_session_factory(
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     monkeypatch.setattr(worker_tasks, "SessionFactory", factory)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_validate_completion_evidence",
+        lambda _session, _organization_id, _job: None,
+    )
     return factory
 
 
-def _seed_generation_job(factory: sessionmaker[Session]) -> tuple[str, str]:
-    organization_id = "22222222-2222-4222-8222-222222222222"
-    version_id = "33333333-3333-4333-8333-333333333333"
-    job_id = "55555555-5555-4555-8555-555555555555"
+def _seed_generation_job(
+    factory: sessionmaker[Session],
+    *,
+    organization_id: str = "22222222-2222-4222-8222-222222222222",
+    version_id: str = "33333333-3333-4333-8333-333333333333",
+    job_id: str = "55555555-5555-4555-8555-555555555555",
+    project_id: str = "44444444-4444-4444-8444-444444444444",
+) -> tuple[str, str]:
     with factory.begin() as session:
+        session.add(
+            Organization(
+                id=organization_id,
+                name=f"Worker tenant {organization_id[:8]}",
+                slug=f"worker-{organization_id}",
+            )
+        )
         session.add(
             DesignVersion(
                 id=version_id,
                 organization_id=organization_id,
-                project_id="44444444-4444-4444-8444-444444444444",
+                project_id=project_id,
                 revision=1,
                 status=DesignStatus.design_validated,
                 design_hash="d" * 64,
@@ -222,6 +239,70 @@ def test_deadline_fences_owned_completion_before_artifacts_and_success_audit(
         ) == []
 
 
+def test_completion_validation_runs_before_success_and_rolls_back_on_failure(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    job, version = claim
+    token = job.lease_token
+    assert token is not None
+    observed: list[tuple[JobStatus, bool, int]] = []
+
+    def reject_completion(
+        session: Session,
+        observed_organization_id: str,
+        staged_job: GenerationJob,
+    ) -> None:
+        observed.append(
+            (
+                staged_job.status,
+                staged_job.result_json == _generation_result(),
+                len(
+                    list(
+                        session.scalars(
+                            select(Artifact).where(
+                                Artifact.generation_job_id == staged_job.id,
+                                Artifact.organization_id == observed_organization_id,
+                            )
+                        )
+                    )
+                ),
+            )
+        )
+        raise worker_tasks.ProductionBlockedError("staged evidence rejected")
+
+    monkeypatch.setattr(worker_tasks, "_validate_completion_evidence", reject_completion)
+
+    with pytest.raises(worker_tasks.ProductionBlockedError, match="staged evidence rejected"):
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            token,
+            version,
+            _generation_result(),
+        )
+
+    assert observed == [(JobStatus.running, True, 2)]
+    with worker_session_factory() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.status == JobStatus.running
+        assert stored.lease_token == token
+        assert stored.result_json is None
+        assert list(session.scalars(select(Artifact))) == []
+        assert list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.entity_id == job_id,
+                    AuditEvent.action == "generation.succeeded",
+                )
+            )
+        ) == []
+
+
 def test_lease_heartbeat_extends_only_the_current_tenant_owner(
     worker_session_factory: sessionmaker[Session],
 ) -> None:
@@ -258,6 +339,48 @@ def test_lease_heartbeat_extends_only_the_current_tenant_owner(
         assert stored.lease_expires_at is not None
         expires_at = stored.lease_expires_at.replace(tzinfo=UTC)
         assert expires_at == renewed_at + worker_tasks.GENERATION_LEASE_TTL
+
+
+def test_every_generation_job_transaction_binds_the_requested_tenant(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    contexts: list[str] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_tenant_context",
+        lambda _session, observed_id: contexts.append(observed_id),
+    )
+
+    first_claim = worker_tasks._claim_job(job_id, organization_id)
+    assert first_claim is not None
+    first_job, _first_version = first_claim
+    first_token = first_job.lease_token
+    assert first_token is not None
+    assert worker_tasks._renew_job_lease(job_id, organization_id, first_token)
+    assert worker_tasks._record_failure(
+        job_id,
+        organization_id,
+        first_token,
+        RuntimeError("retryable"),
+        terminal=False,
+    )
+
+    second_claim = worker_tasks._claim_job(job_id, organization_id)
+    assert second_claim is not None
+    second_job, second_version = second_claim
+    second_token = second_job.lease_token
+    assert second_token is not None
+    assert worker_tasks._complete_job(
+        job_id,
+        organization_id,
+        second_token,
+        second_version,
+        _generation_result(),
+    )
+
+    assert contexts == [organization_id] * 5
 
 
 def test_background_heartbeat_stops_when_lease_ownership_is_lost(
@@ -606,6 +729,13 @@ def test_poison_outbox_event_is_dead_lettered_without_blocking_the_next_event(
     job_id = "11111111-1111-4111-8111-111111111111"
     organization_id = "22222222-2222-4222-8222-222222222222"
     with worker_session_factory.begin() as session:
+        session.add(
+            Organization(
+                id=organization_id,
+                name="Outbox tenant",
+                slug="outbox-poison-tenant",
+            )
+        )
         session.add_all(
             [
                 OutboxEvent(
@@ -666,6 +796,13 @@ def test_transient_outbox_failure_is_bounded_and_sanitized(
     organization_id = "22222222-2222-4222-8222-222222222222"
     with worker_session_factory.begin() as session:
         session.add(
+            Organization(
+                id=organization_id,
+                name="Transient outbox tenant",
+                slug="outbox-transient-tenant",
+            )
+        )
+        session.add(
             OutboxEvent(
                 organization_id=organization_id,
                 event_key="bounded-transient",
@@ -700,3 +837,281 @@ def test_transient_outbox_failure_is_bounded_and_sanitized(
         assert "broker-secret-password" not in event.last_error
         assert "payload-secret" not in event.last_error
     assert attempts == worker_tasks.MAX_OUTBOX_PUBLISH_ATTEMPTS
+
+
+def test_outbox_dispatch_is_tenant_local_payload_bound_and_globally_limited(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_a = "11111111-1111-4111-8111-111111111111"
+    organization_b = "22222222-2222-4222-8222-222222222222"
+    job_a = "33333333-3333-4333-8333-333333333333"
+    job_b = "44444444-4444-4444-8444-444444444444"
+    now = datetime.now(UTC)
+    with worker_session_factory.begin() as session:
+        session.add_all(
+            [
+                Organization(id=organization_a, name="Tenant A", slug="dispatcher-a"),
+                Organization(id=organization_b, name="Tenant B", slug="dispatcher-b"),
+                OutboxEvent(
+                    organization_id=organization_a,
+                    event_key="tenant-a-valid",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job_a,
+                        "organization_id": organization_a,
+                    },
+                    created_at=now,
+                ),
+                OutboxEvent(
+                    organization_id=organization_a,
+                    event_key="tenant-a-forged-payload",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job_b,
+                        "organization_id": organization_b,
+                        "secret": "must-not-leak",
+                    },
+                    created_at=now + timedelta(seconds=1),
+                ),
+                OutboxEvent(
+                    organization_id=organization_b,
+                    event_key="tenant-b-valid",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job_b,
+                        "organization_id": organization_b,
+                    },
+                    created_at=now,
+                ),
+            ]
+        )
+
+    contexts: list[str] = []
+    published: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_tenant_context",
+        lambda _session, organization_id: contexts.append(organization_id),
+    )
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published.append(kwargs),
+    )
+
+    assert worker_tasks.dispatch_outbox.run(limit=1) == 1
+    assert published == [
+        {"kwargs": {"job_id": job_a, "organization_id": organization_a}}
+    ]
+    assert worker_tasks.dispatch_outbox.run(limit=10) == 1
+
+    assert contexts == [organization_a, organization_a, organization_b]
+    assert published == [
+        {"kwargs": {"job_id": job_a, "organization_id": organization_a}},
+        {"kwargs": {"job_id": job_b, "organization_id": organization_b}},
+    ]
+    with worker_session_factory() as session:
+        forged = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.event_key == "tenant-a-forged-payload"
+            )
+        )
+        assert forged is not None
+        assert forged.dispatched_at is None
+        assert forged.dead_lettered_at is not None
+        assert forged.last_error is not None
+        assert "must-not-leak" not in forged.last_error
+        assert organization_a not in forged.last_error
+        assert organization_b not in forged.last_error
+
+
+def test_stale_recovery_runs_one_tenant_transaction_per_organization(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_a = "11111111-1111-4111-8111-111111111111"
+    organization_b = "22222222-2222-4222-8222-222222222222"
+    job_a, _ = _seed_generation_job(
+        worker_session_factory,
+        organization_id=organization_a,
+        version_id="33333333-3333-4333-8333-333333333333",
+        job_id="55555555-5555-4555-8555-555555555555",
+        project_id="77777777-7777-4777-8777-777777777777",
+    )
+    job_b, _ = _seed_generation_job(
+        worker_session_factory,
+        organization_id=organization_b,
+        version_id="44444444-4444-4444-8444-444444444444",
+        job_id="66666666-6666-4666-8666-666666666666",
+        project_id="88888888-8888-4888-8888-888888888888",
+    )
+    assert worker_tasks._claim_job(job_a, organization_a) is not None
+    assert worker_tasks._claim_job(job_b, organization_b) is not None
+    with worker_session_factory.begin() as session:
+        for job_id in (job_a, job_b):
+            job = session.get(GenerationJob, job_id)
+            assert job is not None
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    tenant_sessions: list[tuple[str, Session]] = []
+    monkeypatch.setattr(
+        worker_tasks,
+        "set_tenant_context",
+        lambda session, organization_id: tenant_sessions.append(
+            (organization_id, session)
+        ),
+    )
+
+    assert worker_tasks.recover_stale_jobs.run(limit=2) == 2
+    assert [item[0] for item in tenant_sessions] == [organization_a, organization_b]
+    assert tenant_sessions[0][1] is not tenant_sessions[1][1]
+    with worker_session_factory() as session:
+        jobs = {
+            job.id: job
+            for job in session.scalars(
+                select(GenerationJob).where(GenerationJob.id.in_([job_a, job_b]))
+            )
+        }
+        assert jobs[job_a].status == JobStatus.queued
+        assert jobs[job_b].status == JobStatus.queued
+        recovery_events = list(
+            session.scalars(
+                select(OutboxEvent)
+                .where(OutboxEvent.event_key.like("generation-recovery:%"))
+                .order_by(OutboxEvent.organization_id)
+            )
+        )
+        assert [event.organization_id for event in recovery_events] == [
+            organization_a,
+            organization_b,
+        ]
+
+
+def test_outbox_tenant_rollback_does_not_block_other_tenants(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_a = "11111111-1111-4111-8111-111111111111"
+    organization_b = "22222222-2222-4222-8222-222222222222"
+    job_a = "33333333-3333-4333-8333-333333333333"
+    job_b = "44444444-4444-4444-8444-444444444444"
+    with worker_session_factory.begin() as session:
+        session.add_all(
+            [
+                Organization(id=organization_a, name="Tenant A", slug="rollback-a"),
+                Organization(id=organization_b, name="Tenant B", slug="rollback-b"),
+                OutboxEvent(
+                    organization_id=organization_a,
+                    event_key="rollback-tenant-a",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job_a,
+                        "organization_id": organization_a,
+                    },
+                ),
+                OutboxEvent(
+                    organization_id=organization_b,
+                    event_key="commit-tenant-b",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job_b,
+                        "organization_id": organization_b,
+                    },
+                ),
+            ]
+        )
+
+    original_dispatch = worker_tasks._dispatch_tenant_outbox_events
+
+    def fail_tenant_a(events: list[OutboxEvent], organization_id: str) -> int:
+        if organization_id == organization_a:
+            events[0].last_error = "must roll back"
+            raise RuntimeError("isolated tenant failure")
+        return original_dispatch(events, organization_id)
+
+    published: list[dict[str, Any]] = []
+    monkeypatch.setattr(worker_tasks, "_dispatch_tenant_outbox_events", fail_tenant_a)
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published.append(kwargs),
+    )
+
+    assert worker_tasks.dispatch_outbox.run(limit=1) == 1
+    assert published == [
+        {"kwargs": {"job_id": job_b, "organization_id": organization_b}}
+    ]
+    with worker_session_factory() as session:
+        event_a = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_key == "rollback-tenant-a")
+        )
+        event_b = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_key == "commit-tenant-b")
+        )
+        assert event_a is not None
+        assert event_a.last_error is None
+        assert event_a.dispatched_at is None
+        assert event_b is not None
+        assert event_b.dispatched_at is not None
+
+
+def test_recovery_tenant_rollback_does_not_block_other_tenants(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    organization_a = "11111111-1111-4111-8111-111111111111"
+    organization_b = "22222222-2222-4222-8222-222222222222"
+    job_a, _ = _seed_generation_job(
+        worker_session_factory,
+        organization_id=organization_a,
+        version_id="33333333-3333-4333-8333-333333333333",
+        job_id="55555555-5555-4555-8555-555555555555",
+        project_id="77777777-7777-4777-8777-777777777777",
+    )
+    job_b, _ = _seed_generation_job(
+        worker_session_factory,
+        organization_id=organization_b,
+        version_id="44444444-4444-4444-8444-444444444444",
+        job_id="66666666-6666-4666-8666-666666666666",
+        project_id="88888888-8888-4888-8888-888888888888",
+    )
+    assert worker_tasks._claim_job(job_a, organization_a) is not None
+    assert worker_tasks._claim_job(job_b, organization_b) is not None
+    with worker_session_factory.begin() as session:
+        for job_id in (job_a, job_b):
+            job = session.get(GenerationJob, job_id)
+            assert job is not None
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    original_recovery = worker_tasks._recover_stale_job
+
+    def fail_tenant_a(job: GenerationJob, *, now: datetime) -> OutboxEvent | None:
+        if job.organization_id == organization_a:
+            job.error = "must roll back"
+            raise RuntimeError("isolated tenant failure")
+        return original_recovery(job, now=now)
+
+    monkeypatch.setattr(worker_tasks, "_recover_stale_job", fail_tenant_a)
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    with worker_session_factory() as session:
+        stored_a = session.get(GenerationJob, job_a)
+        stored_b = session.get(GenerationJob, job_b)
+        assert stored_a is not None
+        assert stored_a.status == JobStatus.running
+        assert stored_a.error is None
+        assert stored_b is not None
+        assert stored_b.status == JobStatus.queued
+        events = list(session.scalars(select(OutboxEvent)))
+        assert [event.organization_id for event in events] == [organization_b]
+
+
+@pytest.mark.parametrize("invalid_limit", (0, -1, True, 1.5, "1", None))
+def test_scheduler_tasks_reject_invalid_global_limits(
+    invalid_limit: object,
+) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        worker_tasks.dispatch_outbox.run(limit=invalid_limit)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="positive integer"):
+        worker_tasks.recover_stale_jobs.run(limit=invalid_limit)  # type: ignore[arg-type]

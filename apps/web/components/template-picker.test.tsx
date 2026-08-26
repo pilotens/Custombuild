@@ -39,8 +39,8 @@ describe("TemplatePicker Explore entry", () => {
     const cards = screen.getAllByRole("button").filter((button) => button.classList.contains("template-card"));
     expect(cards).toHaveLength(3);
     expect(screen.getAllByText("Inspirationsbild – exakt modell visas i Studio")).toHaveLength(3);
-    expect(screen.getAllByText("Konstruktionsscreenad startmodell")).toHaveLength(2);
-    expect(screen.getAllByText("Koncept · fortsatt kontroll krävs")).toHaveLength(1);
+    expect(screen.getAllByText("Konstruktionsscreenad startmodell")).toHaveLength(1);
+    expect(screen.getAllByText("Koncept · fortsatt kontroll krävs")).toHaveLength(2);
 
     const libraryCard = screen.getByRole("button", { name: /Väggbibliotek/ });
     fireEvent.click(libraryCard);
@@ -49,8 +49,45 @@ describe("TemplatePicker Explore entry", () => {
 
     expect(onBriefChange).toHaveBeenLastCalledWith(expect.objectContaining({ startMode: "template", selectedTemplateId: "wall-library" }));
     expect(onSelect).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "wall-library", patch: expect.objectContaining({ furniture_type: "wall_library" }) }),
+      expect.objectContaining({
+        id: "wall-library",
+        productionLevel: "concept",
+        patch: expect.objectContaining({
+          furniture_type: "wall_library",
+          width_mm: 4_200,
+          height_mm: 2_400,
+          depth_mm: 320,
+        }),
+      }),
       expect.objectContaining({ startMode: "template", selectedTemplateId: "wall-library" }),
+    );
+  });
+
+  it("keeps user-confirmed measurements when gallery templates are compared afterwards", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+
+    fireEvent.click(screen.getByRole("button", { name: /Skapa med Custombuild/ }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Planerad bredd" }), {
+      target: { value: "3600" },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Planerad höjd" }), {
+      target: { value: "2650" },
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Planerad djup" }), {
+      target: { value: "390" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Visa tre startförslag" }));
+    fireEvent.click(screen.getByRole("button", { name: "Till start" }));
+    fireEvent.click(screen.getByRole("button", { name: /Välj en design/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Väggbibliotek/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Öppna Väggbibliotek i Studio" }));
+
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch: expect.objectContaining({ width_mm: 3_600, height_mm: 2_650, depth_mm: 390 }),
+      }),
+      expect.objectContaining({ dimensionsConfirmed: true }),
     );
   });
 

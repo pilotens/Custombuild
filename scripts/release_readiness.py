@@ -116,6 +116,24 @@ def _resolved_static_value(
     return _static_ast_value(node)
 
 
+def _resolved_static_string_mapping(
+    node: ast.expr,
+    assignments: dict[str, list[ast.expr]],
+) -> dict[str, str] | None:
+    if not isinstance(node, ast.Dict):
+        return None
+    resolved: dict[str, str] = {}
+    for key_node, value_node in zip(node.keys, node.values, strict=True):
+        if key_node is None:
+            return None
+        key = _resolved_static_value(key_node, assignments)
+        value = _resolved_static_value(value_node, assignments)
+        if not isinstance(key, str) or not isinstance(value, str) or key in resolved:
+            return None
+        resolved[key] = value
+    return resolved
+
+
 def _simple_function(tree: ast.Module, name: str) -> FunctionNode | None:
     functions = [
         statement
@@ -1095,6 +1113,34 @@ def _grain_readiness_unresolved_is_required(
     )
 
 
+def _blocked_cam_negative_release_is_required(function: FunctionNode) -> bool:
+    for branch in ast.walk(function):
+        if not isinstance(branch, ast.If) or _expression_path(branch.test) != ("cam_blocked",):
+            continue
+        rejected_paths: set[str] = set()
+        for statement in branch.body:
+            for call in ast.walk(statement):
+                if (
+                    not isinstance(call, ast.Call)
+                    or not isinstance(call.func, ast.Attribute)
+                    or call.func.attr != "request"
+                    or len(call.args) < 2
+                ):
+                    continue
+                keywords = _call_keywords(call)
+                expected = keywords.get("expected") if keywords is not None else None
+                if _static_ast_value(expected) != (409,):
+                    continue
+                rendered_path = ast.unparse(call.args[1])
+                if "/approve" in rendered_path:
+                    rejected_paths.add("approve")
+                if "/release" in rendered_path:
+                    rejected_paths.add("release")
+        if rejected_paths == {"approve", "release"}:
+            return True
+    return False
+
+
 def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: list[str]) -> None:
     assignments = _module_assignments(tree)
     expected_constants = {
@@ -1112,11 +1158,32 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         "OPERATIONS_ENGINE_VERSION": "semantic-operations-1.2.0",
         "STOCK_PROFILE_MISSING": "STOCK_PROFILE_MISSING",
         "DFM_GRAIN_MISSING": "DFM-GRAIN-001",
+        "DADO_RETENTION_EVIDENCE_MISSING": "DADO_RETENTION_EVIDENCE_MISSING",
     }
     for name, expected in expected_constants.items():
         values = assignments.get(name, [])
         if len(values) != 1 or _resolved_static_value(values[0], assignments) != expected:
             issues.append(f"{relative} has an unsafe or missing {name}")
+
+    required_actions = assignments.get("BLOCKED_CAM_REQUIRED_ACTIONS", [])
+    required_action_values = (
+        _resolved_static_string_mapping(required_actions[0], assignments)
+        if len(required_actions) == 1
+        else _STATIC_VALUE_MISSING
+    )
+    retention_action = (
+        required_action_values.get("DADO_RETENTION_EVIDENCE_MISSING")
+        if isinstance(required_action_values, dict)
+        else None
+    )
+    if retention_action != (
+        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
+        "retention system for every DADO joint; a review acknowledgement, adhesive or "
+        "geometric bearing check is not retention evidence."
+    ):
+        issues.append(
+            f"{relative} does not bind the DADO retention blocker to its canonical action"
+        )
 
     context_fields = assignments.get("CONTEXT_HASH_FIELDS", [])
     context_field_values = (
@@ -1208,6 +1275,10 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
 
     context_verifier = _simple_function(tree, "verify_generation_context_hash")
     run_acceptance = _simple_function(tree, "run_acceptance")
+    if run_acceptance is None or not _blocked_cam_negative_release_is_required(run_acceptance):
+        issues.append(
+            f"{relative} does not require CAM approval and release rejection for blocked CAM"
+        )
     context_bound = (
         context_verifier is not None
         and _context_equality_is_required(context_verifier)
@@ -1454,7 +1525,15 @@ def supply_chain_issues(repo: Path) -> list[str]:
     else:
         for line_number, line in enumerate(compose.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
-            if stripped.startswith("image:") and "@sha256:" not in stripped:
+            locally_built = (
+                stripped.startswith("image: custombuild-")
+                and "${VCS_REF:-uncommitted}" in stripped
+            )
+            if (
+                stripped.startswith("image:")
+                and "@sha256:" not in stripped
+                and not locally_built
+            ):
                 issues.append(f"compose.yml:{line_number} uses an unpinned container image")
 
     for relative in (
@@ -1528,6 +1607,23 @@ def supply_chain_issues(repo: Path) -> list[str]:
             or any(f"{argument}=${{{argument}}}" not in source for argument in provenance_arguments)
         ):
             issues.append(f"{relative} does not embed complete OCI release provenance")
+    seaweed_dockerfile = repo / "infra/seaweedfs/Dockerfile"
+    if seaweed_dockerfile.is_file():
+        seaweed_source = seaweed_dockerfile.read_text(encoding="utf-8")
+        required_seaweed_contract = (
+            "golang:1.25.14-alpine3.24@sha256:",
+            "ENV GOTOOLCHAIN=local",
+            (
+                "ADD --checksum=sha256:"
+                "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
+            ),
+            "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd",
+            "-mod=readonly",
+            "FROM scratch AS runtime",
+            'io.custombuild.go.version="1.25.14"',
+        )
+        if any(value not in seaweed_source for value in required_seaweed_contract):
+            issues.append("infra/seaweedfs/Dockerfile is not reproducibly source-bound")
     issues.extend(vulnerability_exception_issues(repo))
     return issues
 
@@ -1884,12 +1980,14 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
     )
     software_blockers = [item for item in checks if item.status is CheckStatus.BLOCK]
     return {
-        "schema_version": "custombuild.release-readiness.v1",
+        "schema_version": "custombuild.release-readiness-static.v2",
         "repository": str(repo),
         "git_revision": revision,
         "git_branch": branch,
         "source_manifest_sha256": source_manifest_sha256,
-        "software_release_ready": not software_blockers,
+        "static_controls_ready": not software_blockers,
+        "software_release_ready": False,
+        "runtime_evidence_required": True,
         "commercial_release_ready": False,
         "physical_machine_release_ready": False,
         "checks": [asdict(item) for item in checks],
@@ -1909,7 +2007,7 @@ def main() -> int:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(payload, encoding="utf-8")
     print(payload, end="")
-    return 0 if report["software_release_ready"] else 1
+    return 0 if report["static_controls_ready"] else 1
 
 
 if __name__ == "__main__":

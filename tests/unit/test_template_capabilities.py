@@ -16,7 +16,8 @@ def test_registry_has_stable_server_owned_fingerprints() -> None:
     assert len(str(payload["registry_fingerprint"])) == 64
     templates = {item["template_id"]: item for item in payload["templates"]}
     assert templates["shelving"]["production_level"] == "screened"
-    assert templates["wall-library"]["production_level"] == "screened"
+    assert templates["wall-library"]["production_level"] == "concept"
+    assert "hinge" in str(templates["wall-library"]["limitation"]).lower()
     assert templates["cupboard"]["production_level"] == "concept"
     assert all(len(str(item["capability_fingerprint"])) == 64 for item in templates.values())
 
@@ -29,9 +30,12 @@ def test_only_screened_matching_templates_can_create_revisions() -> None:
     with pytest.raises(TemplateCapabilityError) as concept:
         require_template_for_revision("sideboard", "wall_library")
     assert concept.value.code == "TEMPLATE_CAPABILITY_BLOCKED"
+    with pytest.raises(TemplateCapabilityError) as wall_library:
+        require_template_for_revision("wall-library", "wall_library")
+    assert wall_library.value.code == "TEMPLATE_CAPABILITY_BLOCKED"
     with pytest.raises(TemplateCapabilityError) as mismatch:
         require_template_for_revision("wall-library", "bookcase")
-    assert mismatch.value.code == "TEMPLATE_FURNITURE_TYPE_MISMATCH"
+    assert mismatch.value.code == "TEMPLATE_CAPABILITY_BLOCKED"
     with pytest.raises(TemplateCapabilityError) as unknown:
         resolve_template_capability("client-invented")
     assert unknown.value.code == "UNKNOWN_TEMPLATE"

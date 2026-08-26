@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import Any
 from unittest.mock import patch
 
+import custombuild_manufacturing.pipeline as manufacturing_pipeline
 import pytest
 from custombuild_cad import CADArtifacts, CADDependencyUnavailable
 from custombuild_domain import (
@@ -41,6 +42,7 @@ from custombuild_manufacturing import (
     build_production_bundle,
     canonical_json_bytes,
     generated_design_review_package_status,
+    generation_plan_artifact,
     linuxcnc_reference_router_1325,
     read_and_verify_package,
     sha256_hex,
@@ -51,6 +53,19 @@ from custombuild_manufacturing import (
 from custombuild_manufacturing.errors import ArtifactError
 from custombuild_manufacturing.pipeline import CadQueryAdapter
 from custombuild_manufacturing.readiness import build_workshop_readiness_report
+
+
+@pytest.fixture(autouse=True)
+def _simulate_versioned_retention_for_legacy_package_security_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep package-tamper tests focused past the independent DADO gate."""
+
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
 
 
 def _review_design(*, edge_band_selection_required: bool = False):
@@ -229,6 +244,168 @@ def _review_case(
 
 def package_fixture():
     return _review_case("GENERATED", include_worker_note=True)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        ({"generation_context_hash": "short"}, "generation context hash"),
+        ({"production_engine_context": {}}, "production engine context"),
+        ({"template_capability_fingerprint": "short"}, "capability fingerprint"),
+        ({"template_capability": {}}, "capability snapshot"),
+        (
+            {
+                "template_capability": {
+                    "template_id": "shelving",
+                    "template_version": "1.0.0",
+                    "capability_fingerprint": "d" * 64,
+                }
+            },
+            "snapshot fingerprint mismatch",
+        ),
+        ({"source_provenance": {"source": "manual"}}, "type is unsupported"),
+        (
+            {
+                "source_provenance": {
+                    "source": "reference_image",
+                    "import_id": "short",
+                }
+            },
+            "requires an import ID",
+        ),
+        (
+            {
+                "source_provenance": {
+                    "source": "reference_image",
+                    "import_id": "i" * 36,
+                    "image_sha256": "not-a-digest",
+                    "verified_model_fingerprint": "b" * 64,
+                }
+            },
+            "requires image_sha256",
+        ),
+        (
+            {
+                "source_provenance": {
+                    "source": "reference_image",
+                    "import_id": "i" * 36,
+                    "image_sha256": "a" * 64,
+                    "verified_model_fingerprint": "B" * 64,
+                }
+            },
+            "requires verified_model_fingerprint",
+        ),
+    ),
+)
+def test_manifest_context_constructor_fails_closed_on_unbound_identity(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    context = _review_context(_review_design())
+
+    with pytest.raises(ValueError, match=message):
+        replace(context, **overrides)
+
+
+def test_artifact_file_requires_immutable_bytes() -> None:
+    with pytest.raises(TypeError, match="artifact data must be bytes"):
+        ArtifactFile("data/value.txt", "mutable text", "text/plain", "TEST")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "program-not-boolean",
+        "registrations-not-mapping",
+        "unknown-stock",
+        "sheets-not-mapping",
+        "sheet-index-not-integer",
+        "sheet-index-out-of-range",
+        "plan-wrong-type",
+        "method-id-unsafe",
+        "points-duplicated",
+        "point-outside-sheet",
+    ),
+)
+def test_generation_plan_rejects_unbound_registration_inputs(case: str) -> None:
+    machine = linuxcnc_reference_router_1325()
+    stock = StockSheet(
+        "registration-stock",
+        "birch-plywood",
+        "screening-1.0.0",
+        1_000_000,
+        500_000,
+        18_000,
+    )
+    valid_plan = TwoSidedRegistration(
+        "fixture:two-pin",
+        (Point2D(50_000, 50_000), Point2D(950_000, 50_000)),
+    )
+    validation_program_requested: object = True
+    registrations: object = {stock.stock_id: {0: valid_plan}}
+    if case == "program-not-boolean":
+        validation_program_requested = 1
+    elif case == "registrations-not-mapping":
+        registrations = [stock.stock_id]
+    elif case == "unknown-stock":
+        registrations = {"unknown-stock": {0: valid_plan}}
+    elif case == "sheets-not-mapping":
+        registrations = {stock.stock_id: [valid_plan]}
+    elif case == "sheet-index-not-integer":
+        registrations = {stock.stock_id: {"0": valid_plan}}
+    elif case == "sheet-index-out-of-range":
+        registrations = {stock.stock_id: {stock.quantity: valid_plan}}
+    elif case == "plan-wrong-type":
+        registrations = {stock.stock_id: {0: object()}}
+    elif case == "method-id-unsafe":
+        registrations = {
+            stock.stock_id: {
+                0: TwoSidedRegistration("fixture/unsafe", valid_plan.points)
+            }
+        }
+    elif case == "points-duplicated":
+        point = Point2D(50_000, 50_000)
+        registrations = {
+            stock.stock_id: {0: TwoSidedRegistration("fixture:duplicate", (point, point))}
+        }
+    elif case == "point-outside-sheet":
+        registrations = {
+            stock.stock_id: {
+                0: TwoSidedRegistration(
+                    "fixture:outside",
+                    (Point2D(50_000, 50_000), Point2D(stock.width_um + 1, 50_000)),
+                )
+            }
+        }
+
+    with pytest.raises(ValueError, match="boolean|mapping|stock|sheet|plan"):
+        generation_plan_artifact(
+            machine=machine,
+            stocks=(stock,),
+            two_sided_registration_by_stock=registrations,  # type: ignore[arg-type]
+            validation_program_requested=validation_program_requested,  # type: ignore[arg-type]
+        )
+
+
+def test_generation_plan_omits_empty_registration_groups_canonically() -> None:
+    machine = linuxcnc_reference_router_1325()
+    stock = StockSheet(
+        "registration-stock",
+        "birch-plywood",
+        "screening-1.0.0",
+        1_000_000,
+        500_000,
+        18_000,
+    )
+
+    artifact = generation_plan_artifact(
+        machine=machine,
+        stocks=(stock,),
+        two_sided_registration_by_stock={stock.stock_id: {}},
+        validation_program_requested=False,
+    )
+
+    assert json.loads(artifact.data)["two_sided_registrations"] == []
 
 
 def review_status_artifact(

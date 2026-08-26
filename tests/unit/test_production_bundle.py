@@ -23,6 +23,7 @@ from custombuild_domain import (
     screening_mdf_18,
 )
 from custombuild_manufacturing import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DFM_GRAIN_BLOCKER_CODE,
     DFM_GRAIN_REQUIRED_ACTION,
     ArtifactFile,
@@ -45,7 +46,21 @@ from custombuild_manufacturing.adapters import AdaptedDesign
 from custombuild_postprocessors import validate_validation_program
 
 _REAL_CAD_EXPORT = CadQueryAdapter.export_design
+_REAL_DADO_RETENTION_CHECK = manufacturing_pipeline.dado_retention_evidence_missing
 _VALID_CAD_BY_DESIGN_HASH: dict[str, CADArtifacts] = {}
+
+
+@pytest.fixture(autouse=True)
+def _simulate_versioned_retention_for_legacy_cam_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep deeper CAM tests reachable under an explicit future-retention premise."""
+
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
 
 
 def valid_cad_for(result) -> CADArtifacts:
@@ -200,6 +215,42 @@ def test_pipeline_requires_explicit_registration_for_each_two_sided_sheet() -> N
     assert {issue.code for issue in caught.value.report.blocking_issues} == {
         "TWO_SIDED_REGISTRATION_MISSING"
     }
+
+
+def test_plain_dado_yields_review_package_but_never_cam_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    design, machine, stock, context = design_and_request()
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        _REAL_DADO_RETENTION_CHECK,
+    )
+    monkeypatch.setattr(
+        CadQueryAdapter,
+        "export_design",
+        lambda self, result: valid_cad_for(result),
+    )
+
+    bundle = build_production_bundle(
+        design,
+        stock=stock,
+        machine=machine,
+        context=context,
+        include_step=True,
+        include_validation_program=True,
+        allow_blocked_cam=True,
+        two_sided_registration_by_stock=explicit_two_sided_registration(stock),
+    )
+
+    assert bundle.review_status.blocker_codes == (
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    )
+    assert bundle.operations is None
+    assert bundle.layouts == ()
+    paths = {artifact.path for artifact in bundle.artifacts}
+    assert not any(path.startswith(("cam/", "nesting/", "machine-validation/")) for path in paths)
+    assert bundle.workshop_readiness.physical_cutting_authorized is False
 
 
 def test_missing_registration_can_yield_only_a_truthful_design_review_package(

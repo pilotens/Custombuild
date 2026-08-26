@@ -19,7 +19,6 @@ try:
     from scripts.compose_backup import (
         ALPINE_IMAGE,
         POSTGRES_IMAGE,
-        SEAWEEDFS_IMAGE,
         BackupError,
         inventory_s3,
         verify_manifest,
@@ -28,7 +27,6 @@ except ModuleNotFoundError:
     from compose_backup import (  # type: ignore[import-not-found,no-redef]  # noqa: I001
         ALPINE_IMAGE,
         POSTGRES_IMAGE,
-        SEAWEEDFS_IMAGE,
         BackupError,
         inventory_s3,
         verify_manifest,
@@ -38,6 +36,9 @@ except ModuleNotFoundError:
 SAFE_NAME = re.compile(r"^custombuild-restore-[a-f0-9]{8}(?:-(?:postgres|seaweed|extract))?$")
 RESTORE_ACCESS_KEY = "custombuild-restore"
 RESTORE_SECRET_KEY = "restore-drill-only-object-secret"  # noqa: S105 - disposable local drill
+RESTORE_MIGRATOR_PASSWORD = "restore-drill-only-migrator-secret"  # noqa: S105
+RESTORE_API_PASSWORD = "restore-drill-only-api-secret"  # noqa: S105
+RESTORE_WORKER_PASSWORD = "restore-drill-only-worker-secret"  # noqa: S105
 POSTGRES_INIT_COMPLETE_MARKER = "PostgreSQL init process complete"
 DOCKER_COMMAND_TIMEOUT_SECONDS = 120
 DOCKER_PAYLOAD_TIMEOUT_SECONDS = 2 * 60 * 60
@@ -236,7 +237,11 @@ def _restored_database_probe(container: str) -> dict[str, Any]:
         "SELECT json_build_object("
         "'alembic_heads', COALESCE((SELECT json_agg(version_num ORDER BY version_num) "
         "FROM alembic_version), '[]'::json), "
-        "'project_rows', (SELECT count(*) FROM projects))::text;"
+        "'row_counts', COALESCE((SELECT json_object_agg(tablename, row_count ORDER BY tablename) "
+        "FROM (SELECT tablename, (((xpath('/row/count/text()', query_to_xml("
+        "format('SELECT count(*) AS count FROM %I.%I', schemaname, tablename), "
+        "false, true, ''))))[1]::text)::bigint AS row_count "
+        "FROM pg_tables WHERE schemaname = 'public') AS counts), '{}'::json))::text;"
     )
     raw = docker(
         "exec",
@@ -259,6 +264,229 @@ def _restored_database_probe(container: str) -> dict[str, Any]:
     if not isinstance(result, dict):
         raise BackupError("Restored database probe did not return an object")
     return {str(key): value for key, value in result.items()}
+
+
+def _restore_runtime_privileges(container: str) -> None:
+    sql = """
+ALTER ROLE custombuild_migrator WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS;
+ALTER ROLE custombuild_api WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS;
+ALTER ROLE custombuild_worker WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS;
+REVOKE custombuild_api, custombuild_worker FROM custombuild_migrator;
+REVOKE custombuild_worker FROM custombuild_api;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT CONNECT ON DATABASE custombuild
+  TO custombuild_migrator, custombuild_api, custombuild_worker;
+GRANT CREATE ON DATABASE custombuild TO custombuild_migrator;
+GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
+GRANT USAGE ON SCHEMA public TO custombuild_api, custombuild_worker;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public
+  TO custombuild_api, custombuild_worker;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public
+  TO custombuild_api, custombuild_worker;
+ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO custombuild_api, custombuild_worker;
+ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
+  GRANT USAGE, SELECT ON SEQUENCES TO custombuild_api, custombuild_worker;
+"""
+    docker(
+        "exec",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "custombuild",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        sql,
+    )
+
+
+def _runtime_role_probe(container: str) -> dict[str, Any]:
+    role_query = """
+SELECT json_build_object(
+  'migrator_safe', (SELECT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
+    AND NOT rolcreaterole AND NOT rolinherit AND NOT rolreplication AND NOT rolbypassrls
+    FROM pg_roles WHERE rolname = 'custombuild_migrator'),
+  'api_safe', (SELECT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
+    AND NOT rolcreaterole AND NOT rolinherit AND NOT rolreplication AND NOT rolbypassrls
+    FROM pg_roles WHERE rolname = 'custombuild_api'),
+  'worker_safe', (SELECT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
+    AND NOT rolcreaterole AND NOT rolinherit AND NOT rolreplication AND NOT rolbypassrls
+    FROM pg_roles WHERE rolname = 'custombuild_worker'),
+  'memberships_absent', NOT pg_has_role('custombuild_migrator', 'custombuild_api', 'MEMBER')
+    AND NOT pg_has_role('custombuild_migrator', 'custombuild_worker', 'MEMBER')
+    AND NOT pg_has_role('custombuild_api', 'custombuild_worker', 'MEMBER'),
+  'all_public_objects_owned_by_migrator', NOT EXISTS (
+    SELECT 1 FROM pg_class object
+    JOIN pg_namespace namespace ON namespace.oid = object.relnamespace
+    WHERE namespace.nspname = 'public'
+      AND object.relkind IN ('r', 'p', 'S', 'v', 'm')
+      AND pg_get_userbyid(object.relowner) <> 'custombuild_migrator'))::text;
+"""
+    raw_roles = docker(
+        "exec",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "custombuild",
+        "--tuples-only",
+        "--no-align",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        role_query,
+        capture=True,
+    )
+    try:
+        roles = json.loads(raw_roles)
+    except json.JSONDecodeError as exc:
+        raise BackupError("Restored database role probe returned invalid JSON") from exc
+    if roles != {
+        "migrator_safe": True,
+        "api_safe": True,
+        "worker_safe": True,
+        "memberships_absent": True,
+        "all_public_objects_owned_by_migrator": True,
+    }:
+        raise BackupError("Restored database runtime-role attributes are unsafe")
+
+    setup_query = """
+DO $$
+DECLARE source_organization text;
+BEGIN
+  SELECT organization_id INTO source_organization FROM projects ORDER BY id LIMIT 1;
+  IF source_organization IS NULL THEN
+    RAISE EXCEPTION 'restore drill requires at least one project';
+  END IF;
+  INSERT INTO organizations (id, name, slug, created_at, updated_at)
+  VALUES ('ffffffff-ffff-ffff-ffff-ffffffffffff', 'Restore isolation probe',
+          'restore-isolation-probe', now(), now());
+  INSERT INTO projects (id, name, description, furniture_type, current_revision,
+                        archived, created_at, updated_at, organization_id)
+  VALUES ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', 'Restore isolation probe', '',
+          'shelving', 0, false, now(), now(),
+          'ffffffff-ffff-ffff-ffff-ffffffffffff');
+END $$;
+SELECT organization_id FROM projects
+WHERE organization_id <> 'ffffffff-ffff-ffff-ffff-ffffffffffff'
+ORDER BY id LIMIT 1;
+"""
+    original_tenant = docker(
+        "exec",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "custombuild",
+        "--tuples-only",
+        "--no-align",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        setup_query,
+        capture=True,
+    ).splitlines()[-1].strip()
+    if not original_tenant:
+        raise BackupError("Restore drill could not select a tenant for the RLS probe")
+
+    api_query = (
+        "SELECT set_config('app.current_organization_id', '"
+        + original_tenant.replace("'", "''")
+        + "', false); "
+        "SELECT json_build_object('visible', count(*), 'foreign', count(*) FILTER "
+        "(WHERE organization_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'))::text "
+        "FROM projects;"
+    )
+    api_raw = docker(
+        "exec",
+        "--env",
+        f"PGPASSWORD={RESTORE_API_PASSWORD}",
+        container,
+        "psql",
+        "-U",
+        "custombuild_api",
+        "-d",
+        "custombuild",
+        "--tuples-only",
+        "--no-align",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        api_query,
+        capture=True,
+    ).splitlines()[-1]
+    try:
+        api_result = json.loads(api_raw)
+    except json.JSONDecodeError as exc:
+        raise BackupError("Restored API-role RLS probe returned invalid JSON") from exc
+    if int(api_result.get("visible", 0)) < 1 or api_result.get("foreign") != 0:
+        raise BackupError("Restored API role did not enforce tenant RLS")
+
+    worker_query = (
+        "SELECT set_config('app.current_organization_id', '"
+        + original_tenant.replace("'", "''")
+        + "', false); "
+        "SELECT json_build_object('visible', count(*), 'foreign', count(*) FILTER "
+        "(WHERE organization_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'))::text "
+        "FROM projects;"
+    )
+    worker_raw = docker(
+        "exec",
+        "--env",
+        f"PGPASSWORD={RESTORE_WORKER_PASSWORD}",
+        container,
+        "psql",
+        "-U",
+        "custombuild_worker",
+        "-d",
+        "custombuild",
+        "--tuples-only",
+        "--no-align",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        worker_query,
+        capture=True,
+    ).splitlines()[-1]
+    try:
+        worker_result = json.loads(worker_raw)
+    except json.JSONDecodeError as exc:
+        raise BackupError("Restored worker-role RLS probe returned invalid JSON") from exc
+    if worker_result != api_result:
+        raise BackupError("Restored worker role did not enforce the same tenant RLS boundary")
+    docker(
+        "exec",
+        "--env",
+        f"PGPASSWORD={RESTORE_MIGRATOR_PASSWORD}",
+        container,
+        "psql",
+        "-U",
+        "custombuild_migrator",
+        "-d",
+        "custombuild",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-c",
+        (
+            "CREATE TABLE public.restore_migration_probe (id integer PRIMARY KEY); "
+            "ALTER TABLE public.restore_migration_probe ADD COLUMN checked boolean NOT NULL "
+            "DEFAULT true; DROP TABLE public.restore_migration_probe;"
+        ),
+    )
+    return {
+        "roles": roles,
+        "api_rls": api_result,
+        "worker_rls": worker_result,
+        "migrator_schema_mutation_verified": True,
+    }
 
 
 def _cleanup_resource(kind: str, name: str, errors: list[str]) -> None:
@@ -323,6 +551,9 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
     if not isinstance(database_snapshot, dict):
         raise BackupError("Backup manifest has no PostgreSQL recovery point")
     expected_heads = sorted(str(value) for value in database_snapshot["alembic_heads"])
+    expected_row_counts = database_snapshot.get("row_counts")
+    if not isinstance(expected_row_counts, dict):
+        raise BackupError("Backup manifest has no exact PostgreSQL row counts")
     repository_heads = current_alembic_heads(repo)
 
     cleanup_errors: list[str] = []
@@ -352,7 +583,20 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             "-v",
             "ON_ERROR_STOP=1",
             "-c",
-            "CREATE ROLE custombuild_api; CREATE ROLE custombuild_worker;",
+            (
+                "CREATE ROLE custombuild_migrator LOGIN PASSWORD '"
+                + RESTORE_MIGRATOR_PASSWORD
+                + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; "
+                "CREATE ROLE custombuild_api LOGIN PASSWORD '"
+                + RESTORE_API_PASSWORD
+                + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; "
+                "CREATE ROLE custombuild_worker LOGIN PASSWORD '"
+                + RESTORE_WORKER_PASSWORD
+                + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; "
+                "GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator; "
+                "ALTER SCHEMA public OWNER TO custombuild_migrator; "
+                "GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;"
+            ),
         )
         restore_path = "/database.dump"
         docker(
@@ -363,13 +607,14 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
         )
         docker(
             "exec",
+            "--env",
+            f"PGPASSWORD={RESTORE_MIGRATOR_PASSWORD}",
             postgres_container,
             "pg_restore",
             "--exit-on-error",
             "--no-owner",
-            "--no-acl",
             "--username",
-            "postgres",
+            "custombuild_migrator",
             "--dbname",
             "custombuild",
             restore_path,
@@ -377,7 +622,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
         )
         database_probe = _restored_database_probe(postgres_container)
         restored_heads = sorted(str(value) for value in database_probe.get("alembic_heads", []))
-        project_rows = int(database_probe.get("project_rows", -1))
+        restored_row_counts = database_probe.get("row_counts")
         if restored_heads != expected_heads:
             raise BackupError(
                 f"Restored Alembic heads {restored_heads} do not match backup {expected_heads}"
@@ -387,10 +632,22 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
                 "Restored Alembic heads "
                 f"{restored_heads} do not match repository {repository_heads}"
             )
+        if restored_row_counts != expected_row_counts:
+            raise BackupError("Restored exact table row counts do not match the backup")
+        project_rows = int(expected_row_counts.get("projects", 0))
         if project_rows < 1:
             raise BackupError(f"Restored database contains no projects: {project_rows}")
+        _restore_runtime_privileges(postgres_container)
+        runtime_role_evidence = _runtime_role_probe(postgres_container)
 
         docker("volume", "create", "--label", "custombuild.restore-drill=true", object_volume)
+        object_image = str(object_store["image"])
+        expected_object_image_id = str(object_store["image_id"])
+        actual_object_image_id = docker(
+            "image", "inspect", object_image, "--format", "{{.Id}}", capture=True
+        )
+        if actual_object_image_id != expected_object_image_id:
+            raise BackupError("Restore SeaweedFS image ID does not match the backup manifest")
         docker(
             "run",
             "--name",
@@ -423,7 +680,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             f"type=volume,source={object_volume},target=/data",
             "--publish",
             "127.0.0.1::8333",
-            SEAWEEDFS_IMAGE,
+            expected_object_image_id,
             "mini",
             "-dir=/data",
             "-master.telemetry=false",
@@ -434,19 +691,26 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             raise BackupError("Restored S3 inventory does not match the backup manifest")
 
         result = {
-            "schema_version": "custombuild.restore-drill.v2",
+            "schema_version": "custombuild.restore-drill.v3",
             "backup_created_at": manifest["created_at"],
+            "git_revision": manifest["git_revision"],
+            "source_manifest_sha256": manifest["source_manifest_sha256"],
             "database_snapshot": database_snapshot,
             "database_alembic_heads": restored_heads,
             "database_project_rows": project_rows,
-            "object_store_image": SEAWEEDFS_IMAGE,
+            "database_exact_row_counts_verified": True,
+            "database_runtime_roles": runtime_role_evidence,
+            "object_store_image": object_image,
+            "object_store_image_id": expected_object_image_id,
             "object_store_bucket": bucket,
             "object_store_object_count": len(restored_inventory),
             "object_store_total_size_bytes": sum(
                 int(item["size_bytes"]) for item in restored_inventory
             ),
             "object_store_hashes_verified": True,
-            "tenant_acceptance_required_before_traffic": True,
+            "object_store_metadata_verified": True,
+            "tenant_rls_verified": True,
+            "tenant_acceptance_required_before_traffic": False,
             "status": "PASS",
         }
     except BaseException as exc:

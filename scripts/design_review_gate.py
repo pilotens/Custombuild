@@ -1,4 +1,4 @@
-"""Run the two screened templates through the complete design-review pipeline.
+"""Run every screened template through the complete design-review pipeline.
 
 This gate is deliberately not a physical-production release.  The caller must
 provide a validation-only fixture containing every stock-frame registration
@@ -37,6 +37,7 @@ from custombuild_domain import (
     template_capability_registry_payload,
 )
 from custombuild_manufacturing import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     ManifestContext,
     Point2D,
     ProductionBlockedError,
@@ -67,13 +68,17 @@ except ModuleNotFoundError:  # Direct ``python scripts/design_review_gate.py`` e
 GATE_REPORT_SCHEMA_VERSION = "custombuild.design-review-gate.v2"
 GATE_FIXTURE_SCHEMA_VERSION = "custombuild.design-review-gate-fixture.v1"
 GATE_FIXTURE_SCOPE = "AUTOMATED_DESIGN_REVIEW_ONLY"
-SCREENED_TEMPLATE_IDS = ("shelving", "wall-library")
+GATE_FIXTURE_WARNING = (
+    "These stock-frame coordinates are deterministic automated test data, not a WCS, "
+    "fixture, machine setup, calibration record, or workshop approval."
+)
+SCREENED_TEMPLATE_IDS = ("shelving",)
 DEFAULT_REPOSITORY = Path(".")
 SCREENED_DEFAULTS_CONTRACT_PATH = Path("packages/contracts/screened-template-defaults.v1.json")
 SCREENED_DEFAULTS_SCHEMA_VERSION = "custombuild.screened-template-defaults.v1"
-SCREENED_DEFAULTS_CONTRACT_VERSION = "1.0.0"
+SCREENED_DEFAULTS_CONTRACT_VERSION = "1.1.0"
 SCREENED_DEFAULTS_CONTRACT_FINGERPRINT = (
-    "4a312a621e53529eb4a69c09c61b752d4b4df13a23ff2160bd630028b55a8d4e"
+    "88eca4417ba84e500a21658f5d7ce2b2277d5feca0bccd8cb36aae4419a821b0"
 )
 SCREENED_DEFAULTS_CANONICALIZATION = (
     "UTF-8 JSON with recursively sorted object keys, compact separators, "
@@ -143,7 +148,7 @@ REQUIRED_CORE_ARTIFACTS = frozenset(
         "validation/workshop-readiness.json",
     }
 )
-REQUIRED_STOCKLESS_REVIEW_ARTIFACTS = frozenset(
+REQUIRED_BLOCKED_REVIEW_ARTIFACTS = frozenset(
     {
         "bom/bom.csv",
         "bom/grouped-bom.json",
@@ -483,6 +488,50 @@ def _stock_profiles(template_id: str, design: Any) -> tuple[StockSheet, ...]:
     )
 
 
+def deterministic_gate_fixture_payload() -> dict[str, Any]:
+    """Generate the canonical validation-only registration fixture.
+
+    The coordinates are deterministic test inputs, never inferred workshop
+    evidence. Keeping the checked-in fixture equal to this payload prevents a
+    concept template or stale sheet count from remaining in the golden data.
+    """
+
+    templates: dict[str, Any] = {}
+    for template_id in SCREENED_TEMPLATE_IDS:
+        design = build_bookcase(
+            BookcaseDesignSpec(
+                design_id=f"automated-design-review-{template_id}",
+                template_id=template_id,
+                parameters=_template_parameters(template_id),
+                material=screening_mdf_18(),
+                back_material=screening_mdf_6(),
+            )
+        )
+        registrations_by_stock: dict[str, Any] = {}
+        for stock in _stock_profiles(template_id, design):
+            stock_suffix = stock.stock_id.removeprefix(f"gate-{template_id}-")
+            registrations_by_stock[stock.stock_id] = {
+                str(sheet_index): {
+                    "method_id": (
+                        f"automated-design-review:{template_id}:{stock_suffix}:"
+                        f"sheet-{sheet_index + 1:03d}"
+                    ),
+                    "points_um": [
+                        [50_000, 50_000],
+                        [stock.width_um - 50_000, 50_000],
+                    ],
+                }
+                for sheet_index in range(stock.quantity)
+            }
+        templates[template_id] = {"registrations_by_stock": registrations_by_stock}
+    return {
+        "schema_version": GATE_FIXTURE_SCHEMA_VERSION,
+        "fixture_scope": GATE_FIXTURE_SCOPE,
+        "warning": GATE_FIXTURE_WARNING,
+        "templates": templates,
+    }
+
+
 def _actual_default_preview_payload(
     default: ScreenedTemplateDefault,
 ) -> dict[str, Any]:
@@ -819,13 +868,20 @@ def _verified_bundle_report(
     paths = {str(entry["path"]) for entry in inventory}
     cam_blocked = bundle.review_status.cam_status.value == "BLOCKED"
     dfm_blocker_codes = {"STOCK_PROFILE_MISSING", "DFM-GRAIN-001"}
+    admitted_blocker_codes = {
+        *dfm_blocker_codes,
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    }
     blocker_codes = bundle.review_status.blocker_codes
     dfm_blocked = len(blocker_codes) == 1 and blocker_codes[0] in dfm_blocker_codes
-    if cam_blocked and not dfm_blocked:
+    retention_blocked = blocker_codes == (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+    if cam_blocked and (
+        len(blocker_codes) != 1 or blocker_codes[0] not in admitted_blocker_codes
+    ):
         raise DesignReviewGateError(
-            "actual review gate only admits an exact stock-profile or grain-axis blocker"
+            "design-review gate only admits an exact stock, grain or DADO-retention blocker"
         )
-    required_core = REQUIRED_STOCKLESS_REVIEW_ARTIFACTS if cam_blocked else REQUIRED_CORE_ARTIFACTS
+    required_core = REQUIRED_BLOCKED_REVIEW_ARTIFACTS if cam_blocked else REQUIRED_CORE_ARTIFACTS
     missing_core = sorted(required_core - paths)
     if missing_core:
         raise DesignReviewGateError(f"design-review package lacks core artifacts: {missing_core}")
@@ -833,7 +889,7 @@ def _verified_bundle_report(
         raise DesignReviewGateError("design-review package has no part DXF")
     if cam_blocked:
         if bundle.operations is not None or bundle.layouts:
-            raise DesignReviewGateError("stockless review package contains CAM or nesting state")
+            raise DesignReviewGateError("CAM-blocked review package contains CAM or nesting state")
         if any(
             blocked_cam_artifact_violation(
                 str(entry["path"]),
@@ -843,14 +899,18 @@ def _verified_bundle_report(
             for entry in inventory
         ):
             raise DesignReviewGateError(
-                "stockless review package contains a stock, nesting or CAM artifact"
+                "CAM-blocked review package contains a stock, nesting or CAM artifact"
             )
         blocking_codes = {
             issue.code for issue in bundle.dfm_report.issues if issue.severity.value == "BLOCK"
         }
-        if blocking_codes != set(blocker_codes):
+        if dfm_blocked and blocking_codes != set(blocker_codes):
             raise DesignReviewGateError(
                 "blocked review package does not preserve its exact raw DFM blocker"
+            )
+        if retention_blocked and blocking_codes:
+            raise DesignReviewGateError(
+                "DADO-retention review blocker must not be misrepresented as a DFM blocker"
             )
     else:
         if not any(path.startswith("cam/setups/") for path in paths):
@@ -961,6 +1021,8 @@ def _verified_bundle_report(
         "design_review_package_status": bundle.review_status.as_dict(),
         "dfm_status": bundle.dfm_report.status.value,
     }
+    if cam_blocked:
+        report["blocking_issue_codes"] = list(blocker_codes)
     if dfm_blocked:
         raw_dfm = json.loads(canonical_json_bytes(bundle.dfm_report))
         names_by_part_id = {
@@ -976,7 +1038,6 @@ def _verified_bundle_report(
             blocking_issues.append(raw_issue)
         report["dfm_report"] = raw_dfm
         report["blocking_issues"] = blocking_issues
-        report["blocking_issue_codes"] = list(blocker_codes)
     if fixture_fingerprint is not None:
         report["fixture_scope"] = GATE_FIXTURE_SCOPE
         report["fixture_fingerprint"] = fixture_fingerprint
@@ -1312,6 +1373,7 @@ def run_design_review_gate(
                 include_freecad_project=False,
                 include_validation_program=True,
                 production_release=False,
+                allow_blocked_cam=True,
                 two_sided_registration_by_stock=registrations,
             )
             report = _verified_bundle_report(

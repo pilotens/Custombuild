@@ -84,10 +84,29 @@ def test_worker_lock_verification_is_independent_of_celery_workdir(
             },
             "database password",
         ),
+        (
+            {
+                "database_url": (
+                    "postgresql+psycopg://custombuild_api:strong-worker-db-password"
+                    "@postgres/custombuild"
+                )
+            },
+            "exact database role custombuild_worker",
+        ),
+        (
+            {
+                "database_url": (
+                    "postgresql+psycopg://custombuild_worker:short@postgres/custombuild"
+                )
+            },
+            "at least 24 characters",
+        ),
         ({"redis_url": "redis://redis:6379/0"}, "Redis password"),
         ({"redis_url": "redis://:change-me-redis@redis:6379/0"}, "Redis password"),
+        ({"redis_url": "redis://:short@redis:6379/0"}, "at least 24 characters"),
         ({"s3_access_key": "minioadmin"}, "access key"),
         ({"s3_secret_key": "development-only-object-secret"}, "object-storage secret"),
+        ({"s3_secret_key": "short"}, "at least 24 characters"),
     ),
 )
 def test_worker_rejects_insecure_production_configuration(
@@ -101,6 +120,7 @@ def test_shared_guards_reject_malformed_urls_and_blank_credentials() -> None:
     with pytest.raises(ValueError, match="MIGRATION_DATABASE_URL is invalid"):
         validate_production_database_url(
             "not a database URL",
+            expected_username="custombuild_migrator",
             setting_name="MIGRATION_DATABASE_URL",
         )
     with pytest.raises(ValueError, match="access key"):
@@ -117,6 +137,15 @@ def test_shared_guards_reject_malformed_urls_and_blank_credentials() -> None:
         "sqlite+pysqlite:///migrations.db",
         "postgresql+psycopg://custombuild_migrator@postgres/custombuild",
         ("postgresql+psycopg://custombuild_migrator:change-me-migrator@postgres/custombuild"),
+        (
+            "postgresql+psycopg://custombuild_api:strong-migrator-db-password"
+            "@postgres/custombuild"
+        ),
+        "postgresql+psycopg://custombuild_migrator:short@postgres/custombuild",
+        (
+            "postgresql+psycopg://custombuild_migrator:%20strong-migrator-db-password%20"
+            "@postgres/custombuild"
+        ),
     ),
 )
 def test_migrator_rejects_insecure_production_database(database_url: str) -> None:
@@ -151,8 +180,10 @@ def _run_postgres_init(
         "PATH": f"{tmp_path}:{os.environ.get('PATH', '')}",
         "APP_ENV": app_env,
         "POSTGRES_DB": "custombuild",
-        "POSTGRES_USER": "custombuild_migrator",
-        "POSTGRES_PASSWORD": "change-me-migrator",
+        "POSTGRES_USER": "custombuild_bootstrap",
+        "POSTGRES_PASSWORD": "change-me-bootstrap",
+        "MIGRATOR_DATABASE_USER": "custombuild_migrator",
+        "MIGRATOR_DATABASE_PASSWORD": "change-me-migrator",
         "API_DATABASE_PASSWORD": "change-me-api",
         "WORKER_DATABASE_PASSWORD": "change-me-worker",
     }
@@ -175,7 +206,9 @@ def test_postgres_init_keeps_development_defaults_working(tmp_path: Path) -> Non
     ("variable", "value"),
     (
         ("POSTGRES_PASSWORD", "change-me-migrator"),
+        ("MIGRATOR_DATABASE_PASSWORD", "change-me-migrator"),
         ("API_DATABASE_PASSWORD", "development-api-password"),
+        ("API_DATABASE_PASSWORD", "too-short"),
         ("WORKER_DATABASE_PASSWORD", "password"),
         ("WORKER_DATABASE_PASSWORD", "   "),
     ),
@@ -187,8 +220,9 @@ def test_postgres_init_rejects_insecure_production_passwords(
         tmp_path,
         app_env="production",
         overrides={
-            "POSTGRES_PASSWORD": "strong-migrator-db-password",
-            "API_DATABASE_PASSWORD": "strong-api-db-password",
+            "POSTGRES_PASSWORD": "strong-bootstrap-db-password",
+            "MIGRATOR_DATABASE_PASSWORD": "strong-migrator-db-password",
+            "API_DATABASE_PASSWORD": "strong-api-database-password",
             "WORKER_DATABASE_PASSWORD": "strong-worker-db-password",
             variable: value,
         },
@@ -203,12 +237,39 @@ def test_postgres_init_accepts_replaced_production_passwords(tmp_path: Path) -> 
         tmp_path,
         app_env="production",
         overrides={
-            "POSTGRES_PASSWORD": "strong-migrator-db-password",
-            "API_DATABASE_PASSWORD": "strong-api-db-password",
+            "POSTGRES_PASSWORD": "strong-bootstrap-db-password",
+            "MIGRATOR_DATABASE_PASSWORD": "strong-migrator-db-password",
+            "API_DATABASE_PASSWORD": "strong-api-database-password",
             "WORKER_DATABASE_PASSWORD": "strong-worker-db-password",
         },
     )
     assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    (
+        ("POSTGRES_USER", "custombuild_migrator"),
+        ("MIGRATOR_DATABASE_USER", "custombuild_bootstrap"),
+    ),
+)
+def test_postgres_init_rejects_role_name_substitution(
+    tmp_path: Path, variable: str, value: str
+) -> None:
+    completed = _run_postgres_init(
+        tmp_path,
+        app_env="production",
+        overrides={
+            "POSTGRES_PASSWORD": "strong-bootstrap-db-password",
+            "MIGRATOR_DATABASE_PASSWORD": "strong-migrator-db-password",
+            "API_DATABASE_PASSWORD": "strong-api-database-password",
+            "WORKER_DATABASE_PASSWORD": "strong-worker-database-password",
+            variable: value,
+        },
+    )
+
+    assert completed.returncode == 64
+    assert variable in completed.stderr
 
 
 def test_compose_routes_production_mode_through_every_startup_guard() -> None:

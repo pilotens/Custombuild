@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
+        image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -27,9 +27,12 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
-      RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:api-test-password@localhost:5432/custombuild
+      MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
+      RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
+      WORKER_RLS_DATABASE_URL: postgresql+psycopg://custombuild_worker:strong-worker-database-test-password@localhost:5432/custombuild
+      TENANT_GRAPH_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
       UV_CACHE_DIR: /tmp/custombuild-prod-uv-cache
+      RELEASE_EVIDENCE_DIR: artifacts/release-evidence
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -41,7 +44,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.18.1
+          node-version: 24.19.0
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Install production-candidate dependencies
@@ -55,8 +58,11 @@ jobs:
           PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d custombuild -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE custombuild_api LOGIN PASSWORD 'api-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-          CREATE ROLE custombuild_worker LOGIN PASSWORD 'worker-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS;
+          CREATE ROLE custombuild_migrator LOGIN PASSWORD 'strong-migrator-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          CREATE ROLE custombuild_api LOGIN PASSWORD 'strong-api-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          CREATE ROLE custombuild_worker LOGIN PASSWORD 'strong-worker-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker;
+          GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
           SQL
       - name: Migrate prod schema
         env:
@@ -70,42 +76,56 @@ jobs:
         run: uv run alembic -c services/api/alembic.ini check
       - name: Full production-candidate quality gate
         run: make check
-      - name: Machine-readable release readiness
-        run: uv run python scripts/release_readiness.py --require-clean --output release-readiness.json
-      - name: Upload release readiness
-        if: always()
+      - name: Static release controls
+        run: >-
+          uv run python scripts/release_readiness.py --require-clean
+          --output "$RELEASE_EVIDENCE_DIR/static-release-readiness.json"
+      - name: Upload SHA-bound static controls
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: release-readiness
-          path: release-readiness.json
+          name: static-release-readiness-${{ github.sha }}
+          path: artifacts/release-evidence/static-release-readiness.json
           if-no-files-found: error
           retention-days: 30
-      - name: Install Chromium for isolated WCAG evidence
-        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Install browser matrix for same-SHA release evidence
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
       - name: Prod WCAG 2.2 AA against the offline production build
         id: prod_wcag
         env:
           PLAYWRIGHT_REAL_API: "0"
           PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-wcag
         run: pnpm --dir apps/web test:e2e:a11y -- --output=wcag-test-results
-      - name: Upload isolated prod WCAG evidence
+      - name: Same-SHA Chromium Firefox and WebKit production workspace acceptance
+        env:
+          PLAYWRIGHT_REAL_API: "0"
+          PLAYWRIGHT_ENVIRONMENT: prod
+        run: pnpm --dir apps/web test:e2e
+      - name: Upload same-SHA browser and WCAG evidence
         if: always() && steps.prod_wcag.outcome != 'skipped'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: prod-offline-wcag-evidence
+          name: prod-browser-wcag-evidence-${{ github.sha }}
           path: |
+            apps/web/playwright-report
+            apps/web/test-results
             apps/web/playwright-report-wcag
             apps/web/wcag-test-results
           if-no-files-found: error
           retention-days: 30
 
   prod-compose-acceptance:
+    needs: prod-quality
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 120
     env:
       COMPOSE_PROJECT_NAME: custombuild-prod-acceptance
+      RELEASE_EVIDENCE_DIR: artifacts/release-evidence
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          enable-cache: true
       - name: Export immutable Compose build identity
         run: |
           source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
@@ -123,18 +143,25 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.18.1
+          node-version: 24.19.0
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Install prod web dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          uv sync --locked
+          pnpm install --frozen-lockfile
+      - name: Download SHA-bound static controls
+        uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v4.2.1
+        with:
+          name: static-release-readiness-${{ github.sha }}
+          path: artifacts/release-evidence
       - name: Install Chromium
         run: pnpm --dir apps/web exec playwright install --with-deps chromium
       - name: Verify source freeze before prod build
         run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
       - name: Build and start prod stack
         run: docker compose --file compose.yml up --build --detach
-      - name: Prod design-to-release acceptance
+      - name: Prod design-review and blocked CAM/release acceptance
         run: >-
           python3 scripts/live_acceptance.py
           --base-url http://127.0.0.1:8000
@@ -149,6 +176,216 @@ jobs:
           PLAYWRIGHT_REAL_API: "1"
           PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
         run: pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+      - name: Create and verify coordinated backup
+        run: >-
+          uv run python scripts/compose_backup.py --compose compose.yml
+          --output "$RELEASE_EVIDENCE_DIR/backup"
+      - name: Restore backup and prove roles, RLS and S3 integrity
+        run: >-
+          uv run python scripts/restore_drill.py
+          --backup "$RELEASE_EVIDENCE_DIR/backup"
+          --output "$RELEASE_EVIDENCE_DIR/restore-evidence.json"
+      - name: Generate exact API runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: custombuild-api:${{ github.sha }}
+          format: spdx-json
+          output-file: artifacts/release-evidence/sbom-api.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate exact worker runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: custombuild-worker:${{ github.sha }}
+          format: spdx-json
+          output-file: artifacts/release-evidence/sbom-worker.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate exact web runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: custombuild-web:${{ github.sha }}
+          format: spdx-json
+          output-file: artifacts/release-evidence/sbom-web.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate exact SeaweedFS runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: custombuild-seaweedfs:${{ github.sha }}
+          format: spdx-json
+          output-file: artifacts/release-evidence/sbom-seaweedfs.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate exact PostgreSQL runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          format: spdx-json
+          output-file: artifacts/release-evidence/sbom-postgres.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate exact Redis runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+          format: spdx-json
+          output-file: artifacts/release-evidence/sbom-redis.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate exact volume-init runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+          format: spdx-json
+          output-file: artifacts/release-evidence/sbom-alpine.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Scan exact API runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: custombuild-api:${{ github.sha }}
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-evidence/scan-api.json
+      - name: Scan exact worker runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: custombuild-worker:${{ github.sha }}
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-evidence/scan-worker.json
+      - name: Scan exact web runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: custombuild-web:${{ github.sha }}
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-evidence/scan-web.json
+      - name: Scan exact SeaweedFS runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: custombuild-seaweedfs:${{ github.sha }}
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-evidence/scan-seaweedfs.json
+      - name: Scan exact PostgreSQL runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-evidence/scan-postgres.json
+      - name: Scan exact Redis runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-evidence/scan-redis.json
+      - name: Scan exact volume-init runtime image
+        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        with:
+          image: alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-evidence/scan-alpine.json
+      - name: Bind scans to the exact images run by Compose
+        run: |
+          set -euo pipefail
+          image_id() {
+            docker image inspect "$1" --format '{{.Id}}'
+          }
+          runtime_id() {
+            container_id="$(docker compose --file compose.yml ps --all --quiet "$1")"
+            test -n "$container_id"
+            docker container inspect "$container_id" --format '{{.Image}}'
+          }
+          api_id="$(image_id "custombuild-api:${GITHUB_SHA}")"
+          worker_id="$(image_id "custombuild-worker:${GITHUB_SHA}")"
+          web_id="$(image_id "custombuild-web:${GITHUB_SHA}")"
+          seaweedfs_id="$(image_id "custombuild-seaweedfs:${GITHUB_SHA}")"
+          postgres_id="$(image_id 'postgres:17.11-alpine3.24@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73')"
+          redis_id="$(image_id 'redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6')"
+          alpine_id="$(image_id 'alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b')"
+          test "$api_id" = "$(runtime_id api)"
+          test "$api_id" = "$(runtime_id migrate)"
+          test "$worker_id" = "$(runtime_id worker)"
+          test "$worker_id" = "$(runtime_id scheduler)"
+          test "$web_id" = "$(runtime_id web)"
+          test "$seaweedfs_id" = "$(runtime_id object-storage)"
+          test "$postgres_id" = "$(runtime_id postgres)"
+          test "$redis_id" = "$(runtime_id redis)"
+          test "$alpine_id" = "$(runtime_id object-storage-init)"
+          for component in api worker web seaweedfs postgres redis alpine; do
+            test -s "$RELEASE_EVIDENCE_DIR/scan-${component}.json"
+            test -s "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json"
+          done
+          jq -n \
+            --arg schema_version "custombuild.runtime-release-evidence.v1" \
+            --arg git_revision "$GITHUB_SHA" \
+            --arg source_manifest_sha256 "$SOURCE_MANIFEST_SHA256" \
+            --arg api_id "$api_id" \
+            --arg worker_id "$worker_id" \
+            --arg web_id "$web_id" \
+            --arg seaweedfs_id "$seaweedfs_id" \
+            --arg postgres_id "$postgres_id" \
+            --arg redis_id "$redis_id" \
+            --arg alpine_id "$alpine_id" \
+            --arg api_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-api.spdx.json" | awk '{print $1}')" \
+            --arg worker_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-worker.spdx.json" | awk '{print $1}')" \
+            --arg web_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" | awk '{print $1}')" \
+            --arg seaweedfs_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-seaweedfs.spdx.json" | awk '{print $1}')" \
+            --arg postgres_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" | awk '{print $1}')" \
+            --arg redis_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-redis.spdx.json" | awk '{print $1}')" \
+            --arg alpine_sbom "$(sha256sum "$RELEASE_EVIDENCE_DIR/sbom-alpine.spdx.json" | awk '{print $1}')" \
+            --arg api_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-api.json" | awk '{print $1}')" \
+            --arg worker_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-worker.json" | awk '{print $1}')" \
+            --arg web_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-web.json" | awk '{print $1}')" \
+            --arg seaweedfs_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-seaweedfs.json" | awk '{print $1}')" \
+            --arg postgres_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-postgres.json" | awk '{print $1}')" \
+            --arg redis_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-redis.json" | awk '{print $1}')" \
+            --arg alpine_scan "$(sha256sum "$RELEASE_EVIDENCE_DIR/scan-alpine.json" | awk '{print $1}')" \
+            '{schema_version:$schema_version,git_revision:$git_revision,source_manifest_sha256:$source_manifest_sha256,status:"PASS",images:[{component:"api",image_id:$api_id,sbom_sha256:$api_sbom,scan_status:"PASS",scan_sha256:$api_scan},{component:"worker",image_id:$worker_id,sbom_sha256:$worker_sbom,scan_status:"PASS",scan_sha256:$worker_scan},{component:"web",image_id:$web_id,sbom_sha256:$web_sbom,scan_status:"PASS",scan_sha256:$web_scan},{component:"seaweedfs",image_id:$seaweedfs_id,sbom_sha256:$seaweedfs_sbom,scan_status:"PASS",scan_sha256:$seaweedfs_scan},{component:"postgres",image_id:$postgres_id,sbom_sha256:$postgres_sbom,scan_status:"PASS",scan_sha256:$postgres_scan},{component:"redis",image_id:$redis_id,sbom_sha256:$redis_sbom,scan_status:"PASS",scan_sha256:$redis_scan},{component:"alpine",image_id:$alpine_id,sbom_sha256:$alpine_sbom,scan_status:"PASS",scan_sha256:$alpine_scan}]}' \
+            > "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"
+      - name: Produce final release readiness after all required evidence
+        run: >-
+          uv run python scripts/release_evidence_gate.py
+          --repo .
+          --static-report "$RELEASE_EVIDENCE_DIR/static-release-readiness.json"
+          --backup "$RELEASE_EVIDENCE_DIR/backup"
+          --restore-evidence "$RELEASE_EVIDENCE_DIR/restore-evidence.json"
+          --runtime-evidence "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"
+          --sbom-directory "$RELEASE_EVIDENCE_DIR"
+          --output "$RELEASE_EVIDENCE_DIR/release-readiness.json"
+      - name: Upload final SHA- and image-bound release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-readiness-${{ github.sha }}
+          path: |
+            artifacts/release-evidence/release-readiness.json
+            artifacts/release-evidence/static-release-readiness.json
+            artifacts/release-evidence/runtime-evidence.json
+            artifacts/release-evidence/restore-evidence.json
+            artifacts/release-evidence/backup/manifest.json
+            artifacts/release-evidence/scan-*.json
+            artifacts/release-evidence/sbom-*.spdx.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Collect prod diagnostics
         if: failure()
         run: |

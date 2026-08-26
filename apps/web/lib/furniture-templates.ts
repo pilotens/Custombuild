@@ -63,8 +63,9 @@ export const FURNITURE_TEMPLATES: readonly FurnitureTemplate[] = [
     name: "Väggbibliotek",
     description: "Överhyllor och underskåp i samma yttermått",
     feature: "Öppen och stängd förvaring",
-    archetypeLabel: "Verifierad väggbiblioteksstomme",
-    productionLevel: "screened",
+    archetypeLabel: "Väggbiblioteksstomme · koncept",
+    productionLevel: "concept",
+    limitation: "Underskåpens gångjärn, beslag, borrbilder, frontspel och limfria mekaniska retention är ännu inte versionsbundna och verifierade.",
     preview: "library",
     patch: {
       furniture_type: "wall_library",

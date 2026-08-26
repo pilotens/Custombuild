@@ -13,7 +13,7 @@ import { referenceVerificationFingerprint } from "./reference-image";
 import { DEFAULT_PLANNING_BRIEF, templateWithPlanningBrief } from "./furniture-planning";
 import { parseLocalDesignSpec } from "./workspace-design-envelope";
 
-const SCREENED_TEMPLATE_DEFAULTS_V1_SHA256 = "4a312a621e53529eb4a69c09c61b752d4b4df13a23ff2160bd630028b55a8d4e";
+const SCREENED_TEMPLATE_DEFAULTS_V1_1_SHA256 = "88eca4417ba84e500a21658f5d7ce2b2277d5feca0bccd8cb36aae4419a821b0";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -101,9 +101,9 @@ function isModeledCapture(left: ResolvedPart, right: ResolvedPart): boolean {
 }
 
 describe("furniture template visual contracts", () => {
-  it("binds the actual screened UI defaults to the versioned, non-release contract", () => {
+  it("binds current screened UI defaults to the versioned non-release contract", () => {
     expect(screenedTemplateDefaults.schema_version).toBe("custombuild.screened-template-defaults.v1");
-    expect(screenedTemplateDefaults.contract_version).toBe("1.0.0");
+    expect(screenedTemplateDefaults.contract_version).toBe("1.1.0");
     expect(screenedTemplateDefaults.identity_policy).toEqual({
       design_id: "preserve_current_project",
       revision: "preserve_current_project",
@@ -116,17 +116,14 @@ describe("furniture template visual contracts", () => {
     expect(fingerprint).toEqual({
       algorithm: "sha256",
       canonicalization: "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
-      value: SCREENED_TEMPLATE_DEFAULTS_V1_SHA256,
+      value: SCREENED_TEMPLATE_DEFAULTS_V1_1_SHA256,
     });
-    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_SHA256);
+    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_1_SHA256);
 
-    expect(screenedTemplateDefaults.templates.map((entry) => entry.template_id)).toEqual([
-      "shelving",
-      "wall-library",
-    ]);
+    expect(screenedTemplateDefaults.templates.map((entry) => entry.template_id)).toEqual(["shelving"]);
     for (const entry of screenedTemplateDefaults.templates) {
       const templateId = entry.template_id;
-      if (templateId !== "shelving" && templateId !== "wall-library") {
+      if (templateId !== "shelving") {
         throw new TypeError(`Unknown screened template default: ${templateId}`);
       }
       const result = effectiveScreenedTemplateDefault(templateId);
@@ -271,9 +268,14 @@ describe("furniture template visual contracts", () => {
     });
   });
 
-  it("only advertises archetypes backed by complete server geometry as production-capable", () => {
-    expect(FURNITURE_TEMPLATES.filter((template) => template.productionLevel === "screened").map((template) => template.id)).toEqual(["shelving", "wall-library"]);
+  it("only advertises archetypes backed by complete production evidence as screened", () => {
+    expect(FURNITURE_TEMPLATES.filter((template) => template.productionLevel === "screened").map((template) => template.id)).toEqual(["shelving"]);
     expect(FURNITURE_TEMPLATES.filter((template) => template.productionLevel === "concept").every((template) => Boolean(template.limitation))).toBe(true);
+    expect(FURNITURE_TEMPLATES.find((template) => template.id === "wall-library")).toMatchObject({
+      productionLevel: "concept",
+      archetypeLabel: "Väggbiblioteksstomme · koncept",
+      limitation: expect.stringMatching(/gångjärn.*borrbilder.*retention/i),
+    });
   });
 
   it("recognizes persisted reference-image provenance as concept geometry", () => {

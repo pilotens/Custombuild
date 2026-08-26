@@ -8,6 +8,7 @@ from io import BytesIO
 from types import SimpleNamespace
 from typing import Any
 
+import custombuild_manufacturing.pipeline as manufacturing_pipeline
 import custombuild_worker.tasks as worker_tasks
 import pytest
 from app.models import DesignStatus, DesignVersion, GenerationJob, JobStatus
@@ -157,6 +158,14 @@ def test_worker_accepts_only_the_exact_frozen_context() -> None:
 def test_worker_returns_review_package_when_two_sided_cam_registration_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Exercise the deeper two-sided registration branch under an explicit
+    # future structured-retention premise. The independent DADO gate has its
+    # own fail-closed regression coverage and must otherwise win first.
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
     job, version = _job_and_version()
     version.spec_json = _frozen_spec_json(
         width_um=mm(700),

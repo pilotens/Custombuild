@@ -85,6 +85,20 @@ def _insecure(value: str) -> bool:
     return not value or any(marker in lowered for marker in INSECURE_MARKERS)
 
 
+def _insecure_secret(value: str, *, minimum_length: int = 24) -> bool:
+    return _insecure(value) or len(value) < minimum_length or value != value.strip()
+
+
+def _database_identity(value: str) -> tuple[str, str] | None:
+    try:
+        parsed = urlsplit(value.replace("postgresql+psycopg://", "postgresql://", 1))
+    except ValueError:
+        return None
+    if parsed.scheme != "postgresql" or not parsed.hostname:
+        return None
+    return parsed.username or "", parsed.password or ""
+
+
 def external_production_issues(
     config: dict[str, Any],
     *,
@@ -116,6 +130,12 @@ def external_production_issues(
             issues.append(f"{name} does not run with APP_ENV=production")
 
     api_env = _environment(_mapping(services["api"]))
+    for name in ("migrate", "api", "worker", "scheduler"):
+        if (
+            _environment(_mapping(services[name])).get("PRODUCTION_FOUR_EYES_REQUIRED")
+            != "true"
+        ):
+            issues.append(f"{name} does not require four-eyes production approval")
     if api_env.get("AUTH_MODE") != "oidc":
         issues.append("api does not require OIDC authentication")
     for key in ("OIDC_ISSUER", "CORS_ORIGINS", "S3_PUBLIC_ENDPOINT"):
@@ -156,16 +176,62 @@ def external_production_issues(
         ).get("AWS_SECRET_ACCESS_KEY", ""),
         "api.ARTIFACT_SIGNING_SECRET": api_env.get("ARTIFACT_SIGNING_SECRET", ""),
     }
+    postgres_env = _environment(_mapping(services["postgres"]))
+    secrets.update(
+        {
+            "postgres.MIGRATOR_DATABASE_PASSWORD": postgres_env.get(
+                "MIGRATOR_DATABASE_PASSWORD", ""
+            ),
+            "postgres.API_DATABASE_PASSWORD": postgres_env.get("API_DATABASE_PASSWORD", ""),
+            "postgres.WORKER_DATABASE_PASSWORD": postgres_env.get(
+                "WORKER_DATABASE_PASSWORD", ""
+            ),
+        }
+    )
     for label, value in secrets.items():
-        if _insecure(value):
-            issues.append(f"{label} is missing or uses an insecure default")
+        minimum_length = 32 if label == "api.ARTIFACT_SIGNING_SECRET" else 24
+        if _insecure_secret(value, minimum_length=minimum_length):
+            issues.append(f"{label} is missing, too short, or uses an insecure default")
 
-    for name in ("migrate", "api", "worker", "scheduler"):
+    expected_postgres_roles = {
+        "POSTGRES_USER": "custombuild_bootstrap",
+        "MIGRATOR_DATABASE_USER": "custombuild_migrator",
+    }
+    for key, expected in expected_postgres_roles.items():
+        if postgres_env.get(key) != expected:
+            issues.append(f"postgres.{key} must be {expected}")
+
+    expected_database_roles = {
+        "migrate": "custombuild_migrator",
+        "api": "custombuild_api",
+        "worker": "custombuild_worker",
+        "scheduler": "custombuild_worker",
+    }
+    for name, expected_role in expected_database_roles.items():
         env = _environment(_mapping(services[name]))
-        for key in ("DATABASE_URL", "REDIS_URL", "S3_SECRET_KEY"):
+        database_identity = _database_identity(env.get("DATABASE_URL", ""))
+        if database_identity is None or database_identity[0] != expected_role:
+            issues.append(f"{name}.DATABASE_URL must use the fixed {expected_role} role")
+        elif _insecure_secret(database_identity[1]):
+            issues.append(f"{name}.DATABASE_URL password is missing, too short, or insecure")
+        for key in ("REDIS_URL", "S3_SECRET_KEY"):
             environment_value = env.get(key)
-            if environment_value is not None and _insecure(environment_value):
-                issues.append(f"{name}.{key} is missing or uses an insecure default")
+            if environment_value is None:
+                continue
+            if key == "REDIS_URL":
+                try:
+                    parsed_redis = urlsplit(environment_value)
+                    redis_password = parsed_redis.password or ""
+                    redis_valid = parsed_redis.scheme in {"redis", "rediss"} and bool(
+                        parsed_redis.hostname
+                    )
+                except ValueError:
+                    redis_password = ""
+                    redis_valid = False
+                if not redis_valid or _insecure_secret(redis_password):
+                    issues.append(f"{name}.{key} password is missing, too short, or insecure")
+            elif _insecure_secret(environment_value):
+                issues.append(f"{name}.{key} is missing, too short, or insecure")
 
     web_build = _mapping(_mapping(services["web"]).get("build"))
     web_args = _mapping(web_build.get("args"))
@@ -242,7 +308,7 @@ def external_production_issues(
             expected_source_manifest_sha256 is not None
             and source_manifest_sha256 != expected_source_manifest_sha256
         ):
-            issues.append(f"{name} source manifest does not match the checked build context")
+            issues.append(f"{name} source manifest does not match the checked build/control set")
     for name in ("migrate", "api", "worker", "scheduler"):
         lock_sha256 = str(build_arguments[name].get("DEPENDENCY_LOCK_SHA256", ""))
         if not re.fullmatch(r"[a-f0-9]{64}", lock_sha256):

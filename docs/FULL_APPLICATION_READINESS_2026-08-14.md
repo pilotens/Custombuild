@@ -1,5 +1,11 @@
 # Full applikationsanalys och väg till fullgod status
 
+> **Historiskt beslutsunderlag:** Alla hashvärden, tjänsteantal, PASS-resultat
+> och runtimepåståenden nedan hör till den daterade körningen och är inte aktuell
+> releaseevidens. Endast slutrapporten från samma commits statiska kontroll,
+> Composeacceptans, exakta imageskanning och backup/restore får beskriva dagens
+> kandidat som programvarureleaseklar.
+
 Datum: 2026-08-14<br>
 Status: besluts- och arbetsunderlag, källans nuläge uppdaterat 2026-08-17; lokal synkroniserad deployment/liveacceptans återstår
 Omfattning: frontend, domänmodell, CAD, tillverkningsunderlag, API, drift, säkerhet och release
@@ -220,7 +226,8 @@ Gap:
 - Den aktuella backupen ligger på samma fysiska dator och saknar schemalagd krypterad offsite-replikering.
 - Ingen färsk `restore-drill.json` ligger bredvid den senaste backupen.
 - Alertleverans och dashboards finns inte i den lokala Compose-miljön.
-- Det äldre `prod/`-trädet finns kvar som historisk spegel och ökar risken för fel releasekälla.
+- Vid den daterade granskningen fanns ett äldre `prod/`-träd kvar som historisk
+  spegel. Det är nu borttaget; repositoryroten är den enda tillåtna releasekällan.
 - Docker har gott om återvinningsbar cache/image-data, men volymer och rollback-images får inte bredprunas.
 
 ## 5. Vad “fullgod” bör betyda

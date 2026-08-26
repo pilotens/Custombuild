@@ -18,6 +18,7 @@ from custombuild_domain import (
     template_capability_registry_payload,
 )
 from custombuild_manufacturing import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DFM_GRAIN_BLOCKER_CODE,
@@ -30,6 +31,7 @@ from custombuild_manufacturing import (
     DesignReviewPackageStatus,
     Severity,
     canonical_json_bytes,
+    dado_retention_evidence_missing,
     grain_control_projection,
     normalize_design_review_dfm_report,
     normalize_design_review_package_status,
@@ -238,6 +240,9 @@ _BLOCKED_CAM_ALLOWED_EVIDENCE_KINDS = frozenset(
 _RULE_REPORT_DISCLAIMER = (
     "Beräkningarna är deterministisk screening och beslutsstöd, inte "
     "produktcertifiering eller garanti för säker konstruktion."
+)
+FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE = (
+    "FOUR_EYES_APPROVER_SEPARATION_REQUIRED"
 )
 
 
@@ -789,6 +794,99 @@ def _require_current_design_approval(
     return approval
 
 
+def _require_four_eyes_approval_separation(
+    design_approver_id: str,
+    cam_approver_id: str,
+) -> None:
+    """Enforce distinct design and CAM reviewers when the deployment requires it."""
+
+    if (
+        get_settings().production_four_eyes_required
+        and design_approver_id == cam_approver_id
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE,
+                "message": (
+                    "Design and CAM approval must be completed by different users."
+                ),
+                "solution": (
+                    "Ask a different authorized reviewer to complete CAM approval "
+                    "for the current design approval."
+                ),
+            },
+        )
+
+
+def _require_current_bound_job_evidence(
+    session: Session,
+    organization_id: str,
+    job: GenerationJob,
+    version: DesignVersion,
+) -> None:
+    """Re-resolve mutable evidence rows before a frozen job may be trusted.
+
+    Job and manifest snapshots prove what was reviewed at generation time.  They
+    do not prove that an evidence row still exists, remains unrevoked/unexpired,
+    or still points at the same immutable object.  Every artifact, CAM and
+    release gate therefore repeats the server-owned evidence resolution.
+    """
+
+    request = job.request_json
+    if not isinstance(request, Mapping):
+        raise HTTPException(status_code=409, detail="Generation evidence binding is malformed")
+    design_approval = session.scalar(
+        select(Approval).where(
+            Approval.organization_id == organization_id,
+            Approval.design_version_id == version.id,
+            Approval.approval_type == "design",
+        )
+    )
+    design_approval = _require_current_design_approval(
+        session,
+        organization_id,
+        design_approval,
+        version,
+    )
+    if request.get("approved_design_review") != _design_approval_snapshot(design_approval):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DESIGN_APPROVAL_SNAPSHOT_STALE",
+                "message": "The generated package is not bound to the current design approval.",
+                "solution": "Generate and review a new package from the current approval.",
+            },
+        )
+
+    snapshots = request.get("external_evidence")
+    if not isinstance(snapshots, list) or any(not isinstance(item, Mapping) for item in snapshots):
+        raise HTTPException(status_code=409, detail="Generation evidence snapshot is malformed")
+    evidence_ids = [
+        str(snapshot.get("evidence_id"))
+        for snapshot in snapshots
+        if snapshot.get("evidence_id")
+    ]
+    if len(evidence_ids) != len(snapshots):
+        raise HTTPException(status_code=409, detail="Generation evidence snapshot is malformed")
+    current = _verified_external_evidence(
+        session,
+        organization_id,
+        version.project_id,
+        version.design_hash,
+        evidence_ids,
+    )
+    if current != snapshots:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "EXTERNAL_EVIDENCE_SNAPSHOT_STALE",
+                "message": "The generated package evidence no longer matches its server record.",
+                "solution": "Generate and review a new package with current immutable evidence.",
+            },
+        )
+
+
 def _design_approval_snapshot(approval: Approval) -> dict[str, Any]:
     """Canonical review identity bound into every generation-context hash."""
 
@@ -798,6 +896,43 @@ def _design_approval_snapshot(approval: Approval) -> dict[str, Any]:
         "reason": approval.reason,
         "warning_overrides": approval.overrides_json,
     }
+
+
+def _frozen_dado_retention_is_unresolved(version: DesignVersion) -> bool | None:
+    """Rebuild the frozen design and fail closed on the current plain-DADO contract."""
+
+    if not isinstance(version.spec_json, Mapping):
+        return None
+    try:
+        design = build_bookcase(BookcaseDesignSpec.model_validate(version.spec_json))
+    except (TypeError, ValueError, ValidationError):
+        return None
+    if design.design_hash != version.design_hash:
+        return None
+    return dado_retention_evidence_missing(design)
+
+
+def _require_resolved_dado_retention(version: DesignVersion) -> None:
+    unresolved = _frozen_dado_retention_is_unresolved(version)
+    if unresolved is None:
+        raise HTTPException(
+            status_code=409,
+            detail="The frozen joint-retention contract cannot be reconstructed",
+        )
+    if unresolved:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+                "message": (
+                    "A plain DADO proves geometry and local bearing, not permanent retention."
+                ),
+                "solution": (
+                    "Bind a versioned, checksum-addressed dry self-locking or mechanical "
+                    "retention system to every DADO joint, then generate a new package."
+                ),
+            },
+        )
 
 
 def _frozen_grain_contract(
@@ -1045,6 +1180,7 @@ def _blocked_cam_review_package_is_valid(result_json: Mapping[str, Any]) -> bool
             STOCK_PROFILE_MISSING_CODE,
             DFM_GRAIN_BLOCKER_CODE,
             "TWO_SIDED_REGISTRATION_MISSING",
+            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
         }
         or result_json.get("authoritative_geometry") is not True
         or result_json.get("machine_program_mode") != "CAM_BLOCKED"
@@ -1150,7 +1286,14 @@ def _manifest_context_matches_frozen_job(
         return False
     capability = version_result.get("template_capability")
     design_spec = version_result.get("spec")
-    if not isinstance(capability, Mapping) or not isinstance(design_spec, Mapping):
+    domain_template_version = version_result.get("template_version")
+    if (
+        not isinstance(capability, Mapping)
+        or not isinstance(design_spec, Mapping)
+        or not isinstance(domain_template_version, str)
+        or not domain_template_version
+        or version.template_version != f"bookcase@{domain_template_version}"
+    ):
         return False
 
     material_versions: set[str] = set()
@@ -1200,8 +1343,8 @@ def _manifest_context_matches_frozen_job(
             "design_hash": version.design_hash,
             "app_version": engine_context["app_version"],
             "engine_version": version.engine_version,
-            "template_version": version.template_version,
-            "domain_template_version": version.template_version,
+            "template_version": domain_template_version,
+            "domain_template_version": domain_template_version,
             "template_capability_version": capability["template_version"],
             "template_capability_registry_version": engine_context[
                 "template_capability_registry_version"
@@ -1654,6 +1797,9 @@ def _review_document_binding_issues(
         blocker_codes = normalized_package_status.blocker_codes
         grain_blocked = blocker_codes == (DFM_GRAIN_BLOCKER_CODE,)
         stock_blocked = blocker_codes == (STOCK_PROFILE_MISSING_CODE,)
+        retention_blocked = blocker_codes == (
+            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        )
         if stored_dfm_report is None or not _stock_report_matches_frozen_version(
             stored_dfm_report,
             expected_stock_missing_issues,
@@ -1679,6 +1825,8 @@ def _review_document_binding_issues(
                 raise ValueError("stock blocker grain warning does not match the frozen design")
         elif expected_grain_issues:
             raise ValueError("unbound directional stock is not represented by the package status")
+        if retention_blocked and _frozen_dado_retention_is_unresolved(version) is not True:
+            raise ValueError("DADO retention blocker does not match the frozen design")
     except (
         ArtifactError,
         ArtifactIntegrityError,
@@ -1977,6 +2125,15 @@ def _require_review_evidence(
             status_code=409,
             detail="Production evidence failed integrity verification; regenerate the package",
         )
+    version = session.scalar(
+        select(DesignVersion).where(
+            DesignVersion.organization_id == organization_id,
+            DesignVersion.id == job.design_version_id,
+        )
+    )
+    if version is None:
+        raise HTTPException(status_code=409, detail="Generation design version is missing")
+    _require_current_bound_job_evidence(session, organization_id, job, version)
 
 
 @router.get("/me")
@@ -3041,6 +3198,10 @@ def approve_version(
     approved_manifest_sha: str | None = None
     approved_overrides: list[dict[str, Any]] = []
     if payload.approval_type == "cam":
+        # Retention is a frozen design invariant, not review evidence.  Surface
+        # its canonical blocker before looking for CAM artifacts so a truthful
+        # CAM-blocked package cannot degrade into a generic missing-file error.
+        _require_resolved_dado_retention(version)
         design_approval = session.scalar(
             select(Approval).where(
                 Approval.organization_id == principal.organization_id,
@@ -3050,6 +3211,10 @@ def approve_version(
         )
         design_approval = _require_current_design_approval(
             session, principal.organization_id, design_approval, version
+        )
+        _require_four_eyes_approval_separation(
+            design_approval.approved_by,
+            principal.user_id,
         )
         if payload.generation_job_id is None:
             raise HTTPException(
@@ -3304,6 +3469,10 @@ def release_version(
 ) -> dict[str, Any]:
     version = tenant_version(session, principal, project_id, revision)
     session.refresh(version, with_for_update=True)
+    _require_frozen_template_capability(version)
+    # A missing CAM approval must never mask an unresolved physical-retention
+    # invariant.  Release therefore returns the same canonical blocker as CAM.
+    _require_resolved_dado_retention(version)
     if version.status == DesignStatus.superseded:
         raise HTTPException(status_code=409, detail="Superseded revisions cannot be released")
     existing_release: Release | None = None
@@ -3334,6 +3503,10 @@ def release_version(
     )
     if cam_approval is None or cam_approval.generation_job_id is None:
         raise HTTPException(status_code=409, detail="A bound CAM approval is required")
+    _require_four_eyes_approval_separation(
+        design_approval.approved_by,
+        cam_approval.approved_by,
+    )
     latest_job = session.scalar(
         select(GenerationJob)
         .where(

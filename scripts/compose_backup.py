@@ -24,15 +24,24 @@ from typing import Any, BinaryIO
 import boto3
 from botocore.config import Config
 
-ALPINE_IMAGE = "alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc"
+try:
+    from scripts.source_manifest import build_source_manifest
+except ModuleNotFoundError:  # Direct script execution.
+    from source_manifest import build_source_manifest  # type: ignore[import-not-found,no-redef]
+
+ALPINE_IMAGE = (
+    "alpine:3.24.1@sha256:"
+    "28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b"
+)
 POSTGRES_IMAGE = (
-    "postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193"
+    "postgres:17.11-alpine3.24@sha256:"
+    "18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73"
 )
-SEAWEEDFS_IMAGE = (
-    "chrislusf/seaweedfs:4.41@sha256:"
-    "43b768cd62b00d132439cda881b93fd1adebf1b315e996e794087743821d771d"
+SEAWEEDFS_IMAGE = "custombuild-seaweedfs:uncommitted"
+SEAWEEDFS_IMAGE_PATTERN = re.compile(
+    r"^custombuild-seaweedfs:(?:uncommitted|[a-f0-9]{40}|[a-f0-9]{64})$"
 )
-MANIFEST_SCHEMA = "custombuild.compose-backup.v2"
+MANIFEST_SCHEMA = "custombuild.compose-backup.v4"
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 WAL_LSN_PATTERN = re.compile(r"^[0-9A-F]+/[0-9A-F]+$")
 
@@ -65,6 +74,10 @@ def digest_file(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def source_manifest_digest(repo: Path) -> str:
+    return build_source_manifest(repo)[2]
 
 
 def _prepare_private_output_directory(path: Path) -> None:
@@ -259,8 +272,23 @@ def inventory_s3(
                         f"Object changed while inventorying {key!r}: "
                         f"listed {expected_size} bytes, read {actual_size}"
                     )
+                content_type = downloaded.get("ContentType")
+                metadata = downloaded.get("Metadata", {})
+                if not isinstance(content_type, str) or not content_type:
+                    raise BackupError(f"Object {key!r} has no immutable media type")
+                if not isinstance(metadata, dict) or not all(
+                    isinstance(name, str) and isinstance(value, str)
+                    for name, value in metadata.items()
+                ):
+                    raise BackupError(f"Object {key!r} has invalid immutable metadata")
                 inventory.append(
-                    {"key": key, "size_bytes": actual_size, "sha256": digest.hexdigest()}
+                    {
+                        "key": key,
+                        "size_bytes": actual_size,
+                        "sha256": digest.hexdigest(),
+                        "content_type": content_type,
+                        "metadata": dict(sorted(metadata.items())),
+                    }
                 )
             if not response.get("IsTruncated"):
                 break
@@ -352,7 +380,12 @@ def database_snapshot(
         "'captured_at', clock_timestamp(), "
         "'wal_lsn', pg_current_wal_lsn()::text, "
         "'alembic_heads', COALESCE((SELECT json_agg(version_num ORDER BY version_num) "
-        "FROM alembic_version), '[]'::json))::text;"
+        "FROM alembic_version), '[]'::json), "
+        "'row_counts', COALESCE((SELECT json_object_agg(tablename, row_count ORDER BY tablename) "
+        "FROM (SELECT tablename, (((xpath('/row/count/text()', query_to_xml("
+        "format('SELECT count(*) AS count FROM %I.%I', schemaname, tablename), "
+        "false, true, ''))))[1]::text)::bigint AS row_count "
+        "FROM pg_tables WHERE schemaname = 'public') AS counts), '{}'::json))::text;"
     )
     raw = run_capture(
         [
@@ -432,13 +465,31 @@ def _verify_database_snapshot(value: Any) -> None:
         raise BackupError("Backup manifest has invalid Alembic heads")
     if heads != sorted(set(heads)):
         raise BackupError("Backup manifest Alembic heads are not unique and sorted")
+    row_counts = value.get("row_counts")
+    if (
+        not isinstance(row_counts, dict)
+        or not row_counts
+        or not all(
+            isinstance(table, str)
+            and table
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count >= 0
+            for table, count in row_counts.items()
+        )
+    ):
+        raise BackupError("Backup manifest has invalid exact PostgreSQL row counts")
 
 
 def _verify_object_store(value: Any) -> None:
     if not isinstance(value, dict):
         raise BackupError("Backup manifest has no object-store evidence")
-    if value.get("image") != SEAWEEDFS_IMAGE:
-        raise BackupError("Backup manifest does not pin the approved SeaweedFS image")
+    image = value.get("image")
+    if not isinstance(image, str) or not SEAWEEDFS_IMAGE_PATTERN.fullmatch(image):
+        raise BackupError("Backup manifest does not bind an approved SeaweedFS build")
+    image_id = value.get("image_id")
+    if not isinstance(image_id, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
+        raise BackupError("Backup manifest does not bind the exact SeaweedFS image ID")
     if not isinstance(value.get("bucket"), str) or not value["bucket"]:
         raise BackupError("Backup manifest has no object-store bucket")
     objects = value.get("objects")
@@ -452,12 +503,25 @@ def _verify_object_store(value: Any) -> None:
         key = item.get("key")
         size = item.get("size_bytes")
         digest = item.get("sha256")
+        content_type = item.get("content_type")
+        metadata = item.get("metadata")
         if not isinstance(key, str) or not key or key in seen:
             raise BackupError("Backup manifest contains an invalid or duplicate S3 key")
         if not isinstance(size, int) or isinstance(size, bool) or size < 0:
             raise BackupError(f"Backup manifest contains an invalid size for {key!r}")
         if not isinstance(digest, str) or not SHA256_PATTERN.fullmatch(digest):
             raise BackupError(f"Backup manifest contains an invalid SHA-256 for {key!r}")
+        if not isinstance(content_type, str) or not content_type:
+            raise BackupError(f"Backup manifest contains an invalid media type for {key!r}")
+        if not isinstance(metadata, dict) or not all(
+            isinstance(name, str)
+            and name
+            and isinstance(metadata_value, str)
+            for name, metadata_value in metadata.items()
+        ):
+            raise BackupError(f"Backup manifest contains invalid metadata for {key!r}")
+        if list(metadata) != sorted(metadata):
+            raise BackupError(f"Backup manifest metadata is not canonical for {key!r}")
         seen.add(key)
         total_size += size
     if value.get("object_count") != len(objects) or value.get("total_size_bytes") != total_size:
@@ -478,6 +542,15 @@ def verify_manifest(directory: Path) -> dict[str, Any]:
     manifest = {str(key): item for key, item in raw_manifest.items()}
     if manifest.get("schema_version") != MANIFEST_SCHEMA:
         raise BackupError("Unsupported backup manifest schema")
+    created_at = manifest.get("created_at")
+    if not isinstance(created_at, str):
+        raise BackupError("Backup manifest has no creation timestamp")
+    try:
+        parsed_created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BackupError("Backup manifest has an invalid creation timestamp") from exc
+    if parsed_created_at.tzinfo is None:
+        raise BackupError("Backup manifest creation timestamp has no timezone")
     if manifest.get("order") != ["database.dump", "artifacts.tar"]:
         raise BackupError("Backup capture order is invalid")
     entries = manifest.get("files")
@@ -508,6 +581,15 @@ def verify_manifest(directory: Path) -> dict[str, Any]:
         raise BackupError("Backup manifest is missing a required payload")
     _verify_database_snapshot(manifest.get("database_snapshot"))
     _verify_object_store(manifest.get("object_store"))
+    revision = manifest.get("git_revision")
+    source_manifest_sha256 = manifest.get("source_manifest_sha256")
+    if not isinstance(revision, str) or not re.fullmatch(r"[a-f0-9]{40}", revision):
+        raise BackupError("Backup manifest has no exact Git revision")
+    if (
+        not isinstance(source_manifest_sha256, str)
+        or not SHA256_PATTERN.fullmatch(source_manifest_sha256)
+    ):
+        raise BackupError("Backup manifest has no exact source manifest SHA-256")
     return manifest
 
 
@@ -522,8 +604,8 @@ def _resolved_storage(config: dict[str, Any]) -> tuple[str, str, str, str, str, 
         bucket = str(api_environment["S3_BUCKET"])
     except (KeyError, TypeError) as exc:
         raise BackupError("Compose configuration is missing object-storage settings") from exc
-    if object_image != SEAWEEDFS_IMAGE:
-        raise BackupError("Compose must use the approved digest-pinned SeaweedFS image")
+    if not SEAWEEDFS_IMAGE_PATTERN.fullmatch(object_image):
+        raise BackupError("Compose must use the repository-owned SeaweedFS build")
     return object_volume, object_image, endpoint, access_key, secret_key, bucket
 
 
@@ -537,7 +619,7 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
     project = str(config.get("name", "unknown"))
     postgres_environment = config["services"]["postgres"].get("environment", {})
     database = str(postgres_environment.get("POSTGRES_DB", "custombuild"))
-    user = str(postgres_environment.get("POSTGRES_USER", "custombuild_migrator"))
+    user = str(postgres_environment.get("POSTGRES_USER", "custombuild_bootstrap"))
     storage = _resolved_storage(config)
     object_volume, object_image, endpoint, access_key, secret_key, bucket = storage
     docker = executable("docker")
@@ -578,7 +660,6 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
                     database,
                     "--format=custom",
                     "--no-owner",
-                    "--no-acl",
                 ],
                 cwd=repo,
                 stdout=target,
@@ -696,16 +777,27 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
         timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
         operation="Git revision lookup",
     )
+    object_image_id = run_capture(
+        [docker, "image", "inspect", object_image, "--format", "{{.Id}}"],
+        cwd=repo,
+        timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
+        operation="SeaweedFS image identity lookup",
+    )
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", object_image_id):
+        raise BackupError("SeaweedFS image identity lookup returned an invalid image ID")
+    source_manifest_sha256 = source_manifest_digest(repo)
     manifest = build_manifest(
         output,
         {
             "compose_project": project,
             "git_revision": revision,
+            "source_manifest_sha256": source_manifest_sha256,
             "database": database,
             "database_snapshot": snapshot,
             "object_volume": object_volume,
             "object_store": {
                 "image": object_image,
+                "image_id": object_image_id,
                 "bucket": bucket,
                 "object_count": len(inventory),
                 "total_size_bytes": sum(int(item["size_bytes"]) for item in inventory),

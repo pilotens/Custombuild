@@ -94,6 +94,7 @@ DFM_ENGINE_VERSION: Final = "dfm-1.3.0"
 STOCK_PROFILE_MISSING: Final = "STOCK_PROFILE_MISSING"
 DFM_GRAIN_MISSING: Final = "DFM-GRAIN-001"
 TWO_SIDED_REGISTRATION_MISSING: Final = "TWO_SIDED_REGISTRATION_MISSING"
+DADO_RETENTION_EVIDENCE_MISSING: Final = "DADO_RETENTION_EVIDENCE_MISSING"
 DFM_BLOCKER_CODES: Final = frozenset({STOCK_PROFILE_MISSING, DFM_GRAIN_MISSING})
 BLOCKED_CAM_REQUIRED_ACTIONS: Final = {
     STOCK_PROFILE_MISSING: (
@@ -108,6 +109,11 @@ BLOCKED_CAM_REQUIRED_ACTIONS: Final = {
     TWO_SIDED_REGISTRATION_MISSING: (
         "Bind an externally specified two-sided registration and fixture plan; "
         "do not infer WCS, pins, fixtures or registration coordinates."
+    ),
+    DADO_RETENTION_EVIDENCE_MISSING: (
+        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
+        "retention system for every DADO joint; a review acknowledgement, adhesive or "
+        "geometric bearing check is not retention evidence."
     ),
 }
 GENERATED_REVIEW_REQUIRED_ACTION: Final = (
@@ -461,6 +467,33 @@ def require_sha256(value: Any, label: str) -> str:
     text = string(value, label)
     require(re.fullmatch(r"[0-9a-f]{64}", text) is not None, f"{label} is not SHA-256")
     return text
+
+
+def verify_blocked_cam_endpoint_rejection(
+    result: HttpResult,
+    blocker_codes: list[Any],
+    *,
+    label: str,
+) -> None:
+    """Prove that CAM/release remains closed for the package blocker.
+
+    DADO retention is a frozen-design invariant. Its endpoints must preserve
+    the exact machine-readable blocker rather than degrade into a generic
+    missing-CAM response.
+    """
+
+    require(result.status == 409, f"{label} did not fail closed")
+    if blocker_codes != [DADO_RETENTION_EVIDENCE_MISSING]:
+        return
+    try:
+        response = mapping(json.loads(result.body), f"{label} rejection")
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AcceptanceFailure(f"{label} rejection is not JSON") from exc
+    detail = mapping(response.get("detail"), f"{label} rejection detail")
+    require(
+        detail.get("code") == DADO_RETENTION_EVIDENCE_MISSING,
+        f"{label} did not preserve the DADO retention blocker",
+    )
 
 
 def _verify_readiness_requirements(
@@ -1942,7 +1975,7 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
     )
 
     if cam_blocked:
-        nordic.request(
+        cam_rejection = nordic.request(
             "POST",
             f"{base}/approve",
             payload={
@@ -1953,7 +1986,7 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             },
             expected=(409,),
         )
-        nordic.request(
+        release_rejection = nordic.request(
             "POST",
             f"{base}/release",
             payload={
@@ -1961,6 +1994,16 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
                 "confirmation": "RELEASE",
             },
             expected=(409,),
+        )
+        verify_blocked_cam_endpoint_rejection(
+            cam_rejection,
+            review_package_status["blocker_codes"],
+            label="CAM approval",
+        )
+        verify_blocked_cam_endpoint_rejection(
+            release_rejection,
+            review_package_status["blocker_codes"],
+            label="release",
         )
         log(
             "cam_blocked_review_package_verified",

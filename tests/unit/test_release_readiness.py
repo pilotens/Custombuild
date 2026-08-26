@@ -19,7 +19,7 @@ from scripts.release_readiness import (
 def test_report_cli_creates_the_output_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    expected = {"software_release_ready": True}
+    expected = {"static_controls_ready": True}
     monkeypatch.setattr(release_readiness, "build_report", lambda *_args, **_kwargs: expected)
     output = tmp_path / "nested" / "readiness.json"
 
@@ -156,6 +156,14 @@ OPERATIONS_ENGINE_VERSION = "semantic-operations-1.2.0"
 REQUIRED_REVIEW_PACKAGE_PATHS = frozenset({STOCK_SELECTION_PATH, GENERATION_PLAN_PATH})
 STOCK_PROFILE_MISSING = "STOCK_PROFILE_MISSING"
 DFM_GRAIN_MISSING = "DFM-GRAIN-001"
+DADO_RETENTION_EVIDENCE_MISSING = "DADO_RETENTION_EVIDENCE_MISSING"
+BLOCKED_CAM_REQUIRED_ACTIONS = {
+    DADO_RETENTION_EVIDENCE_MISSING: (
+        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
+        "retention system for every DADO joint; a review acknowledgement, adhesive or "
+        "geometric bearing check is not retention evidence."
+    ),
+}
 
 def verify_workshop_readiness(payload):
     require(payload["physical_cutting_authorized"] is False, "unsafe readiness")
@@ -208,6 +216,10 @@ def verify_package(
     )
 
 def run_acceptance(completed_job, job_result, manifest):
+    cam_blocked = True
+    if cam_blocked:
+        nordic.request("POST", f"{base}/approve", expected=(409,))
+        nordic.request("POST", f"{base}/release", expected=(409,))
     generation_context_hash = verify_generation_context_hash(completed_job, job_result)
     downloaded = {
         "stock_selection": b"selection",
@@ -705,6 +717,7 @@ def test_build_report_blocks_software_release_on_semantic_drift(
 
     assert semantic_check["status"] == "BLOCK"
     assert "worker result can claim production cutting" in semantic_check["detail"]
+    assert report["static_controls_ready"] is False
     assert report["software_release_ready"] is False
 
 

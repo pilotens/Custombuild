@@ -10,11 +10,10 @@ persistent volumes.
 | Production candidate | `custombuild-prod` | 3000 | 8000 | 9000 | Stable local acceptance candidate |
 | Test | `custombuild-test` | 3100 | 8100 | 9200 | New changes and destructive test data |
 
-The top-level `prod/` directory is an older self-contained release snapshot. It
-is not a third runtime and must not be used as the source for current local
-containers. Until its history has been archived, it remains read-only reference
-material. New implementation belongs in the repository root and is promoted to
-the sibling test copy through reviewed commits.
+The former top-level `prod/` snapshot has been retired from the working tree.
+Git history preserves it if an audit needs the old bytes; it must not be restored
+as an active source. New implementation and every build originate at the
+repository root.
 
 Before starting both local surfaces, run:
 

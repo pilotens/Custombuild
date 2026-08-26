@@ -67,12 +67,19 @@ export function ProductionDrawer({
 
   const referenceImage = isReferenceImageDesign(spec);
   const partCustomization = hasPartCustomization(spec);
-  const productionBlocked = template.productionLevel === "concept" || referenceImage || partCustomization;
+  // The furniture family is a safety boundary too: a stale or tampered local
+  // template id must never make wall-library geometry production-capable.
+  const conceptTemplate = template.productionLevel === "concept" || spec.furniture_type === "wall_library";
+  const productionBlocked = conceptTemplate || referenceImage || partCustomization;
   const limitation = referenceImage
     ? "Modellen är tolkad från en referensbild. Bilden visar inte säkra verkliga mått, materialtjocklek, beslag, infästningar eller dolda förband. Bekräfta konstruktionen manuellt innan ett underlag kan skapas."
     : partCustomization
       ? "En eller flera fria deländringar saknar en säker parametrisk transformation. Stödda flyttar och sammanslagningar regenererar redan anslutande brädor; övriga ändringar blockeras tills förband, upplag och bärighet kan räknas om på servern."
-    : template.limitation;
+      : template.limitation ?? (
+        spec.furniture_type === "wall_library"
+          ? "Väggbibliotekets gångjärn, beslag, borrbilder, frontspel och limfria mekaniska retention är ännu inte versionsbundna och verifierade."
+          : undefined
+      );
 
   const content = (
     <section

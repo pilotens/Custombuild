@@ -19,7 +19,7 @@ const screenshotOptions = {
   threshold: 0.1,
 };
 
-const persistentCanvasIdentity = "p19-shared-viewer-canvas";
+const persistentViewerIdentity = "p19-shared-furniture-viewer";
 
 interface ProjectedModelMetrics {
   heightRatio: number;
@@ -34,19 +34,27 @@ async function freezeVisualMotion(page: Page): Promise<void> {
   await page.evaluate(async () => document.fonts.ready);
 }
 
+function renderedModelSurface(page: Page) {
+  return page.getByTestId("furniture-viewer")
+    .locator("canvas, [data-testid='front-projection-fallback'] svg")
+    .first();
+}
+
 async function settleViewport(page: Page, width: number, withModel = false): Promise<void> {
   await expect(page.locator(".save-state")).toContainText("Sparad lokalt");
   await page.evaluate(async () => document.fonts.ready);
   await page.evaluate(() => window.scrollTo(0, 0));
 
   if (withModel) {
-    const model = page.getByLabel("Interaktiv 3D-modell av möbeln");
-    const canvas = model.locator("canvas");
-    await expect(model).toBeVisible();
-    await expect(canvas).toBeVisible();
-    await expect.poll(async () => canvas.evaluate((element) => {
-      const renderCanvas = element as HTMLCanvasElement;
-      return renderCanvas.height * renderCanvas.width;
+    const viewer = page.getByTestId("furniture-viewer");
+    const surface = renderedModelSurface(page);
+    await expect(viewer).toBeVisible();
+    await expect(viewer).toHaveAttribute("data-renderer", /^(webgl|front-projection)$/);
+    await expect(surface).toBeVisible();
+    await expect.poll(async () => surface.evaluate((element) => {
+      if (element instanceof HTMLCanvasElement) return element.height * element.width;
+      const bounds = element.getBoundingClientRect();
+      return bounds.height * bounds.width;
     })).toBeGreaterThan(0);
   }
 
@@ -57,8 +65,7 @@ async function settleViewport(page: Page, width: number, withModel = false): Pro
 }
 
 async function projectedModelMetrics(page: Page): Promise<ProjectedModelMetrics> {
-  const canvas = page.getByLabel("Interaktiv 3D-modell av möbeln").locator("canvas");
-  const screenshot = await canvas.screenshot({ animations: "disabled", scale: "css" });
+  const screenshot = await renderedModelSurface(page).screenshot({ animations: "disabled", scale: "css" });
   return page.evaluate(async (encodedPng) => {
     const binary = atob(encodedPng);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
@@ -70,7 +77,7 @@ async function projectedModelMetrics(page: Page): Promise<ProjectedModelMetrics>
     context?.drawImage(bitmap, 0, 0);
     bitmap.close();
     const pixels = context?.getImageData(0, 0, scratch.width, scratch.height).data;
-    if (!pixels) throw new Error("Canvas screenshot could not be decoded for projected-model verification.");
+    if (!pixels) throw new Error("Model-surface screenshot could not be decoded for projected-model verification.");
 
     let count = 0;
     let minX = scratch.width;
@@ -106,11 +113,12 @@ async function projectedModelMetrics(page: Page): Promise<ProjectedModelMetrics>
 }
 
 async function verifyPersistentVisibleModel(page: Page): Promise<void> {
-  const canvas = page.getByLabel("Interaktiv 3D-modell av möbeln").locator("canvas");
-  await expect(canvas).toHaveAttribute("data-visual-regression-identity", persistentCanvasIdentity);
-  const box = await canvas.boundingBox();
+  const viewer = page.getByTestId("furniture-viewer");
+  const surface = renderedModelSurface(page);
+  await expect(viewer).toHaveAttribute("data-visual-regression-identity", persistentViewerIdentity);
+  const box = await surface.boundingBox();
   expect(box).not.toBeNull();
-  if (!box) throw new Error("The shared model canvas has no layout box.");
+  if (!box) throw new Error("The shared model surface has no layout box.");
   expect(box.height).toBeGreaterThanOrEqual(240);
   expect(box.width).toBeGreaterThanOrEqual(300);
 
@@ -296,9 +304,9 @@ for (const visualCase of visualCases) {
       const modes = page.getByRole("navigation", { name: "Produktlägen" });
       await expect(modes.getByRole("button", { name: /Studio/ })).toHaveAttribute("aria-current", "page");
       await expect(page.getByRole("heading", { name: "Möbel", exact: true })).toBeVisible();
-      await page.getByLabel("Interaktiv 3D-modell av möbeln").locator("canvas").evaluate((canvas, identity) => {
-        canvas.setAttribute("data-visual-regression-identity", identity);
-      }, persistentCanvasIdentity);
+      await page.getByTestId("furniture-viewer").evaluate((viewer, identity) => {
+        viewer.setAttribute("data-visual-regression-identity", identity);
+      }, persistentViewerIdentity);
       await verifyMobileViewerToolbar(page);
       await verifyMobileComponentPalette(page);
       await settleViewport(page, visualCase.viewport.width, true);

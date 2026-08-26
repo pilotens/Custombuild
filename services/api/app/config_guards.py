@@ -14,6 +14,7 @@ INSECURE_SECRET_MARKERS = ("change-me", "development")
 INSECURE_SECRET_VALUES = frozenset({"custombuild", "minioadmin", "password", "postgres"})
 INSECURE_S3_ACCESS_KEYS = frozenset({"custombuild", "minioadmin"})
 INSECURE_BUILD_IDENTITY_MARKERS = ("dirty", "local", "unknown", "uncommitted")
+MIN_PRODUCTION_SECRET_LENGTH = 24
 
 
 class BuildIdentityValues(TypedDict):
@@ -38,9 +39,21 @@ def is_insecure_secret(value: str) -> bool:
     )
 
 
+def _validate_production_secret(value: str, *, label: str) -> None:
+    if value != value.strip():
+        raise ValueError(f"production {label} must not have surrounding whitespace")
+    if len(value) < MIN_PRODUCTION_SECRET_LENGTH:
+        raise ValueError(
+            f"production {label} must be at least {MIN_PRODUCTION_SECRET_LENGTH} characters"
+        )
+    if is_insecure_secret(value):
+        raise ValueError(f"production {label} must be replaced")
+
+
 def validate_production_database_url(
     database_url: str,
     *,
+    expected_username: str,
     setting_name: str = "DATABASE_URL",
 ) -> None:
     try:
@@ -54,15 +67,24 @@ def validate_production_database_url(
         or not database.password
     ):
         raise ValueError(f"production requires password-authenticated PostgreSQL in {setting_name}")
-    if is_insecure_secret(database.password):
-        raise ValueError(f"production database password in {setting_name} must be replaced")
+    if database.username != expected_username:
+        raise ValueError(
+            f"production {setting_name} must use the exact database role {expected_username}"
+        )
+    _validate_production_secret(
+        database.password,
+        label=f"database password in {setting_name}",
+    )
 
 
 def validate_production_s3_credentials(access_key: str, secret_key: str) -> None:
-    if _normalise_secret(access_key) in INSECURE_S3_ACCESS_KEYS or not access_key.strip():
+    if (
+        access_key != access_key.strip()
+        or _normalise_secret(access_key) in INSECURE_S3_ACCESS_KEYS
+        or not access_key
+    ):
         raise ValueError("production object-storage access key must be replaced")
-    if is_insecure_secret(secret_key):
-        raise ValueError("production object-storage secret must be replaced")
+    _validate_production_secret(secret_key, label="object-storage secret")
 
 
 def validate_production_redis_url(redis_url: str) -> None:
@@ -75,8 +97,7 @@ def validate_production_redis_url(redis_url: str) -> None:
     if parsed.scheme not in {"redis", "rediss"} or not parsed.hostname:
         raise ValueError("production REDIS_URL must identify a Redis service")
     password = unquote(parsed.password or "")
-    if is_insecure_secret(password):
-        raise ValueError("production Redis password in REDIS_URL must be replaced")
+    _validate_production_secret(password, label="Redis password in REDIS_URL")
 
 
 def validate_production_build_identity(

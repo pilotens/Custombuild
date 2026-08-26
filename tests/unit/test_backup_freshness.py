@@ -28,9 +28,13 @@ def create_backup(
                 "captured_at": (database_captured_at or created_at).isoformat(),
                 "wal_lsn": "0/16B6C50",
                 "alembic_heads": ["0004_design_source_provenance"],
+                "row_counts": {"alembic_version": 1, "projects": 1},
             },
+            "git_revision": "3" * 40,
+            "source_manifest_sha256": "2" * 64,
             "object_store": {
                 "image": SEAWEEDFS_IMAGE,
+                "image_id": "sha256:" + "1" * 64,
                 "bucket": "custombuild-artifacts",
                 "object_count": 0,
                 "total_size_bytes": 0,

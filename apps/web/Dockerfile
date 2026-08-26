@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_VERSION=24.18.1
+ARG NODE_VERSION=24.19.0
 ARG PNPM_VERSION=11.7.0
 
-FROM node:${NODE_VERSION}-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS base
+FROM node:${NODE_VERSION}-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS base
 
 ARG PNPM_VERSION
 ENV PNPM_HOME=/pnpm \
@@ -47,7 +47,7 @@ COPY packages/contracts packages/contracts
 RUN mkdir -p apps/web/public && pnpm --dir apps/web build
 
 
-FROM node:${NODE_VERSION}-bookworm-slim@sha256:235600a8101ab264e117b1768e925532262668dc9b581ef1dd7d96ced463b8e7 AS runner
+FROM node:${NODE_VERSION}-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS runner
 
 ARG APP_VERSION=0.1.0-local
 ARG VCS_REF=uncommitted
@@ -55,7 +55,7 @@ ARG BUILD_DATE=unknown
 ARG SOURCE_URL=unknown
 ARG SOURCE_MANIFEST_SHA256=unknown
 ARG FRONTEND_LOCK_SHA256=unknown
-ARG DEBIAN_SNAPSHOT=20260713T000000Z
+ARG DEBIAN_SNAPSHOT=20260825T000000Z
 LABEL org.opencontainers.image.title="Custombuild Web" \
       org.opencontainers.image.description="Swedish parametric furniture production workspace" \
       org.opencontainers.image.version="${APP_VERSION}" \

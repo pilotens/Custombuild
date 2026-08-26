@@ -125,6 +125,7 @@ const ARTIFACT_INTEGRITY_API_MESSAGE = (
 const STOCK_PROFILE_MISSING_CODE = "STOCK_PROFILE_MISSING";
 const DFM_GRAIN_MISSING_CODE = "DFM-GRAIN-001";
 const TWO_SIDED_REGISTRATION_MISSING_CODE = "TWO_SIDED_REGISTRATION_MISSING";
+const DADO_RETENTION_EVIDENCE_MISSING_CODE = "DADO_RETENTION_EVIDENCE_MISSING";
 const GENERATED_REVIEW_REQUIRED_ACTION = (
   "None for design review; physical workshop evidence remains required."
 );
@@ -142,6 +143,11 @@ const BLOCKED_CAM_REQUIRED_ACTIONS: Record<string, string> = {
     "Bind an externally specified two-sided registration and fixture plan; "
     + "do not infer WCS, pins, fixtures or registration coordinates."
   ),
+  [DADO_RETENTION_EVIDENCE_MISSING_CODE]: (
+    "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
+    + "retention system for every DADO joint; a review acknowledgement, adhesive or "
+    + "geometric bearing check is not retention evidence."
+  ),
 };
 
 function productionErrorHasCode(message: string | null | undefined, code: string): boolean {
@@ -157,6 +163,9 @@ function productionFailureMessage(message: string): string {
   }
   if (productionErrorHasCode(message, DFM_GRAIN_MISSING_CODE)) {
     return "Råskivans fiberriktningsaxel är inte strukturerat serverbunden. Designgranskningspaketet kan skapas, men nesting och CAM ska förbli blockerade; ett dokument eller ett godkännande ersätter inte X/Y-bindningen.";
+  }
+  if (productionErrorHasCode(message, DADO_RETENTION_EVIDENCE_MISSING_CODE)) {
+    return "Not/spår-förbanden saknar versionsbunden torr självlåsning eller mekanisk retention. Designgranskningspaketet kan skapas, men CAM och fysisk frisläppning ska förbli blockerade; lim, bärande geometri eller ett granskningsgodkännande är inte retentionsevidens.";
   }
   if (message.includes("FROZEN_PRODUCTION_CONTEXT_")) {
     return "Skivformat, antal skivor eller maskinval har ändrats. Spara och kontrollera modellen igen.";
@@ -919,11 +928,12 @@ export function ProductionWorkflow({
   const stockBlocked = blockedCamCode === STOCK_PROFILE_MISSING_CODE;
   const grainBlocked = blockedCamCode === DFM_GRAIN_MISSING_CODE;
   const registrationBlocked = blockedCamCode === TWO_SIDED_REGISTRATION_MISSING_CODE;
+  const retentionBlocked = blockedCamCode === DADO_RETENTION_EVIDENCE_MISSING_CODE;
   const dfmBlocked = stockBlocked || grainBlocked;
   const jobDfmStatus = job?.result_json?.dfm_status;
   const blockedCamReviewIsTruthful = Boolean(
     camBlocked
-    && (dfmBlocked || registrationBlocked)
+    && (dfmBlocked || registrationBlocked || retentionBlocked)
     && job?.result_json?.authoritative_geometry === true
     && (dfmBlocked ? jobDfmStatus === "BLOCK" : jobDfmStatus === "PASS" || jobDfmStatus === "WARNING")
     && job?.result_json?.nesting_utilization_ppm === null
@@ -1573,7 +1583,9 @@ export function ProductionWorkflow({
                       ? "En exakt serverbunden lagerprofil saknas. Lagerinköp, nesting, operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Modellens mått och valda profiler har inte ändrats eller ersatts med antagna storformat."
                       : grainBlocked
                         ? "En riktad materialprofil saknar en exakt, strukturerad X/Y-bindning till den verkliga råskivan. Nesting, operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Uppladdade dokument och varningsgodkännanden kan inte ange eller låsa denna axel."
-                        : "Tvåsidiga delar saknar en verifierad registrerings- och fixturplan. Nesting, operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Inga WCS-, pinn- eller fixturdata har antagits."}
+                        : retentionBlocked
+                          ? "Not/spår-förbanden saknar en versionsbunden, checksummeadresserad torr självlåsning eller mekanisk retention. Operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Lim, bärande geometri och granskningsgodkännanden ersätter inte retentionsevidens."
+                          : "Tvåsidiga delar saknar en verifierad registrerings- och fixturplan. Nesting, operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Inga WCS-, pinn- eller fixturdata har antagits."}
                   </p>
                 ) : null}
                 <p

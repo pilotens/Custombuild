@@ -21,7 +21,7 @@ manifest, package-status document and readiness report. The browser cannot turn
 missing software evidence or external workshop requirements into trusted
 approvals.
 
-Two supported CAM-only blockers have additional hard requirements:
+Supported CAM-only blockers have additional hard requirements:
 
 - `STOCK_PROFILE_MISSING` remains visible in the raw DFM report, package status
   and checksum-bound stock-selection snapshot. Required blank sizes and the
@@ -34,6 +34,12 @@ Two supported CAM-only blockers have additional hard requirements:
   be retained for traceability but cannot verify the axis or unlock nesting/CAM.
   Catalogue-declared non-directional material such as MDF is explicitly not
   subject to this requirement.
+- `TWO_SIDED_REGISTRATION_MISSING` requires an externally specified fixture and
+  registration plan; software must not invent WCS, pins or clamp coordinates.
+- `DADO_RETENTION_EVIDENCE_MISSING` is not a raw DFM failure. It means the
+  geometric/bearing screen passed but no versioned, checksum-addressed dry
+  self-locking or mechanical retention system exists. The design-review package
+  remains available while CAM approval and release remain blocked.
 
 The package status document is mandatory for the current manifest format. A
 status-stripped package is invalid; it must never be reinterpreted automatically

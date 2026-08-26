@@ -200,6 +200,27 @@ const designReviewReadiness = designReviewReadinessFixture();
 function blockedCamPackageStatusFixture(
   blockerCode = "TWO_SIDED_REGISTRATION_MISSING",
 ): ReviewPackageStatusFixture {
+  const requiredAction = blockerCode === "STOCK_PROFILE_MISSING"
+    ? (
+        "Select and server-bind an exact stock profile for every part material, version, "
+        + "thickness, blank size and quantity; do not infer sheet size, stock identity or "
+        + "machine capacity."
+      )
+    : blockerCode === "DFM-GRAIN-001"
+      ? (
+          "Bind an exact, structured X or Y stock-grain axis for every directional material "
+          + "stock profile; opaque evidence or acknowledgement cannot resolve this blocker."
+        )
+      : blockerCode === "DADO_RETENTION_EVIDENCE_MISSING"
+        ? (
+            "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
+            + "retention system for every DADO joint; a review acknowledgement, adhesive or "
+            + "geometric bearing check is not retention evidence."
+          )
+        : (
+            "Bind an externally specified two-sided registration and fixture plan; "
+            + "do not infer WCS, pins, fixtures or registration coordinates."
+          );
   return {
     schema_version: "custombuild.design-review-package-status.v1",
     package_status: "READY_FOR_DESIGN_REVIEW",
@@ -211,21 +232,7 @@ function blockedCamPackageStatusFixture(
     validation_backplot_included: false,
     validation_program_included: false,
     physical_cutting_authorized: false,
-    required_action: blockerCode === "STOCK_PROFILE_MISSING"
-      ? (
-          "Select and server-bind an exact stock profile for every part material, version, "
-          + "thickness, blank size and quantity; do not infer sheet size, stock identity or "
-          + "machine capacity."
-        )
-      : blockerCode === "DFM-GRAIN-001"
-        ? (
-            "Bind an exact, structured X or Y stock-grain axis for every directional material "
-            + "stock profile; opaque evidence or acknowledgement cannot resolve this blocker."
-          )
-        : (
-          "Bind an externally specified two-sided registration and fixture plan; "
-          + "do not infer WCS, pins, fixtures or registration coordinates."
-        ),
+    required_action: requiredAction,
   };
 }
 
@@ -314,6 +321,16 @@ const grainBlockedCamJob: JobRead = {
     dfm_status: "BLOCK",
     design_review_package_status: blockedCamPackageStatusFixture("DFM-GRAIN-001"),
     workshop_readiness: blockedCamReadinessFixture(true),
+  },
+};
+
+const retentionBlockedCamJob: JobRead = {
+  ...blockedCamJob,
+  result_json: {
+    ...blockedCamJob.result_json,
+    design_review_package_status: blockedCamPackageStatusFixture(
+      "DADO_RETENTION_EVIDENCE_MISSING",
+    ),
   },
 };
 
@@ -670,6 +687,12 @@ describe("designReviewPackageStatusFromJob", () => {
   it("accepts the exact server-owned grain blocker status", () => {
     expect(designReviewPackageStatusFromJob(grainBlockedCamJob)).toEqual(
       blockedCamPackageStatusFixture("DFM-GRAIN-001"),
+    );
+  });
+
+  it("accepts the exact server-owned DADO retention blocker status", () => {
+    expect(designReviewPackageStatusFromJob(retentionBlockedCamJob)).toEqual(
+      blockedCamPackageStatusFixture("DADO_RETENTION_EVIDENCE_MISSING"),
     );
   });
 
@@ -1614,6 +1637,52 @@ describe("ProductionWorkflow", () => {
     await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
     expect(anchorClick).toHaveBeenCalledOnce();
     expect(api.approveVersion).not.toHaveBeenCalled();
+  });
+
+  it("offers a DADO-retention-blocked review ZIP without treating acknowledgement as retention", async () => {
+    const onSummaryChange = vi.fn();
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designvarningarna har granskats.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: retentionBlockedCamJob,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(blockedReviewArtifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={onSummaryChange}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    expect(screen.getByRole("button", {
+      name: "Ladda ned granskningspaket (.zip)",
+    })).toBeVisible();
+    const camStatus = screen.getByRole("status", { name: "Status för CAM" });
+    expect(camStatus).toHaveTextContent("versionsbunden, checksummeadresserad");
+    expect(camStatus).toHaveTextContent("torr självlåsning eller mekanisk retention");
+    expect(camStatus).toHaveTextContent(
+      "Lim, bärande geometri och granskningsgodkännanden ersätter inte retentionsevidens",
+    );
+    expect(screen.getByRole("status", {
+      name: "Status för fysisk tillverkning",
+    })).toHaveTextContent("Ej frisläppt för fysisk kapning");
+    await waitFor(() => expect(onSummaryChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ designReviewReady: true, physicalCuttingAuthorized: false }),
+    ));
   });
 
   it.each([

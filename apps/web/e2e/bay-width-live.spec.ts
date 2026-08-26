@@ -74,11 +74,9 @@ test("300 mm fackbredd maximerar antalet fack och följer senare måttändringar
   await expect(page.getByRole("group", { name: "Hur vill du bestämma facken?" })).toBeVisible();
   const gridStatus = studioPanel.getByRole("status").filter({ hasText: "fri bredd per fack" });
 
-  // Exercise the native radio through its supported keyboard interaction. The
-  // visible segment label intentionally covers the visually-hidden input.
+  // The whole visible segment is the native radio hit target.
   const targetMode = studioPanel.getByRole("radio", { name: "Minsta bredd", exact: true });
-  await targetMode.focus();
-  await page.keyboard.press("Space");
+  await targetMode.check();
   await expect(targetMode).toBeChecked();
   const targetInput = studioPanel.getByRole("spinbutton", { name: "Minsta fria fackbredd" });
   await targetInput.fill("300");

@@ -16,7 +16,7 @@ from pydantic import Field
 from .identity import content_hash
 from .models import BOOKCASE_TEMPLATE_VERSION, FrozenModel, StableKey
 
-TEMPLATE_CAPABILITY_REGISTRY_VERSION = "custombuild-template-capabilities-1.0.0"
+TEMPLATE_CAPABILITY_REGISTRY_VERSION = "custombuild-template-capabilities-1.1.0"
 
 
 class TemplateProductionLevel(StrEnum):
@@ -53,9 +53,13 @@ _CAPABILITIES = (
     TemplateCapability(
         template_id="wall-library",
         template_version="1.0.0",
-        production_level=TemplateProductionLevel.SCREENED,
+        production_level=TemplateProductionLevel.CONCEPT,
         archetype="wall_library",
         allowed_furniture_types=("wall_library",),
+        limitation=(
+            "Wall-library revisions have no versioned hinge catalogue, boring pattern, "
+            "front clearance model or dry/mechanical retention system."
+        ),
     ),
     TemplateCapability(
         template_id="sideboard",
@@ -150,8 +154,8 @@ def require_template_for_revision(
             "TEMPLATE_CAPABILITY_BLOCKED",
             capability.limitation or "The selected template is a concept model.",
             (
-                "Continue designing as a concept or choose the screened shelving or "
-                "wall-library template before creating a production revision."
+                "Continue designing as a concept or choose the screened shelving "
+                "template before creating a production revision."
             ),
             template_id,
         )

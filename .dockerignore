@@ -23,7 +23,6 @@ artifacts
 release-readiness.json
 *.release.json
 *.spdx.json
-prod
 *.db
 *.sqlite3
 .env*

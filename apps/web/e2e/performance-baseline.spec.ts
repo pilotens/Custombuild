@@ -96,8 +96,10 @@ test("records the warm interaction baseline without timing first WebGL compilati
   const studio = modes.getByRole("button", { name: /Studio/ });
   const check = modes.getByRole("button", { name: /Kontroll/ });
   const partPicker = page.getByRole("combobox", { name: "Välj möbeldel att inspektera" });
-  const model = page.getByLabel("Interaktiv 3D-modell av möbeln");
+  const model = page.getByTestId("furniture-viewer");
   await expect(model).toBeVisible();
+  await expect(model).toHaveAttribute("data-renderer", /^(webgl|front-projection)$/);
+  await expect(model.locator("canvas, [data-testid='front-projection-fallback']").first()).toBeVisible();
   const bayCount = page.locator("output[aria-label='Vertikala fack']");
   while (Number(await bayCount.textContent()) < budget.fixtures.normal_5x5.bay_count) {
     await page.getByRole("button", { name: "Öka vertikala fack" }).click();

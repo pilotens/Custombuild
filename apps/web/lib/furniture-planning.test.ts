@@ -23,7 +23,7 @@ describe("furniture planning", () => {
       depth_mm: 390,
       priority: "capacity",
     });
-    expect(result.productionLevel).toBe("screened");
+    expect(result.productionLevel).toBe("concept");
     expect(result.patch).toMatchObject({ width_mm: 3650, height_mm: 2650, depth_mm: 390, load_per_shelf_kg: 40 });
     expect(result.patch.base_cabinet_depth_mm).toBe(390);
   });
@@ -56,9 +56,17 @@ describe("furniture planning", () => {
 
   it("validates persisted briefs defensively", () => {
     expect(isFurniturePlanningBrief(DEFAULT_PLANNING_BRIEF)).toBe(true);
+    expect(isFurniturePlanningBrief({
+      ...DEFAULT_PLANNING_BRIEF,
+      dimensionsConfirmed: true,
+    })).toBe(true);
     expect(recommendedTemplateId(DEFAULT_PLANNING_BRIEF)).toBe("shelving");
     expect(isFurniturePlanningBrief({ ...DEFAULT_PLANNING_BRIEF, width_mm: 30 })).toBe(false);
     expect(isFurniturePlanningBrief({ ...DEFAULT_PLANNING_BRIEF, startMode: "magic" })).toBe(false);
+    expect(isFurniturePlanningBrief({
+      ...DEFAULT_PLANNING_BRIEF,
+      dimensionsConfirmed: "yes",
+    })).toBe(false);
   });
 
   it("uses the complete canonical B1 dimension envelope", () => {

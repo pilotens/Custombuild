@@ -102,12 +102,14 @@ from .readiness import (
     validate_workshop_evidence_binding,
 )
 from .review_status import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DESIGN_REVIEW_PACKAGE_STATUS_SCHEMA_VERSION,
     CAMStageStatus,
     DesignReviewPackageStatus,
     blocked_design_review_package_status,
+    dado_retention_evidence_missing,
     generated_design_review_package_status,
     normalize_design_review_package_status,
 )
@@ -126,6 +128,7 @@ __all__ = [
     "ArtifactFile",
     "CAMOperation",
     "CAMStageStatus",
+    "DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
     "DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH",
     "DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE",
     "DESIGN_REVIEW_PACKAGE_STATUS_SCHEMA_VERSION",
@@ -189,6 +192,7 @@ __all__ = [
     "build_production_bundle",
     "build_workshop_readiness_report",
     "blocked_design_review_package_status",
+    "dado_retention_evidence_missing",
     "canonical_json_bytes",
     "default_artifacts",
     "design_review_artifacts",

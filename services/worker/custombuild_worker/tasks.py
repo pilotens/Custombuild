@@ -9,6 +9,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import boto3
+from app.db import set_tenant_context
 from app.job_policy import (
     GENERATION_HEARTBEAT_INTERVAL_SECONDS,
     GENERATION_JOB_TIMEOUT,
@@ -24,6 +25,7 @@ from app.models import (
     DesignVersion,
     GenerationJob,
     JobStatus,
+    Organization,
     OutboxEvent,
 )
 from app.storage import (
@@ -67,7 +69,7 @@ from custombuild_manufacturing.production_context import (
 from custombuild_manufacturing.readiness import ReadinessValidationError
 from custombuild_rules import RuleStatus, evaluate_design
 from sqlalchemy import and_, create_engine, or_, select
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_worker_settings
 from .documents import (
@@ -118,6 +120,7 @@ _engine = create_engine(
 SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
 MAX_GENERATION_ATTEMPTS = 4
 MAX_OUTBOX_PUBLISH_ATTEMPTS = 5
+DEFAULT_SCHEDULER_BATCH_LIMIT = 50
 TERMINAL_JOB_STATUSES = frozenset({JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled})
 GENERATION_DEADLINE_ERROR = "Generation job exceeded the server deadline of 120 minutes"
 S3_CONNECT_TIMEOUT_SECONDS = 3
@@ -177,6 +180,39 @@ def _valid_event_identifier(value: object) -> bool:
         return False
 
 
+def _scheduler_limit(value: int) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("scheduler limit must be a positive integer")
+    return value
+
+
+def _organization_ids() -> tuple[str, ...]:
+    """Enumerate only the non-RLS organization root table.
+
+    This transaction must never inspect tenant-owned rows. Every subsequent
+    outbox, recovery or generation query uses a fresh tenant-local transaction.
+    """
+
+    with SessionFactory.begin() as session:
+        organization_ids = tuple(
+            session.scalars(select(Organization.id).order_by(Organization.id))
+        )
+    if any(not _valid_event_identifier(item) for item in organization_ids):
+        raise RuntimeError("organization registry contains a non-canonical identifier")
+    return organization_ids
+
+
+@contextmanager
+def _tenant_transaction(organization_id: str) -> Iterator[Session]:
+    """Open one transaction whose PostgreSQL RLS context is the exact tenant."""
+
+    if not _valid_event_identifier(organization_id):
+        raise ValueError("organization_id must be a canonical UUID")
+    with SessionFactory.begin() as session:
+        set_tenant_context(session, organization_id)
+        yield session
+
+
 def _dead_letter(event: OutboxEvent, reason: str, *, increment_attempt: bool = True) -> None:
     if increment_attempt:
         event.attempts += 1
@@ -188,96 +224,153 @@ def _dead_letter(event: OutboxEvent, reason: str, *, increment_attempt: bool = T
 def dispatch_outbox(limit: int = 50) -> int:
     """Publish committed outbox events. Duplicate delivery is safe by job identity."""
 
+    global_limit = _scheduler_limit(limit)
     dispatched = 0
-    with SessionFactory.begin() as session:
-        events = list(
-            session.scalars(
-                select(OutboxEvent)
-                .where(
-                    OutboxEvent.dispatched_at.is_(None),
-                    OutboxEvent.dead_lettered_at.is_(None),
-                )
-                .order_by(OutboxEvent.created_at)
-                .with_for_update(skip_locked=True)
-                .limit(limit)
-            )
-        )
-        for event in events:
-            if event.attempts >= MAX_OUTBOX_PUBLISH_ATTEMPTS:
-                _dead_letter(
-                    event,
-                    "Broker publish retry limit exceeded; event was dead-lettered.",
-                    increment_attempt=False,
-                )
-                continue
-            if event.topic != "generation.requested":
-                _dead_letter(event, "Unsupported outbox topic; event was dead-lettered.")
-                continue
-            payload = event.payload_json if isinstance(event.payload_json, dict) else {}
-            job_id = payload.get("job_id")
-            organization_id = payload.get("organization_id")
-            if not _valid_event_identifier(job_id) or not _valid_event_identifier(organization_id):
-                _dead_letter(
-                    event,
-                    "Malformed generation request payload; event was dead-lettered.",
-                )
-                continue
-            try:
-                celery_app.send_task(
-                    "custombuild.generate_package",
-                    kwargs={
-                        "job_id": job_id,
-                        "organization_id": organization_id,
-                    },
-                )
-            except Exception:
-                event.attempts += 1
-                if event.attempts >= MAX_OUTBOX_PUBLISH_ATTEMPTS:
-                    event.dead_lettered_at = _utcnow()
-                    event.last_error = (
-                        "Broker publish failed at the retry limit; event was dead-lettered."
+    handled = 0
+    for tenant_id in _organization_ids():
+        remaining = global_limit - handled
+        if remaining <= 0:
+            break
+        tenant_handled = 0
+        tenant_dispatched = 0
+        try:
+            with _tenant_transaction(tenant_id) as session:
+                events = list(
+                    session.scalars(
+                        select(OutboxEvent)
+                        .where(
+                            OutboxEvent.organization_id == tenant_id,
+                            OutboxEvent.dispatched_at.is_(None),
+                            OutboxEvent.dead_lettered_at.is_(None),
+                        )
+                        .order_by(OutboxEvent.created_at, OutboxEvent.id)
+                        .with_for_update(skip_locked=True)
+                        .limit(remaining)
                     )
-                else:
-                    event.last_error = "Broker publish failed; a bounded retry is scheduled."
-                continue
-            event.dispatched_at = _utcnow()
+                )
+                tenant_handled = len(events)
+                tenant_dispatched = _dispatch_tenant_outbox_events(events, tenant_id)
+        except Exception as exc:
+            logger.error(
+                "Tenant outbox transaction rolled back (%s); continuing with other tenants.",
+                type(exc).__name__,
+            )
+            continue
+        handled += tenant_handled
+        dispatched += tenant_dispatched
+    return dispatched
+
+
+def _dispatch_tenant_outbox_events(
+    events: list[OutboxEvent],
+    organization_id: str,
+) -> int:
+    dispatched = 0
+    for event in events:
+        if event.organization_id != organization_id:
+            raise RuntimeError("tenant-local outbox query returned a cross-tenant row")
+        if event.attempts >= MAX_OUTBOX_PUBLISH_ATTEMPTS:
+            _dead_letter(
+                event,
+                "Broker publish retry limit exceeded; event was dead-lettered.",
+                increment_attempt=False,
+            )
+            continue
+        if event.topic != "generation.requested":
+            _dead_letter(event, "Unsupported outbox topic; event was dead-lettered.")
+            continue
+        payload = event.payload_json if isinstance(event.payload_json, dict) else {}
+        job_id = payload.get("job_id")
+        payload_organization_id = payload.get("organization_id")
+        if (
+            not _valid_event_identifier(job_id)
+            or not _valid_event_identifier(payload_organization_id)
+            or payload_organization_id != event.organization_id
+        ):
+            _dead_letter(
+                event,
+                "Malformed or cross-tenant generation request payload; event was dead-lettered.",
+            )
+            continue
+        try:
+            celery_app.send_task(
+                "custombuild.generate_package",
+                kwargs={
+                    "job_id": job_id,
+                    "organization_id": payload_organization_id,
+                },
+            )
+        except Exception:
             event.attempts += 1
-            event.last_error = None
-            dispatched += 1
+            if event.attempts >= MAX_OUTBOX_PUBLISH_ATTEMPTS:
+                event.dead_lettered_at = _utcnow()
+                event.last_error = (
+                    "Broker publish failed at the retry limit; event was dead-lettered."
+                )
+            else:
+                event.last_error = "Broker publish failed; a bounded retry is scheduled."
+            continue
+        event.dispatched_at = _utcnow()
+        event.attempts += 1
+        event.last_error = None
+        dispatched += 1
     return dispatched
 
 
 @celery_app.task(name="custombuild.recover_stale_jobs")  # type: ignore[misc]
-def recover_stale_jobs() -> int:
+def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
     now = _utcnow()
     legacy_threshold = now - LEGACY_STALE_LEASE_THRESHOLD
+    global_limit = _scheduler_limit(limit)
     handled = 0
-    with SessionFactory.begin() as session:
-        jobs = session.scalars(
-            select(GenerationJob)
-            .where(
-                GenerationJob.status.in_([JobStatus.queued, JobStatus.running]),
-                or_(
-                    GenerationJob.deadline_at <= now,
-                    and_(
-                        GenerationJob.status == JobStatus.running,
-                        or_(
-                            GenerationJob.lease_expires_at <= now,
-                            and_(
-                                GenerationJob.lease_expires_at.is_(None),
-                                GenerationJob.started_at < legacy_threshold,
+    for tenant_id in _organization_ids():
+        remaining = global_limit - handled
+        if remaining <= 0:
+            break
+        tenant_handled = 0
+        try:
+            with _tenant_transaction(tenant_id) as session:
+                jobs = list(
+                    session.scalars(
+                        select(GenerationJob)
+                        .where(
+                            GenerationJob.organization_id == tenant_id,
+                            GenerationJob.status.in_([JobStatus.queued, JobStatus.running]),
+                            or_(
+                                GenerationJob.deadline_at <= now,
+                                and_(
+                                    GenerationJob.status == JobStatus.running,
+                                    or_(
+                                        GenerationJob.lease_expires_at <= now,
+                                        and_(
+                                            GenerationJob.lease_expires_at.is_(None),
+                                            GenerationJob.started_at < legacy_threshold,
+                                        ),
+                                    ),
+                                ),
                             ),
-                        ),
-                    ),
-                ),
+                        )
+                        .order_by(GenerationJob.created_at, GenerationJob.id)
+                        .with_for_update(skip_locked=True)
+                        .limit(remaining)
+                    )
+                )
+                for job in jobs:
+                    if job.organization_id != tenant_id:
+                        raise RuntimeError(
+                            "tenant-local recovery query returned a cross-tenant row"
+                        )
+                    event = _recover_stale_job(job, now=now)
+                    if event is not None:
+                        session.add(event)
+                    tenant_handled += 1
+        except Exception as exc:
+            logger.error(
+                "Tenant recovery transaction rolled back (%s); continuing with other tenants.",
+                type(exc).__name__,
             )
-            .with_for_update(skip_locked=True)
-        )
-        for job in jobs:
-            event = _recover_stale_job(job, now=now)
-            if event is not None:
-                session.add(event)
-            handled += 1
+            continue
+        handled += tenant_handled
     return handled
 
 
@@ -375,7 +468,7 @@ def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[st
 
 
 def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, DesignVersion] | None:
-    with SessionFactory.begin() as session:
+    with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
             .where(
@@ -429,7 +522,7 @@ def _renew_job_lease(
     """Extend a live lease only when the same tenant worker still owns it."""
 
     renewed_at = now or _utcnow()
-    with SessionFactory.begin() as session:
+    with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
             .where(
@@ -884,7 +977,7 @@ def _complete_job(
     version: DesignVersion,
     result: dict[str, Any],
 ) -> bool:
-    with SessionFactory.begin() as session:
+    with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
             .where(
@@ -904,11 +997,7 @@ def _complete_job(
         if job.attempts > MAX_GENERATION_ATTEMPTS:
             _terminalize_attempt_budget(job, now=completed_at)
             return False
-        job.status = JobStatus.succeeded
-        job.lease_token = None
-        job.lease_expires_at = None
         job.result_json = result
-        job.finished_at = completed_at
         artifact_records = [
             (
                 "production_bundle",
@@ -959,6 +1048,15 @@ def _complete_job(
                 raise RuntimeError(
                     f"non-deterministic {kind} artifact detected for generation job {job.id}"
                 )
+        session.flush()
+        _validate_completion_evidence(session, organization_id, job)
+        # Success is the final state transition.  The exact API download gate
+        # above must pass while the job is still lease-owned and ``running``;
+        # any exception rolls this transaction back without a success audit.
+        job.status = JobStatus.succeeded
+        job.lease_token = None
+        job.lease_expires_at = None
+        job.finished_at = completed_at
         session.add(
             AuditEvent(
                 organization_id=organization_id,
@@ -975,6 +1073,38 @@ def _complete_job(
         return True
 
 
+def _validate_completion_evidence(
+    session: Any,
+    organization_id: str,
+    job: GenerationJob,
+) -> None:
+    """Run the API's artifact/download evidence gate before committing success."""
+
+    # The worker already shares the API's models and storage adapter.  Import
+    # lazily to avoid initializing the HTTP router during worker module import,
+    # while still using one canonical validation implementation.
+    from app.api import _require_review_evidence
+    from fastapi import HTTPException
+
+    try:
+        _require_review_evidence(
+            session,
+            organization_id,
+            job,
+            stream_hash=False,
+            require_cam=False,
+            bind_review_documents=True,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            raise ArtifactStorageUnavailableError(
+                "completion evidence storage is temporarily unavailable"
+            ) from exc
+        raise ProductionBlockedError(
+            "generated artifact evidence failed the canonical completion gate"
+        ) from exc
+
+
 def _record_failure(
     job_id: str,
     organization_id: str,
@@ -984,7 +1114,7 @@ def _record_failure(
     terminal: bool,
     recorded_at: datetime | None = None,
 ) -> bool:
-    with SessionFactory.begin() as session:
+    with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
             .where(

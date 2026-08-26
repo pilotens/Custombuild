@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from scripts.source_manifest import (
+    SCHEMA_VERSION,
     DockerIgnore,
     SourceManifestError,
     _dockerfile_local_copy_sources,
@@ -52,6 +53,32 @@ def test_manifest_is_canonical_stable_and_content_sensitive(tmp_path: Path) -> N
     assert build_source_manifest(repo)[2] != digest
 
 
+def test_manifest_identity_includes_docker_relevant_executable_mode(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("Windows does not expose POSIX executable mode changes")
+    repo = _repo(tmp_path)
+    (repo / "scripts").mkdir()
+    source = repo / "scripts" / "startup.sh"
+    source.write_text("#!/bin/sh\n", encoding="utf-8")
+    source.chmod(0o644)
+    regular_manifest, _canonical, regular_digest = build_source_manifest(repo)
+
+    source.chmod(0o755)
+    executable_manifest, _canonical, executable_digest = build_source_manifest(repo)
+
+    regular = next(
+        entry for entry in regular_manifest["entries"] if entry["path"] == "scripts/startup.sh"
+    )
+    executable = next(
+        entry
+        for entry in executable_manifest["entries"]
+        if entry["path"] == "scripts/startup.sh"
+    )
+    assert regular["mode"] == 0o644
+    assert executable["mode"] == 0o755
+    assert executable_digest != regular_digest
+
+
 def test_manifest_does_not_depend_on_absolute_repository_location(tmp_path: Path) -> None:
     first = _repo(tmp_path / "first")
     second = _repo(tmp_path / "second")
@@ -62,7 +89,7 @@ def test_manifest_does_not_depend_on_absolute_repository_location(tmp_path: Path
     assert build_source_manifest(first)[1:] == build_source_manifest(second)[1:]
 
 
-def test_deployment_only_files_are_not_shared_application_image_sources(tmp_path: Path) -> None:
+def test_deployment_contract_is_bound_to_application_source_identity(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     (repo / "scripts").mkdir()
     (repo / "scripts" / "build.py").write_text("source\n", encoding="utf-8")
@@ -71,7 +98,44 @@ def test_deployment_only_files_are_not_shared_application_image_sources(tmp_path
 
     (repo / "compose.yml").write_text("name: test\n", encoding="utf-8")
 
-    assert build_source_manifest(repo)[2] == before
+    assert build_source_manifest(repo)[2] != before
+
+
+def test_release_workflow_is_hashed_even_when_dockerignore_excludes_github(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path, ".github\nartifacts\n")
+    workflow = repo / ".github" / "workflows" / "release.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: first\n", encoding="utf-8")
+    before_manifest, _canonical, before_digest = build_source_manifest(repo)
+
+    workflow.write_text("name: second\n", encoding="utf-8")
+    after_manifest, _canonical, after_digest = build_source_manifest(repo)
+
+    assert before_manifest["schema_version"] == SCHEMA_VERSION
+    assert ".github/workflows" in before_manifest["release_control_roots"]
+    assert ".github/workflows/release.yml" in {
+        entry["path"] for entry in before_manifest["entries"]
+    }
+    assert ".github/workflows/release.yml" in {
+        entry["path"] for entry in after_manifest["entries"]
+    }
+    assert after_digest != before_digest
+
+
+def test_current_repository_manifest_contains_release_workflows() -> None:
+    paths = {entry["path"] for entry in build_source_manifest(Path.cwd())[0]["entries"]}
+
+    assert ".github/workflows/ci.yml" in paths
+    assert ".github/workflows/prod-ci.yml" in paths
+    assert ".github/workflows/supply-chain.yml" in paths
+    # These remain bound by VCS_REF plus the final clean-tree gate, not by the
+    # narrower image/workflow source manifest.
+    assert "README.md" not in paths
+    assert "docs/SECURITY.md" not in paths
+    assert "tests/unit/test_source_manifest.py" not in paths
+    assert "apps/web/e2e/workspace.spec.ts" not in paths
 
 
 def test_unused_dockerignore_rule_still_changes_source_identity(tmp_path: Path) -> None:
@@ -93,6 +157,7 @@ def test_copy_contract_rejects_a_new_unhashed_source_root(tmp_path: Path) -> Non
     repo = _repo(tmp_path)
     for relative in (
         "apps/web/Dockerfile",
+        "infra/seaweedfs/Dockerfile",
         "services/api/Dockerfile",
         "services/worker/Dockerfile",
     ):
@@ -100,12 +165,57 @@ def test_copy_contract_rejects_a_new_unhashed_source_root(tmp_path: Path) -> Non
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("FROM example\n", encoding="utf-8")
     (repo / "services/api/Dockerfile").write_text(
-        "FROM example\nCOPY infra /app/infra\n",
+        "FROM example\nCOPY deployment-secrets /app/deployment-secrets\n",
         encoding="utf-8",
     )
 
     with pytest.raises(SourceManifestError, match="outside the manifest contract"):
         build_source_manifest(repo)
+
+
+def test_manifest_rejects_the_retired_duplicate_prod_source(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "prod").mkdir()
+    (repo / "prod" / "compose.yml").write_text("name: stale\n", encoding="utf-8")
+
+    with pytest.raises(SourceManifestError, match="repository root must be the only"):
+        build_source_manifest(repo)
+
+
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "compose.yml",
+        "compose.external-production.yml",
+        "infra/postgres/init-roles.sh",
+        "infra/seaweedfs/Dockerfile",
+        ".github/workflows/prod-ci.yml",
+        ".grype.yaml",
+        "security/vulnerability-exceptions.json",
+    ),
+)
+def test_release_runtime_inputs_change_source_identity(
+    tmp_path: Path,
+    relative: str,
+) -> None:
+    repo = _repo(tmp_path)
+    for dockerfile_relative in (
+        "apps/web/Dockerfile",
+        "infra/seaweedfs/Dockerfile",
+        "services/api/Dockerfile",
+        "services/worker/Dockerfile",
+    ):
+        dockerfile = repo / dockerfile_relative
+        dockerfile.parent.mkdir(parents=True, exist_ok=True)
+        dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    target = repo / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("first\n", encoding="utf-8")
+    before = build_source_manifest(repo)[2]
+
+    target.write_text("second\n", encoding="utf-8")
+
+    assert build_source_manifest(repo)[2] != before
 
 
 def test_copy_parser_ignores_prior_build_stages(tmp_path: Path) -> None:
@@ -217,11 +327,18 @@ def test_cli_writes_exact_manifest_and_digest_only_to_ignored_output(
     assert sha_output.read_text(encoding="ascii") == f"{digest}  source-manifest.json\n"
     assert build_source_manifest(repo)[2] == digest
 
-    with pytest.raises(SourceManifestError, match="would change the Docker build context"):
+    with pytest.raises(SourceManifestError, match="would change the build/control source set"):
         from scripts.source_manifest import _ensure_output_is_not_a_build_input
 
         _ensure_output_is_not_a_build_input(
             repo=repo,
             output=repo / "manifest.json",
             dockerignore=DockerIgnore("artifacts\n"),
+        )
+
+    with pytest.raises(SourceManifestError, match="would change the build/control source set"):
+        _ensure_output_is_not_a_build_input(
+            repo=repo,
+            output=repo / ".github" / "workflows" / "manifest.json",
+            dockerignore=DockerIgnore(".github\nartifacts\n"),
         )

@@ -18,10 +18,12 @@ def production_settings(**overrides: object) -> Settings:
         "source_manifest_sha256": "c" * 64,
         "dependency_lock_sha256": hashlib.sha256(DEPENDENCY_LOCK_PATH.read_bytes()).hexdigest(),
         "auth_mode": "oidc",
+        "production_four_eyes_required": True,
         "database_url": (
-            "postgresql+psycopg://custombuild_api:strong-db-password@db.internal/custombuild"
+            "postgresql+psycopg://custombuild_api:strong-api-database-password"
+            "@db.internal/custombuild"
         ),
-        "redis_url": "redis://:strong-redis-password@redis.internal:6379/0",
+        "redis_url": "redis://:strong-api-redis-password-0001@redis.internal:6379/0",
         "oidc_issuer": "https://identity.example.test/tenant",
         "artifact_signing_secret": "strong-artifact-signing-secret-0001",
         "s3_public_endpoint": "https://artifacts.example.test",
@@ -37,6 +39,7 @@ def production_settings(**overrides: object) -> Settings:
 def test_complete_production_configuration_is_accepted() -> None:
     settings = production_settings()
     assert settings.auth_mode == "oidc"
+    assert settings.production_four_eyes_required is True
     assert settings.allowed_origins == ["https://custombuild.example.test"]
     assert settings.build_identity == {
         "app_version": "1.4.0",
@@ -69,6 +72,7 @@ def test_compose_forwards_every_production_guard_switch_to_the_api() -> None:
         "SOURCE_MANIFEST_SHA256",
         "DEPENDENCY_LOCK_SHA256",
         "AUTH_MODE",
+        "PRODUCTION_FOUR_EYES_REQUIRED",
         "DATABASE_URL",
         "READINESS_TIMEOUT_SECONDS",
         "RATE_LIMIT_REQUESTS",
@@ -119,6 +123,10 @@ def test_development_compose_only_publishes_services_on_loopback() -> None:
         ({"dependency_lock_sha256": "b" * 63}, "DEPENDENCY_LOCK_SHA256"),
         ({"dependency_lock_sha256": "b" * 64}, "does not match uv.lock"),
         ({"auth_mode": "development"}, "AUTH_MODE=oidc"),
+        (
+            {"production_four_eyes_required": False},
+            "PRODUCTION_FOUR_EYES_REQUIRED=true",
+        ),
         ({"app_env": "development"}, "APP_ENV=production"),
         ({"oidc_issuer": "http://identity.example.test"}, "HTTPS issuer"),
         ({"oidc_issuer": "https://user@identity.example.test"}, "HTTPS issuer"),
@@ -131,14 +139,50 @@ def test_development_compose_only_publishes_services_on_loopback() -> None:
             {"database_url": "postgresql+psycopg://custombuild_api:change-me@db/custombuild"},
             "database password",
         ),
+        (
+            {
+                "database_url": (
+                    "postgresql+psycopg://custombuild_worker:strong-api-database-password"
+                    "@db/custombuild"
+                )
+            },
+            "exact database role custombuild_api",
+        ),
+        (
+            {"database_url": "postgresql+psycopg://custombuild_api:short@db/custombuild"},
+            "at least 24 characters",
+        ),
+        (
+            {
+                "database_url": (
+                    "postgresql+psycopg://custombuild_api:%20strong-api-database-password%20"
+                    "@db/custombuild"
+                )
+            },
+            "surrounding whitespace",
+        ),
         ({"redis_url": "redis://redis.internal:6379/0"}, "Redis password"),
         (
             {"redis_url": "redis://:change-me-redis@redis.internal:6379/0"},
             "Redis password",
         ),
+        ({"redis_url": "redis://:short@redis.internal:6379/0"}, "at least 24 characters"),
+        (
+            {
+                "redis_url": (
+                    "redis://:%20strong-api-redis-password-0001%20@redis.internal:6379/0"
+                )
+            },
+            "surrounding whitespace",
+        ),
         ({"artifact_signing_secret": "development-signing-secret-000000"}, "signing"),
         ({"s3_access_key": "custombuild"}, "access key"),
         ({"s3_secret_key": "change-me-object-secret"}, "object-storage secret"),
+        ({"s3_secret_key": "short"}, "at least 24 characters"),
+        (
+            {"s3_secret_key": " strong-object-storage-secret "},
+            "surrounding whitespace",
+        ),
         ({"s3_public_endpoint": "http://artifacts.example.test"}, "HTTPS public S3"),
         ({"s3_public_endpoint": "https://user@artifacts.example.test"}, "HTTPS public S3"),
         ({"s3_public_endpoint": "https:///missing-host"}, "HTTPS public S3"),
@@ -155,3 +199,11 @@ def test_insecure_production_configuration_is_rejected(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         production_settings(**overrides)
+
+
+def test_four_eyes_setting_defaults_off_outside_production() -> None:
+    assert Settings(_env_file=None).production_four_eyes_required is False
+    assert (
+        Settings(_env_file=None, app_env="test").production_four_eyes_required
+        is False
+    )

@@ -5,11 +5,13 @@
 - Every tenant query contains an application-level organization predicate and
   PostgreSQL applies a second Row-Level Security policy using transaction-local
   `app.current_organization_id`.
-- The API database role is `NOSUPERUSER NOBYPASSRLS`. Only the isolated worker
-  can bypass RLS to discover global outbox events; job reads/writes still include
-  the persisted organization ID.
+- The API, migrator and worker database roles are `NOSUPERUSER NOBYPASSRLS`.
+  Worker transactions bind the persisted organization context before tenant
+  reads or writes; a background process is not exempt from the database boundary.
 - Roles gate design, review, production and release actions. Released revisions
-  are immutable and changes create new revisions.
+  are immutable and changes create new revisions. Production additionally
+  requires four-eyes approval: design and CAM reviews must come from different
+  reviewer identities, and release revalidates that separation.
 - Bearer authentication does not use ambient browser cookies, so cross-site
   requests cannot inherit authentication; CORS is allow-listed. If cookie-based
   sessions are introduced later, synchronizer-token CSRF protection is required.
@@ -39,8 +41,9 @@
   `compose.external-production.yml`, then run
   `python scripts/check_external_production.py --repo .`; a non-zero result is a
   deployment blocker and includes the missing operator action without echoing secrets.
-  The preflight recomputes the canonical Docker-context source manifest, verifies its
-  SHA-256 across every application image, and keeps that identity separate from the
+  The preflight recomputes the canonical build/control source manifest
+  (Docker-visible application inputs plus the release-control workflows),
+  verifies its SHA-256 across every application image, and keeps that identity separate from the
   required Git commit in `VCS_REF`.
 - Candidate and pinned runtime images are scanned for every High/Critical finding,
   including findings without an upstream fix. A scanner suppression is accepted only

@@ -231,13 +231,10 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
     await expect(page.locator(".save-state")).toBeVisible();
     await expectNoHorizontalOverflow(page);
     await expectPanelsDoNotOverlap(page);
-    if (viewport.width <= 820) {
-      await expect(page.getByRole("navigation", { name: "Mobil huvudnavigering" })).toBeVisible();
-      await expect(page.getByRole("complementary", { name: "Huvudnavigering" })).toBeHidden();
-    } else {
-      await expect(page.getByRole("navigation", { name: "Mobil huvudnavigering" })).toBeHidden();
-      await expect(page.getByRole("complementary", { name: "Huvudnavigering" })).toBeVisible();
-    }
+    const modes = page.getByRole("navigation", { name: "Produktlägen" });
+    await expect(modes).toBeVisible();
+    await expect(modes.getByRole("button")).toHaveCount(4);
+    await expect(page.locator(".side-nav nav, .mobile-nav")).toHaveCount(0);
     await page.screenshot({
       path: testInfo.outputPath(`responsive-${viewport.width}x${viewport.height}.png`),
       fullPage: true,
@@ -248,12 +245,16 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
   await modes.getByRole("button", { name: /Underlag/ }).click();
   const productionDialog = page.locator("section.production-drawer-embedded");
   await expect(productionDialog).toBeVisible();
-  const productionStatus = productionDialog.getByRole("region", { name: "Status för verifieringen" });
-  await expect(productionStatus).toBeVisible();
-  await expect(productionStatus).toContainText(/Godkänt|Behöver beslut|Måste lösas/);
+  await expect(productionDialog.getByRole("heading", {
+    name: "Den här mallen är fortfarande en konceptmodell",
+  })).toBeVisible();
+  await expect(productionDialog).toContainText("gångjärn, beslag, borrbilder, frontspel");
+  await expect(productionDialog).toContainText("inget designgranskningspaket skapas");
+  await expect(productionDialog.getByRole("button", { name: /Spara.*revision/i })).toHaveCount(0);
+  await expect(productionDialog.getByRole("button", { name: /Skapa underlag/i })).toHaveCount(0);
   await expect(productionDialog.getByLabel("Övergripande designgranskning")).toHaveCount(0);
   await expect(productionDialog.getByLabel("CAM-granskarens motivering")).toHaveCount(0);
-  await page.screenshot({ path: testInfo.outputPath("04-simple-production-review.png"), fullPage: true });
+  await page.screenshot({ path: testInfo.outputPath("04-concept-production-gate.png"), fullPage: true });
   await modes.getByRole("button", { name: /Studio/ }).click();
   await expect(productionDialog).toBeHidden();
 

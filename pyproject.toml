@@ -61,13 +61,14 @@ source = ["packages/domain/src", "packages/rule-engine/src", "packages/manufactu
 
 [tool.coverage.report]
 fail_under = 80
+precision = 2
 show_missing = true
 skip_covered = true
 
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-extend-exclude = ["prod"]
+extend-exclude = []
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "S"]

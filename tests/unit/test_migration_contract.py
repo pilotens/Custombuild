@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
+from typing import Any
+
+import pytest
 
 MIGRATIONS = Path("services/api/alembic/versions")
 INITIAL_MIGRATION = MIGRATIONS / "0001_initial.py"
@@ -11,7 +15,66 @@ RUNTIME_RELIABILITY_MIGRATION = MIGRATIONS / "0008_runtime_reliability.py"
 GENERATION_LEASE_HEARTBEAT_MIGRATION = (
     MIGRATIONS / "0009_generation_lease_heartbeat.py"
 )
+TENANT_GRAPH_MIGRATION = MIGRATIONS / "0010_tenant_graph_foreign_keys.py"
 TEMPLATE_CAPABILITY_MIGRATION = MIGRATIONS / "0005_template_capability_identity.py"
+
+
+class _FakePreflightResult:
+    def __init__(
+        self,
+        *,
+        values: tuple[str, ...] = (),
+        scalar: int = 0,
+    ) -> None:
+        self.values = values
+        self.scalar = scalar
+
+    def scalars(self) -> tuple[str, ...]:
+        return self.values
+
+    def scalar_one(self) -> int:
+        return self.scalar
+
+
+class _FakeTenantPreflightBind:
+    def __init__(
+        self,
+        organization_ids: tuple[str, ...],
+        *,
+        mismatch: tuple[str, str] | None = None,
+    ) -> None:
+        self.organization_ids = organization_ids
+        self.mismatch = mismatch
+        self.current_tenant = ""
+        self.contexts: list[str] = []
+        self.relationship_queries: list[tuple[str, str]] = []
+
+    def execute(
+        self,
+        statement: object,
+        parameters: dict[str, str] | None = None,
+    ) -> _FakePreflightResult:
+        sql = str(statement)
+        if sql == "SELECT id FROM organizations ORDER BY id":
+            return _FakePreflightResult(values=self.organization_ids)
+        if "set_config('app.current_organization_id'" in sql:
+            self.current_tenant = parameters["organization_id"] if parameters else ""
+            self.contexts.append(self.current_tenant)
+            return _FakePreflightResult()
+        assert self.current_tenant in self.organization_ids
+        self.relationship_queries.append((self.current_tenant, sql))
+        mismatch_count = int(
+            self.mismatch is not None
+            and self.current_tenant == self.mismatch[0]
+            and self.mismatch[1] in sql
+        )
+        return _FakePreflightResult(scalar=mismatch_count)
+
+
+def _tenant_graph_module() -> Any:
+    return importlib.import_module(
+        "services.api.alembic.versions.0010_tenant_graph_foreign_keys"
+    )
 
 
 def test_initial_migration_does_not_depend_on_live_application_metadata() -> None:
@@ -87,3 +150,80 @@ def test_generation_heartbeat_lease_is_migrated_after_runtime_reliability() -> N
     assert '"ix_generation_jobs_status_lease_expires_at"' in source
     assert "INTERVAL '30 minutes'" in source
     assert "INTERVAL '2 hours'" in source
+
+
+def test_tenant_graph_migration_preflights_and_replaces_every_parent_edge() -> None:
+    source = TENANT_GRAPH_MIGRATION.read_text(encoding="utf-8")
+
+    assert 'down_revision = "0009_generation_lease_heartbeat"' in source
+    assert "TENANT_GRAPH_PRECHECK_FAILED" in source
+    assert "parent.id IS NULL" in source
+    assert "child.organization_id <> parent.organization_id" in source
+    assert '"projects", "uq_projects_org_id"' in source
+    assert '"design_versions", "uq_design_versions_org_id"' in source
+    assert '"generation_jobs", "uq_generation_jobs_org_id"' in source
+    assert "PRODUCTION_TABLES" in source
+    assert '"fk_approvals_org_generation_job"' in source
+    assert "_restore_single_column_foreign_key" in source
+
+
+def test_tenant_graph_preflight_checks_every_edge_per_tenant_and_resets_rls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _tenant_graph_module()
+    bind = _FakeTenantPreflightBind(("tenant-a", "tenant-b"))
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+
+    migration._preflight_existing_rows()
+
+    assert len(migration.TENANT_RELATIONSHIPS) == 25
+    assert len(bind.relationship_queries) == 50
+    assert bind.contexts == ["tenant-a", "tenant-b", ""]
+    for tenant in ("tenant-a", "tenant-b"):
+        tenant_queries = [sql for current, sql in bind.relationship_queries if current == tenant]
+        for relationship in migration.TENANT_RELATIONSHIPS:
+            assert any(
+                f"FROM {relationship.child_table} AS child" in sql
+                and f"LEFT JOIN {relationship.parent_table} AS parent" in sql
+                and f"child.{relationship.child_column}" in sql
+                for sql in tenant_queries
+            )
+
+
+def test_tenant_graph_preflight_clears_rls_context_for_empty_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _tenant_graph_module()
+    bind = _FakeTenantPreflightBind(())
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+
+    migration._preflight_existing_rows()
+
+    assert bind.relationship_queries == []
+    assert bind.contexts == [""]
+
+
+def test_tenant_graph_mismatch_aborts_upgrade_before_ddl_and_resets_rls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _tenant_graph_module()
+    bind = _FakeTenantPreflightBind(
+        ("tenant-a", "tenant-b"),
+        mismatch=("tenant-b", "FROM designs AS child"),
+    )
+    monkeypatch.setattr(migration.op, "get_bind", lambda: bind)
+
+    def unexpected_ddl(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("tenant graph DDL ran before the preflight passed")
+
+    monkeypatch.setattr(migration.op, "create_unique_constraint", unexpected_ddl)
+    monkeypatch.setattr(migration, "_replace_with_tenant_foreign_key", unexpected_ddl)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"TENANT_GRAPH_PRECHECK_FAILED: designs\.project_id -> projects\.id",
+    ):
+        migration.upgrade()
+
+    assert len(bind.relationship_queries) == 50
+    assert bind.contexts == ["tenant-a", "tenant-b", ""]

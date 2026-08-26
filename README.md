@@ -3,7 +3,8 @@
 Custombuild is a deterministic, tenant-aware B2B design-to-production system for
 parametric casework. The implemented vertical is a configurable bookcase: one
 frozen `DesignSpec` drives construction screening, stable parts and joints, BOM,
-nesting, CAD/CAM, drawings, assembly data and a checksummed production bundle.
+CAD, drawings, assembly data and a checksummed design-review bundle. CAM
+validation is generated only when every structured CAM prerequisite is present.
 
 > Machine output is validation-only. It is not safe for physical cutting until
 > the exact machine, tooling, material batch, calibration, postprocessor and
@@ -34,6 +35,11 @@ nesting, CAD/CAM, drawings, assembly data and a checksummed production bundle.
 - Adjustable shelf-pin designs remain `BLOCK` because the MVP has no versioned
   manufacturer capacity for the exact pin, drilling pattern, material and measured
   thickness. Custombuild does not infer or substitute a hardware capacity.
+- A plain DADO proves groove geometry and local bearing only. It produces a
+  design-review package, but `DADO_RETENTION_EVIDENCE_MISSING` blocks CAM
+  approval and release until every joint has a versioned, checksum-addressed dry
+  self-locking or mechanical retention contract. A warning acknowledgement,
+  adhesive or geometric calculation cannot substitute for retention evidence.
 - DFM screening with calculation traces, assumptions, PASS/WARNING/BLOCK and
   explicit fixes.
 - A physically paired not/groove reference flow, semantic manufacturing
@@ -92,8 +98,9 @@ The root Compose stack uses the isolated project name `custombuild-prod`. A
 sibling `DIY-test` working copy uses `custombuild-test` and ports 3100/8100/9200.
 Run `python scripts/check_environment_isolation.py compose.yml
 --peer ../DIY-test/compose.yml` before starting both. See
-[docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md) for the source-of-truth policy; the
-tracked `prod/` directory is a historical release snapshot, not a third runtime.
+[docs/ENVIRONMENTS.md](docs/ENVIRONMENTS.md) for the source-of-truth policy. The
+duplicate `prod/` source tree has been retired; the repository root is the only
+runtime and release source.
 
 The idempotent development seed creates two isolated organizations and a real
 bookcase project in each:
@@ -129,6 +136,8 @@ non-PostgreSQL database. The supplied `.env.example` is development-only.
    a machine profile. Directional sheet material without an exact structured X/Y
    stock-axis binding remains `DFM-GRAIN-001`; an uploaded document or review
    acknowledgement cannot resolve that blocker.
+   A plain DADO similarly remains `DADO_RETENTION_EVIDENCE_MISSING`; only a
+   versioned and checksum-bound dry/mechanical retention system can unlock CAM.
 6. Enter a separate CAM review reason and approve that exact successful job only
    when its complete CAM evidence set exists. A CAM-blocked review package cannot
    enter this step.
@@ -166,16 +175,18 @@ requires both a non-empty render and a changed image. The before/after PNGs are
 attached to the Playwright report for human inspection. This visual gate runs in
 CI as part of the production workspace acceptance.
 The deterministic offline creation, image-import and accessibility flows run in
-Chromium, Firefox and WebKit. The state-mutating live release flow runs once in
-Chromium so that one acceptance run cannot race another browser against the same
-revision.
+Chromium, Firefox and WebKit. The state-mutating live design-review flow runs
+once in Chromium so that one acceptance run cannot race another browser against
+the same revision.
 
-The web configurator separates production-screened models from concept models.
-`Shelving` and `Wall library` can enter the revision-gated production drawer
-when their construction rules pass. Exact bay widths and shelf heights are sent
-to the authoritative server model and regenerate all connected boards. Other
-visual starting models stay in concept mode until their dedicated server
-geometry, hardware and machining rules exist.
+The web configurator separates screened models from concept models. `Shelving`
+can enter the revision-gated design-review drawer when its construction rules
+pass. `Wall library` remains a saveable, three-dimensional concept until its
+hinges, drill pattern, clearances and dry/mechanical retention are versioned.
+Exact bay widths and shelf heights are sent to the authoritative server model
+and regenerate all connected boards. Other visual starting models stay in
+concept mode until their dedicated server geometry, hardware and machining
+rules exist.
 The selected starting model and complete semantic workspace are saved in the
 tenant project through the API, with local storage used only as an offline
 fallback. Reopening the workspace therefore resumes the same server-authoritative
@@ -194,11 +205,11 @@ then frozen on the server. This is a reviewed model conversion, not proof that a
 photograph contains hidden joints, hardware or anchors and not a physical release.
 
 CI additionally starts the full Compose topology—PostgreSQL, Redis, SeaweedFS, API,
-worker and web—and verifies tenant isolation, a genuine CadQuery generation,
-package hashes, validation-only machine code, approval/release and stale-output
-invalidation without mutating the database directly. A Chromium acceptance then
-drives the built workbench through dimensions, validation, both approvals, the
-real worker job, immutable release and ZIP download without route mocks.
+worker and web—and verifies tenant isolation, a genuine CadQuery generation and
+package hashes. For the current plain-DADO fixture it also proves that the
+design-review ZIP remains downloadable while CAM approval and release are both
+rejected with the exact retention blocker. A Chromium acceptance drives the
+built workbench through that real worker-backed flow without route mocks.
 
 ## Production package
 

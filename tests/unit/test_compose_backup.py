@@ -18,6 +18,20 @@ from scripts.compose_backup import (
 )
 
 OBJECT_DIGEST = "0" * 64
+OBJECT_ENTRY = {
+    "key": "artifact.step",
+    "size_bytes": 4,
+    "sha256": OBJECT_DIGEST,
+    "content_type": "application/step",
+    "metadata": {"immutable": "true"},
+}
+IMAGE_ID = "sha256:" + "1" * 64
+SOURCE_MANIFEST_SHA256 = "2" * 64
+GIT_REVISION = "3" * 40
+
+
+def identity_capture(command: list[str], **_kwargs: object) -> str:
+    return IMAGE_ID if "inspect" in command else GIT_REVISION
 
 
 def backup_metadata() -> dict[str, object]:
@@ -27,13 +41,17 @@ def backup_metadata() -> dict[str, object]:
             "captured_at": "2026-08-11T10:00:00+00:00",
             "wal_lsn": "0/16B6C50",
             "alembic_heads": ["0004_design_source_provenance"],
+            "row_counts": {"alembic_version": 1, "projects": 1},
         },
+        "git_revision": GIT_REVISION,
+        "source_manifest_sha256": SOURCE_MANIFEST_SHA256,
         "object_store": {
             "image": SEAWEEDFS_IMAGE,
+            "image_id": IMAGE_ID,
             "bucket": "custombuild-artifacts",
             "object_count": 1,
             "total_size_bytes": 4,
-            "objects": [{"key": "artifact.step", "size_bytes": 4, "sha256": OBJECT_DIGEST}],
+            "objects": [OBJECT_ENTRY],
         },
     }
 
@@ -45,7 +63,7 @@ def compose_fixture() -> dict[str, object]:
             "postgres": {
                 "environment": {
                     "POSTGRES_DB": "custombuild",
-                    "POSTGRES_USER": "custombuild_migrator",
+                    "POSTGRES_USER": "custombuild_bootstrap",
                 }
             },
             "api": {
@@ -271,6 +289,17 @@ def test_manifest_rejects_legacy_schema(tmp_path: Path) -> None:
         verify_manifest(tmp_path)
 
 
+def test_manifest_requires_timezone_bound_creation_time(tmp_path: Path) -> None:
+    backup_fixture(tmp_path)
+    path = tmp_path / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["created_at"] = "2026-08-26T10:00:00"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BackupError, match="no timezone"):
+        verify_manifest(tmp_path)
+
+
 def test_manifest_rejects_payload_path_traversal(tmp_path: Path) -> None:
     backup_fixture(tmp_path)
     path = tmp_path / "manifest.json"
@@ -304,12 +333,23 @@ def test_manifest_requires_approved_seaweedfs_image(tmp_path: Path) -> None:
         verify_manifest(tmp_path)
 
 
+def test_manifest_rejects_ambiguous_length_seaweedfs_revision(tmp_path: Path) -> None:
+    backup_fixture(tmp_path)
+    path = tmp_path / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["object_store"]["image"] = f"custombuild-seaweedfs:{'a' * 41}"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BackupError, match="approved SeaweedFS"):
+        verify_manifest(tmp_path)
+
+
 def test_backup_quiesces_storage_and_restores_writers(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[list[str]] = []
     call_metadata: list[tuple[list[str], int, str]] = []
-    inventory = [{"key": "artifact.step", "size_bytes": 4, "sha256": OBJECT_DIGEST}]
+    inventory = [OBJECT_ENTRY]
 
     def fake_run(
         command: list[str],
@@ -328,7 +368,10 @@ def test_backup_quiesces_storage_and_restores_writers(
     monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
     monkeypatch.setattr(compose_backup, "executable", lambda name: name)
     monkeypatch.setattr(compose_backup, "run", fake_run)
-    monkeypatch.setattr(compose_backup, "run_capture", lambda *_args, **_kwargs: "deadbeef")
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
+    monkeypatch.setattr(
+        compose_backup, "source_manifest_digest", lambda _repo: SOURCE_MANIFEST_SHA256
+    )
     monkeypatch.setattr(compose_backup, "inventory_s3", lambda *_: inventory)
     monkeypatch.setattr(compose_backup, "wait_for_s3_readiness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -381,7 +424,7 @@ def test_backup_quiesces_storage_and_restores_writers(
 def test_backup_outputs_remain_owner_only_with_umask_022(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    inventory = [{"key": "artifact.step", "size_bytes": 4, "sha256": OBJECT_DIGEST}]
+    inventory = [OBJECT_ENTRY]
 
     def fake_run(
         _command: list[str],
@@ -398,7 +441,10 @@ def test_backup_outputs_remain_owner_only_with_umask_022(
     monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
     monkeypatch.setattr(compose_backup, "executable", lambda name: name)
     monkeypatch.setattr(compose_backup, "run", fake_run)
-    monkeypatch.setattr(compose_backup, "run_capture", lambda *_args, **_kwargs: "deadbeef")
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
+    monkeypatch.setattr(
+        compose_backup, "source_manifest_digest", lambda _repo: SOURCE_MANIFEST_SHA256
+    )
     monkeypatch.setattr(compose_backup, "inventory_s3", lambda *_: inventory)
     monkeypatch.setattr(compose_backup, "wait_for_s3_readiness", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -422,7 +468,7 @@ def test_backup_bounds_dump_hang_after_pause_and_attempts_every_unpause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[list[str], int, str]] = []
-    inventory = [{"key": "artifact.step", "size_bytes": 4, "sha256": OBJECT_DIGEST}]
+    inventory = [OBJECT_ENTRY]
 
     def fake_run(
         command: list[str],
@@ -502,7 +548,7 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     calls: list[tuple[list[str], int, str]] = []
     recovery_readiness_budgets: list[int] = []
     full_inventory_calls = 0
-    inventory = [{"key": "artifact.step", "size_bytes": 4, "sha256": OBJECT_DIGEST}]
+    inventory = [OBJECT_ENTRY]
 
     def fake_run(
         command: list[str],

@@ -82,12 +82,9 @@ def test_screened_defaults_contract_is_pinned_and_rejects_tampering(
 ) -> None:
     contract = load_screened_defaults_contract(CONTRACT)
 
-    assert contract.contract_version == "1.0.0"
+    assert contract.contract_version == "1.1.0"
     assert contract.fingerprint == SCREENED_DEFAULTS_CONTRACT_FINGERPRINT
-    assert [item.template_id for item in contract.templates] == [
-        "shelving",
-        "wall-library",
-    ]
+    assert [item.template_id for item in contract.templates] == ["shelving"]
     assert all(
         item.effective_design_spec["material_id"] == "birch-plywood" for item in contract.templates
     )
@@ -107,6 +104,7 @@ def test_fixture_is_explicit_validation_data_and_fails_closed_when_incomplete(
     tmp_path: Path,
 ) -> None:
     fixture = load_gate_fixture(FIXTURE)
+    assert fixture.raw == design_review_gate.deterministic_gate_fixture_payload()
     assert fixture.raw["fixture_scope"] == "AUTOMATED_DESIGN_REVIEW_ONLY"
     assert len(fixture.fingerprint) == 64
     assert all(
@@ -117,7 +115,7 @@ def test_fixture_is_explicit_validation_data_and_fails_closed_when_incomplete(
     )
 
     raw = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    del raw["templates"]["wall-library"]["registrations_by_stock"]
+    del raw["templates"]["shelving"]["registrations_by_stock"]
     invalid = tmp_path / "invalid.json"
     invalid.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(DesignReviewGateError, match="keys must be exactly"):
@@ -214,15 +212,15 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
     assert report["physical_cutting_authorized"] is False
     assert report["screened_template_defaults_contract"] == {
         "schema_version": "custombuild.screened-template-defaults.v1",
-        "contract_version": "1.0.0",
+        "contract_version": "1.1.0",
         "fingerprint": SCREENED_DEFAULTS_CONTRACT_FINGERPRINT,
         "physical_cutting_authorized": False,
     }
 
     smoke_by_id = {item["template_id"]: item for item in report["engine_smoke"]["templates"]}
     assert report["engine_smoke"]["status"] == GateStatus.EXTERNAL_EVIDENCE_REQUIRED
-    assert set(smoke_by_id) == {"shelving", "wall-library"}
-    for template_id in ("shelving", "wall-library"):
+    assert set(smoke_by_id) == {"shelving"}
+    for template_id in ("shelving",):
         item = smoke_by_id[template_id]
         assert item["input_kind"] == "DETERMINISTIC_MDF_ENGINE_SMOKE"
         assert item["status"] == GateStatus.EXTERNAL_EVIDENCE_REQUIRED
@@ -239,7 +237,12 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
             "validation/stock-selection.json",
             "validation/generation-plan.json",
         } <= paths
-        assert item["workshop_readiness"]["design_review_ready"] is True
+        assert item["design_review_package_status"]["blocker_codes"] == [
+            "DADO_RETENTION_EVIDENCE_MISSING"
+        ]
+        assert item["design_review_package_status"]["cam_status"] == "BLOCKED"
+        assert item["blocking_issue_codes"] == ["DADO_RETENTION_EVIDENCE_MISSING"]
+        assert item["workshop_readiness"]["design_review_ready"] is False
         assert item["workshop_readiness"]["external_evidence_required"]
         assert item["workshop_readiness"]["physical_cutting_authorized"] is False
 
@@ -247,11 +250,8 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
         item["template_id"]: item for item in report["actual_default_readiness"]["templates"]
     }
     assert report["actual_default_readiness"]["status"] == GateStatus.EXTERNAL_EVIDENCE_REQUIRED
-    assert set(actual_by_id) == {"shelving", "wall-library"}
-    expected_back_blanks = {
-        "shelving": [2_376_266, 2_296_266],
-        "wall-library": [2_376_266, 1_634_066],
-    }
+    assert set(actual_by_id) == {"shelving"}
+    expected_back_blanks = {"shelving": [2_376_266, 2_296_266]}
     for template_id, expected_blank in expected_back_blanks.items():
         item = actual_by_id[template_id]
         assert item["input_kind"] == "ACTUAL_EFFECTIVE_UI_DEFAULT"
@@ -315,8 +315,15 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
         "hanging-shelf",
         "room-divider",
         "sideboard",
+        "wall-library",
     }
-    for template_id in ("cupboard", "hanging-shelf", "room-divider", "sideboard"):
+    for template_id in (
+        "cupboard",
+        "hanging-shelf",
+        "room-divider",
+        "sideboard",
+        "wall-library",
+    ):
         item = concepts_by_id[template_id]
         assert item["status"] == GateStatus.BLOCK
         assert item["code"] == "CONCEPT_TEMPLATE_NOT_RELEASEABLE"

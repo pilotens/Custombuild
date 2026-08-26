@@ -59,10 +59,12 @@ from .package import (
 from .profiles import tool_catalog_fingerprint
 from .readiness import WorkshopReadinessReport, build_workshop_readiness_report
 from .review_status import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DesignReviewPackageStatus,
     blocked_design_review_package_status,
+    dado_retention_evidence_missing,
     generated_design_review_package_status,
 )
 
@@ -108,9 +110,9 @@ def build_production_bundle(
     ``two_sided_registration_by_stock[stock_id][sheet_index]``. The pipeline
     deliberately does not infer WCS, pins, fixtures or registration coordinates.
     ``allow_blocked_cam`` may only convert an exact missing-stock profile, an
-    unbound directional stock axis, or a missing registration plan into a
-    checksum-bound design-review package. It never invents stock or emits
-    partial nesting/CAM artifacts.
+    unbound directional stock axis, unresolved dry/mechanical DADO retention,
+    or a missing registration plan into a checksum-bound design-review package.
+    It never invents evidence or emits partial nesting/CAM artifacts.
     """
 
     if include_freecad_project and not include_step:
@@ -214,6 +216,20 @@ def build_production_bundle(
     elif grain_profile_blocked:
         report = grain_report
         review_status = blocked_design_review_package_status(grain_blocker_codes)
+    elif dado_retention_evidence_missing(design_result):
+        report = DFMReport(
+            tuple((*selection_issues, *grain_issues)),
+            engine_version=DFM_ENGINE_VERSION,
+        )
+        if not allow_blocked_cam:
+            raise ProductionBlockedError(
+                "production bundle blocked by unresolved dry/mechanical DADO retention: "
+                f"{DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE}",
+                report=report,
+            )
+        review_status = blocked_design_review_package_status(
+            (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+        )
     else:
         report_issues = list(selection_issues)
         validated_groups: list[tuple[StockSheet, tuple[PartSpec, ...], NestingLayout]] = []

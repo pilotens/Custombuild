@@ -344,10 +344,33 @@ function OpenTemplatePicker({
     return next;
   };
 
+  const dimensionsForTemplate = (id: FurnitureTemplateId) => {
+    const template = furnitureTemplate(id);
+    return {
+      width_mm: Number(template.patch.width_mm),
+      height_mm: Number(template.patch.height_mm),
+      depth_mm: Number(template.patch.depth_mm),
+    };
+  };
+
+  const openDesignGallery = () => {
+    setPlanningError(undefined);
+    setView("designs");
+    updateBrief({
+      startMode: "template",
+      selectedTemplateId,
+      ...(brief.dimensionsConfirmed ? {} : dimensionsForTemplate(selectedTemplateId)),
+    });
+  };
+
   const chooseDesign = (id: FurnitureTemplateId) => {
     setPlanningError(undefined);
     setSelectedTemplateId(id);
-    updateBrief({ startMode: "template", selectedTemplateId: id });
+    updateBrief({
+      startMode: "template",
+      selectedTemplateId: id,
+      ...(brief.dimensionsConfirmed ? {} : dimensionsForTemplate(id)),
+    });
   };
 
   const openInStudio = (templateId = selectedTemplateId, currentBrief = brief) => {
@@ -384,7 +407,12 @@ function OpenTemplatePicker({
       height_mm: Math.round(Number(dimensionDrafts.height_mm)),
       depth_mm: Math.round(Number(dimensionDrafts.depth_mm)),
     };
-    const next = updateBrief({ ...inferIntent(intent), ...dimensions, startMode: "recommended" });
+    const next = updateBrief({
+      ...inferIntent(intent),
+      ...dimensions,
+      dimensionsConfirmed: true,
+      startMode: "recommended",
+    });
     const first = recommendedTemplateId(next);
     setSelectedTemplateId(first);
     setSuggestionsVisible(true);
@@ -428,7 +456,7 @@ function OpenTemplatePicker({
             <h2 id="explore-title">Vad vill du skapa?</h2>
             <p id="explore-intro" className={styles.lead}>Välj en startpunkt. Möbeln öppnas direkt i Studio, där du formar den och Custombuild håller reda på vad som går att bygga.</p>
             <div className={styles.routeGrid} aria-label="Välj hur du vill börja">
-              <button type="button" className={styles.routeCard} onClick={() => setView("designs")}>
+              <button type="button" className={styles.routeCard} onClick={openDesignGallery}>
                 <span className={styles.routeIcon}><LayoutGrid aria-hidden="true" /></span>
                 <span><strong>Välj en design</strong><small>Bläddra bland verkliga startmodeller och forma dem vidare.</small></span>
                 <ArrowRight aria-hidden="true" size={20} />

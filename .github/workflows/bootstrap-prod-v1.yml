@@ -13,5 +13,5 @@ jobs:
       - name: Explain canonical source
         run: |
           echo "The repository root is the canonical production candidate."
-          echo "The tracked prod/ tree is a historical snapshot and is not materialized or deployed."
+          echo "The retired prod/ snapshot exists only in Git history and is never materialized or deployed."
           echo "Use Production Candidate CI for current release evidence."

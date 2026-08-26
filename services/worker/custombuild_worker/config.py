@@ -46,7 +46,10 @@ class WorkerSettings(BaseSettings):
                 dependency_lock_sha256=self.dependency_lock_sha256,
                 dependency_lock_path=DEPENDENCY_LOCK_PATH,
             )
-            validate_production_database_url(self.database_url)
+            validate_production_database_url(
+                self.database_url,
+                expected_username="custombuild_worker",
+            )
             validate_production_redis_url(self.redis_url)
             validate_production_s3_credentials(self.s3_access_key, self.s3_secret_key)
         return self

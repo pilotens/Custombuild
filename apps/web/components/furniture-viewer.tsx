@@ -2254,7 +2254,12 @@ export default function FurnitureViewer(props: FurnitureViewerProps) {
       }}
       onDrop={handleDrop}
     >
-      <div className={`canvas-shell ${props.selectedPartId ? "part-selected" : ""}`} aria-label="Interaktiv 3D-modell av möbeln">
+      <div
+        className={`canvas-shell ${props.selectedPartId ? "part-selected" : ""}`}
+        aria-label="Interaktiv 3D-modell av möbeln"
+        data-testid="furniture-viewer"
+        data-renderer={webGLAvailable ? "webgl" : "front-projection"}
+      >
         {webGLAvailable ? (
           <Canvas
             camera={initialCameraForView("perspective", false)}

@@ -1,8 +1,8 @@
 {
   "schema_version": "custombuild.screened-template-defaults.v1",
-  "contract_version": "1.0.0",
+  "contract_version": "1.1.0",
   "status": "published",
-  "purpose": "Version-bound effective UI defaults for the screened shelving and wall-library templates. This contract records design-review inputs and does not authorize manufacturing or physical cutting.",
+  "purpose": "Version-bound effective UI defaults for the screened shelving template. Concept templates are deliberately excluded. This contract records design-review inputs and does not authorize manufacturing or physical cutting.",
   "units": {
     "dimensions": "mm",
     "load_per_shelf": "kg",
@@ -80,57 +80,11 @@
         "back_stock_count": 2,
         "machine_profile_id": "custombuild-router-1325-linuxcnc"
       }
-    },
-    {
-      "template_id": "wall-library",
-      "production_level": "screened",
-      "planning_selection": {
-        "startMode": "template",
-        "selectedTemplateId": "wall-library"
-      },
-      "effective_design_spec": {
-        "schema_version": "1.0",
-        "furniture_type": "wall_library",
-        "width_mm": 2400,
-        "height_mm": 2400,
-        "depth_mm": 340,
-        "material_id": "birch-plywood",
-        "material_name": "Björkplywood",
-        "nominal_thickness_mm": 18,
-        "measured_thickness_mm": 17.8,
-        "shelf_count": 5,
-        "fixed_shelves": true,
-        "load_per_shelf_kg": 32,
-        "back_panel": true,
-        "plinth": true,
-        "divider_count": 2,
-        "bay_sizing_mode": "count",
-        "target_bay_width_mm": 300,
-        "bay_width_ratios": [],
-        "shelf_height_ratios": [],
-        "symmetry_locked": true,
-        "part_overrides": {},
-        "removed_part_ids": [],
-        "base_cabinet_height_mm": 680,
-        "base_cabinet_depth_mm": 340,
-        "base_cabinet_count": 3,
-        "reinforcement_mode": "auto",
-        "joint_system": "dado",
-        "edge_band_mm": 1,
-        "wall_anchor_verified": false,
-        "stock_width_mm": 2440,
-        "stock_height_mm": 1220,
-        "stock_count": 16,
-        "back_stock_width_mm": 2440,
-        "back_stock_height_mm": 1220,
-        "back_stock_count": 6,
-        "machine_profile_id": "custombuild-router-1325-linuxcnc"
-      }
     }
   ],
   "fingerprint": {
     "algorithm": "sha256",
     "canonicalization": "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
-    "value": "4a312a621e53529eb4a69c09c61b752d4b4df13a23ff2160bd630028b55a8d4e"
+    "value": "88eca4417ba84e500a21658f5d7ce2b2277d5feca0bccd8cb36aae4419a821b0"
   }
 }

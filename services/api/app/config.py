@@ -36,6 +36,7 @@ class Settings(BaseSettings):
     source_manifest_sha256: str = "unknown"
     dependency_lock_sha256: str = "unknown"
     auth_mode: Literal["development", "oidc"] = "development"
+    production_four_eyes_required: bool = False
     database_url: str = "sqlite+pysqlite:///./custombuild.db"
     redis_url: str = "redis://localhost:6379/0"
     readiness_timeout_seconds: int = Field(default=2, ge=1, le=10)
@@ -60,6 +61,10 @@ class Settings(BaseSettings):
     def production_guards(self) -> Settings:
         if self.app_env == "production" and self.auth_mode != "oidc":
             raise ValueError("production requires AUTH_MODE=oidc")
+        if self.app_env == "production" and not self.production_four_eyes_required:
+            raise ValueError(
+                "production requires PRODUCTION_FOUR_EYES_REQUIRED=true"
+            )
         if self.auth_mode == "oidc" and self.app_env != "production":
             raise ValueError("OIDC mode requires APP_ENV=production")
         if self.auth_mode == "oidc" and not self.oidc_issuer:
@@ -84,7 +89,10 @@ class Settings(BaseSettings):
                 or issuer.fragment
             ):
                 raise ValueError("production OIDC_ISSUER must be an HTTPS issuer URL")
-            validate_production_database_url(self.database_url)
+            validate_production_database_url(
+                self.database_url,
+                expected_username="custombuild_api",
+            )
             validate_production_redis_url(self.redis_url)
             for origin in self.allowed_origins:
                 parsed_origin = urlparse(origin)

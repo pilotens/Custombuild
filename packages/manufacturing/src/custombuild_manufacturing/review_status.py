@@ -20,10 +20,12 @@ DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH = "validation/design-review-package-s
 DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE = "DESIGN_REVIEW_PACKAGE_STATUS"
 STOCK_PROFILE_MISSING_BLOCKER_CODE = STOCK_PROFILE_MISSING_CODE
 TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE = "TWO_SIDED_REGISTRATION_MISSING"
+DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE = "DADO_RETENTION_EVIDENCE_MISSING"
 BLOCKED_CAM_SUPPORTED_BLOCKER_CODES = (
     STOCK_PROFILE_MISSING_BLOCKER_CODE,
     DFM_GRAIN_BLOCKER_CODE,
     TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
 )
 GENERATED_REVIEW_REQUIRED_ACTION = (
     "None for design review; physical workshop evidence remains required."
@@ -39,7 +41,30 @@ BLOCKED_CAM_REQUIRED_ACTIONS = {
         "Bind an externally specified two-sided registration and fixture plan; "
         "do not infer WCS, pins, fixtures or registration coordinates."
     ),
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE: (
+        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
+        "retention system for every DADO joint; a review acknowledgement, adhesive or "
+        "geometric bearing check is not retention evidence."
+    ),
 }
+
+
+def dado_retention_evidence_missing(design_result: Any) -> bool:
+    """Return true while any plain DADO lacks a structured retention contract.
+
+    The current domain joint schema proves the groove geometry and local bearing
+    path, but it deliberately has no field that can identify a versioned dry or
+    mechanical retention system.  Treat every DADO as unresolved until that
+    domain contract exists; caller-supplied review text must never substitute for
+    a product-modelled retention declaration.
+    """
+
+    for joint in getattr(design_result, "joints", ()):
+        joint_type = getattr(joint, "joint_type", None)
+        value = getattr(joint_type, "value", joint_type)
+        if isinstance(value, str) and value.casefold() == "dado":
+            return True
+    return False
 
 
 class CAMStageStatus(StrEnum):
@@ -108,8 +133,8 @@ def blocked_design_review_package_status(
         raise ValueError("blocked CAM status requires non-empty blocker codes")
     if len(codes) != 1 or codes[0] not in BLOCKED_CAM_SUPPORTED_BLOCKER_CODES:
         raise ValueError(
-            "design-review status v1 only supports exactly one canonical stock, grain or "
-            "registration blocker"
+            "design-review status v1 only supports exactly one canonical stock, grain, "
+            "registration or retention blocker"
         )
     return DesignReviewPackageStatus(
         schema_version=DESIGN_REVIEW_PACKAGE_STATUS_SCHEMA_VERSION,

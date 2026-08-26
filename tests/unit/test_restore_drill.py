@@ -31,7 +31,15 @@ def test_broad_or_unsafe_restore_names_are_rejected(name: str) -> None:
 
 
 def test_restore_drill_resolves_current_repository_alembic_head() -> None:
-    assert current_alembic_heads(Path.cwd()) == ["0009_generation_lease_heartbeat"]
+    assert current_alembic_heads(Path.cwd()) == ["0010_tenant_graph_foreign_keys"]
+
+
+def test_restore_prepares_schema_ownership_and_restores_as_migrator() -> None:
+    source = Path("scripts/restore_drill.py").read_text(encoding="utf-8")
+
+    assert "ALTER SCHEMA public OWNER TO custombuild_migrator" in source
+    assert '"--username",\n            "custombuild_migrator"' in source
+    assert '"PGPASSWORD={RESTORE_MIGRATOR_PASSWORD}"' in source
 
 
 def test_postgres_wait_ignores_temporary_initialization_server(

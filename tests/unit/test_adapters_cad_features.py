@@ -430,7 +430,7 @@ def test_exact_assembly_gate_does_not_treat_a_declared_joint_as_a_collision_waiv
     ("template_id", "expected_level"),
     (
         ("shelving", TemplateProductionLevel.SCREENED),
-        ("wall-library", TemplateProductionLevel.SCREENED),
+        ("wall-library", TemplateProductionLevel.CONCEPT),
         ("sideboard", TemplateProductionLevel.CONCEPT),
         ("room-divider", TemplateProductionLevel.CONCEPT),
         ("hanging-shelf", TemplateProductionLevel.CONCEPT),
