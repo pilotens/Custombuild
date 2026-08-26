@@ -244,24 +244,33 @@ def test_python_runtimes_are_minimal_pinned_and_keep_python_313(dockerfile: str)
         "python-3.13=3.13.15-r2",
     ):
         assert package in source
-    assert "COPY --from=builder /usr/local /usr/local" not in source
+    builder_copy_lines = [
+        line
+        for line in source.splitlines()
+        if line.startswith("COPY ") and "--from=builder" in line
+    ]
+    assert builder_copy_lines
+    assert all("/usr/local" not in line for line in builder_copy_lines)
     assert "COPY --from=builder /opt/custombuild-venv /base-chroot/opt/custombuild-venv" in source
     assert "COPY --from=builder /app/uv.lock /base-chroot/app/uv.lock" in source
     assert "ln -s /usr/bin/python3.13 /base-chroot/opt/custombuild-venv/bin/python" in source
     assert "sed -i 's|^home = .*|home = /usr/bin|'" in source
     assert "COPY --link --from=runtime-assembler /base-chroot /" in source
+    assert "FROM scratch AS runtime" in source
+    assert "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in source
     assert 'io.custombuild.python.version="3.13.15"' in source
     assert "ENTRYPOINT []" in source
     assert "USER 65532:65532" in source
     assert "assert sys.version_info[:3] == (3, 13, 15)" in source
+    assert "assert ssl.create_default_context().get_ca_certs()" in source
     assert "assert importlib.util.find_spec('pip') is None" in source
     assert "assert importlib.util.find_spec('uv') is None" in source
     assert "assert shutil.which('FreeCAD') is None" in source
-    assert (
-        "assert not any(path.is_file() or path.is_symlink() for path in "
-        "pathlib.Path('/usr/local').rglob('*'))"
-        in source
-    )
+    assert "test ! -e /base-chroot/opt/custombuild-venv/bin/pip" in source
+    assert "test ! -e /base-chroot/opt/custombuild-venv/bin/uv" in source
+    assert "test ! -e /base-chroot/usr/bin/FreeCAD" in source
+    assert "/base-chroot/usr/local" in source
+    assert "assert not pathlib.Path('/usr/local').exists()" in source
     assert "PATH=/opt/custombuild-venv/bin:/usr/bin:/usr/sbin:/sbin:/bin" in source
 
 

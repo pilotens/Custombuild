@@ -217,7 +217,11 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   await perspective.click();
   await expect(perspective).toHaveAttribute("aria-pressed", "true");
 
-  await controls.evaluate((element) => { element.scrollLeft = 0; });
+  await controls.evaluate((element) => {
+    (element as HTMLElement).style.scrollBehavior = "auto";
+    element.scrollLeft = 0;
+  });
+  await expect.poll(() => controls.evaluate((element) => element.scrollLeft)).toBe(0);
   await controls.focus();
   await page.keyboard.press("ArrowRight");
   await expect.poll(() => controls.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
@@ -225,6 +229,7 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
     element.scrollLeft = 0;
     (element as HTMLElement).blur();
   });
+  await expect.poll(() => controls.evaluate((element) => element.scrollLeft)).toBe(0);
 
   const toolbarBox = await toolbar.boundingBox();
   const healthBox = await toolbar.locator(".design-health-pill").boundingBox();
@@ -280,6 +285,11 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   await page.keyboard.press("Tab");
   await expect(divider).toBeFocused();
   await divider.evaluate((element) => element.blur());
+  await row.evaluate((element) => {
+    (element as HTMLElement).style.scrollBehavior = "auto";
+    element.scrollLeft = 0;
+  });
+  await expect.poll(() => row.evaluate((element) => element.scrollLeft)).toBe(0);
 }
 
 for (const visualCase of visualCases) {
@@ -298,7 +308,7 @@ for (const visualCase of visualCases) {
       await expect(explore.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible();
       await expect(explore).toHaveAttribute("data-presentation", "embedded");
       await settleViewport(page, visualCase.viewport.width);
-      await expect(page).toHaveScreenshot(`utforska-${visualCase.name}.png`, screenshotOptions);
+      await expect.soft(page).toHaveScreenshot(`utforska-${visualCase.name}.png`, screenshotOptions);
 
       await openDeterministicWallLibrary(page);
       const modes = page.getByRole("navigation", { name: "Produktlägen" });
@@ -311,7 +321,7 @@ for (const visualCase of visualCases) {
       await verifyMobileComponentPalette(page);
       await settleViewport(page, visualCase.viewport.width, true);
       await verifyPersistentVisibleModel(page);
-      await expect(page).toHaveScreenshot(`studio-${visualCase.name}.png`, screenshotOptions);
+      await expect.soft(page).toHaveScreenshot(`studio-${visualCase.name}.png`, screenshotOptions);
 
       await modes.getByRole("button", { name: /Kontroll/ }).click();
       await expect(modes.getByRole("button", { name: /Kontroll/ })).toHaveAttribute("aria-current", "page");
@@ -320,7 +330,7 @@ for (const visualCase of visualCases) {
       })).toBeVisible();
       await settleViewport(page, visualCase.viewport.width, true);
       await verifyPersistentVisibleModel(page);
-      await expect(page).toHaveScreenshot(`kontroll-${visualCase.name}.png`, screenshotOptions);
+      await expect.soft(page).toHaveScreenshot(`kontroll-${visualCase.name}.png`, screenshotOptions);
 
       await modes.getByRole("button", { name: /Underlag/ }).click();
       await expect(modes.getByRole("button", { name: /Underlag/ })).toHaveAttribute("aria-current", "page");
@@ -328,7 +338,7 @@ for (const visualCase of visualCases) {
       await expect(page.getByLabel("Underlagets innehåll")).toBeVisible();
       await settleViewport(page, visualCase.viewport.width, true);
       await verifyPersistentVisibleModel(page);
-      await expect(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions);
+      await expect.soft(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions);
     });
   });
 }

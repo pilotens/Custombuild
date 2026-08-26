@@ -106,16 +106,17 @@ RUN rm -f \
     && sed -i 's|^home = .*|home = /usr/bin|' /base-chroot/opt/custombuild-venv/pyvenv.cfg \
     && rm -rf /base-chroot/usr/lib/python3.13/ensurepip \
       /base-chroot/usr/share/python-wheels \
+      /base-chroot/usr/local \
     && PYTHONPATH=/app/packages/domain/src:/app/packages/rule-engine/src:/app/packages/manufacturing/src:/app/packages/template-sdk/src:/app/cad/src:/app/cam/src:/app/postprocessors/src:/app/services/api:/app/services/worker \
       PATH=/opt/custombuild-venv/bin:/usr/bin:/usr/sbin:/sbin:/bin \
       chroot /base-chroot /opt/custombuild-venv/bin/python -c \
-      "import importlib.util, pathlib, shutil, sys; assert sys.version_info[:3] == (3, 13, 15); import uvicorn; import app.main; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('uv') is None; assert shutil.which('pip') is None; assert shutil.which('uv') is None; assert shutil.which('FreeCAD') is None; assert not any(path.is_file() or path.is_symlink() for path in pathlib.Path('/usr/local').rglob('*'))" \
+      "import importlib.util, pathlib, shutil, ssl, sys; assert sys.version_info[:3] == (3, 13, 15); import uvicorn; import app.main; assert ssl.create_default_context().get_ca_certs(); assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('uv') is None; assert shutil.which('pip') is None; assert shutil.which('uv') is None; assert shutil.which('FreeCAD') is None; assert not pathlib.Path('/usr/local').exists()" \
     && test ! -e /base-chroot/opt/custombuild-venv/bin/pip \
     && test ! -e /base-chroot/opt/custombuild-venv/bin/uv \
     && test ! -e /base-chroot/usr/bin/FreeCAD
 
 
-FROM runtime-base AS runtime
+FROM scratch AS runtime
 
 ARG APP_VERSION=0.1.0-local
 ARG VCS_REF=uncommitted
@@ -126,6 +127,7 @@ ARG DEPENDENCY_LOCK_SHA256=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     APP_VERSION=${APP_VERSION} \
     VCS_REF=${VCS_REF} \
     BUILD_DATE=${BUILD_DATE} \

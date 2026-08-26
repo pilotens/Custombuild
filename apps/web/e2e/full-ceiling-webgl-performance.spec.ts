@@ -372,40 +372,57 @@ async function resetRendererCommitObservations(page: Page): Promise<void> {
 }
 
 async function waitForObservedRendererCommit(
-  page: Page,
   canvas: Locator,
   afterRevision: number,
   startedAtMs: number,
   expectedModelRoot: string,
 ): Promise<RendererCommitProbe> {
-  const observation = async () => page.evaluate(({ after, startedAt }) => {
+  const observation = async () => canvas.evaluate((element, {
+    after,
+    canvasIdentity,
+    expectedRoot,
+    startedAt,
+  }) => {
     const probe = (window as typeof window & { __custombuildFullCeilingProbe?: BrowserProbe })
       .__custombuildFullCeilingProbe;
     if (!probe) throw new Error("The full-ceiling browser probe was not installed.");
-    return probe.renderer_commit_observations.find(
+    const committed = probe.renderer_commit_observations.find(
       (candidate) => candidate.render_commit > after && candidate.observed_at_ms >= startedAt,
     ) ?? null;
-  }, { after: afterRevision, startedAt: startedAtMs });
-  await expect.poll(async () => (await observation())?.render_commit ?? 0, {
+    if (!committed) return null;
+    if (committed.canvas_identity !== canvasIdentity) {
+      throw new Error("The WebGL canvas was replaced during the OrbitControls drag.");
+    }
+    if (committed.model_root !== expectedRoot) {
+      throw new Error("The stable model-root identity changed during the OrbitControls drag.");
+    }
+    const currentRoot = element.getAttribute("data-custombuild-model-root");
+    const rawCurrentCommit = element.getAttribute("data-custombuild-render-commit");
+    const currentCommit = rawCurrentCommit === null ? Number.NaN : Number(rawCurrentCommit);
+    if (!Number.isSafeInteger(currentCommit) || currentCommit < committed.render_commit) {
+      throw new Error("The canvas renderer revision regressed after the observed OrbitControls commit.");
+    }
+    if (element.getAttribute("data-full-ceiling-canvas") !== canvasIdentity || currentRoot !== expectedRoot) {
+      throw new Error("The canvas or model root changed after the observed OrbitControls commit.");
+    }
+    return committed;
+  }, {
+    after: afterRevision,
+    canvasIdentity: CANVAS_IDENTITY,
+    expectedRoot: expectedModelRoot,
+    startedAt: startedAtMs,
+  });
+  const observed: { committed: RendererCommitProbe | null } = { committed: null };
+  await expect.poll(async () => {
+    observed.committed = await observation();
+    return observed.committed?.render_commit ?? 0;
+  }, {
     intervals: [16, 32, 64, 100],
     message: `OrbitControls must commit a renderer revision after ${afterRevision}.`,
     timeout: DIAGNOSTIC_ACTION_TIMEOUT_MS,
   }).toBeGreaterThan(afterRevision);
-  const committed = await observation();
+  const committed = observed.committed;
   if (!committed) throw new Error("The timestamped renderer commit disappeared after observation.");
-  if (committed.canvas_identity !== CANVAS_IDENTITY) {
-    throw new Error("The WebGL canvas was replaced during the OrbitControls drag.");
-  }
-  if (committed.model_root !== expectedModelRoot) {
-    throw new Error("The stable model-root identity changed during the OrbitControls drag.");
-  }
-  const current = await readRendererCommit(canvas);
-  if (!current || current.render_commit < committed.render_commit) {
-    throw new Error("The canvas renderer revision regressed after the observed OrbitControls commit.");
-  }
-  if (current.canvas_identity !== CANVAS_IDENTITY || current.model_root !== expectedModelRoot) {
-    throw new Error("The canvas or model root changed after the observed OrbitControls commit.");
-  }
   return committed;
 }
 
@@ -737,7 +754,6 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
       const startedAt = await page.evaluate(() => performance.now());
       await page.mouse.move(x, y, { steps: 1 });
       const committed = await waitForObservedRendererCommit(
-        page,
         canvas,
         previousRevision,
         startedAt,
