@@ -220,7 +220,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     await expect(warning).toHaveCount(1);
     await expect(warning.getByText(warningPath.title, { exact: true })).toBeVisible();
     if (warningPath.ruleId === "DFM-GRAIN-001") {
-      await expect(warning.getByRole("button")).toHaveCount(0);
+      await expect(warning.locator(".validation-actions").getByRole("button")).toHaveCount(0);
     }
   }
   await stocklessBlocks

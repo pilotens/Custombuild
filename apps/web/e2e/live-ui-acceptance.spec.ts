@@ -297,7 +297,7 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
   await expect(page.getByRole("heading", { name: "Vad vill du skapa?" })).toHaveCount(0);
   await waitForServerSave(page);
 
-  await page.getByRole("button", { name: "Ladda upp referensbild", exact: true }).click();
+  await openReferencePlanning(page);
   await expect(page.getByRole("heading", { name: "Skapa från referensbild" })).toBeVisible();
   const pasteBuffer = await createReferencePng(page, "#355c55");
   const pasteInspectionPromise = page.waitForResponse((candidate) => (

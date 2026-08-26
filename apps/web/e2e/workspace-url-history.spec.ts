@@ -10,6 +10,10 @@ function productModes(page: import("@playwright/test").Page) {
   return page.getByRole("navigation", { name: "Produktlägen" });
 }
 
+// This exact key is an E2E storage-contract boundary: changing the v3 anonymous
+// draft namespace must make this persistence test fail until the contract is updated.
+const anonymousDraftKey = "custombuild:workspace:v3:anonymous:project:local-draft:draft";
+
 test("a canonical mode deep link survives reload without putting design state in the URL", async ({ page }) => {
   await startWithEmptyPlanningStorage(page);
   await page.goto("/?return=kept&mode=studio#workspace", { waitUntil: "networkidle" });
@@ -59,15 +63,26 @@ test("malformed mode and unavailable project fall back to local v3 mode and are 
   await productModes(page).getByRole("button", { name: /Underlag/ }).click();
   await expect(productModes(page).getByRole("button", { name: /Underlag/ }))
     .toHaveAttribute("aria-current", "page");
-  await page.waitForTimeout(600);
+  await expect.poll(() => page.evaluate((draftKey) => {
+    const rawDraft = window.localStorage.getItem(draftKey);
+    if (!rawDraft) return null;
+    try {
+      const draft = JSON.parse(rawDraft) as { uiState?: { mode?: unknown } };
+      return draft.uiState?.mode ?? null;
+    } catch {
+      return null;
+    }
+  }, anonymousDraftKey), {
+    message: "Underlag mode must be durably persisted before a new document hydrates it.",
+  }).toBe("build");
 
   await page.goto("/?project=not-authorized&mode=verification&return=kept#workspace", {
     waitUntil: "networkidle",
   });
 
+  await expect(page).toHaveURL(/\?return=kept&mode=build#workspace$/);
   await expect(productModes(page).getByRole("button", { name: /Underlag/ }))
     .toHaveAttribute("aria-current", "page");
-  await expect(page).toHaveURL(/\?return=kept&mode=build#workspace$/);
   const canonical = new URL(page.url());
   expect(canonical.searchParams.has("project")).toBe(false);
   expect(canonical.searchParams.has("revision")).toBe(false);
