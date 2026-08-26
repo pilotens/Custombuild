@@ -20,6 +20,9 @@ const screenshotOptions = {
 };
 
 const persistentViewerIdentity = "p19-shared-furniture-viewer";
+const visualCanvasIdentity = "p19-visual-regression-canvas";
+const visualCanvasIdentityAttribute = "data-custombuild-visual-canvas";
+const viewerModelRootAttribute = "data-custombuild-model-root";
 const viewerRenderCommitAttribute = "data-custombuild-render-commit";
 const viewerRenderQuietWindowMs = 300;
 
@@ -27,6 +30,12 @@ interface ProjectedModelMetrics {
   heightRatio: number;
   pixelRatio: number;
   widthRatio: number;
+}
+
+interface ViewerRenderCheckpoint {
+  canvasIdentity: string;
+  modelRoot: string;
+  renderCommit: number;
 }
 
 test.use({ video: "off" });
@@ -42,43 +51,133 @@ function renderedModelSurface(page: Page) {
     .first();
 }
 
-async function waitForRenderedModelToSettle(surface: Locator): Promise<void> {
-  const tagName = await surface.evaluate((element) => element.tagName);
-  if (tagName !== "CANVAS") return;
+async function readViewerRenderCheckpoint(surface: Locator): Promise<ViewerRenderCheckpoint | undefined> {
+  return surface.evaluate((element, attributes) => {
+    const canvasIdentity = element.getAttribute(attributes.canvasIdentity);
+    const modelRoot = element.getAttribute(attributes.modelRoot);
+    const rawCommit = element.getAttribute(attributes.renderCommit);
+    const renderCommit = rawCommit === null ? Number.NaN : Number(rawCommit);
+    if (!canvasIdentity || !modelRoot || !Number.isSafeInteger(renderCommit) || renderCommit < 1) return undefined;
+    return { canvasIdentity, modelRoot, renderCommit };
+  }, {
+    canvasIdentity: visualCanvasIdentityAttribute,
+    modelRoot: viewerModelRootAttribute,
+    renderCommit: viewerRenderCommitAttribute,
+  });
+}
 
-  await expect(surface).toHaveAttribute(viewerRenderCommitAttribute, /^[1-9]\d*$/);
+async function waitForRenderedModelToSettle(
+  surface: Locator,
+  afterCheckpoint?: ViewerRenderCheckpoint,
+): Promise<ViewerRenderCheckpoint | undefined> {
+  const tagName = await surface.evaluate((element) => element.tagName);
+  if (tagName !== "CANVAS") {
+    if (afterCheckpoint) throw new Error("The WebGL canvas disappeared before the next render commit.");
+    return undefined;
+  }
+
+  if (!afterCheckpoint) {
+    await surface.evaluate((element, { attribute, identity }) => {
+      const existingIdentity = element.getAttribute(attribute);
+      if (existingIdentity !== null && existingIdentity !== identity) {
+        throw new Error(`Unexpected visual canvas identity: ${existingIdentity}.`);
+      }
+      element.setAttribute(attribute, identity);
+    }, { attribute: visualCanvasIdentityAttribute, identity: visualCanvasIdentity });
+  } else {
+    const currentCheckpoint = await readViewerRenderCheckpoint(surface);
+    if (currentCheckpoint?.canvasIdentity !== afterCheckpoint.canvasIdentity) {
+      throw new Error("The WebGL canvas identity changed before the next render commit.");
+    }
+    if (currentCheckpoint.modelRoot !== afterCheckpoint.modelRoot) {
+      throw new Error("The WebGL model root changed before the next render commit.");
+    }
+  }
+
+  await expect.poll(async () => (await readViewerRenderCheckpoint(surface))?.renderCommit ?? 0, {
+    intervals: [16, 32, 64, 100],
+    message: `The WebGL renderer must commit a revision after ${afterCheckpoint?.renderCommit ?? 0}.`,
+    timeout: 5_000,
+  }).toBeGreaterThan(afterCheckpoint?.renderCommit ?? 0);
+  const committedCheckpoint = await readViewerRenderCheckpoint(surface);
+  if (!committedCheckpoint) throw new Error("The WebGL render checkpoint disappeared after commit.");
+  if (committedCheckpoint.canvasIdentity !== visualCanvasIdentity) {
+    throw new Error("The WebGL canvas identity changed during the render commit.");
+  }
+  if (afterCheckpoint && committedCheckpoint.modelRoot !== afterCheckpoint.modelRoot) {
+    throw new Error("The WebGL model root changed during the render commit.");
+  }
+
   // Drei Bounds invalidates the demand renderer while its camera fit is still
   // interpolating. Wait on the renderer's commit contract so a view switch
   // cannot preserve a load-dependent intermediate OrbitControls target.
-  await surface.evaluate((element, { attribute, quietWindowMs }) => new Promise<void>((resolve, reject) => {
+  await surface.evaluate((element, options) => new Promise<void>((resolve, reject) => {
     let quietTimer = 0;
     const timeoutTimer = window.setTimeout(() => {
       observer.disconnect();
       window.clearTimeout(quietTimer);
-      reject(new Error(`The WebGL renderer did not settle within 5 seconds (${attribute}).`));
+      reject(new Error(`The WebGL renderer did not settle within 5 seconds (${options.renderCommitAttribute}).`));
     }, 5_000);
 
     const finish = () => {
+      const rawCommit = element.getAttribute(options.renderCommitAttribute);
+      const renderCommit = rawCommit === null ? Number.NaN : Number(rawCommit);
+      if (element.getAttribute(options.canvasIdentityAttribute) !== options.canvasIdentity
+        || element.getAttribute(options.modelRootAttribute) !== options.modelRoot
+        || !Number.isSafeInteger(renderCommit)
+        || renderCommit <= options.afterCommit) {
+        observer.disconnect();
+        window.clearTimeout(timeoutTimer);
+        reject(new Error("The WebGL render checkpoint changed before the renderer settled."));
+        return;
+      }
       observer.disconnect();
       window.clearTimeout(timeoutTimer);
       resolve();
     };
     const scheduleFinish = () => {
       window.clearTimeout(quietTimer);
-      quietTimer = window.setTimeout(finish, quietWindowMs);
+      quietTimer = window.setTimeout(finish, options.quietWindowMs);
     };
     const observer = new MutationObserver((mutations) => {
-      if (mutations.some((mutation) => mutation.attributeName === attribute)) scheduleFinish();
+      if (mutations.some((mutation) => mutation.attributeName === options.renderCommitAttribute)) scheduleFinish();
     });
-    observer.observe(element, { attributeFilter: [attribute], attributes: true });
+    observer.observe(element, {
+      attributeFilter: [
+        options.canvasIdentityAttribute,
+        options.modelRootAttribute,
+        options.renderCommitAttribute,
+      ],
+      attributes: true,
+    });
     scheduleFinish();
   }), {
-    attribute: viewerRenderCommitAttribute,
+    afterCommit: afterCheckpoint?.renderCommit ?? 0,
+    canvasIdentity: committedCheckpoint.canvasIdentity,
+    canvasIdentityAttribute: visualCanvasIdentityAttribute,
+    modelRoot: committedCheckpoint.modelRoot,
+    modelRootAttribute: viewerModelRootAttribute,
     quietWindowMs: viewerRenderQuietWindowMs,
+    renderCommitAttribute: viewerRenderCommitAttribute,
   });
+
+  const settledCheckpoint = await readViewerRenderCheckpoint(surface);
+  if (!settledCheckpoint) throw new Error("The WebGL render checkpoint disappeared after settling.");
+  if (settledCheckpoint.canvasIdentity !== committedCheckpoint.canvasIdentity
+    || settledCheckpoint.modelRoot !== committedCheckpoint.modelRoot
+    || settledCheckpoint.renderCommit < committedCheckpoint.renderCommit) {
+    throw new Error("The WebGL canvas or model root changed while the renderer settled.");
+  }
+  return settledCheckpoint;
 }
 
-async function settleViewport(page: Page, width: number, withModel = false): Promise<void> {
+async function settleViewport(
+  page: Page,
+  width: number,
+  withModel = false,
+  afterCheckpoint?: ViewerRenderCheckpoint,
+): Promise<ViewerRenderCheckpoint | undefined> {
+  let settledCheckpoint: ViewerRenderCheckpoint | undefined;
   await expect(page.locator(".save-state")).toContainText("Sparad lokalt");
   await page.evaluate(async () => document.fonts.ready);
   await page.evaluate(() => window.scrollTo(0, 0));
@@ -94,13 +193,14 @@ async function settleViewport(page: Page, width: number, withModel = false): Pro
       const bounds = element.getBoundingClientRect();
       return bounds.height * bounds.width;
     })).toBeGreaterThan(0);
-    await waitForRenderedModelToSettle(surface);
+    settledCheckpoint = await waitForRenderedModelToSettle(surface, afterCheckpoint);
   }
 
   await page.evaluate(() => new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   }));
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+  return settledCheckpoint;
 }
 
 async function waitForHorizontalScrollToSettle(scroller: Locator): Promise<void> {
@@ -215,12 +315,15 @@ async function openDeterministicWallLibrary(page: Page): Promise<void> {
   await expect(closeChangeSummary).toHaveCount(0);
 }
 
-async function verifyMobileViewerToolbar(page: Page): Promise<void> {
-  if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 820) return;
+async function verifyMobileViewerToolbar(
+  page: Page,
+  initialCheckpoint?: ViewerRenderCheckpoint,
+): Promise<ViewerRenderCheckpoint | undefined> {
+  if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 820) return initialCheckpoint;
 
   const surface = renderedModelSurface(page);
   await expect(surface).toBeVisible();
-  await waitForRenderedModelToSettle(surface);
+  let checkpoint = await waitForRenderedModelToSettle(surface, initialCheckpoint);
 
   const toolbar = page.getByRole("toolbar", { name: "Visningsverktyg" });
   const controls = page.getByLabel("Visningskontroller, horisontellt rullningsbara");
@@ -275,11 +378,11 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   expect(frontPointerTarget).toBe("Front");
   await front.click();
   await expect(front).toHaveAttribute("aria-pressed", "true");
-  await waitForRenderedModelToSettle(surface);
+  checkpoint = await waitForRenderedModelToSettle(surface, checkpoint);
   const perspective = controls.getByRole("button", { name: "3D", exact: true });
   await perspective.click();
   await expect(perspective).toHaveAttribute("aria-pressed", "true");
-  await waitForRenderedModelToSettle(surface);
+  checkpoint = await waitForRenderedModelToSettle(surface, checkpoint);
 
   await controls.evaluate((element) => {
     (element as HTMLElement).style.scrollBehavior = "auto";
@@ -305,6 +408,7 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   if (!toolbarBox || !healthBox) throw new Error("The mobile construction status has no visible box.");
   expect(healthBox.x).toBeGreaterThanOrEqual(toolbarBox.x);
   expect(healthBox.x + healthBox.width).toBeLessThanOrEqual(toolbarBox.x + toolbarBox.width);
+  return checkpoint;
 }
 
 async function verifyMobileViewerOverlayLayout(page: Page): Promise<void> {
@@ -395,6 +499,41 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   await expect.poll(() => row.evaluate((element) => element.scrollLeft)).toBe(0);
 }
 
+test("renderer settling requires a new commit on the same canvas", async ({ page }) => {
+  await page.setContent(`
+    <canvas
+      ${viewerModelRootAttribute}="fixture-model-root"
+      ${viewerRenderCommitAttribute}="1"
+    ></canvas>
+  `);
+  const surface = page.locator("canvas");
+  const initialCheckpoint = await waitForRenderedModelToSettle(surface);
+  if (!initialCheckpoint) throw new Error("The synthetic WebGL checkpoint was not initialized.");
+
+  await page.evaluate(({ delayMs, renderCommitAttribute }) => {
+    window.setTimeout(() => {
+      document.querySelector("canvas")?.setAttribute(renderCommitAttribute, "2");
+    }, delayMs);
+  }, {
+    delayMs: viewerRenderQuietWindowMs + 150,
+    renderCommitAttribute: viewerRenderCommitAttribute,
+  });
+
+  const nextCheckpoint = await waitForRenderedModelToSettle(surface, initialCheckpoint);
+  expect(nextCheckpoint?.renderCommit).toBe(2);
+  expect(nextCheckpoint?.canvasIdentity).toBe(initialCheckpoint.canvasIdentity);
+  expect(nextCheckpoint?.modelRoot).toBe(initialCheckpoint.modelRoot);
+
+  await surface.evaluate((element, canvasIdentityAttribute) => {
+    const replacement = element.cloneNode() as HTMLCanvasElement;
+    replacement.removeAttribute(canvasIdentityAttribute);
+    element.replaceWith(replacement);
+  }, visualCanvasIdentityAttribute);
+  await expect(waitForRenderedModelToSettle(surface, nextCheckpoint)).rejects.toThrow(
+    "The WebGL canvas identity changed before the next render commit.",
+  );
+});
+
 for (const visualCase of visualCases) {
   test.describe(visualCase.name, () => {
     test.use({
@@ -420,9 +559,10 @@ for (const visualCase of visualCases) {
       await page.getByTestId("furniture-viewer").evaluate((viewer, identity) => {
         viewer.setAttribute("data-visual-regression-identity", identity);
       }, persistentViewerIdentity);
-      await verifyMobileViewerToolbar(page);
+      let viewerCheckpoint = await settleViewport(page, visualCase.viewport.width, true);
+      viewerCheckpoint = await verifyMobileViewerToolbar(page, viewerCheckpoint);
       await verifyMobileComponentPalette(page);
-      await settleViewport(page, visualCase.viewport.width, true);
+      viewerCheckpoint = await settleViewport(page, visualCase.viewport.width, true) ?? viewerCheckpoint;
       await verifyPersistentVisibleModel(page);
       await verifyMobileViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`studio-${visualCase.name}.png`, screenshotOptions);
@@ -432,7 +572,12 @@ for (const visualCase of visualCases) {
       await expect(page.getByLabel("Kontrollera konstruktionen").getByRole("heading", {
         name: "Kontrollera konstruktionen",
       })).toBeVisible();
-      await settleViewport(page, visualCase.viewport.width, true);
+      viewerCheckpoint = await settleViewport(
+        page,
+        visualCase.viewport.width,
+        true,
+        viewerCheckpoint,
+      ) ?? viewerCheckpoint;
       await verifyPersistentVisibleModel(page);
       await verifyMobileViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`kontroll-${visualCase.name}.png`, screenshotOptions);
@@ -441,7 +586,12 @@ for (const visualCase of visualCases) {
       await expect(modes.getByRole("button", { name: /Underlag/ })).toHaveAttribute("aria-current", "page");
       await expect(page.getByRole("dialog", { name: "Skapa underlag" })).toHaveCount(0);
       await expect(page.getByLabel("Underlagets innehåll")).toBeVisible();
-      await settleViewport(page, visualCase.viewport.width, true);
+      await settleViewport(
+        page,
+        visualCase.viewport.width,
+        true,
+        viewerCheckpoint,
+      );
       await verifyPersistentVisibleModel(page);
       await verifyMobileViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions);
