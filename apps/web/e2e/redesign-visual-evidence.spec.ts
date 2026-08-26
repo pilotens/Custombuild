@@ -323,7 +323,9 @@ async function verifyMobileViewerToolbar(
 
   const surface = renderedModelSurface(page);
   await expect(surface).toBeVisible();
-  let checkpoint = await waitForRenderedModelToSettle(surface, initialCheckpoint);
+  // settleViewport already captured the current quiet frame. Do not require a
+  // new renderer commit until a toolbar action actually changes the camera.
+  let checkpoint = initialCheckpoint ?? await waitForRenderedModelToSettle(surface);
 
   const toolbar = page.getByRole("toolbar", { name: "Visningsverktyg" });
   const controls = page.getByLabel("Visningskontroller, horisontellt rullningsbara");
