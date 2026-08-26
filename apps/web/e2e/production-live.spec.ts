@@ -233,8 +233,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     .not.toHaveText("Hämtar projektet", { timeout: 30_000 });
   await expect(productionDialog.getByText("Blockerar CAM · 2 krav")).toBeVisible();
   await expect(productionDialog).not.toContainText("5 000 × 2 500");
-  await expect(page.getByRole("spinbutton", { name: "Bredd", exact: true })).toHaveValue("1800");
-  await expect(page.getByRole("spinbutton", { name: "Höjd", exact: true })).toHaveValue("2100");
+  // Underlag intentionally replaces the editable Studio inspector. Verify the
+  // construction summary that remains visible across the mode transition.
+  await expect(page.getByTestId("current-design-label").getByText("1800 × 2100 × 320 mm", { exact: true }))
+    .toBeVisible();
   console.log("production-live: stockless manufacturing review visible");
 
   const save = page.getByRole("button", {
