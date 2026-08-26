@@ -128,7 +128,11 @@ from .storage import (
 )
 
 router = APIRouter(prefix="/v1")
-SessionDep = Annotated[Session, Depends(tenant_session)]
+# The transaction must commit before FastAPI starts sending the response.  The
+# default scope for a yield dependency is ``request``, whose cleanup runs after
+# the response has been sent; a client can otherwise receive ``201 Created``
+# and immediately fail to read the newly-created row from another connection.
+SessionDep = Annotated[Session, Depends(tenant_session, scope="function")]
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 DesignerDep = Annotated[Principal, Depends(require_minimum_role(Role.designer))]
 ReviewerDep = Annotated[Principal, Depends(require_minimum_role(Role.reviewer))]
