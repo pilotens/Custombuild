@@ -135,7 +135,7 @@ RUN rm -f \
     && PYTHONPATH=/app/packages/domain/src:/app/packages/rule-engine/src:/app/packages/manufacturing/src:/app/packages/template-sdk/src:/app/cad/src:/app/cam/src:/app/postprocessors/src:/app/services/api:/app/services/worker \
       PATH=/opt/custombuild-venv/bin:/usr/bin:/usr/sbin:/sbin:/bin \
       chroot /base-chroot /opt/custombuild-venv/bin/python -c \
-      "import importlib.util, pathlib, shutil, sys; assert sys.version_info[:3] == (3, 13, 15); import celery, cadquery, OCP, vtkmodules.vtkCommonCore; import custombuild_worker.tasks; solid = cadquery.Workplane('XY').box(10, 20, 30); assert solid.val().Volume() > 0; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('uv') is None; assert importlib.util.find_spec('FreeCAD') is None; assert shutil.which('pip') is None; assert shutil.which('uv') is None; assert shutil.which('FreeCAD') is None; assert not pathlib.Path('/usr/local').exists()" \
+      "import importlib.util, pathlib, shutil, sys; assert sys.version_info[:3] == (3, 13, 15); import celery, cadquery, OCP, vtkmodules.vtkCommonCore; import custombuild_worker.tasks; solid = cadquery.Workplane('XY').box(10, 20, 30); assert solid.val().Volume() > 0; assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('uv') is None; assert importlib.util.find_spec('FreeCAD') is None; assert shutil.which('pip') is None; assert shutil.which('uv') is None; assert shutil.which('FreeCAD') is None; assert not any(path.is_file() or path.is_symlink() for path in pathlib.Path('/usr/local').rglob('*'))" \
     && test ! -e /base-chroot/opt/custombuild-venv/bin/pip \
     && test ! -e /base-chroot/opt/custombuild-venv/bin/uv \
     && test ! -e /base-chroot/usr/bin/FreeCAD

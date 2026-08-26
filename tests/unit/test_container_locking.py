@@ -257,7 +257,11 @@ def test_python_runtimes_are_minimal_pinned_and_keep_python_313(dockerfile: str)
     assert "assert importlib.util.find_spec('pip') is None" in source
     assert "assert importlib.util.find_spec('uv') is None" in source
     assert "assert shutil.which('FreeCAD') is None" in source
-    assert "assert not pathlib.Path('/usr/local').exists()" in source
+    assert (
+        "assert not any(path.is_file() or path.is_symlink() for path in "
+        "pathlib.Path('/usr/local').rglob('*'))"
+        in source
+    )
     assert "PATH=/opt/custombuild-venv/bin:/usr/bin:/usr/sbin:/sbin:/bin" in source
 
 
