@@ -1003,6 +1003,72 @@ def test_supply_chain_gate_reports_floating_container_references(tmp_path: Path)
     assert any("unpinned base image" in issue for issue in issues)
 
 
+def _write_supply_chain_dockerfile_fixture(tmp_path: Path, source: str) -> None:
+    workflow = tmp_path / ".github/workflows/supply-chain.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("steps: []\n", encoding="utf-8")
+    for relative in (
+        "services/api/Dockerfile",
+        "services/worker/Dockerfile",
+        "apps/web/Dockerfile",
+    ):
+        dockerfile = tmp_path / relative
+        dockerfile.parent.mkdir(parents=True, exist_ok=True)
+        dockerfile.write_text(source, encoding="utf-8")
+
+
+def test_supply_chain_gate_accepts_only_reserved_scratch_as_an_unpinned_base(
+    tmp_path: Path,
+) -> None:
+    _write_supply_chain_dockerfile_fixture(tmp_path, "FROM scratch AS runtime\n")
+
+    issues = supply_chain_issues(tmp_path)
+
+    assert not any("uses an unpinned base image" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "image",
+    (
+        "scratch:latest",
+        "registry.example/scratch",
+        "scratch-runtime",
+        "Scratch",
+        "${RUNTIME_IMAGE}",
+    ),
+)
+def test_supply_chain_gate_rejects_deceptive_scratch_references(
+    tmp_path: Path,
+    image: str,
+) -> None:
+    _write_supply_chain_dockerfile_fixture(tmp_path, f"FROM {image} AS runtime\n")
+
+    issues = supply_chain_issues(tmp_path)
+
+    assert sum("uses an unpinned base image" in issue for issue in issues) == 3
+
+
+def test_supply_chain_gate_rejects_mutable_base_hidden_behind_scratch_alias(
+    tmp_path: Path,
+) -> None:
+    _write_supply_chain_dockerfile_fixture(
+        tmp_path,
+        "FROM example:latest AS scratch\nFROM scratch AS runtime\n",
+    )
+
+    issues = supply_chain_issues(tmp_path)
+
+    assert sum("uses an unpinned base image" in issue for issue in issues) == 3
+
+
+def test_supply_chain_gate_checks_case_insensitive_from_instructions(tmp_path: Path) -> None:
+    _write_supply_chain_dockerfile_fixture(tmp_path, "from example:latest AS runtime\n")
+
+    issues = supply_chain_issues(tmp_path)
+
+    assert sum("uses an unpinned base image" in issue for issue in issues) == 3
+
+
 def test_supply_chain_gate_reports_mutable_apt_indexes(tmp_path: Path) -> None:
     workflows = tmp_path / ".github/workflows"
     workflows.mkdir(parents=True)

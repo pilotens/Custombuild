@@ -1549,11 +1549,16 @@ def supply_chain_issues(repo: Path) -> list[str]:
         local_stages: set[str] = set()
         for line_number, line in enumerate(source.splitlines(), 1):
             tokens = line.strip().split()
-            if not tokens or tokens[0] != "FROM":
+            if not tokens or tokens[0].upper() != "FROM":
                 continue
             image_index = 2 if len(tokens) > 1 and tokens[1].startswith("--platform=") else 1
             image = tokens[image_index] if len(tokens) > image_index else ""
-            if image not in local_stages and "@sha256:" not in image:
+            reserved_scratch = image == "scratch" and image not in local_stages
+            if (
+                image not in local_stages
+                and not reserved_scratch
+                and "@sha256:" not in image
+            ):
                 issues.append(f"{relative}:{line_number} uses an unpinned base image")
             if "AS" in (token.upper() for token in tokens):
                 as_index = next(
