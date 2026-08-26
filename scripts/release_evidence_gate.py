@@ -90,7 +90,7 @@ REQUIRED_NATIVE_PACKAGES = {
             ("mesa-glx", "26.2.1-r0"),
         }
     ),
-    "web": frozenset({("nodejs-24-minimal", "24.19.0-r0")}),
+    "web": frozenset({("nodejs-24", "24.19.0-r0")}),
 }
 BUILT_IMAGE_NAMES = {
     "api": "custombuild-api",

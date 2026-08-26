@@ -69,15 +69,15 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
       libssl3=3.6.4-r0 \
       libuv=1.52.1-r1 \
       zlib=1.3.2-r4 \
-      nodejs-24-minimal=24.19.0-r0 \
+      nodejs-24=24.19.0-r0 \
     && ldconfig -r /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
     && test "$(wc -l < /tmp/runtime-package-closure)" = "19" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "c1dd3f34a4e609705a82320975cb9bbac035fd9969f592d52fe58158689d4b4c" \
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "f44e2ee8aacd1d2fbe9c51b2e354973ef3d1ef1b82a202be483c3bedab17879f" \
     && PATH=/usr/bin:/usr/sbin:/sbin:/bin \
       chroot /base-chroot /usr/bin/node -e \
-      "const fs = require('node:fs'); if (process.version !== 'v24.19.0') process.exit(1); for (const path of ['/usr/local/bin/node', '/usr/bin/npm', '/usr/bin/pnpm', '/usr/bin/corepack']) if (fs.existsSync(path)) process.exit(1)"
+      "const fs = require('node:fs'); require('node:inspector'); if (process.version !== 'v24.19.0') process.exit(1); for (const path of ['/usr/local/bin/node', '/usr/bin/npm', '/usr/bin/pnpm', '/usr/bin/corepack']) if (fs.existsSync(path)) process.exit(1)"
 
 
 FROM runtime-base AS runner

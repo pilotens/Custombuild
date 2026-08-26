@@ -52,7 +52,7 @@ def test_prod_ci_sboms_prove_native_interpreter_package_versions() -> None:
         "require_exact_package",
         "reject_package_prefix",
         "sbom-web.spdx.json",
-        "nodejs-24-minimal 24.19.0-r0",
+        "nodejs-24 24.19.0-r0",
         "nodejs-26",
         "sbom-${component}.spdx.json",
         "python-3.13 3.13.15-r2",

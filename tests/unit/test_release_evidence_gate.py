@@ -625,7 +625,7 @@ def test_final_gate_rejects_incomplete_or_tampered_sbom_set(
     (
         ("api", "python-3.13"),
         ("worker", "python-3.13"),
-        ("web", "nodejs-24-minimal"),
+        ("web", "nodejs-24"),
     ),
 )
 def test_final_gate_rejects_wrong_native_interpreter_version(

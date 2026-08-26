@@ -320,7 +320,7 @@ jobs:
               "$sbom" >/dev/null
           }
           require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" \
-            nodejs-24-minimal 24.19.0-r0
+            nodejs-24 24.19.0-r0
           reject_package_prefix "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" nodejs-26
           for component in api worker; do
             require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" \

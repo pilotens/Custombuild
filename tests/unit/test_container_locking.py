@@ -190,13 +190,14 @@ def test_all_external_container_images_are_digest_pinned() -> None:
         "libssl3=3.6.4-r0",
         "libuv=1.52.1-r1",
         "zlib=1.3.2-r4",
-        "nodejs-24-minimal=24.19.0-r0",
+        "nodejs-24=24.19.0-r0",
     ):
         assert package in web
     assert "COPY --from=base /usr/local/bin/node" not in web
     assert "COPY --link --from=runtime-assembler /base-chroot /" in web
     assert 'ENTRYPOINT ["/usr/bin/node"]' in web
     assert 'CMD ["/usr/bin/node", "-e"' in web
+    assert "require('node:inspector')" in web
     assert "process.version !== 'v24.19.0'" in web
     assert "apt-get" not in web
 
@@ -292,7 +293,7 @@ def test_python_runtime_build_probes_import_the_real_entrypoint_dependencies() -
         (
             "apps/web/Dockerfile",
             19,
-            "c1dd3f34a4e609705a82320975cb9bbac035fd9969f592d52fe58158689d4b4c",
+            "f44e2ee8aacd1d2fbe9c51b2e354973ef3d1ef1b82a202be483c3bedab17879f",
         ),
         (
             "services/api/Dockerfile",

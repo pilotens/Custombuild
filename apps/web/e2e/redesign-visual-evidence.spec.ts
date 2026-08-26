@@ -226,8 +226,10 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   await page.keyboard.press("ArrowRight");
   await expect.poll(() => controls.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
   await controls.evaluate((element) => {
-    element.scrollLeft = 0;
-    (element as HTMLElement).blur();
+    const controlsElement = element as HTMLElement;
+    controlsElement.blur();
+    controlsElement.style.scrollBehavior = "auto";
+    controlsElement.scrollLeft = 0;
   });
   await expect.poll(() => controls.evaluate((element) => element.scrollLeft)).toBe(0);
 

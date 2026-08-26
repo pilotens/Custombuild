@@ -765,6 +765,8 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
       }
       orbitRenderSamples.push(duration);
       rememberRendererCommit(committed);
+      // This is a serialized browser-automation deadline, not a rendering budget.
+      // The per-frame p95/max gates below remain the product-performance authority.
       if (committed.observed_at_ms - sequenceStartedAt > budget.sampling.frame_collection_timeout_ms) {
         const failureReason = (
           `Only ${index + 1}/${budget.sampling.warm_frame_count} OrbitControls commits arrived within `
