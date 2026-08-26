@@ -1985,10 +1985,11 @@ export function CustombuildWorkspace() {
                 <span>Välj del</span>
                 <select
                   aria-label="Välj möbeldel att inspektera"
+                  title="Klicka i modellen eller välj en del i listan"
                   value={effectiveSelectedPartId ?? ""}
                   onChange={(event) => changeSelectedPart(event.target.value || undefined)}
                 >
-                  <option value="">Klicka i modellen eller välj del…</option>
+                  <option value="">Välj del</option>
                   {design.parts.map((part) => <option key={part.part_id} value={part.part_id}>{part.name}</option>)}
                 </select>
               </label>
@@ -2042,7 +2043,7 @@ export function CustombuildWorkspace() {
                 />
               ) : null}
               <div className={`${styles.canvasStage} ${studioStyles.canvas}`}>
-                <div className={studioStyles.modelLabel}>
+                <div className={studioStyles.modelLabel} data-testid="current-design-label">
                   <strong>Aktuell konstruktion</strong>
                   <small>{spec.width_mm} × {spec.height_mm} × {Math.max(spec.depth_mm, spec.base_cabinet_depth_mm)} mm</small>
                 </div>

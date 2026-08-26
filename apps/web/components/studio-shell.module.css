@@ -233,5 +233,17 @@
     border: 0;
     border-radius: 0;
   }
-  .modelLabel { top: 10px; left: 10px; }
+  .modelLabel {
+    /* The X/Y/Z chips and status strip already identify the current mobile
+       model. Keep the redundant desktop badge from covering the geometry. */
+    display: none;
+  }
+
+  /* The server banner occupies the first canvas row in check/build modes.
+     Move both dimension metadata rows below it instead of hiding either one
+     behind the warning. */
+  .modelStage:has(> :global(.offline-banner)) :global(.canvas-dimensions) {
+    top: 56px;
+  }
+
 }

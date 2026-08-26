@@ -262,6 +262,42 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   expect(healthBox.x + healthBox.width).toBeLessThanOrEqual(toolbarBox.x + toolbarBox.width);
 }
 
+async function verifyMobileViewerOverlayLayout(page: Page): Promise<void> {
+  if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 760) return;
+
+  const modelLabel = page.getByTestId("current-design-label");
+  const dimensions = page.getByLabel("Aktuella yttermått");
+  await expect(modelLabel).toBeHidden();
+  const dimensionsBox = await dimensions.boundingBox();
+  expect(dimensionsBox).not.toBeNull();
+  if (!dimensionsBox) throw new Error("The mobile model dimensions have no visible layout box.");
+
+  const serverBanner = page.locator(".offline-banner:visible");
+  if (await serverBanner.count()) {
+    const serverBannerBox = await serverBanner.first().boundingBox();
+    expect(serverBannerBox).not.toBeNull();
+    if (!serverBannerBox) throw new Error("The mobile server banner has no visible layout box.");
+    expect(dimensionsBox.y).toBeGreaterThanOrEqual(serverBannerBox.y + serverBannerBox.height + 4);
+  }
+
+  const partSelector = page.getByLabel("Välj möbeldel att inspektera");
+  const placeholderFit = await partSelector.evaluate((element) => {
+    if (!(element instanceof HTMLSelectElement)) throw new Error("The part selector is not a select element.");
+    const style = getComputedStyle(element);
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("2d");
+    if (!context) throw new Error("Could not measure the part-selector placeholder.");
+    context.font = style.font || `${style.fontSize} ${style.fontFamily}`;
+    const text = element.selectedOptions[0]?.text ?? "";
+    const availableWidth = element.clientWidth
+      - Number.parseFloat(style.paddingLeft)
+      - Number.parseFloat(style.paddingRight);
+    return { availableWidth, text, textWidth: context.measureText(text).width };
+  });
+  expect(placeholderFit.text).toBe("Välj del");
+  expect(placeholderFit.textWidth).toBeLessThanOrEqual(placeholderFit.availableWidth);
+}
+
 async function verifyMobileComponentPalette(page: Page): Promise<void> {
   if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 760) return;
 
@@ -343,6 +379,7 @@ for (const visualCase of visualCases) {
       await verifyMobileComponentPalette(page);
       await settleViewport(page, visualCase.viewport.width, true);
       await verifyPersistentVisibleModel(page);
+      await verifyMobileViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`studio-${visualCase.name}.png`, screenshotOptions);
 
       await modes.getByRole("button", { name: /Kontroll/ }).click();
@@ -352,6 +389,7 @@ for (const visualCase of visualCases) {
       })).toBeVisible();
       await settleViewport(page, visualCase.viewport.width, true);
       await verifyPersistentVisibleModel(page);
+      await verifyMobileViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`kontroll-${visualCase.name}.png`, screenshotOptions);
 
       await modes.getByRole("button", { name: /Underlag/ }).click();
@@ -360,6 +398,7 @@ for (const visualCase of visualCases) {
       await expect(page.getByLabel("Underlagets innehåll")).toBeVisible();
       await settleViewport(page, visualCase.viewport.width, true);
       await verifyPersistentVisibleModel(page);
+      await verifyMobileViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions);
     });
   });

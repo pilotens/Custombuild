@@ -49,6 +49,7 @@ interface Distribution {
 }
 
 interface BrowserProbe {
+  action_start_observations_ms: Record<string, number>;
   navigation_started_at_ms: number;
   webgl_context_losses: number;
   long_tasks_ms: number[];
@@ -93,6 +94,8 @@ interface MeasuredAction<T> {
   duration_ms: number;
 }
 
+type MeasuredControlEvent = "click" | "input";
+
 interface OrbitDragStart {
   inward_x: -1 | 1;
   inward_y: -1 | 1;
@@ -103,6 +106,7 @@ interface OrbitDragStart {
 const DRAFT_KEY = "custombuild:workspace:v3:anonymous:project:local-draft:draft";
 const CANVAS_IDENTITY = "b1-full-ceiling-webgl-canvas";
 const DIAGNOSTIC_ACTION_TIMEOUT_MS = 15_000;
+let actionMeasurementSequence = 0;
 
 function record(value: unknown, path: string): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -278,6 +282,7 @@ async function installFullCeilingDraft(page: Page): Promise<void> {
     window.localStorage.setItem(draftKey, JSON.stringify(snapshot));
 
     const probe: BrowserProbe = {
+      action_start_observations_ms: {},
       navigation_started_at_ms: performance.now(),
       webgl_context_losses: 0,
       long_tasks_ms: [],
@@ -376,11 +381,13 @@ async function waitForObservedRendererCommit(
   afterRevision: number,
   startedAtMs: number,
   expectedModelRoot: string,
+  interaction = "visual interaction",
 ): Promise<RendererCommitProbe> {
   const observation = async () => canvas.evaluate((element, {
     after,
     canvasIdentity,
     expectedRoot,
+    interactionName,
     startedAt,
   }) => {
     const probe = (window as typeof window & { __custombuildFullCeilingProbe?: BrowserProbe })
@@ -391,10 +398,10 @@ async function waitForObservedRendererCommit(
     ) ?? null;
     if (!committed) return null;
     if (committed.canvas_identity !== canvasIdentity) {
-      throw new Error("The WebGL canvas was replaced during the OrbitControls drag.");
+      throw new Error(`The WebGL canvas was replaced during the ${interactionName}.`);
     }
     if (committed.model_root !== expectedRoot) {
-      throw new Error("The stable model-root identity changed during the OrbitControls drag.");
+      throw new Error(`The stable model-root identity changed during the ${interactionName}.`);
     }
     const currentRoot = element.getAttribute("data-custombuild-model-root");
     const rawCurrentCommit = element.getAttribute("data-custombuild-render-commit");
@@ -410,6 +417,7 @@ async function waitForObservedRendererCommit(
     after: afterRevision,
     canvasIdentity: CANVAS_IDENTITY,
     expectedRoot: expectedModelRoot,
+    interactionName: interaction,
     startedAt: startedAtMs,
   });
   const observed: { committed: RendererCommitProbe | null } = { committed: null };
@@ -418,12 +426,45 @@ async function waitForObservedRendererCommit(
     return observed.committed?.render_commit ?? 0;
   }, {
     intervals: [16, 32, 64, 100],
-    message: `OrbitControls must commit a renderer revision after ${afterRevision}.`,
+    message: `${interaction} must commit a renderer revision after ${afterRevision}.`,
     timeout: DIAGNOSTIC_ACTION_TIMEOUT_MS,
   }).toBeGreaterThan(afterRevision);
   const committed = observed.committed;
   if (!committed) throw new Error("The timestamped renderer commit disappeared after observation.");
   return committed;
+}
+
+async function armBrowserActionStart(
+  target: Locator,
+  eventType: MeasuredControlEvent,
+): Promise<string> {
+  actionMeasurementSequence += 1;
+  const observationId = `interaction-${actionMeasurementSequence}`;
+  await target.evaluate((element, { event, id }) => {
+    const probe = (window as typeof window & { __custombuildFullCeilingProbe?: BrowserProbe })
+      .__custombuildFullCeilingProbe;
+    if (!probe) throw new Error("The full-ceiling browser probe was not installed.");
+    delete probe.action_start_observations_ms[id];
+    element.addEventListener(event, () => {
+      probe.action_start_observations_ms[id] = performance.now();
+    }, { capture: true, once: true });
+  }, { event: eventType, id: observationId });
+  return observationId;
+}
+
+async function takeBrowserActionStart(page: Page, observationId: string): Promise<number> {
+  const startedAtMs = await page.evaluate((id) => {
+    const probe = (window as typeof window & { __custombuildFullCeilingProbe?: BrowserProbe })
+      .__custombuildFullCeilingProbe;
+    if (!probe) throw new Error("The full-ceiling browser probe was not installed.");
+    const observed = probe.action_start_observations_ms[id];
+    delete probe.action_start_observations_ms[id];
+    return observed ?? null;
+  }, observationId);
+  if (startedAtMs === null) {
+    throw new Error(`The browser did not observe the measured control event (${observationId}).`);
+  }
+  return startedAtMs;
 }
 
 async function orbitDragStart(canvas: Locator): Promise<OrbitDragStart> {
@@ -442,19 +483,27 @@ async function orbitDragStart(canvas: Locator): Promise<OrbitDragStart> {
   });
 }
 
-async function measureAction<T>(
+async function measureAction<T extends { observed_at_ms: number }>(
   page: Page,
+  trigger: { event: MeasuredControlEvent; target: Locator },
   action: () => Promise<unknown>,
-  committed: () => Promise<T>,
+  committed: (startedAtMs: number) => Promise<T>,
 ): Promise<MeasuredAction<T>> {
   await waitForFrames(page, 2);
-  const startedAt = await page.evaluate(() => performance.now());
+  const observationId = await armBrowserActionStart(trigger.target, trigger.event);
   await action();
-  const committedValue = await committed();
+  const startedAt = await takeBrowserActionStart(page, observationId);
+  const committedValue = await committed(startedAt);
+  const durationMs = committedValue.observed_at_ms - startedAt;
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    throw new Error("The browser action produced an invalid renderer-commit duration.");
+  }
+  // Keep samples separated by two rendered frames without charging unrelated
+  // post-commit runner or animation-frame scheduling to the product latency.
   await waitForFrames(page, 2);
   return {
     committed: committedValue,
-    duration_ms: await page.evaluate((started) => performance.now() - started, startedAt),
+    duration_ms: durationMs,
   };
 }
 
@@ -787,6 +836,7 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
           fixture: budget.fixture,
           measurements: {
             clock: "window.performance.now",
+            interaction_measurement: "browser_control_event_capture_to_observed_post_render_commit",
             warm_frame_measurement: "orbit_controls_pointer_move_to_observed_post-render_commit",
             cold_webgl_ready_ms: Number(coldWebGlReadyMs.toFixed(2)),
             expected_orbit_samples: budget.sampling.warm_frame_count,
@@ -835,6 +885,7 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
       fixture: budget.fixture,
       measurements: {
         clock: "window.performance.now",
+        interaction_measurement: "browser_control_event_capture_to_observed_post_render_commit",
         warm_frame_measurement: "orbit_controls_pointer_move_to_observed_post-render_commit",
         cold_webgl_ready_ms: Number(coldWebGlReadyMs.toFixed(2)),
         warm_frame_interval: frameIntervals,
@@ -867,10 +918,17 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
         const revision = latestRendererCommit!.render_commit;
         return measureAction(
           page,
+          { event: "input", target: partPicker },
           () => partPicker.selectOption("side-left", { timeout: DIAGNOSTIC_ACTION_TIMEOUT_MS }),
-          async () => {
+          async (startedAtMs) => {
             await expect(partEditor).toBeVisible();
-            return waitForRendererCommit(canvas, revision, rendererCommits[0]!.model_root);
+            return waitForObservedRendererCommit(
+              canvas,
+              revision,
+              startedAtMs,
+              rendererCommits[0]!.model_root,
+              "part-selection interaction",
+            );
           },
         );
       },
@@ -897,10 +955,17 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
         const revision = latestRendererCommit!.render_commit;
         return measureAction(
           page,
+          { event: "click", target },
           () => target.click({ timeout: DIAGNOSTIC_ACTION_TIMEOUT_MS }),
-          async () => {
+          async (startedAtMs) => {
             await expect(target).toHaveAttribute("aria-pressed", "true");
-            return waitForRendererCommit(canvas, revision, rendererCommits[0]!.model_root);
+            return waitForObservedRendererCommit(
+              canvas,
+              revision,
+              startedAtMs,
+              rendererCommits[0]!.model_root,
+              "view-switch interaction",
+            );
           },
         );
       },
@@ -930,10 +995,17 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
         const revision = latestRendererCommit!.render_commit;
         return measureAction(
           page,
+          { event: "click", target: transparent },
           () => transparent.click({ timeout: DIAGNOSTIC_ACTION_TIMEOUT_MS }),
-          async () => {
+          async (startedAtMs) => {
             await expect(transparent).toHaveAttribute("aria-pressed", expected);
-            return waitForRendererCommit(canvas, revision, rendererCommits[0]!.model_root);
+            return waitForObservedRendererCommit(
+              canvas,
+              revision,
+              startedAtMs,
+              rendererCommits[0]!.model_root,
+              "transparency-toggle interaction",
+            );
           },
         );
       },
@@ -1023,6 +1095,7 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
     },
     measurements: {
       clock: "window.performance.now",
+      interaction_measurement: "browser_control_event_capture_to_observed_post_render_commit",
       warm_frame_measurement: "orbit_controls_pointer_move_to_observed_post-render_commit",
       cold_webgl_ready_ms: Number(coldWebGlReadyMs.toFixed(2)),
       warm_frame_interval: frameIntervals,
