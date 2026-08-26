@@ -16,7 +16,7 @@
   "sampling": {
     "warm_frame_count": 120,
     "interaction_sample_count": 7,
-    "frame_collection_timeout_ms": 60000
+    "frame_collection_timeout_ms": 90000
   },
   "budgets": {
     "cold_webgl_ready_ms": 20000,

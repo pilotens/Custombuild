@@ -42,7 +42,17 @@ async function expectPanelsDoNotOverlap(page: Page): Promise<void> {
   if (!viewer || !rail) return;
   const overlapWidth = Math.min(viewer.x + viewer.width, rail.x + rail.width) - Math.max(viewer.x, rail.x);
   const overlapHeight = Math.min(viewer.y + viewer.height, rail.y + rail.height) - Math.max(viewer.y, rail.y);
-  expect(overlapWidth > 1 && overlapHeight > 1).toBe(false);
+  if (page.viewportSize()?.width && page.viewportSize()!.width <= 920) {
+    // The small-screen Studio intentionally presents the inspector as a
+    // bottom-sheet surface over the lower edge of the model. Keep the live
+    // assertion aligned with the deterministic responsive contract: the
+    // sheet must stay inside the model width and below its upper half.
+    expect(rail.y).toBeGreaterThan(viewer.y + viewer.height * 0.45);
+    expect(rail.x).toBeGreaterThanOrEqual(viewer.x - 1);
+    expect(rail.x + rail.width).toBeLessThanOrEqual(viewer.x + viewer.width + 1);
+  } else {
+    expect(overlapWidth > 1 && overlapHeight > 1).toBe(false);
+  }
 }
 
 async function waitForTwoAnimationFrames(page: Page): Promise<void> {

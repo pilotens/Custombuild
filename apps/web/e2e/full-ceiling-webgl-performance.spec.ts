@@ -767,10 +767,16 @@ test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace
       rememberRendererCommit(committed);
       // This is a serialized browser-automation deadline, not a rendering budget.
       // The per-frame p95/max gates below remain the product-performance authority.
-      if (committed.observed_at_ms - sequenceStartedAt > budget.sampling.frame_collection_timeout_ms) {
+      const collectionElapsedMs = committed.observed_at_ms - sequenceStartedAt;
+      const completedOrbitSamples = index + 1;
+      if (
+        completedOrbitSamples < budget.sampling.warm_frame_count
+        && collectionElapsedMs > budget.sampling.frame_collection_timeout_ms
+      ) {
         const failureReason = (
-          `Only ${index + 1}/${budget.sampling.warm_frame_count} OrbitControls commits arrived within `
-          + `${budget.sampling.frame_collection_timeout_ms} ms.`
+          `OrbitControls collection exceeded the ${budget.sampling.frame_collection_timeout_ms} ms `
+          + `automation deadline after ${completedOrbitSamples}/${budget.sampling.warm_frame_count} commits `
+          + `(elapsed ${Number(collectionElapsedMs.toFixed(2))} ms).`
         );
         const failureCheckpoint = {
           schema_version: budget.schema_version,

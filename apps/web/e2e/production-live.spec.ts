@@ -29,8 +29,8 @@ const SERVER_WARNING_PATHS = [
 const REVIEW_WARNING_PATHS = SERVER_WARNING_PATHS;
 
 const STOCKLESS_BLOCK_PATHS = [
-  { ruleId: "DFM-MACHINE-001", title: "Maskinens arbetsområde" },
-  { ruleId: "DFM-STOCK-001", title: "Delar ryms i råmaterial" },
+  { ruleId: "DFM-MACHINE-001", ruleVersion: "1.0.0", title: "Maskinens arbetsområde" },
+  { ruleId: "DFM-STOCK-001", ruleVersion: "1.0.0", title: "Delar ryms i råmaterial" },
 ] as const;
 
 const STOCKLESS_FORBIDDEN_ARTIFACT_KIND = /(?:stock|nest|placement|label_index|measurement_plan|operation|tool|setup|backplot|machine|ngc)/i;
@@ -201,10 +201,15 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   const stocklessBlocks = validationPanel.locator(".validation-card.validation-block");
   await expect(stocklessBlocks).toHaveCount(STOCKLESS_BLOCK_PATHS.length);
   for (const blocker of STOCKLESS_BLOCK_PATHS) {
-    const card = stocklessBlocks.filter({ hasText: `Regel ${blocker.ruleId} · version 1.0.0` });
+    const card = stocklessBlocks.filter({
+      hasText: `Regel ${blocker.ruleId} · version ${blocker.ruleVersion}`,
+    });
     await expect(card).toHaveCount(1);
     await expect(card.getByText(blocker.title, { exact: true })).toBeVisible();
-    await expect(card).toContainText("Lagerobundet granskningspaket");
+    await expect(card.getByRole("button", {
+      name: `Åtgärda problem för ${blocker.title}: öppna Lagerobundet granskningspaket`,
+      exact: true,
+    })).toBeVisible();
   }
   const reviewWarnings = validationPanel.locator(".validation-card.validation-warning");
   await expect(reviewWarnings).toHaveCount(REVIEW_WARNING_PATHS.length);

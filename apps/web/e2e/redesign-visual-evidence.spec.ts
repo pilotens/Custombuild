@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import { openPlanning, startWithEmptyPlanningStorage } from "./planning-helpers";
 
 test.skip(
@@ -62,6 +62,25 @@ async function settleViewport(page: Page, width: number, withModel = false): Pro
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   }));
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+}
+
+async function waitForHorizontalScrollToSettle(scroller: Locator): Promise<void> {
+  await scroller.evaluate((element) => new Promise<void>((resolve) => {
+    let settleTimer = 0;
+
+    function finish() {
+      element.removeEventListener("scroll", scheduleFinish);
+      resolve();
+    }
+
+    function scheduleFinish() {
+      window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(finish, 150);
+    }
+
+    element.addEventListener("scroll", scheduleFinish, { passive: true });
+    scheduleFinish();
+  }));
 }
 
 async function projectedModelMetrics(page: Page): Promise<ProjectedModelMetrics> {
@@ -225,6 +244,7 @@ async function verifyMobileViewerToolbar(page: Page): Promise<void> {
   await controls.focus();
   await page.keyboard.press("ArrowRight");
   await expect.poll(() => controls.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+  await waitForHorizontalScrollToSettle(controls);
   await controls.evaluate((element) => {
     const controlsElement = element as HTMLElement;
     controlsElement.blur();
