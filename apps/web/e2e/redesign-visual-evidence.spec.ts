@@ -724,6 +724,36 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
     expect(fallbackBox.y).toBeGreaterThanOrEqual(viewerBox.y);
     expect(fallbackBox.y + fallbackBox.height).toBeLessThanOrEqual(viewerBox.y + viewerBox.height);
   }
+
+  const contextRail = page.locator("aside.right-rail.configurator-rail");
+  const statusStrip = viewerPanel.locator(".viewer-status-strip");
+  const workspace = page.locator(".workspace-grid.configurator-workspace");
+  const contextRailBox = await contextRail.boundingBox();
+  const statusStripBox = await statusStrip.boundingBox();
+  expect(contextRailBox).not.toBeNull();
+  expect(statusStripBox).not.toBeNull();
+  if (!viewerPanelBox || !contextRailBox || !statusStripBox) {
+    throw new Error("The mobile Studio viewer, status strip, or context rail lost its layout box.");
+  }
+  const rowGap = await workspace.evaluate((element) => Number.parseFloat(getComputedStyle(element).rowGap) || 0);
+  expect(contextRailBox.y).toBeGreaterThanOrEqual(
+    viewerPanelBox.y + viewerPanelBox.height + Math.max(0, rowGap - 1),
+  );
+  expect(statusStripBox.y).toBeGreaterThanOrEqual(viewerPanelBox.y);
+  expect(statusStripBox.y + statusStripBox.height).toBeLessThanOrEqual(
+    viewerPanelBox.y + viewerPanelBox.height,
+  );
+  const statusStripIsExposed = await statusStrip.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const sampleY = Math.min(bounds.bottom - 1, window.innerHeight - 1);
+    if (sampleY < bounds.top) return false;
+    const topmost = document.elementFromPoint(
+      bounds.left + bounds.width / 2,
+      sampleY,
+    );
+    return topmost !== null && (topmost === element || element.contains(topmost));
+  });
+  expect(statusStripIsExposed).toBe(true);
 }
 
 test("renderer settling requires a new commit on the same canvas", async ({ page }) => {
