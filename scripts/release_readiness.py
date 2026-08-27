@@ -1654,12 +1654,15 @@ def supply_chain_issues(repo: Path) -> list[str]:
 
 
 def promotion_contract_issues(repo: Path) -> list[str]:
-    """Verify the repository-owned, non-privileged promotion boundary."""
+    """Verify the repository-owned build-once promotion boundary."""
 
     issues = registry_overlay_issues(repo / "compose.registry.yml")
     descriptor = repo / "scripts/deploy_descriptor.py"
     if not descriptor.is_file():
         issues.append("scripts/deploy_descriptor.py is missing")
+    workflow = repo / ".github/workflows/cd.yml"
+    if not workflow.is_file():
+        issues.append(".github/workflows/cd.yml is missing")
     return issues
 
 
@@ -1836,6 +1839,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "docs/PRODUCTION_SAFETY.md",
         "docs/SECURITY.md",
         ".github/workflows/supply-chain.yml",
+        ".github/workflows/cd.yml",
         "scripts/compose_backup.py",
         "scripts/backup_freshness.py",
         "scripts/check_external_production.py",

@@ -1,0 +1,969 @@
+name: Build-once release evidence
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-main-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  quality-evidence:
+    if: >-
+      github.repository == 'pilotens/Custombuild' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+        env:
+          POSTGRES_DB: custombuild
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d custombuild"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
+      RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
+      WORKER_RLS_DATABASE_URL: postgresql+psycopg://custombuild_worker:strong-worker-database-test-password@localhost:5432/custombuild
+      TENANT_GRAPH_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
+      UV_CACHE_DIR: /tmp/custombuild-cd-quality-uv-cache
+      RELEASE_EVIDENCE_DIR: artifacts/release-evidence
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          enable-cache: true
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install exact release dependencies
+        run: |
+          uv sync --locked --group dev --group cad
+          pnpm install --frozen-lockfile
+      - name: Create least-privilege database roles
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h localhost -U postgres -d custombuild -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE ROLE custombuild_migrator LOGIN PASSWORD 'strong-migrator-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          CREATE ROLE custombuild_api LOGIN PASSWORD 'strong-api-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          CREATE ROLE custombuild_worker LOGIN PASSWORD 'strong-worker-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker;
+          GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
+          SQL
+      - name: Migrate and check the release schema
+        env:
+          DATABASE_URL: ${{ env.MIGRATION_DATABASE_URL }}
+          PYTHONPATH: services/api
+        run: |
+          uv run alembic -c services/api/alembic.ini upgrade head
+          uv run alembic -c services/api/alembic.ini check
+      - name: Full same-SHA quality gate
+        run: make check
+      - name: Freeze static release controls
+        run: >-
+          uv run python scripts/release_readiness.py --require-clean
+          --output "$RELEASE_EVIDENCE_DIR/static-release-readiness.json"
+      - name: Install the same-SHA browser matrix
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
+      - name: Same-SHA WCAG 2.2 AA production-build acceptance
+        env:
+          PLAYWRIGHT_REAL_API: "0"
+          PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-wcag
+        run: pnpm --dir apps/web test:e2e:a11y -- --output=wcag-test-results
+      - name: Same-SHA Chromium Firefox and WebKit acceptance
+        env:
+          PLAYWRIGHT_REAL_API: "0"
+          PLAYWRIGHT_ENVIRONMENT: prod
+        run: pnpm --dir apps/web test:e2e
+      - name: Upload SHA-bound static controls
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-static-controls-${{ github.sha }}
+          path: artifacts/release-evidence/static-release-readiness.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload SHA-bound browser and WCAG evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-browser-wcag-${{ github.sha }}
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+            apps/web/playwright-report-wcag
+            apps/web/wcag-test-results
+          if-no-files-found: error
+          retention-days: 30
+
+  build-images:
+    if: >-
+      github.repository == 'pilotens/Custombuild' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            dockerfile: services/api/Dockerfile
+            lock_argument: DEPENDENCY_LOCK_SHA256
+            lock_file: uv.lock
+          - component: worker
+            dockerfile: services/worker/Dockerfile
+            lock_argument: DEPENDENCY_LOCK_SHA256
+            lock_file: uv.lock
+          - component: web
+            dockerfile: apps/web/Dockerfile
+            lock_argument: FRONTEND_LOCK_SHA256
+            lock_file: pnpm-lock.yaml
+          - component: seaweedfs
+            dockerfile: infra/seaweedfs/Dockerfile
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Freeze image build identity
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release-images
+          source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
+          build_date="$(git show -s --format=%cI "${GITHUB_SHA}")"
+          {
+            echo "BUILD_DATE=${build_date}"
+            echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
+          } >> "$GITHUB_ENV"
+          {
+            echo "build_args<<CUSTOMBUILD_BUILD_ARGS"
+            if [ '${{ matrix.component }}' != seaweedfs ]; then
+              lock_sha256="$(sha256sum '${{ matrix.lock_file }}' | awk '{print $1}')"
+              echo "APP_VERSION=0.1.0+${GITHUB_SHA}"
+              echo "VCS_REF=${GITHUB_SHA}"
+              echo "BUILD_DATE=${build_date}"
+              echo "SOURCE_URL=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+              echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
+              echo '${{ matrix.lock_argument }}'="${lock_sha256}"
+            fi
+            echo "CUSTOMBUILD_BUILD_ARGS"
+          } >> "$GITHUB_OUTPUT"
+          python3 scripts/source_manifest.py \
+            --repo . \
+            --expect-sha256 "$source_manifest_sha256"
+      - name: Build candidate exactly once
+        uses: docker/build-push-action@d08e5c354a6adb9ed34480a06d141179aa583294 # v7.0.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: custombuild-${{ matrix.component }}:${{ github.sha }}
+          build-args: ${{ steps.identity.outputs.build_args }}
+      - name: Verify source-bound image identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="custombuild-${{ matrix.component }}:${GITHUB_SHA}"
+          if [ "${{ matrix.component }}" = "seaweedfs" ]; then
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "4.41"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "https://github.com/seaweedfs/seaweedfs"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.upstream-source.sha256" }}')" = "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
+          else
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.source-manifest.sha256" }}')" = "$SOURCE_MANIFEST_SHA256"
+          fi
+      - name: Generate exact image SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: custombuild-${{ matrix.component }}:${{ github.sha }}
+          format: spdx-json
+          output-file: artifacts/release-images/sbom-${{ matrix.component }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Block all image High and Critical vulnerabilities
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
+        with:
+          image: custombuild-${{ matrix.component }}:${{ github.sha }}
+          grype-version: v0.110.0
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-images/scan-${{ matrix.component }}.json
+      - name: Save the exact tested image object
+        shell: bash
+        run: |
+          set -euo pipefail
+          component='${{ matrix.component }}'
+          image="custombuild-${component}:${GITHUB_SHA}"
+          archive="artifacts/release-images/image-${component}.tar"
+          docker image save --output "$archive" "$image"
+          (
+            cd artifacts/release-images
+            sha256sum "image-${component}.tar" > "image-${component}.tar.sha256"
+          )
+          jq -n \
+            --arg schema_version custombuild.release-image-archive.v2 \
+            --arg component "$component" \
+            --arg git_revision "$GITHUB_SHA" \
+            --arg source_manifest_sha256 "$SOURCE_MANIFEST_SHA256" \
+            --arg image_reference "$image" \
+            --arg image_config_digest "$(docker image inspect "$image" --format '{{.Id}}')" \
+            --arg local_scan_manifest_digest "$(jq -er '.source.target.manifestDigest' "artifacts/release-images/scan-${component}.json")" \
+            --arg archive_sha256 "$(sha256sum "$archive" | awk '{print $1}')" \
+            '{schema_version:$schema_version,component:$component,git_revision:$git_revision,source_manifest_sha256:$source_manifest_sha256,image_reference:$image_reference,image_config_digest:$image_config_digest,local_scan_manifest_digest:$local_scan_manifest_digest,archive_sha256:$archive_sha256}' \
+            > "artifacts/release-images/image-${component}.json"
+      - name: Upload the build-once image archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-image-${{ matrix.component }}-${{ github.sha }}
+          path: |
+            artifacts/release-images/image-${{ matrix.component }}.tar
+            artifacts/release-images/image-${{ matrix.component }}.tar.sha256
+            artifacts/release-images/image-${{ matrix.component }}.json
+            artifacts/release-images/sbom-${{ matrix.component }}.spdx.json
+            artifacts/release-images/scan-${{ matrix.component }}.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  test-release-bundle:
+    needs: [quality-evidence, build-images]
+    if: >-
+      github.repository == 'pilotens/Custombuild' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    env:
+      COMPOSE_PROJECT_NAME: custombuild-cd-acceptance
+      RELEASE_EVIDENCE_DIR: artifacts/release-evidence
+      UV_CACHE_DIR: /tmp/custombuild-cd-runtime-uv-cache
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          enable-cache: true
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24.19.0
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Download the exact build-once image archives
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: release-image-*-${{ github.sha }}
+          path: artifacts/release-images
+          merge-multiple: true
+      - name: Download SHA-bound static controls
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-static-controls-${{ github.sha }}
+          path: artifacts/release-evidence
+      - name: Verify and load the exact archived images
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find artifacts/release-images -maxdepth 1 -type f | wc -l)" -eq 20
+          source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
+          for component in api worker web seaweedfs; do
+            archive="artifacts/release-images/image-${component}.tar"
+            metadata="artifacts/release-images/image-${component}.json"
+            test -f "$archive"
+            test -f "${archive}.sha256"
+            test -f "$metadata"
+            test -f "artifacts/release-images/sbom-${component}.spdx.json"
+            test -f "artifacts/release-images/scan-${component}.json"
+            (cd artifacts/release-images && sha256sum --check "image-${component}.tar.sha256")
+            jq --exit-status \
+              'keys == ["archive_sha256","component","git_revision","image_config_digest","image_reference","local_scan_manifest_digest","schema_version","source_manifest_sha256"]' \
+              "$metadata" > /dev/null
+            test "$(jq -er '.schema_version' "$metadata")" = custombuild.release-image-archive.v2
+            test "$(jq -er '.component' "$metadata")" = "$component"
+            test "$(jq -er '.git_revision' "$metadata")" = "$GITHUB_SHA"
+            test "$(jq -er '.source_manifest_sha256' "$metadata")" = "$source_manifest_sha256"
+            test "$(jq -er '.archive_sha256' "$metadata")" = "$(sha256sum "$archive" | awk '{print $1}')"
+            docker image load --input "$archive"
+            image="custombuild-${component}:${GITHUB_SHA}"
+            test "$(jq -er '.image_reference' "$metadata")" = "$image"
+            test "$(jq -er '.image_config_digest' "$metadata")" = "$(docker image inspect "$image" --format '{{.Id}}')"
+            test "$(jq -er '.local_scan_manifest_digest' "$metadata")" = "$(jq -er '.source.target.manifestDigest' "artifacts/release-images/scan-${component}.json")"
+          done
+          {
+            echo "VCS_REF=${GITHUB_SHA}"
+            echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
+          } >> "$GITHUB_ENV"
+      - name: Install live-acceptance dependencies
+        run: |
+          uv sync --locked
+          pnpm install --frozen-lockfile
+          pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Recheck source freeze before runtime acceptance
+        run: >-
+          python3 scripts/source_manifest.py --repo .
+          --expect-sha256 "$SOURCE_MANIFEST_SHA256"
+      - name: Start only the archived image objects
+        run: >-
+          docker compose --file compose.yml up --no-build --detach
+          --wait --wait-timeout 900
+      - name: Verify exact native runtimes and excluded tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.19.0"
+          docker compose --file compose.yml exec -T web /usr/bin/node -e \
+            "if (process.execPath !== '/usr/bin/node' || process.getuid() !== 65532) throw new Error(process.execPath + ':' + process.getuid())"
+          docker compose --file compose.yml exec -T api /opt/custombuild-venv/bin/python - <<'PY'
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+
+          import uvicorn
+          from app.main import app
+
+          assert sys.version_info[:3] == (3, 13, 15), sys.version
+          assert os.getuid() == 65532, os.getuid()
+          assert Path(sys.executable).resolve() == Path("/usr/bin/python3.13").resolve()
+          assert callable(app)
+          assert uvicorn.__version__
+          for executable in ("pip", "pip3", "pip3.13", "uv", "uvx"):
+              assert shutil.which(executable) is None, executable
+          PY
+          docker compose --file compose.yml exec -T worker /opt/custombuild-venv/bin/python - <<'PY'
+          import importlib.util
+          import os
+          import shutil
+          import sys
+          from pathlib import Path
+
+          import OCP
+          import cadquery as cq
+          import vtkmodules.vtkCommonCore
+          from custombuild_worker.tasks import celery_app
+
+          assert sys.version_info[:3] == (3, 13, 15), sys.version
+          assert os.getuid() == 65532, os.getuid()
+          assert Path(sys.executable).resolve() == Path("/usr/bin/python3.13").resolve()
+          assert celery_app is not None
+          assert cq.Workplane("XY").box(10, 20, 30).val().Volume() > 0
+          assert importlib.util.find_spec("FreeCAD") is None
+          for executable in ("pip", "pip3", "pip3.13", "uv", "uvx", "FreeCAD", "FreeCADCmd", "freecad", "freecadcmd"):
+              assert shutil.which(executable) is None, executable
+          PY
+      - name: Same-SHA live design-review and blocked CAM/release acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/live_acceptance.py \
+            --base-url http://127.0.0.1:8000 \
+            --run-id "cd-${{ github.run_id }}-${{ github.run_attempt }}" \
+            --readiness-timeout 180 \
+            --job-timeout 900 \
+            | tee "$RELEASE_EVIDENCE_DIR/live-acceptance.jsonl"
+      - name: Same-SHA browser acceptance against exact images
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+          PLAYWRIGHT_API_URL: http://127.0.0.1:8000
+          PLAYWRIGHT_ENVIRONMENT: prod
+          PLAYWRIGHT_REAL_API: "1"
+          PLAYWRIGHT_RUN_ID: cd-${{ github.run_id }}-${{ github.run_attempt }}
+        run: pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+      - name: Create and verify coordinated backup
+        run: >-
+          uv run python scripts/compose_backup.py --compose compose.yml
+          --output "$RELEASE_EVIDENCE_DIR/backup"
+      - name: Restore backup and prove roles RLS and S3 integrity
+        run: >-
+          uv run python scripts/restore_drill.py
+          --backup "$RELEASE_EVIDENCE_DIR/backup"
+          --output "$RELEASE_EVIDENCE_DIR/restore-evidence.json"
+      - name: Generate reviewed PostgreSQL runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: registry:cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+          format: spdx-json
+          output-file: artifacts/release-images/sbom-postgres.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate reviewed Redis runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: registry:redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+          format: spdx-json
+          output-file: artifacts/release-images/sbom-redis.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Generate reviewed volume-init runtime SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          image: registry:cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+          format: spdx-json
+          output-file: artifacts/release-images/sbom-volume-init.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Scan reviewed PostgreSQL runtime
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
+        with:
+          image: registry:cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+          grype-version: v0.110.0
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-images/scan-postgres.json
+      - name: Scan reviewed Redis runtime
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
+        with:
+          image: registry:redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+          grype-version: v0.110.0
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-images/scan-redis.json
+      - name: Scan reviewed volume-init runtime
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
+        with:
+          image: registry:cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+          grype-version: v0.110.0
+          config: .grype.yaml
+          fail-build: true
+          severity-cutoff: high
+          output-format: json
+          output-file: artifacts/release-images/scan-volume-init.json
+      - name: Bind scans and SBOMs to the exact running images
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_id() {
+            docker image inspect "$1" --format '{{.Id}}'
+          }
+          runtime_id() {
+            container_id="$(docker compose --file compose.yml ps --all --quiet "$1")"
+            test -n "$container_id"
+            docker container inspect "$container_id" --format '{{.Image}}'
+          }
+          scan_value() {
+            jq --exit-status --raw-output "$2" "artifacts/release-images/scan-$1.json"
+          }
+          api_ref="custombuild-api:${GITHUB_SHA}"
+          worker_ref="custombuild-worker:${GITHUB_SHA}"
+          web_ref="custombuild-web:${GITHUB_SHA}"
+          seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
+          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060'
+          redis_ref='redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6'
+          volume_init_ref='cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6'
+          api_id="$(image_id "$api_ref")"
+          worker_id="$(image_id "$worker_ref")"
+          web_id="$(image_id "$web_ref")"
+          seaweedfs_id="$(image_id "$seaweedfs_ref")"
+          postgres_id="$(image_id "$postgres_ref")"
+          redis_id="$(image_id "$redis_ref")"
+          volume_init_id="$(image_id "$volume_init_ref")"
+          test "$api_id" = "$(runtime_id api)"
+          test "$api_id" = "$(runtime_id migrate)"
+          test "$worker_id" = "$(runtime_id worker)"
+          test "$worker_id" = "$(runtime_id scheduler)"
+          test "$web_id" = "$(runtime_id web)"
+          test "$seaweedfs_id" = "$(runtime_id object-storage)"
+          test "$postgres_id" = "$(runtime_id postgres)"
+          test "$redis_id" = "$(runtime_id redis)"
+          test "$volume_init_id" = "$(runtime_id object-storage-init)"
+          for component in api worker web seaweedfs postgres redis volume-init; do
+            test -s "artifacts/release-images/sbom-${component}.spdx.json"
+            test -s "artifacts/release-images/scan-${component}.json"
+          done
+          for component in api worker web seaweedfs; do
+            test "$(scan_value "$component" '.source.target.imageID')" = "$(image_id "$(scan_value "$component" '.source.target.userInput')")"
+          done
+          test "$api_id" = "$(scan_value api '.source.target.imageID')"
+          test "$worker_id" = "$(scan_value worker '.source.target.imageID')"
+          test "$web_id" = "$(scan_value web '.source.target.imageID')"
+          test "$seaweedfs_id" = "$(scan_value seaweedfs '.source.target.imageID')"
+          test "$postgres_id" = "$(scan_value postgres '.source.target.imageID')"
+          test "$redis_id" = "$(scan_value redis '.source.target.imageID')"
+          test "$volume_init_id" = "$(scan_value volume-init '.source.target.imageID')"
+          resolve_registry_platform() {
+            component="$1"
+            reference="$2"
+            expected_config_digest="$3"
+            deployment_digest="${reference##*@}"
+            repository="${reference%@*}"
+            deployment_raw="artifacts/release-images/registry-deployment-${component}.json"
+            platform_raw="artifacts/release-images/registry-platform-${component}.json"
+            docker buildx imagetools inspect "$reference" --raw > "$deployment_raw"
+            if jq -e '.manifests | type == "array"' "$deployment_raw" > /dev/null; then
+              platform_digest="$(jq -er '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64" and ((.platform.variant // "") == ""))] | if length == 1 then .[0].digest else error("ambiguous linux/amd64 platform") end' "$deployment_raw")"
+              docker buildx imagetools inspect "${repository}@${platform_digest}" --raw > "$platform_raw"
+            else
+              platform_digest="$deployment_digest"
+              cp "$deployment_raw" "$platform_raw"
+            fi
+            registry_config_digest="$(jq -er '.config.digest | select(test("^sha256:[a-f0-9]{64}$"))' "$platform_raw")"
+            test "$registry_config_digest" = "$expected_config_digest"
+            test "$platform_digest" = "$(scan_value "$component" '.source.target.manifestDigest')"
+            jq -cn \
+              --arg deployment_reference_digest "$deployment_digest" \
+              --arg runtime_platform_manifest_digest "$platform_digest" \
+              --arg image_config_digest "$registry_config_digest" \
+              '{deployment_reference_digest:$deployment_reference_digest,runtime_platform_manifest_digest:$runtime_platform_manifest_digest,image_config_digest:$image_config_digest}' \
+              > "artifacts/release-images/registry-resolution-${component}.json"
+          }
+          test "$(scan_value postgres '.source.target.userInput')" = "registry:${postgres_ref}"
+          test "$(scan_value redis '.source.target.userInput')" = "registry:${redis_ref}"
+          test "$(scan_value volume-init '.source.target.userInput')" = "registry:${volume_init_ref}"
+          resolve_registry_platform postgres "$postgres_ref" "$postgres_id"
+          resolve_registry_platform redis "$redis_ref" "$redis_id"
+          resolve_registry_platform volume-init "$volume_init_ref" "$volume_init_id"
+          jq -n \
+            --arg schema_version custombuild.runtime-release-evidence.v3 \
+            --arg git_revision "$GITHUB_SHA" \
+            --arg source_manifest_sha256 "$SOURCE_MANIFEST_SHA256" \
+            --arg api_id "$api_id" \
+            --arg worker_id "$worker_id" \
+            --arg web_id "$web_id" \
+            --arg seaweedfs_id "$seaweedfs_id" \
+            --arg postgres_id "$postgres_id" \
+            --arg redis_id "$redis_id" \
+            --arg volume_init_id "$volume_init_id" \
+            --arg api_ref "$api_ref" \
+            --arg worker_ref "$worker_ref" \
+            --arg web_ref "$web_ref" \
+            --arg seaweedfs_ref "$seaweedfs_ref" \
+            --arg postgres_ref "$postgres_ref" \
+            --arg redis_ref "$redis_ref" \
+            --arg volume_init_ref "$volume_init_ref" \
+            --arg api_scan_input "$(scan_value api '.source.target.userInput')" \
+            --arg worker_scan_input "$(scan_value worker '.source.target.userInput')" \
+            --arg web_scan_input "$(scan_value web '.source.target.userInput')" \
+            --arg seaweedfs_scan_input "$(scan_value seaweedfs '.source.target.userInput')" \
+            --arg postgres_scan_input "$(scan_value postgres '.source.target.userInput')" \
+            --arg redis_scan_input "$(scan_value redis '.source.target.userInput')" \
+            --arg volume_init_scan_input "$(scan_value volume-init '.source.target.userInput')" \
+            --arg api_manifest "$(scan_value api '.source.target.manifestDigest')" \
+            --arg worker_manifest "$(scan_value worker '.source.target.manifestDigest')" \
+            --arg web_manifest "$(scan_value web '.source.target.manifestDigest')" \
+            --arg seaweedfs_manifest "$(scan_value seaweedfs '.source.target.manifestDigest')" \
+            --arg postgres_manifest "$(scan_value postgres '.source.target.manifestDigest')" \
+            --arg redis_manifest "$(scan_value redis '.source.target.manifestDigest')" \
+            --arg volume_init_manifest "$(scan_value volume-init '.source.target.manifestDigest')" \
+            --arg api_sbom "$(sha256sum artifacts/release-images/sbom-api.spdx.json | awk '{print $1}')" \
+            --arg worker_sbom "$(sha256sum artifacts/release-images/sbom-worker.spdx.json | awk '{print $1}')" \
+            --arg web_sbom "$(sha256sum artifacts/release-images/sbom-web.spdx.json | awk '{print $1}')" \
+            --arg seaweedfs_sbom "$(sha256sum artifacts/release-images/sbom-seaweedfs.spdx.json | awk '{print $1}')" \
+            --arg postgres_sbom "$(sha256sum artifacts/release-images/sbom-postgres.spdx.json | awk '{print $1}')" \
+            --arg redis_sbom "$(sha256sum artifacts/release-images/sbom-redis.spdx.json | awk '{print $1}')" \
+            --arg volume_init_sbom "$(sha256sum artifacts/release-images/sbom-volume-init.spdx.json | awk '{print $1}')" \
+            --arg api_scan "$(sha256sum artifacts/release-images/scan-api.json | awk '{print $1}')" \
+            --arg worker_scan "$(sha256sum artifacts/release-images/scan-worker.json | awk '{print $1}')" \
+            --arg web_scan "$(sha256sum artifacts/release-images/scan-web.json | awk '{print $1}')" \
+            --arg seaweedfs_scan "$(sha256sum artifacts/release-images/scan-seaweedfs.json | awk '{print $1}')" \
+            --arg postgres_scan "$(sha256sum artifacts/release-images/scan-postgres.json | awk '{print $1}')" \
+            --arg redis_scan "$(sha256sum artifacts/release-images/scan-redis.json | awk '{print $1}')" \
+            --arg volume_init_scan "$(sha256sum artifacts/release-images/scan-volume-init.json | awk '{print $1}')" \
+            --argjson postgres_resolution "$(cat artifacts/release-images/registry-resolution-postgres.json)" \
+            --argjson redis_resolution "$(cat artifacts/release-images/registry-resolution-redis.json)" \
+            --argjson volume_init_resolution "$(cat artifacts/release-images/registry-resolution-volume-init.json)" \
+            '{schema_version:$schema_version,git_revision:$git_revision,source_manifest_sha256:$source_manifest_sha256,status:"PASS",images:[{component:"api",image_id:$api_id,image_reference:$api_ref,scan_input:$api_scan_input,manifest_digest:$api_manifest,sbom_sha256:$api_sbom,scan_status:"PASS",scan_sha256:$api_scan},{component:"worker",image_id:$worker_id,image_reference:$worker_ref,scan_input:$worker_scan_input,manifest_digest:$worker_manifest,sbom_sha256:$worker_sbom,scan_status:"PASS",scan_sha256:$worker_scan},{component:"web",image_id:$web_id,image_reference:$web_ref,scan_input:$web_scan_input,manifest_digest:$web_manifest,sbom_sha256:$web_sbom,scan_status:"PASS",scan_sha256:$web_scan},{component:"seaweedfs",image_id:$seaweedfs_id,image_reference:$seaweedfs_ref,scan_input:$seaweedfs_scan_input,manifest_digest:$seaweedfs_manifest,sbom_sha256:$seaweedfs_sbom,scan_status:"PASS",scan_sha256:$seaweedfs_scan},{component:"postgres",image_id:$postgres_id,image_reference:$postgres_ref,scan_input:$postgres_scan_input,manifest_digest:$postgres_manifest,sbom_sha256:$postgres_sbom,scan_status:"PASS",scan_sha256:$postgres_scan,registry_resolution:$postgres_resolution},{component:"redis",image_id:$redis_id,image_reference:$redis_ref,scan_input:$redis_scan_input,manifest_digest:$redis_manifest,sbom_sha256:$redis_sbom,scan_status:"PASS",scan_sha256:$redis_scan,registry_resolution:$redis_resolution},{component:"volume-init",image_id:$volume_init_id,image_reference:$volume_init_ref,scan_input:$volume_init_scan_input,manifest_digest:$volume_init_manifest,sbom_sha256:$volume_init_sbom,scan_status:"PASS",scan_sha256:$volume_init_scan,registry_resolution:$volume_init_resolution}]}' \
+            > "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"
+      - name: Produce final software release evidence
+        run: >-
+          uv run python scripts/release_evidence_gate.py
+          --repo .
+          --static-report "$RELEASE_EVIDENCE_DIR/static-release-readiness.json"
+          --backup "$RELEASE_EVIDENCE_DIR/backup"
+          --restore-evidence "$RELEASE_EVIDENCE_DIR/restore-evidence.json"
+          --runtime-evidence "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"
+          --sbom-directory artifacts/release-images
+          --pinned-registry-inputs
+          --output "$RELEASE_EVIDENCE_DIR/release-readiness.json"
+      - name: Prove software authority without claiming external authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RELEASE_EVIDENCE_DIR/release-readiness.json"
+          test "$(jq -er '.git_revision' "$report")" = "$GITHUB_SHA"
+          test "$(jq -er '.source_manifest_sha256' "$report")" = "$SOURCE_MANIFEST_SHA256"
+          test "$(jq -er '.software_release_ready' "$report")" = true
+          test "$(jq -er '.commercial_release_ready' "$report")" = false
+          test "$(jq -er '.physical_machine_release_ready' "$report")" = false
+      - name: Upload final SHA- and image-bound release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/release-evidence/release-readiness.json
+            artifacts/release-evidence/static-release-readiness.json
+            artifacts/release-evidence/runtime-evidence.json
+            artifacts/release-evidence/restore-evidence.json
+            artifacts/release-evidence/live-acceptance.jsonl
+            artifacts/release-evidence/backup/manifest.json
+            artifacts/release-images/scan-*.json
+            artifacts/release-images/sbom-*.spdx.json
+            artifacts/release-images/registry-*.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload exact-image live browser evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-live-browser-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: error
+          retention-days: 30
+      - name: Collect runtime diagnostics
+        if: failure()
+        run: |
+          docker compose --file compose.yml ps --all || true
+          docker compose --file compose.yml logs --no-color --timestamps > artifacts/cd-runtime.log || true
+      - name: Upload runtime diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-runtime-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            artifacts/cd-runtime.log
+            apps/web/playwright-report
+            apps/web/test-results
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Stop the release acceptance stack
+        if: always()
+        run: docker compose --file compose.yml down --volumes --remove-orphans --timeout 30
+
+  publish-images:
+    needs: test-release-bundle
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'pilotens/Custombuild'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [api, worker, web, seaweedfs]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+      - name: Download the exact accepted image archive
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-image-${{ matrix.component }}-${{ github.sha }}
+          path: artifacts/release-images
+      - name: Download the exact accepted release evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+      - name: Revalidate the accepted archive before registry access
+        id: accepted
+        shell: bash
+        run: |
+          set -euo pipefail
+          component='${{ matrix.component }}'
+          archive="artifacts/release-images/image-${component}.tar"
+          metadata="artifacts/release-images/image-${component}.json"
+          evidence="artifacts/release-evidence/release-readiness.json"
+          test -f "$archive"
+          test -f "${archive}.sha256"
+          test -f "$metadata"
+          test -f "$evidence"
+          (cd artifacts/release-images && sha256sum --check "image-${component}.tar.sha256")
+          jq --exit-status \
+            'keys == ["archive_sha256","component","git_revision","image_config_digest","image_reference","local_scan_manifest_digest","schema_version","source_manifest_sha256"]' \
+            "$metadata" > /dev/null
+          test "$(jq -er '.schema_version' "$metadata")" = custombuild.release-image-archive.v2
+          test "$(jq -er '.component' "$metadata")" = "$component"
+          test "$(jq -er '.git_revision' "$metadata")" = "$GITHUB_SHA"
+          test "$(jq -er '.git_revision' "$evidence")" = "$GITHUB_SHA"
+          test "$(jq -er '.software_release_ready' "$evidence")" = true
+          test "$(jq -er '.commercial_release_ready' "$evidence")" = false
+          test "$(jq -er '.physical_machine_release_ready' "$evidence")" = false
+          docker image load --input "$archive"
+          local_image="custombuild-${component}:${GITHUB_SHA}"
+          image_config_digest="$(docker image inspect "$local_image" --format '{{.Id}}')"
+          expected_config_digest="$(jq -er --arg component "$component" '.runtime_image_config_digests[$component]' "$evidence")"
+          archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+          source_manifest_sha256="$(jq -er '.source_manifest_sha256' "$metadata")"
+          test "$image_config_digest" = "$expected_config_digest"
+          test "$(jq -er '.image_config_digest' "$metadata")" = "$image_config_digest"
+          test "$(jq -er '.local_scan_manifest_digest' "$metadata")" = "$(jq -er '.source.target.manifestDigest' "artifacts/release-images/scan-${component}.json")"
+          test "$(jq -er '.archive_sha256' "$metadata")" = "$archive_sha256"
+          test "$source_manifest_sha256" = "$(jq -er '.source_manifest_sha256' "$evidence")"
+          registry_repository="$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REPOSITORY")"
+          subject_name="ghcr.io/${registry_repository}-${component}"
+          {
+            echo "component=${component}"
+            echo "archive=${archive}"
+            echo "local_image=${local_image}"
+            echo "image_config_digest=${image_config_digest}"
+            echo "archive_sha256=${archive_sha256}"
+            echo "source_manifest_sha256=${source_manifest_sha256}"
+            echo "subject_name=${subject_name}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Authenticate to GHCR only after acceptance
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push the exact tested object without rebuilding
+        id: published
+        shell: bash
+        env:
+          LOCAL_IMAGE: ${{ steps.accepted.outputs.local_image }}
+          SUBJECT_NAME: ${{ steps.accepted.outputs.subject_name }}
+          EXPECTED_CONFIG_DIGEST: ${{ steps.accepted.outputs.image_config_digest }}
+        run: |
+          set -euo pipefail
+          tagged_reference="${SUBJECT_NAME}:${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker image tag "$LOCAL_IMAGE" "$tagged_reference"
+          docker image push "$tagged_reference"
+          registry_digest="$(docker buildx imagetools inspect "$tagged_reference" | awk '$1 == "Digest:" {print $2; exit}')"
+          [[ "$registry_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          exact_reference="${SUBJECT_NAME}@${registry_digest}"
+          raw_manifest="$(mktemp)"
+          docker buildx imagetools inspect "$exact_reference" --raw > "$raw_manifest"
+          registry_config_digest="$(jq -er '.config.digest | select(test("^sha256:[a-f0-9]{64}$"))' "$raw_manifest")"
+          test "$registry_config_digest" = "$EXPECTED_CONFIG_DIGEST"
+          {
+            echo "subject_name=${SUBJECT_NAME}"
+            echo "digest=${registry_digest}"
+            echo "exact_reference=${exact_reference}"
+          } >> "$GITHUB_OUTPUT"
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Sign the exact digest with GitHub OIDC
+        env:
+          EXACT_REFERENCE: ${{ steps.published.outputs.exact_reference }}
+        run: cosign sign --yes "$EXACT_REFERENCE"
+      - name: Create the GitHub artifact attestation
+        id: attestation
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+        with:
+          subject-name: ${{ steps.published.outputs.subject_name }}
+          subject-digest: ${{ steps.published.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Verify exact signer and attestation policy
+        shell: bash
+        env:
+          EXACT_REFERENCE: ${{ steps.published.outputs.exact_reference }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/published
+          for attempt in 1 2 3 4 5 6; do
+            if cosign verify \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/cd.yml@refs/heads/main" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$EXACT_REFERENCE" \
+              > "artifacts/published/cosign-${{ matrix.component }}.json"; then
+              break
+            fi
+            test "$attempt" -lt 6
+            sleep 5
+          done
+          for attempt in 1 2 3 4 5 6; do
+            if gh attestation verify "oci://${EXACT_REFERENCE}" \
+              --bundle-from-oci \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/cd.yml" \
+              --cert-oidc-issuer https://token.actions.githubusercontent.com \
+              --source-ref refs/heads/main \
+              --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners \
+              > "artifacts/published/github-attestation-${{ matrix.component }}.txt"; then
+              break
+            fi
+            test "$attempt" -lt 6
+            sleep 5
+          done
+          test -s "artifacts/published/cosign-${{ matrix.component }}.json"
+          test -s "artifacts/published/github-attestation-${{ matrix.component }}.txt"
+      - name: Record immutable publication identity
+        shell: bash
+        env:
+          EXACT_REFERENCE: ${{ steps.published.outputs.exact_reference }}
+          IMAGE_CONFIG_DIGEST: ${{ steps.accepted.outputs.image_config_digest }}
+          ARCHIVE_SHA256: ${{ steps.accepted.outputs.archive_sha256 }}
+          SOURCE_MANIFEST_SHA256: ${{ steps.accepted.outputs.source_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/deploy_descriptor.py publication \
+            --component '${{ matrix.component }}' \
+            --repository "$GITHUB_REPOSITORY" \
+            --git-revision "$GITHUB_SHA" \
+            --source-manifest-sha256 "$SOURCE_MANIFEST_SHA256" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --registry-image "$EXACT_REFERENCE" \
+            --image-config-digest "$IMAGE_CONFIG_DIGEST" \
+            --archive-sha256 "$ARCHIVE_SHA256" \
+            --output "artifacts/published/image-${{ matrix.component }}.json" \
+            --sha256-output "artifacts/published/image-${{ matrix.component }}.sha256"
+      - name: Upload verified publication identity
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: published-image-${{ matrix.component }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/published/image-${{ matrix.component }}.json
+            artifacts/published/image-${{ matrix.component }}.sha256
+            artifacts/published/cosign-${{ matrix.component }}.json
+            artifacts/published/github-attestation-${{ matrix.component }}.txt
+          if-no-files-found: error
+          retention-days: 90
+
+  deployment-descriptor:
+    needs: publish-images
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      github.repository == 'pilotens/Custombuild'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download exact accepted release evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+      - name: Download all exact publication identities
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: published-image-*-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/published
+          merge-multiple: true
+      - name: Render and independently verify the deployment descriptor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/promotion
+          evidence=artifacts/release-evidence/release-readiness.json
+          test -f "$evidence"
+          test "$(find artifacts/published -maxdepth 1 -name 'image-*.json' -type f | wc -l)" -eq 4
+          source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
+          declare -a image_arguments=()
+          for component in api worker web seaweedfs; do
+            metadata="artifacts/published/image-${component}.json"
+            (cd artifacts/published && sha256sum --check "image-${component}.sha256")
+            reference="$(jq -er '.registry_image | select(test("^ghcr\\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$"))' "$metadata")"
+            image_arguments+=("--${component}-image" "$reference")
+          done
+          python3 scripts/deploy_descriptor.py render \
+            --repository "$GITHUB_REPOSITORY" \
+            --git-revision "$GITHUB_SHA" \
+            --source-manifest-sha256 "$source_manifest_sha256" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --release-evidence "$evidence" \
+            --publication-directory artifacts/published \
+            "${image_arguments[@]}" \
+            --output artifacts/promotion/deploy-descriptor.json \
+            --sha256-output artifacts/promotion/deploy-descriptor.sha256 \
+            --compose-env-output artifacts/promotion/deploy-images.env
+          python3 scripts/deploy_descriptor.py verify \
+            --repository "$GITHUB_REPOSITORY" \
+            --git-revision "$GITHUB_SHA" \
+            --source-manifest-sha256 "$source_manifest_sha256" \
+            --workflow-run-id "$GITHUB_RUN_ID" \
+            --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --release-evidence "$evidence" \
+            --publication-directory artifacts/published \
+            --compose-env-output artifacts/promotion/verified-deploy-images.env \
+            artifacts/promotion/deploy-descriptor.json
+          cmp artifacts/promotion/deploy-images.env artifacts/promotion/verified-deploy-images.env
+          (cd artifacts/promotion && sha256sum --check deploy-descriptor.sha256)
+      - name: Prove the digest-only no-build Compose input
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r name value; do
+            test "$name" = "$(tr -cd 'A-Z0-9_' <<< "$name")"
+            export "${name}=${value}"
+          done < artifacts/promotion/verified-deploy-images.env
+          jq -r '.images[]' artifacts/promotion/deploy-descriptor.json | sort --unique > artifacts/promotion/expected-images.txt
+          docker compose --file compose.yml --file compose.registry.yml config --images | sort --unique > artifacts/promotion/resolved-images.txt
+          diff --unified artifacts/promotion/expected-images.txt artifacts/promotion/resolved-images.txt
+          test "$(jq -r '.images[]' artifacts/promotion/deploy-descriptor.json | grep -c '@sha256:')" -eq 7
+          test "$(grep -c '@sha256:' artifacts/promotion/resolved-images.txt)" -eq 7
+      - name: Upload the verified promotion input without deploying
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verified-promotion-input-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/promotion/deploy-descriptor.json
+            artifacts/promotion/deploy-descriptor.sha256
+            artifacts/promotion/verified-deploy-images.env
+            artifacts/promotion/expected-images.txt
+            artifacts/promotion/resolved-images.txt
+            artifacts/release-evidence/release-readiness.json
+            artifacts/published/image-*.json
+            artifacts/published/image-*.sha256
+            artifacts/published/cosign-*.json
+            artifacts/published/github-attestation-*.txt
+          if-no-files-found: error
+          retention-days: 90

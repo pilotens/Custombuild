@@ -41,6 +41,7 @@ def test_digest_promotion_contract_requires_descriptor_and_exact_overlay(
     tmp_path: Path,
 ) -> None:
     assert set(promotion_contract_issues(tmp_path)) == {
+        ".github/workflows/cd.yml is missing",
         "compose.registry.yml is missing or unreadable",
         "scripts/deploy_descriptor.py is missing",
     }
@@ -50,6 +51,9 @@ def test_digest_promotion_contract_requires_descriptor_and_exact_overlay(
     descriptor.write_text("# verifier\n", encoding="utf-8")
     overlay = tmp_path / "compose.registry.yml"
     overlay.write_text(EXPECTED_REGISTRY_OVERLAY, encoding="utf-8")
+    workflow = tmp_path / ".github/workflows/cd.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: build-once release\n", encoding="utf-8")
 
     assert promotion_contract_issues(tmp_path) == []
 

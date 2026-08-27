@@ -225,7 +225,7 @@ configuration approval.
 ### Digest-only deployment descriptor
 
 `scripts/deploy_descriptor.py` is the repository-owned boundary between completed
-release evidence and a future privileged promotion workflow. It renders canonical
+release evidence and `.github/workflows/cd.yml`. It renders canonical
 JSON for exactly four application images (`api`, `worker`, `web`, `seaweedfs`) plus
 the reviewed PostgreSQL, Redis and volume-initializer digests. The descriptor also
 binds the full source commit, source-manifest digest, final release-evidence digest,
@@ -234,10 +234,33 @@ OIDC/Cosign and artifact-attestation identities. Tags, additional fields, duplic
 JSON keys, non-canonical bytes, substituted component digests and evidence from a
 different run are rejected.
 
-Rendering and verification require the same trusted values. A future main-only
-workflow will supply them directly from GitHub and the completed release evidence;
-the following shape is shown for operator review, not as proof that registry
-publication or deployment automation already exists:
+Rendering and verification require the same trusted values. The release workflow
+supplies them directly from GitHub and the completed release evidence. Its read-only
+quality, build and exact-image acceptance jobs run for pull requests targeting
+`main`, so the full candidate path is proven before merge. Only a direct push to
+`main` in this repository can enter GHCR publication or descriptor generation;
+`workflow_run`, fork credentials and PR write authority are absent. Four unprivileged
+matrix jobs build the application images once, scan them and
+archive those exact Docker objects. A separate unprivileged job loads the archives,
+starts Compose with `--no-build`, and captures same-commit browser, WCAG, live
+design-review/CAM blocking, backup, restore, SBOM and vulnerability evidence. Only
+after that gate passes may the four least-privilege publication jobs load the same
+archives and push them to GHCR. The archive SHA-256 proves the bytes transferred
+between jobs; the image config digest links archive load, running containers, scans
+and the raw GHCR manifest; the registry manifest digest is the independent immutable
+subject used by signatures, attestations, the descriptor and deployment. These three
+identities are never compared as though they were interchangeable. In particular,
+the daemon-local scan manifest digest is not a GHCR manifest digest. For pinned
+multi-platform runtimes the evidence separately binds the deployment index digest to
+its unique `linux/amd64` child manifest and that child's config digest. The workflow
+then creates both a keyless Cosign signature and a GitHub artifact attestation with
+the exact workflow identity, and hashes each canonical component publication record
+into descriptor v2.
+
+The final read-only job renders and verifies `verified-promotion-input-<sha>-<run>-<attempt>`.
+That artifact contains the canonical descriptor, checksum, final software release
+evidence and non-secret digest-only Compose environment. The following commands show
+the same verifier boundary for an operator audit:
 
 ```bash
 python3 scripts/deploy_descriptor.py render \
@@ -246,7 +269,8 @@ python3 scripts/deploy_descriptor.py render \
   --source-manifest-sha256 "$SOURCE_MANIFEST_SHA256" \
   --workflow-run-id "$GITHUB_RUN_ID" \
   --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
-  --release-evidence artifacts/release-readiness-evidence.json \
+  --release-evidence artifacts/release-evidence/release-readiness.json \
+  --publication-directory artifacts/published \
   --api-image "ghcr.io/pilotens/custombuild-api@sha256:<digest>" \
   --worker-image "ghcr.io/pilotens/custombuild-worker@sha256:<digest>" \
   --web-image "ghcr.io/pilotens/custombuild-web@sha256:<digest>" \
@@ -260,7 +284,8 @@ python3 scripts/deploy_descriptor.py verify \
   --source-manifest-sha256 "$SOURCE_MANIFEST_SHA256" \
   --workflow-run-id "$GITHUB_RUN_ID" \
   --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
-  --release-evidence artifacts/release-readiness-evidence.json \
+  --release-evidence artifacts/release-evidence/release-readiness.json \
+  --publication-directory artifacts/published \
   --compose-env-output artifacts/deploy-images.env \
   artifacts/deploy-descriptor.json
 ```
@@ -279,9 +304,14 @@ docker compose --env-file artifacts/deploy-images.env \
 ```
 
 The overlay deliberately contains no registry credentials or deployment secrets.
-It does not sign, publish, promote or authorize a physical machine. Those privileged
-steps remain absent until the separately reviewed main-only workflow and protected
-deployment environment are implemented.
+The workflow publishes, signs and attests images, but deliberately performs no
+deployment. Repository branch protection, a protected production environment,
+hosting, secrets, ingress and rollback ownership must be configured and reviewed in
+GitHub and on the target platform before an operator may use the artifact. If GHCR
+package creation or `GITHUB_TOKEN` package permission is disabled, publication fails
+closed and that repository-administration blocker must be resolved externally.
+Neither a successful software release nor its descriptor grants commercial release
+authority or physical-machine authorization; both remain explicitly `false`.
 
 Register the web application as an OIDC public client with Authorization Code and
 PKCE (`S256`). The callback URI must be the public web origin's exact root (for

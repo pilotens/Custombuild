@@ -1,8 +1,9 @@
 """Render and verify the immutable input to release promotion.
 
 The descriptor deliberately contains no deployment secrets or mutable image tags.
-It binds the exact release evidence, source identity, registry manifest digests,
-Compose service roles and signer policy that a later privileged workflow must verify.
+It binds the exact release evidence, source identity, publication evidence, registry
+deployment digests, Compose service roles and signer policy that any later deployment
+must verify.
 """
 
 from __future__ import annotations
@@ -15,7 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "custombuild.deploy-descriptor.v1"
+SCHEMA_VERSION = "custombuild.deploy-descriptor.v2"
+PUBLICATION_SCHEMA_VERSION = "custombuild.published-image.v2"
 RELEASE_EVIDENCE_SCHEMA_VERSION = "custombuild.release-readiness-evidence.v1"
 REGISTRY_OVERLAY_SCHEMA_VERSION = "custombuild.compose-registry.v1"
 PROMOTION_WORKFLOW_PATH = ".github/workflows/cd.yml"
@@ -34,6 +36,20 @@ PINNED_RUNTIME_IMAGES = {
     ),
     "volume-init": (
         "cgr.dev/chainguard/busybox@"
+        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+    ),
+}
+PINNED_RUNTIME_SCAN_REFERENCES = {
+    "postgres": (
+        "cgr.dev/chainguard/postgres:latest@"
+        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+    ),
+    "redis": (
+        "redis:7.2.15-alpine@"
+        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
+    ),
+    "volume-init": (
+        "cgr.dev/chainguard/busybox:latest@"
         "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
     ),
 }
@@ -87,8 +103,26 @@ ROOT_KEYS = {
     "release_evidence",
     "release_workflow",
     "images",
+    "application_image_config_digests",
+    "application_image_archive_sha256",
+    "publication_evidence_sha256",
     "roles",
     "signing_policy",
+}
+PUBLICATION_KEYS = {
+    "schema_version",
+    "component",
+    "repository",
+    "git_revision",
+    "source_manifest_sha256",
+    "workflow_run_id",
+    "workflow_run_attempt",
+    "registry_image",
+    "registry_manifest_digest",
+    "image_config_digest",
+    "archive_sha256",
+    "cosign_verified",
+    "github_attestation_verified",
 }
 RELEASE_EVIDENCE_KEYS = {"schema_version", "sha256"}
 RELEASE_WORKFLOW_KEYS = {"run_id", "run_attempt", "workflow_path", "source_ref"}
@@ -112,7 +146,13 @@ IMAGE_NAME = re.compile(
 )
 MAX_DESCRIPTOR_BYTES = 128 * 1024
 MAX_RELEASE_EVIDENCE_BYTES = 16 * 1024 * 1024
+MAX_PUBLICATION_EVIDENCE_BYTES = 32 * 1024
 MAX_WORKFLOW_INTEGER = 9_223_372_036_854_775_807
+REGISTRY_RESOLUTION_KEYS = {
+    "deployment_reference_digest",
+    "runtime_platform_manifest_digest",
+    "image_config_digest",
+}
 
 
 class DescriptorError(RuntimeError):
@@ -237,12 +277,174 @@ def application_image_name(repository: str, component: str) -> str:
     return f"ghcr.io/{repository.lower()}-{component}"
 
 
+def render_publication_evidence(
+    *,
+    component: str,
+    repository: str,
+    git_revision: str,
+    source_manifest_sha256: str,
+    workflow_run_id: int,
+    workflow_run_attempt: int,
+    registry_image: str,
+    image_config_digest: str,
+    archive_sha256: str,
+) -> dict[str, Any]:
+    """Render the exact registry/config/archive binding proven after publication."""
+
+    repository = _repository(repository)
+    git_revision = _revision(git_revision)
+    source_manifest_sha256 = _sha256(
+        source_manifest_sha256,
+        label="source_manifest_sha256",
+    )
+    _positive_integer(workflow_run_id, label="workflow_run_id")
+    _positive_integer(workflow_run_attempt, label="workflow_run_attempt")
+    if component not in APPLICATION_COMPONENTS:
+        raise DescriptorError("publication component is not an application image")
+    registry_name, registry_manifest_digest = _image_reference(
+        registry_image,
+        label="registry_image",
+    )
+    if registry_name != application_image_name(repository, component):
+        raise DescriptorError("publication registry image has another component name")
+    if not isinstance(image_config_digest, str) or not DIGEST.fullmatch(
+        image_config_digest
+    ):
+        raise DescriptorError("image_config_digest must be a lowercase SHA-256 digest")
+    archive_sha256 = _sha256(archive_sha256, label="archive_sha256")
+    publication: dict[str, Any] = {
+        "schema_version": PUBLICATION_SCHEMA_VERSION,
+        "component": component,
+        "repository": repository,
+        "git_revision": git_revision,
+        "source_manifest_sha256": source_manifest_sha256,
+        "workflow_run_id": workflow_run_id,
+        "workflow_run_attempt": workflow_run_attempt,
+        "registry_image": registry_image,
+        "registry_manifest_digest": registry_manifest_digest,
+        "image_config_digest": image_config_digest,
+        "archive_sha256": archive_sha256,
+        "cosign_verified": True,
+        "github_attestation_verified": True,
+    }
+    _validate_publication_object(
+        publication,
+        expected_component=component,
+        expected_repository=repository,
+        expected_git_revision=git_revision,
+        expected_source_manifest_sha256=source_manifest_sha256,
+        expected_workflow_run_id=workflow_run_id,
+        expected_workflow_run_attempt=workflow_run_attempt,
+    )
+    return publication
+
+
+def _validate_publication_object(
+    publication: dict[str, Any],
+    *,
+    expected_component: str,
+    expected_repository: str,
+    expected_git_revision: str,
+    expected_source_manifest_sha256: str,
+    expected_workflow_run_id: int,
+    expected_workflow_run_attempt: int,
+) -> None:
+    value = _exact_object(publication, PUBLICATION_KEYS, label="publication evidence")
+    if value["schema_version"] != PUBLICATION_SCHEMA_VERSION:
+        raise DescriptorError("publication evidence has another schema version")
+    if value["component"] != expected_component:
+        raise DescriptorError("publication evidence belongs to another component")
+    repository = _repository(value["repository"])
+    revision = _revision(value["git_revision"], label="publication git_revision")
+    source_manifest = _sha256(
+        value["source_manifest_sha256"],
+        label="publication source_manifest_sha256",
+    )
+    run_id = _positive_integer(value["workflow_run_id"], label="publication workflow_run_id")
+    run_attempt = _positive_integer(
+        value["workflow_run_attempt"],
+        label="publication workflow_run_attempt",
+    )
+    if repository != _repository(expected_repository):
+        raise DescriptorError("publication evidence belongs to another repository")
+    if revision != _revision(
+        expected_git_revision,
+        label="expected publication git_revision",
+    ):
+        raise DescriptorError("publication evidence belongs to another Git revision")
+    if source_manifest != _sha256(
+        expected_source_manifest_sha256,
+        label="expected publication source_manifest_sha256",
+    ):
+        raise DescriptorError("publication evidence belongs to another source manifest")
+    if run_id != _positive_integer(
+        expected_workflow_run_id,
+        label="expected publication workflow_run_id",
+    ) or run_attempt != _positive_integer(
+        expected_workflow_run_attempt,
+        label="expected publication workflow_run_attempt",
+    ):
+        raise DescriptorError("publication evidence belongs to another workflow run")
+    registry_name, registry_digest = _image_reference(
+        value["registry_image"],
+        label="publication registry_image",
+    )
+    if registry_name != application_image_name(repository, expected_component):
+        raise DescriptorError("publication evidence has another registry image name")
+    if value["registry_manifest_digest"] != registry_digest:
+        raise DescriptorError("publication registry manifest digest is inconsistent")
+    if not isinstance(value["image_config_digest"], str) or not DIGEST.fullmatch(
+        value["image_config_digest"]
+    ):
+        raise DescriptorError("publication image config digest is invalid")
+    _sha256(value["archive_sha256"], label="publication archive_sha256")
+    if value["cosign_verified"] is not True:
+        raise DescriptorError("publication evidence did not verify Cosign")
+    if value["github_attestation_verified"] is not True:
+        raise DescriptorError("publication evidence did not verify GitHub attestation")
+
+
+def _publication_objects(
+    publication_evidence_bytes: dict[str, bytes],
+    *,
+    repository: str,
+    git_revision: str,
+    source_manifest_sha256: str,
+    workflow_run_id: int,
+    workflow_run_attempt: int,
+) -> dict[str, dict[str, Any]]:
+    if set(publication_evidence_bytes) != set(APPLICATION_COMPONENTS):
+        raise DescriptorError("publication evidence does not cover the application image set")
+    result: dict[str, dict[str, Any]] = {}
+    for component in APPLICATION_COMPONENTS:
+        payload = publication_evidence_bytes[component]
+        publication = _parse_json(
+            payload,
+            label=f"publication evidence {component}",
+            maximum_size=MAX_PUBLICATION_EVIDENCE_BYTES,
+        )
+        if payload != canonical_json_bytes(publication):
+            raise DescriptorError(f"publication evidence {component} is not canonical JSON")
+        _validate_publication_object(
+            publication,
+            expected_component=component,
+            expected_repository=repository,
+            expected_git_revision=git_revision,
+            expected_source_manifest_sha256=source_manifest_sha256,
+            expected_workflow_run_id=workflow_run_id,
+            expected_workflow_run_attempt=workflow_run_attempt,
+        )
+        result[component] = publication
+    return result
+
+
 def _release_evidence(
     data: bytes,
     *,
     git_revision: str,
     source_manifest_sha256: str,
-    image_digests: dict[str, str],
+    application_config_digests: dict[str, str],
+    pinned_deployment_digests: dict[str, str],
 ) -> dict[str, Any]:
     evidence = _parse_json(
         data,
@@ -267,13 +469,73 @@ def _release_evidence(
         or static_report.get("static_controls_ready") is not True
     ):
         raise DescriptorError("release evidence did not preserve passed static controls")
-    manifest_digests = evidence.get("runtime_manifest_digests")
-    if not isinstance(manifest_digests, dict) or set(manifest_digests) != set(ALL_COMPONENTS):
-        raise DescriptorError("release evidence has another runtime image set")
-    for component, digest in image_digests.items():
-        if manifest_digests.get(component) != digest:
+    platform_manifest_digests = evidence.get("runtime_platform_manifest_digests")
+    if (
+        not isinstance(platform_manifest_digests, dict)
+        or set(platform_manifest_digests) != set(ALL_COMPONENTS)
+        or any(
+            not isinstance(digest, str) or not DIGEST.fullmatch(digest)
+            for digest in platform_manifest_digests.values()
+        )
+    ):
+        raise DescriptorError("release evidence has another platform manifest set")
+    config_digests = evidence.get("runtime_image_config_digests")
+    if (
+        not isinstance(config_digests, dict)
+        or set(config_digests) != set(ALL_COMPONENTS)
+        or any(
+            not isinstance(digest, str) or not DIGEST.fullmatch(digest)
+            for digest in config_digests.values()
+        )
+    ):
+        raise DescriptorError("release evidence has another image config digest set")
+    deployment_digests = evidence.get("runtime_deployment_reference_digests")
+    if (
+        not isinstance(deployment_digests, dict)
+        or set(deployment_digests) != set(PINNED_RUNTIME_IMAGES)
+    ):
+        raise DescriptorError("release evidence has another deployment reference set")
+    scan_inputs = evidence.get("runtime_scan_inputs")
+    if not isinstance(scan_inputs, dict) or set(scan_inputs) != set(ALL_COMPONENTS):
+        raise DescriptorError("release evidence has another runtime scan input set")
+    resolutions = evidence.get("runtime_registry_resolutions")
+    if not isinstance(resolutions, dict) or set(resolutions) != set(PINNED_RUNTIME_IMAGES):
+        raise DescriptorError("release evidence has another registry resolution set")
+    for component, digest in application_config_digests.items():
+        if config_digests.get(component) != digest:
             raise DescriptorError(
-                f"release evidence has another manifest digest for {component}"
+                f"release evidence has another accepted config digest for {component}"
+            )
+    for component, digest in pinned_deployment_digests.items():
+        if deployment_digests.get(component) != digest:
+            raise DescriptorError(
+                f"release evidence has another deployment digest for {component}"
+            )
+        if scan_inputs.get(component) != (
+            f"registry:{PINNED_RUNTIME_SCAN_REFERENCES[component]}"
+        ):
+            raise DescriptorError(
+                f"release evidence has another registry scan input for {component}"
+            )
+        resolution = _exact_object(
+            resolutions[component],
+            REGISTRY_RESOLUTION_KEYS,
+            label=f"runtime_registry_resolutions.{component}",
+        )
+        if resolution["deployment_reference_digest"] != digest:
+            raise DescriptorError(
+                f"release evidence breaks the deployment-to-platform link for {component}"
+            )
+        if (
+            resolution["runtime_platform_manifest_digest"]
+            != platform_manifest_digests[component]
+        ):
+            raise DescriptorError(
+                f"release evidence has another platform manifest for {component}"
+            )
+        if resolution["image_config_digest"] != config_digests[component]:
+            raise DescriptorError(
+                f"release evidence has another registry config digest for {component}"
             )
     return evidence
 
@@ -301,6 +563,7 @@ def _validate_descriptor_object(
     descriptor: dict[str, Any],
     *,
     release_evidence_bytes: bytes,
+    publication_evidence_bytes: dict[str, bytes],
     expected_repository: str,
     expected_git_revision: str,
     expected_source_manifest_sha256: str,
@@ -359,12 +622,12 @@ def _validate_descriptor_object(
         raise DescriptorError("descriptor names another promotion source ref")
 
     images = _exact_object(root["images"], set(ALL_COMPONENTS), label="images")
-    image_digests: dict[str, str] = {}
+    deployment_reference_digests: dict[str, str] = {}
     for component in APPLICATION_COMPONENTS:
         name, digest = _image_reference(images[component], label=f"images.{component}")
         if name != application_image_name(repository, component):
             raise DescriptorError(f"images.{component} has another registry repository")
-        image_digests[component] = digest
+        deployment_reference_digests[component] = digest
     for component, expected_reference in PINNED_RUNTIME_IMAGES.items():
         name, digest = _image_reference(images[component], label=f"images.{component}")
         expected_name, expected_digest = _image_reference(
@@ -373,9 +636,69 @@ def _validate_descriptor_object(
         )
         if name != expected_name or digest != expected_digest:
             raise DescriptorError(f"images.{component} is not the reviewed runtime digest")
-        image_digests[component] = digest
-    if len(set(image_digests.values())) != len(ALL_COMPONENTS):
+        deployment_reference_digests[component] = digest
+    if len(set(deployment_reference_digests.values())) != len(ALL_COMPONENTS):
         raise DescriptorError("descriptor substitutes one image digest for another component")
+
+    config_digests = _exact_object(
+        root["application_image_config_digests"],
+        set(APPLICATION_COMPONENTS),
+        label="application_image_config_digests",
+    )
+    archive_digests = _exact_object(
+        root["application_image_archive_sha256"],
+        set(APPLICATION_COMPONENTS),
+        label="application_image_archive_sha256",
+    )
+    publication_digests = _exact_object(
+        root["publication_evidence_sha256"],
+        set(APPLICATION_COMPONENTS),
+        label="publication_evidence_sha256",
+    )
+    for component in APPLICATION_COMPONENTS:
+        config_digest = config_digests[component]
+        if not isinstance(config_digest, str) or not DIGEST.fullmatch(config_digest):
+            raise DescriptorError(
+                f"application_image_config_digests.{component} is invalid"
+            )
+        _sha256(
+            archive_digests[component],
+            label=f"application_image_archive_sha256.{component}",
+        )
+        _sha256(
+            publication_digests[component],
+            label=f"publication_evidence_sha256.{component}",
+        )
+    publications = _publication_objects(
+        publication_evidence_bytes,
+        repository=repository,
+        git_revision=git_revision,
+        source_manifest_sha256=source_manifest_sha256,
+        workflow_run_id=run_id,
+        workflow_run_attempt=run_attempt,
+    )
+    for component, publication in publications.items():
+        if publication["registry_image"] != images[component]:
+            raise DescriptorError(f"publication evidence {component} has another registry image")
+        if (
+            publication["registry_manifest_digest"]
+            != deployment_reference_digests[component]
+        ):
+            raise DescriptorError(
+                f"publication evidence {component} has another registry manifest digest"
+            )
+        if publication["image_config_digest"] != config_digests[component]:
+            raise DescriptorError(
+                f"publication evidence {component} has another image config digest"
+            )
+        if publication["archive_sha256"] != archive_digests[component]:
+            raise DescriptorError(
+                f"publication evidence {component} has another archive digest"
+            )
+        if hashlib.sha256(publication_evidence_bytes[component]).hexdigest() != (
+            publication_digests[component]
+        ):
+            raise DescriptorError(f"publication evidence {component} digest does not match")
 
     roles = _exact_object(root["roles"], set(ROLE_COMPONENTS), label="roles")
     if roles != ROLE_COMPONENTS:
@@ -399,7 +722,14 @@ def _validate_descriptor_object(
         release_evidence_bytes,
         git_revision=git_revision,
         source_manifest_sha256=source_manifest_sha256,
-        image_digests=image_digests,
+        application_config_digests={
+            component: str(config_digests[component])
+            for component in APPLICATION_COMPONENTS
+        },
+        pinned_deployment_digests={
+            component: deployment_reference_digests[component]
+            for component in PINNED_RUNTIME_IMAGES
+        },
     )
 
 
@@ -412,6 +742,7 @@ def render_descriptor(
     workflow_run_attempt: int,
     application_images: dict[str, str],
     release_evidence_bytes: bytes,
+    publication_evidence_bytes: dict[str, bytes],
 ) -> dict[str, Any]:
     """Build a descriptor and immediately validate every cross-source binding."""
 
@@ -425,6 +756,14 @@ def render_descriptor(
     _positive_integer(workflow_run_attempt, label="workflow_run_attempt")
     if set(application_images) != set(APPLICATION_COMPONENTS):
         raise DescriptorError("render requires the exact application image set")
+    publications = _publication_objects(
+        publication_evidence_bytes,
+        repository=repository,
+        git_revision=git_revision,
+        source_manifest_sha256=source_manifest_sha256,
+        workflow_run_id=workflow_run_id,
+        workflow_run_attempt=workflow_run_attempt,
+    )
     images = {**application_images, **PINNED_RUNTIME_IMAGES}
     descriptor: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
@@ -442,12 +781,25 @@ def render_descriptor(
             "source_ref": PROMOTION_SOURCE_REF,
         },
         "images": images,
+        "application_image_config_digests": {
+            component: publications[component]["image_config_digest"]
+            for component in APPLICATION_COMPONENTS
+        },
+        "application_image_archive_sha256": {
+            component: publications[component]["archive_sha256"]
+            for component in APPLICATION_COMPONENTS
+        },
+        "publication_evidence_sha256": {
+            component: hashlib.sha256(publication_evidence_bytes[component]).hexdigest()
+            for component in APPLICATION_COMPONENTS
+        },
         "roles": dict(ROLE_COMPONENTS),
         "signing_policy": _expected_signing_policy(repository, git_revision),
     }
     _validate_descriptor_object(
         descriptor,
         release_evidence_bytes=release_evidence_bytes,
+        publication_evidence_bytes=publication_evidence_bytes,
         expected_repository=repository,
         expected_git_revision=git_revision,
         expected_source_manifest_sha256=source_manifest_sha256,
@@ -462,6 +814,7 @@ def verify_descriptor_bytes(
     data: bytes,
     *,
     release_evidence_bytes: bytes,
+    publication_evidence_bytes: dict[str, bytes],
     expected_repository: str,
     expected_git_revision: str,
     expected_source_manifest_sha256: str,
@@ -480,6 +833,7 @@ def verify_descriptor_bytes(
     _validate_descriptor_object(
         descriptor,
         release_evidence_bytes=release_evidence_bytes,
+        publication_evidence_bytes=publication_evidence_bytes,
         expected_repository=expected_repository,
         expected_git_revision=expected_git_revision,
         expected_source_manifest_sha256=expected_source_manifest_sha256,
@@ -543,15 +897,43 @@ def _common_expectation_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--source-manifest-sha256", required=True)
     parser.add_argument("--workflow-run-id", type=int, required=True)
     parser.add_argument("--workflow-run-attempt", type=int, required=True)
+
+
+def _descriptor_expectation_arguments(parser: argparse.ArgumentParser) -> None:
+    _common_expectation_arguments(parser)
     parser.add_argument("--release-evidence", type=Path, required=True)
+    parser.add_argument("--publication-directory", type=Path, required=True)
+
+
+def _read_publication_directory(directory: Path) -> dict[str, bytes]:
+    return {
+        component: _read_bounded(
+            directory / f"image-{component}.json",
+            label=f"publication evidence {component}",
+            maximum_size=MAX_PUBLICATION_EVIDENCE_BYTES,
+        )
+        for component in APPLICATION_COMPONENTS
+    }
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    publication = subparsers.add_parser(
+        "publication",
+        help="render canonical registry/config/archive publication evidence",
+    )
+    _common_expectation_arguments(publication)
+    publication.add_argument("--component", choices=APPLICATION_COMPONENTS, required=True)
+    publication.add_argument("--registry-image", required=True)
+    publication.add_argument("--image-config-digest", required=True)
+    publication.add_argument("--archive-sha256", required=True)
+    publication.add_argument("--output", type=Path, required=True)
+    publication.add_argument("--sha256-output", type=Path)
+
     render = subparsers.add_parser("render", help="render canonical descriptor bytes")
-    _common_expectation_arguments(render)
+    _descriptor_expectation_arguments(render)
     for component in APPLICATION_COMPONENTS:
         render.add_argument(f"--{component}-image", required=True)
     render.add_argument("--output", type=Path, required=True)
@@ -559,7 +941,7 @@ def _parser() -> argparse.ArgumentParser:
     render.add_argument("--compose-env-output", type=Path)
 
     verify = subparsers.add_parser("verify", help="verify canonical descriptor bytes")
-    _common_expectation_arguments(verify)
+    _descriptor_expectation_arguments(verify)
     verify.add_argument("descriptor", type=Path)
     verify.add_argument("--compose-env-output", type=Path)
     return parser
@@ -568,10 +950,35 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     try:
+        if args.command == "publication":
+            publication = render_publication_evidence(
+                component=args.component,
+                repository=args.repository,
+                git_revision=args.git_revision,
+                source_manifest_sha256=args.source_manifest_sha256,
+                workflow_run_id=args.workflow_run_id,
+                workflow_run_attempt=args.workflow_run_attempt,
+                registry_image=args.registry_image,
+                image_config_digest=args.image_config_digest,
+                archive_sha256=args.archive_sha256,
+            )
+            canonical = canonical_json_bytes(publication)
+            _write(args.output, canonical)
+            digest = hashlib.sha256(canonical).hexdigest()
+            if args.sha256_output is not None:
+                _write(
+                    args.sha256_output,
+                    f"{digest}  {args.output.name}\n".encode("ascii"),
+                )
+            print(digest)
+            return 0
         release_evidence_bytes = _read_bounded(
             args.release_evidence,
             label="release evidence",
             maximum_size=MAX_RELEASE_EVIDENCE_BYTES,
+        )
+        publication_evidence_bytes = _read_publication_directory(
+            args.publication_directory
         )
         if args.command == "render":
             application_images = {
@@ -586,6 +993,7 @@ def main() -> int:
                 workflow_run_attempt=args.workflow_run_attempt,
                 application_images=application_images,
                 release_evidence_bytes=release_evidence_bytes,
+                publication_evidence_bytes=publication_evidence_bytes,
             )
             canonical = canonical_json_bytes(descriptor)
             _write(args.output, canonical)
@@ -604,6 +1012,7 @@ def main() -> int:
             descriptor = verify_descriptor_bytes(
                 canonical,
                 release_evidence_bytes=release_evidence_bytes,
+                publication_evidence_bytes=publication_evidence_bytes,
                 expected_repository=args.repository,
                 expected_git_revision=args.git_revision,
                 expected_source_manifest_sha256=args.source_manifest_sha256,

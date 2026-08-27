@@ -57,15 +57,28 @@
   when its exact CVE/package/version/type tuple has a current ledger entry with severity,
   owner, rationale, mitigation, HTTPS source and review deadline; mismatch or expiry
   blocks release readiness.
-- Promotion input is canonical, digest-only JSON. It binds the final release-evidence
-  hash, Git/source-manifest identity, workflow run and attempt, four application image
-  manifests, three reviewed runtime manifests, exact Compose service roles and an
-  exact GitHub OIDC signer/attestation policy. Verification rejects tags, duplicate
-  keys, non-canonical encodings, unknown fields, digest reuse between components and
-  evidence from another source or run. Only a successfully verified descriptor may
-  produce the non-secret image environment consumed by `compose.registry.yml`, and
-  the runtime command must use `--no-build`. This repository contract does not itself
-  publish, sign, deploy or grant commercial or physical-machine authority.
+- Promotion input is canonical, digest-only descriptor v2 JSON. It binds the final
+  release-evidence hash, Git/source-manifest identity, workflow run and attempt, four
+  application registry manifests, component publication-evidence hashes, three
+  reviewed runtime deployment digests, exact Compose service roles and an exact
+  GitHub OIDC signer/attestation policy. Archive SHA-256, image config digest and
+  registry manifest digest remain separate identity domains: archive bytes are
+  checked across artifact transfer, config digest links load/runtime/scan to the raw
+  GHCR manifest, and the registry manifest is signed and attested as the sole
+  immutable subject eligible for a later external deployment. A local
+  daemon scan manifest is never equated with a registry manifest. OCI index-pinned
+  runtimes additionally prove the selected `linux/amd64` child manifest and config.
+  Verification rejects tags, duplicate keys, non-canonical encodings, unknown fields,
+  digest reuse between components and evidence from another source or run. Only a
+  successfully verified descriptor may produce the non-secret image environment
+  consumed by `compose.registry.yml`, and the runtime command must use `--no-build`.
+  The release workflow runs its unprivileged build/test path on pull requests but
+  keeps GHCR publication and descriptor generation main-push-only, reloads the same
+  archived image object instead of rebuilding it, and
+  applies exact-identity Cosign and GitHub artifact attestations. It emits promotion
+  input but never deploys. Branch protection,
+  protected environments, hosting and secrets remain external controls, and no
+  workflow result grants commercial or physical-machine authority.
 - A `design_review` lock proves only that the recorded software checks and named
   human review steps were completed. It is not a physical machine authorization;
   workshop evidence and external operator authority remain out of band.

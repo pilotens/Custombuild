@@ -10,12 +10,14 @@ from scripts.deploy_descriptor import (
     APPLICATION_COMPONENTS,
     EXPECTED_REGISTRY_OVERLAY,
     PINNED_RUNTIME_IMAGES,
+    PINNED_RUNTIME_SCAN_REFERENCES,
     ROLE_COMPONENTS,
     DescriptorError,
     canonical_json_bytes,
     compose_environment_bytes,
     registry_overlay_issues,
     render_descriptor,
+    render_publication_evidence,
     verify_descriptor_bytes,
 )
 
@@ -30,6 +32,34 @@ APPLICATION_DIGESTS = {
     "web": f"sha256:{'3' * 64}",
     "seaweedfs": f"sha256:{'4' * 64}",
 }
+APPLICATION_CONFIG_DIGESTS = {
+    "api": f"sha256:{'5' * 64}",
+    "worker": f"sha256:{'6' * 64}",
+    "web": f"sha256:{'7' * 64}",
+    "seaweedfs": f"sha256:{'8' * 64}",
+}
+APPLICATION_ARCHIVE_DIGESTS = {
+    "api": "9" * 64,
+    "worker": "a" * 64,
+    "web": "c" * 64,
+    "seaweedfs": "d" * 64,
+}
+LOCAL_APPLICATION_MANIFEST_DIGESTS = {
+    "api": f"sha256:{'a' * 64}",
+    "worker": f"sha256:{'b' * 64}",
+    "web": f"sha256:{'c' * 64}",
+    "seaweedfs": f"sha256:{'d' * 64}",
+}
+PINNED_PLATFORM_MANIFEST_DIGESTS = {
+    "postgres": f"sha256:{'e' * 64}",
+    "redis": f"sha256:{'f' * 64}",
+    "volume-init": f"sha256:{'0' * 64}",
+}
+PINNED_CONFIG_DIGESTS = {
+    "postgres": f"sha256:{'b' * 64}",
+    "redis": f"sha256:{'c' * 64}",
+    "volume-init": f"sha256:{'d' * 64}",
+}
 
 
 def application_images() -> dict[str, str]:
@@ -42,13 +72,15 @@ def application_images() -> dict[str, str]:
 
 
 def evidence_object() -> dict[str, object]:
-    runtime_digests = dict(APPLICATION_DIGESTS)
-    runtime_digests.update(
-        {
-            component: reference.split("@", 1)[1]
-            for component, reference in PINNED_RUNTIME_IMAGES.items()
-        }
-    )
+    platform_digests = {
+        **LOCAL_APPLICATION_MANIFEST_DIGESTS,
+        **PINNED_PLATFORM_MANIFEST_DIGESTS,
+    }
+    config_digests = {**APPLICATION_CONFIG_DIGESTS, **PINNED_CONFIG_DIGESTS}
+    deployment_digests = {
+        component: reference.split("@", 1)[1]
+        for component, reference in PINNED_RUNTIME_IMAGES.items()
+    }
     return {
         "schema_version": "custombuild.release-readiness-evidence.v1",
         "git_revision": REVISION,
@@ -60,7 +92,27 @@ def evidence_object() -> dict[str, object]:
             "schema_version": "custombuild.release-readiness-static.v2",
             "static_controls_ready": True,
         },
-        "runtime_manifest_digests": runtime_digests,
+        "runtime_image_config_digests": config_digests,
+        "runtime_platform_manifest_digests": platform_digests,
+        "runtime_deployment_reference_digests": deployment_digests,
+        "runtime_scan_inputs": {
+            **{
+                component: f"custombuild-{component}:{REVISION}"
+                for component in APPLICATION_COMPONENTS
+            },
+            **{
+                component: f"registry:{reference}"
+                for component, reference in PINNED_RUNTIME_SCAN_REFERENCES.items()
+            },
+        },
+        "runtime_registry_resolutions": {
+            component: {
+                "deployment_reference_digest": deployment_digests[component],
+                "runtime_platform_manifest_digest": platform_digests[component],
+                "image_config_digest": config_digests[component],
+            }
+            for component in PINNED_RUNTIME_IMAGES
+        },
         "unrelated_final_evidence_is_preserved": {"restore": "passed"},
     }
 
@@ -69,7 +121,35 @@ def evidence_bytes(value: dict[str, object] | None = None) -> bytes:
     return (json.dumps(value or evidence_object(), sort_keys=True, indent=2) + "\n").encode()
 
 
-def descriptor_for(evidence: bytes | None = None) -> dict[str, object]:
+def publication_bytes() -> dict[str, bytes]:
+    return {
+        component: canonical_json_bytes(
+            render_publication_evidence(
+                component=component,
+                repository=REPOSITORY,
+                git_revision=REVISION,
+                source_manifest_sha256=SOURCE_MANIFEST,
+                workflow_run_id=RUN_ID,
+                workflow_run_attempt=RUN_ATTEMPT,
+                registry_image=application_images()[component],
+                image_config_digest=APPLICATION_CONFIG_DIGESTS[component],
+                archive_sha256=APPLICATION_ARCHIVE_DIGESTS[component],
+            )
+        )
+        for component in APPLICATION_COMPONENTS
+    }
+
+
+def write_publication_directory(directory: Path) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    for component, payload in publication_bytes().items():
+        (directory / f"image-{component}.json").write_bytes(payload)
+
+
+def descriptor_for(
+    evidence: bytes | None = None,
+    publications: dict[str, bytes] | None = None,
+) -> dict[str, object]:
     return render_descriptor(
         repository=REPOSITORY,
         git_revision=REVISION,
@@ -78,13 +158,19 @@ def descriptor_for(evidence: bytes | None = None) -> dict[str, object]:
         workflow_run_attempt=RUN_ATTEMPT,
         application_images=application_images(),
         release_evidence_bytes=evidence or evidence_bytes(),
+        publication_evidence_bytes=publications or publication_bytes(),
     )
 
 
-def verify(data: bytes, evidence: bytes | None = None) -> dict[str, object]:
+def verify(
+    data: bytes,
+    evidence: bytes | None = None,
+    publications: dict[str, bytes] | None = None,
+) -> dict[str, object]:
     return verify_descriptor_bytes(
         data,
         release_evidence_bytes=evidence or evidence_bytes(),
+        publication_evidence_bytes=publications or publication_bytes(),
         expected_repository=REPOSITORY,
         expected_git_revision=REVISION,
         expected_source_manifest_sha256=SOURCE_MANIFEST,
@@ -115,7 +201,65 @@ def test_descriptor_is_deterministic_canonical_and_cross_bound() -> None:
         "sha256": hashlib.sha256(evidence).hexdigest(),
     }
     assert descriptor["images"] == {**application_images(), **PINNED_RUNTIME_IMAGES}
+    assert descriptor["application_image_config_digests"] == APPLICATION_CONFIG_DIGESTS
+    assert descriptor["application_image_archive_sha256"] == APPLICATION_ARCHIVE_DIGESTS
+    assert descriptor["publication_evidence_sha256"] == {
+        component: hashlib.sha256(payload).hexdigest()
+        for component, payload in publication_bytes().items()
+    }
+    assert descriptor["images"]["api"].split("@", 1)[1] != (
+        evidence_object()["runtime_platform_manifest_digests"]["api"]
+    )
     assert descriptor_for(evidence) == descriptor
+
+
+def test_publication_evidence_is_canonical_and_keeps_identity_domains_distinct() -> None:
+    publications = publication_bytes()
+    publication = json.loads(publications["api"])
+
+    assert publications["api"] == canonical_json_bytes(publication)
+    assert publication["registry_manifest_digest"] == APPLICATION_DIGESTS["api"]
+    assert publication["image_config_digest"] == APPLICATION_CONFIG_DIGESTS["api"]
+    assert publication["archive_sha256"] == APPLICATION_ARCHIVE_DIGESTS["api"]
+    assert len(
+        {
+            publication["registry_manifest_digest"],
+            publication["image_config_digest"],
+            f"sha256:{publication['archive_sha256']}",
+        }
+    ) == 3
+
+
+@pytest.mark.parametrize("identity", ("registry", "config", "archive"))
+def test_independent_publication_identity_mutations_invalidate_descriptor(
+    identity: str,
+) -> None:
+    canonical = canonical_json_bytes(descriptor_for())
+    publications = publication_bytes()
+    publication = json.loads(publications["api"])
+    if identity == "registry":
+        digest = f"sha256:{'9' * 64}"
+        publication["registry_manifest_digest"] = digest
+        publication["registry_image"] = (
+            f"ghcr.io/{REPOSITORY.lower()}-api@{digest}"
+        )
+    elif identity == "config":
+        publication["image_config_digest"] = f"sha256:{'9' * 64}"
+    else:
+        publication["archive_sha256"] = "8" * 64
+    publications["api"] = canonical_json_bytes(publication)
+
+    with pytest.raises(DescriptorError):
+        verify(canonical, publications=publications)
+
+
+def test_changed_publication_bytes_invalidate_descriptor_even_when_json_is_same() -> None:
+    canonical = canonical_json_bytes(descriptor_for())
+    publications = publication_bytes()
+    publications["api"] += b"\n"
+
+    with pytest.raises(DescriptorError, match="canonical"):
+        verify(canonical, publications=publications)
 
 
 def test_descriptor_is_independent_of_application_mapping_insertion_order() -> None:
@@ -129,6 +273,7 @@ def test_descriptor_is_independent_of_application_mapping_insertion_order() -> N
         workflow_run_attempt=RUN_ATTEMPT,
         application_images=reversed_images,
         release_evidence_bytes=evidence_bytes(),
+        publication_evidence_bytes=publication_bytes(),
     )
 
     assert canonical_json_bytes(rendered) == canonical_json_bytes(descriptor_for())
@@ -187,7 +332,7 @@ def test_compose_environment_rejects_unverified_role_or_repository(
 @pytest.mark.parametrize(
     ("path", "replacement"),
     (
-        (("schema_version",), "custombuild.deploy-descriptor.v2"),
+        (("schema_version",), "custombuild.deploy-descriptor.v3"),
         (("repository",), "another/Repository"),
         (("git_revision",), "c" * 40),
         (("source_manifest_sha256",), "c" * 64),
@@ -209,6 +354,9 @@ def test_compose_environment_rejects_unverified_role_or_repository(
             f"ghcr.io/pilotens/custombuild-api@SHA256:{'1' * 64}",
         ),
         (("images", "worker"), application_images()["api"]),
+        (("application_image_config_digests", "api"), f"sha256:{'9' * 64}"),
+        (("application_image_archive_sha256", "api"), "8" * 64),
+        (("publication_evidence_sha256", "api"), "7" * 64),
         (
             ("images", "postgres"),
             f"cgr.dev/chainguard/postgres@sha256:{'9' * 64}",
@@ -260,6 +408,9 @@ def test_descriptor_mutations_fail_closed(
     (
         ((), "roles"),
         (("images",), "api"),
+        (("application_image_config_digests",), "api"),
+        (("application_image_archive_sha256",), "api"),
+        (("publication_evidence_sha256",), "api"),
         (("roles",), "migrate"),
         (("signing_policy",), "cosign"),
         (("signing_policy", "github_attestations"), "source_digest"),
@@ -280,7 +431,15 @@ def test_descriptor_rejects_missing_fields(path: tuple[str, ...], key: str) -> N
 
 @pytest.mark.parametrize(
     "path",
-    ((), ("images",), ("roles",), ("signing_policy", "cosign")),
+    (
+        (),
+        ("images",),
+        ("application_image_config_digests",),
+        ("application_image_archive_sha256",),
+        ("publication_evidence_sha256",),
+        ("roles",),
+        ("signing_policy", "cosign"),
+    ),
 )
 def test_descriptor_rejects_unknown_fields(path: tuple[str, ...]) -> None:
     descriptor = copy.deepcopy(descriptor_for())
@@ -341,7 +500,12 @@ def test_descriptor_rejects_oversized_input() -> None:
         (("commercial_release_ready",), True),
         (("physical_machine_release_ready",), True),
         (("static_report", "static_controls_ready"), False),
-        (("runtime_manifest_digests", "api"), f"sha256:{'9' * 64}"),
+        (("runtime_deployment_reference_digests", "postgres"), f"sha256:{'9' * 64}"),
+        (("runtime_image_config_digests", "api"), f"sha256:{'9' * 64}"),
+        (
+            ("runtime_registry_resolutions", "redis", "runtime_platform_manifest_digest"),
+            f"sha256:{'9' * 64}",
+        ),
     ),
 )
 def test_render_rejects_cross_source_or_unsafe_release_evidence(
@@ -355,14 +519,26 @@ def test_render_rejects_cross_source_or_unsafe_release_evidence(
         descriptor_for(evidence_bytes(evidence))
 
 
-@pytest.mark.parametrize("component", ("api", "postgres"))
-def test_render_requires_complete_release_evidence_image_set(component: str) -> None:
+@pytest.mark.parametrize(
+    ("mapping", "component"),
+    (
+        ("runtime_platform_manifest_digests", "api"),
+        ("runtime_deployment_reference_digests", "postgres"),
+        ("runtime_image_config_digests", "api"),
+        ("runtime_scan_inputs", "api"),
+        ("runtime_registry_resolutions", "redis"),
+    ),
+)
+def test_render_requires_complete_release_evidence_image_set(
+    mapping: str,
+    component: str,
+) -> None:
     evidence = evidence_object()
-    manifests = evidence["runtime_manifest_digests"]
+    manifests = evidence[mapping]
     assert isinstance(manifests, dict)
     del manifests[component]
 
-    with pytest.raises(DescriptorError, match="runtime image set"):
+    with pytest.raises(DescriptorError):
         descriptor_for(evidence_bytes(evidence))
 
 
@@ -384,7 +560,9 @@ def test_cli_renders_verifies_and_emits_only_digest_refs(
     descriptor = tmp_path / "deploy-descriptor.json"
     descriptor_sha = tmp_path / "deploy-descriptor.sha256"
     environment = tmp_path / "deploy-images.env"
+    publication_directory = tmp_path / "published"
     release_evidence.write_bytes(evidence_bytes())
+    write_publication_directory(publication_directory)
     image_arguments = [
         argument
         for component, reference in application_images().items()
@@ -403,6 +581,8 @@ def test_cli_renders_verifies_and_emits_only_digest_refs(
         str(RUN_ATTEMPT),
         "--release-evidence",
         str(release_evidence),
+        "--publication-directory",
+        str(publication_directory),
     ]
     monkeypatch.setattr(
         "sys.argv",
@@ -442,6 +622,50 @@ def test_cli_renders_verifies_and_emits_only_digest_refs(
     assert environment.read_bytes() == compose_environment_bytes(descriptor_for())
 
 
+def test_cli_renders_canonical_publication_and_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "image-api.json"
+    checksum = tmp_path / "image-api.sha256"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "deploy_descriptor.py",
+            "publication",
+            "--component",
+            "api",
+            "--repository",
+            REPOSITORY,
+            "--git-revision",
+            REVISION,
+            "--source-manifest-sha256",
+            SOURCE_MANIFEST,
+            "--workflow-run-id",
+            str(RUN_ID),
+            "--workflow-run-attempt",
+            str(RUN_ATTEMPT),
+            "--registry-image",
+            application_images()["api"],
+            "--image-config-digest",
+            APPLICATION_CONFIG_DIGESTS["api"],
+            "--archive-sha256",
+            APPLICATION_ARCHIVE_DIGESTS["api"],
+            "--output",
+            str(output),
+            "--sha256-output",
+            str(checksum),
+        ],
+    )
+
+    assert deploy_descriptor.main() == 0
+    digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    assert capsys.readouterr().out.strip() == digest
+    assert output.read_bytes() == publication_bytes()["api"]
+    assert checksum.read_text(encoding="ascii") == f"{digest}  image-api.json\n"
+
+
 def test_cli_rejection_does_not_emit_compose_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -450,7 +674,9 @@ def test_cli_rejection_does_not_emit_compose_environment(
     release_evidence = tmp_path / "release-evidence.json"
     descriptor = tmp_path / "deploy-descriptor.json"
     environment = tmp_path / "deploy-images.env"
+    publication_directory = tmp_path / "published"
     release_evidence.write_bytes(evidence_bytes())
+    write_publication_directory(publication_directory)
     descriptor.write_bytes(canonical_json_bytes(descriptor_for()) + b"\n")
     monkeypatch.setattr(
         "sys.argv",
@@ -469,6 +695,8 @@ def test_cli_rejection_does_not_emit_compose_environment(
             str(RUN_ATTEMPT),
             "--release-evidence",
             str(release_evidence),
+            "--publication-directory",
+            str(publication_directory),
             str(descriptor),
             "--compose-env-output",
             str(environment),

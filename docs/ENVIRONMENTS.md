@@ -41,10 +41,15 @@ Environment promotion must reuse the tested image digest and change only validat
 forbids the public local demo credential and fails closed on HTTP or partial OIDC
 configuration.
 
-The checked-in `compose.registry.yml` is the digest-only image-role overlay for a
-future protected promotion workflow. Its four application references may come only
-from `scripts/deploy_descriptor.py verify`; PostgreSQL, Redis and volume-init remain
-fixed to the reviewed digests. Combine it with the base and external-production files
-and run `up --no-build` so environment promotion cannot rebuild source or resolve a
-tag. The overlay is a static contract, not evidence that a registry, environment or
-deployment has already been provisioned.
+The checked-in `compose.registry.yml` is the digest-only image-role overlay consumed
+by the verified artifact from the main-push-only publication stage. Its four
+application references may come only from `scripts/deploy_descriptor.py verify`;
+PostgreSQL, Redis and volume-init remain fixed to the reviewed digests. Combine it
+with the base and external-production files and run `up --no-build` so environment
+promotion cannot rebuild source or resolve a tag. The workflow publishes, signs and
+attests the accepted GHCR manifests, but does not deploy them. A protected production
+environment, hosting and its operational evidence remain external prerequisites.
+Descriptor v2 keeps the archived object checksum, the accepted image config digest
+and the published registry manifest digest as distinct identities. For a pinned OCI
+index it also records the resolved `linux/amd64` child manifest; operators must not
+substitute that child digest for the reviewed deployment index digest.

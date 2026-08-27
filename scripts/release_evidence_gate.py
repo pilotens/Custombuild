@@ -118,6 +118,11 @@ REVISION = re.compile(r"^[a-f0-9]{40}$")
 SYFT_CREATOR = re.compile(r"^Tool: syft-[^\s]+$")
 SYFT_PACKAGE_ID = re.compile(r"^[a-f0-9]{16}$")
 GRYPE_VERSION = "0.110.0"
+REGISTRY_RESOLUTION_KEYS = {
+    "deployment_reference_digest",
+    "runtime_platform_manifest_digest",
+    "image_config_digest",
+}
 
 
 class EvidenceError(RuntimeError):
@@ -191,8 +196,16 @@ def _expected_image_reference(component: str, revision: str) -> str:
     return EXTERNAL_IMAGE_REFERENCES[component]
 
 
-def _expected_scan_input(component: str, revision: str) -> str:
-    return _expected_image_reference(component, revision)
+def _expected_scan_input(
+    component: str,
+    revision: str,
+    *,
+    pinned_registry_inputs: bool = False,
+) -> str:
+    reference = _expected_image_reference(component, revision)
+    if pinned_registry_inputs and component in EXTERNAL_IMAGE_REFERENCES:
+        return f"registry:{reference}"
+    return reference
 
 
 def _expected_sbom_root_identity(component: str, revision: str) -> tuple[str, str, str]:
@@ -214,6 +227,8 @@ def _verify_sboms(
     directory: Path,
     images: list[dict[str, Any]],
     revision: str,
+    *,
+    pinned_registry_inputs: bool = False,
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     expected_names = {f"sbom-{component}.spdx.json" for component in REQUIRED_IMAGES}
     try:
@@ -333,7 +348,11 @@ def _verify_sboms(
         root = next(package for package in packages if package.get("SPDXID") == root_spdx_id)
         if root.get("primaryPackagePurpose") != "CONTAINER":
             raise EvidenceError(f"runtime SBOM {component} root is not a container")
-        expected_input = _expected_scan_input(component, revision)
+        expected_input = _expected_scan_input(
+            component,
+            revision,
+            pinned_registry_inputs=pinned_registry_inputs,
+        )
         expected_name, expected_version, expected_tag = _expected_sbom_root_identity(
             component, revision
         )
@@ -503,6 +522,7 @@ def build_final_report(
     restore_evidence_path: Path,
     runtime_evidence_path: Path,
     sbom_directory: Path,
+    pinned_registry_inputs: bool = False,
 ) -> dict[str, Any]:
     repo = repo.resolve()
     _assert_clean_repository(repo)
@@ -623,7 +643,11 @@ def build_final_report(
             raise EvidenceError(f"runtime image {component} has no exact image ID")
         if image_reference != _expected_image_reference(component, revision):
             raise EvidenceError(f"runtime image {component} has another image reference")
-        if scan_input != _expected_scan_input(component, revision):
+        if scan_input != _expected_scan_input(
+            component,
+            revision,
+            pinned_registry_inputs=pinned_registry_inputs,
+        ):
             raise EvidenceError(f"runtime image {component} has another scan input")
         if not isinstance(manifest_digest, str) or not IMAGE_ID.fullmatch(manifest_digest):
             raise EvidenceError(f"runtime image {component} has no exact manifest digest")
@@ -633,14 +657,64 @@ def build_final_report(
             raise EvidenceError(f"runtime image {component} has no SBOM digest")
         if item.get("scan_status") != "PASS":
             raise EvidenceError(f"runtime image {component} did not pass vulnerability scanning")
+        registry_resolution = item.get("registry_resolution")
+        if component in EXTERNAL_IMAGE_REFERENCES and pinned_registry_inputs:
+            if (
+                not isinstance(registry_resolution, dict)
+                or set(registry_resolution) != REGISTRY_RESOLUTION_KEYS
+            ):
+                raise EvidenceError(
+                    f"runtime image {component} has no exact registry resolution"
+                )
+            deployment_digest = str(image_reference).rsplit("@", 1)[-1]
+            if registry_resolution.get("deployment_reference_digest") != deployment_digest:
+                raise EvidenceError(
+                    f"runtime image {component} has another deployment reference digest"
+                )
+            if registry_resolution.get("runtime_platform_manifest_digest") != manifest_digest:
+                raise EvidenceError(
+                    f"runtime image {component} has another platform manifest digest"
+                )
+            if registry_resolution.get("image_config_digest") != image_id:
+                raise EvidenceError(
+                    f"runtime image {component} has another registry config digest"
+                )
+        elif registry_resolution is not None:
+            raise EvidenceError(
+                f"runtime image {component} has unexpected registry resolution evidence"
+            )
         components.add(component)
     if components != REQUIRED_IMAGES:
         raise EvidenceError("runtime evidence does not cover the exact required image set")
-    sbom_sha256, sbom_identities = _verify_sboms(sbom_directory, images, revision)
+    sbom_sha256, sbom_identities = _verify_sboms(
+        sbom_directory,
+        images,
+        revision,
+        pinned_registry_inputs=pinned_registry_inputs,
+    )
     scan_sha256 = _verify_scans(sbom_directory, images, sbom_identities)
     seaweed = next(item for item in images if item.get("component") == "seaweedfs")
     if seaweed.get("image_id") != object_store.get("image_id"):
         raise EvidenceError("scanned SeaweedFS image differs from backup and restore")
+
+    image_config_digests = {
+        str(item["component"]): str(item["image_id"])
+        for item in sorted(images, key=lambda entry: str(entry["component"]))
+    }
+    platform_manifest_digests = {
+        component: str(identity["manifest_digest"])
+        for component, identity in sorted(sbom_identities.items())
+    }
+    deployment_reference_digests = {
+        component: reference.rsplit("@", 1)[1]
+        for component, reference in sorted(EXTERNAL_IMAGE_REFERENCES.items())
+    }
+    registry_resolutions = {
+        str(item["component"]): dict(item["registry_resolution"])
+        for item in sorted(images, key=lambda entry: str(entry["component"]))
+        if item["component"] in EXTERNAL_IMAGE_REFERENCES
+        and isinstance(item.get("registry_resolution"), dict)
+    }
 
     return {
         "schema_version": FINAL_SCHEMA,
@@ -653,10 +727,8 @@ def build_final_report(
         "backup_manifest_schema": MANIFEST_SCHEMA,
         "restore_evidence_schema": RESTORE_SCHEMA,
         "runtime_evidence_schema": RUNTIME_SCHEMA,
-        "runtime_image_ids": {
-            str(item["component"]): str(item["image_id"])
-            for item in sorted(images, key=lambda entry: str(entry["component"]))
-        },
+        "runtime_image_ids": image_config_digests,
+        "runtime_image_config_digests": image_config_digests,
         "runtime_image_references": {
             str(item["component"]): str(item["image_reference"])
             for item in sorted(images, key=lambda entry: str(entry["component"]))
@@ -667,10 +739,10 @@ def build_final_report(
         },
         "runtime_sbom_sha256": sbom_sha256,
         "runtime_scan_sha256": scan_sha256,
-        "runtime_manifest_digests": {
-            component: str(identity["manifest_digest"])
-            for component, identity in sorted(sbom_identities.items())
-        },
+        "runtime_manifest_digests": platform_manifest_digests,
+        "runtime_platform_manifest_digests": platform_manifest_digests,
+        "runtime_deployment_reference_digests": deployment_reference_digests,
+        "runtime_registry_resolutions": registry_resolutions,
     }
 
 
@@ -683,6 +755,11 @@ def main() -> int:
     parser.add_argument("--runtime-evidence", type=Path, required=True)
     parser.add_argument("--sbom-directory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--pinned-registry-inputs",
+        action="store_true",
+        help="require registry-sourced evidence and OCI index resolution for pinned images",
+    )
     arguments = parser.parse_args()
     report = build_final_report(
         arguments.repo,
@@ -691,6 +768,7 @@ def main() -> int:
         restore_evidence_path=arguments.restore_evidence,
         runtime_evidence_path=arguments.runtime_evidence,
         sbom_directory=arguments.sbom_directory,
+        pinned_registry_inputs=arguments.pinned_registry_inputs,
     )
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
     arguments.output.write_text(

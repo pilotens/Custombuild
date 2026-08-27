@@ -2,7 +2,7 @@
 # Always invoke this overlay with `docker compose ... up --no-build`.
 x-custombuild-registry-contract:
   schema-version: custombuild.compose-registry.v1
-  descriptor-schema-version: custombuild.deploy-descriptor.v1
+  descriptor-schema-version: custombuild.deploy-descriptor.v2
   required-up-flag: --no-build
 
 services:
