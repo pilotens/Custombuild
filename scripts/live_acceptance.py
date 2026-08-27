@@ -111,9 +111,12 @@ BLOCKED_CAM_REQUIRED_ACTIONS: Final = {
         "do not infer WCS, pins, fixtures or registration coordinates."
     ),
     DADO_RETENTION_EVIDENCE_MISSING: (
-        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
-        "retention system for every DADO joint; a review acknowledgement, adhesive or "
-        "geometric bearing check is not retention evidence."
+        "The current MVP cannot resolve this blocker because it has no authenticated "
+        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
+        "checksum-addressed mechanical retention contract to every DADO joint, including "
+        "exact geometry, hardware quantity, material/thickness applicability and separate "
+        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
+        "bearing check is not retention evidence."
     ),
 }
 GENERATED_REVIEW_REQUIRED_ACTION: Final = (

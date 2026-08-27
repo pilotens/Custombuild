@@ -13,6 +13,7 @@ interface PerformanceBudget {
       bay_count: number;
       shelf_count: number;
       base_cabinet_count: number;
+      expected_part_count: number;
     };
   };
   budgets: {
@@ -110,7 +111,9 @@ test("records the warm interaction baseline without timing first WebGL compilati
   await expect(bayCount).toHaveText(String(budget.fixtures.normal_5x5.bay_count));
   await expect(page.locator("output[aria-label='Hyllnivåer']"))
     .toHaveText(String(budget.fixtures.normal_5x5.shelf_count));
-  await expect(partPicker.locator("option")).toHaveCount(50);
+  await expect(partPicker.locator("option")).toHaveCount(
+    budget.fixtures.normal_5x5.expected_part_count + 1,
+  );
   await waitForTwoFrames(page);
 
   // One complete warmup per path keeps shader compilation and first lazy render out of samples.
