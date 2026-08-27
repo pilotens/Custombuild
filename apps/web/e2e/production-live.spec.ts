@@ -29,7 +29,7 @@ const SERVER_WARNING_PATHS = [
 
 const REVIEW_WARNING_PATHS = SERVER_WARNING_PATHS;
 
-const STOCKLESS_BLOCK_PATHS = [
+const SCREENED_STOCK_PASS_PATHS = [
   { ruleId: "DFM-MACHINE-001", ruleVersion: "1.0.0", title: "Maskinens arbetsområde" },
   { ruleId: "DFM-STOCK-001", ruleVersion: "1.0.0", title: "Delar ryms i råmaterial" },
 ] as const;
@@ -200,18 +200,14 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   await expect(validationPanel).toBeVisible({
     timeout: 30_000,
   });
-  const stocklessBlocks = validationPanel.locator(".validation-card.validation-block");
-  await expect(stocklessBlocks).toHaveCount(STOCKLESS_BLOCK_PATHS.length);
-  for (const blocker of STOCKLESS_BLOCK_PATHS) {
-    const card = stocklessBlocks.filter({
-      hasText: `Regel ${blocker.ruleId} · version ${blocker.ruleVersion}`,
+  await expect(validationPanel.locator(".validation-card.validation-block")).toHaveCount(0);
+  const screenedStockPasses = validationPanel.locator(".validation-card.validation-pass");
+  for (const screenedPath of SCREENED_STOCK_PASS_PATHS) {
+    const card = screenedStockPasses.filter({
+      hasText: `Regel ${screenedPath.ruleId} · version ${screenedPath.ruleVersion}`,
     });
     await expect(card).toHaveCount(1);
-    await expect(card.getByText(blocker.title, { exact: true })).toBeVisible();
-    await expect(card.getByRole("button", {
-      name: `Åtgärda problem för ${blocker.title}: öppna Lagerobundet granskningspaket`,
-      exact: true,
-    })).toBeVisible();
+    await expect(card.getByText(screenedPath.title, { exact: true })).toBeVisible();
   }
   const reviewWarnings = validationPanel.locator(".validation-card.validation-warning");
   await expect(reviewWarnings).toHaveCount(REVIEW_WARNING_PATHS.length);
@@ -225,10 +221,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
       await expect(warning.locator(".validation-actions").getByRole("button")).toHaveCount(0);
     }
   }
-  await stocklessBlocks
-    .filter({ hasText: "Regel DFM-STOCK-001 · version 1.0.0" })
-    .getByRole("button", { name: /Åtgärda problem/ })
-    .click();
+  await modes.getByRole("button", { name: /Underlag/ }).click();
   const productionDialog = page.locator("section.production-drawer-embedded");
   await expect(productionDialog).toBeVisible();
   await expect(productionDialog.locator("#production-next-action-heading"))
@@ -239,7 +232,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   // construction summary that remains visible across the mode transition.
   await expect(page.getByTestId("current-design-label").getByText("1800 × 2100 × 320 mm", { exact: true }))
     .toBeVisible();
-  console.log("production-live: stockless manufacturing review visible");
+  console.log("production-live: manufacturing review visible");
 
   const save = page.getByRole("button", {
     name: "Spara för lagerobunden granskning",
