@@ -3,6 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import {
   provisionLiveProject,
   selectProjectBeforeNavigation,
+  waitForLiveWorkspaceReady,
   waitForSuccessfulProjectDraftSave,
 } from "./live-helpers";
 import { openReferencePlanning } from "./planning-helpers";
@@ -175,9 +176,7 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
   await page.setViewportSize({ width: 1_280, height: 900 });
   const response = await page.goto("/", { waitUntil: "domcontentloaded" });
   expect(response?.status()).toBe(200);
-  await expect(page.getByRole("combobox", { name: "Aktivt projekt" })).toHaveValue(wallProject.project.id, {
-    timeout: 30_000,
-  });
+  await waitForLiveWorkspaceReady(page, wallProject.project.id);
   const initialDraftSave = waitForSuccessfulProjectDraftSave(page, wallProject.project.id, {
     furniture_type: "wall_library",
     width_mm: 4_200,
