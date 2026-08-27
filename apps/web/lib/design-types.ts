@@ -9,6 +9,54 @@ export type DesignStatus =
 
 export type JointSystem = "dado";
 export type ReinforcementMode = "manual" | "auto";
+export type FurnitureType = "bookcase" | "wall_library";
+export type BaySizingMode = "count" | "target_width";
+
+export interface ReferenceImageConfirmedInputs {
+  dimensions_measured: boolean;
+  layout_confirmed: boolean;
+  material_confirmed: boolean;
+  construction_assumptions_confirmed: boolean;
+}
+
+export interface ReferenceImageImport {
+  source: "reference_image";
+  /** Server-issued identity of the immutable image bytes in this project. */
+  import_id: string;
+  /** Server-computed SHA-256 for offline provenance verification. */
+  image_sha256: string;
+  file_name: string;
+  image_width_px: number;
+  image_height_px: number;
+  confidence: number;
+  detected_shelves: number;
+  detected_dividers: number;
+  detected_base_cabinets: boolean;
+  warnings: string[];
+  /** Concept provenance never grants production authority by itself. */
+  verification_status?: "concept" | "parametric_confirmed";
+  confirmed_inputs?: ReferenceImageConfirmedInputs;
+  /** Fingerprint of the exact parametric inputs the confirmations apply to. */
+  verified_model_fingerprint?: string;
+}
+
+export interface PartOverride {
+  width_mm?: number;
+  depth_mm?: number;
+  thickness_mm?: number;
+  position_x_mm?: number;
+  position_y_mm?: number;
+  position_z_mm?: number;
+}
+
+export interface TopologyBaseline {
+  divider_count: number;
+  shelf_count: number;
+  base_cabinet_count: number;
+  bay_width_ratios: number[];
+  shelf_height_ratios: number[];
+  reinforcement_mode: ReinforcementMode;
+}
 
 /**
  * The flat API contract used by POST /v1/designs/preview and /v1/designs/autofix.
@@ -19,6 +67,7 @@ export interface DesignSpec {
   schema_version: "1.0";
   design_id: string;
   revision: number;
+  furniture_type: FurnitureType;
   width_mm: number;
   height_mm: number;
   depth_mm: number;
@@ -32,6 +81,25 @@ export interface DesignSpec {
   back_panel: boolean;
   plinth: boolean;
   divider_count: number;
+  /** Workspace intent. Production APIs receive only the deterministically resolved divider count. */
+  bay_sizing_mode: BaySizingMode;
+  /** Desired minimum clear width for equal bays when bay_sizing_mode is target_width. */
+  target_bay_width_mm: number;
+  /** Frontend concept layout. Empty arrays mean the production-screened equal grid. */
+  bay_width_ratios: number[];
+  shelf_height_ratios: number[];
+  /** Keeps the visible grid mirrored around the furniture centre lines. Frontend-only. */
+  symmetry_locked: boolean;
+  /** Immutable source provenance; inferred geometry remains a reviewed concept until confirmed. */
+  reference_image_import?: ReferenceImageImport;
+  /** Frontend concept edits for individual generated boards. Never sent to production APIs. */
+  part_overrides: Record<string, PartOverride>;
+  removed_part_ids: string[];
+  /** Snapshot used to restore topology-aware removals of dividers, shelf rows and cabinet modules. */
+  topology_baseline?: TopologyBaseline;
+  base_cabinet_height_mm: number;
+  base_cabinet_depth_mm: number;
+  base_cabinet_count: number;
   reinforcement_mode: ReinforcementMode;
   joint_system: JointSystem;
   edge_band_mm: number;
@@ -76,7 +144,18 @@ export interface ManufacturingFeature {
 export interface ResolvedPart {
   part_id: string;
   name: string;
-  kind: "side" | "top" | "bottom" | "shelf" | "back" | "plinth" | "divider";
+  kind:
+    | "side"
+    | "top"
+    | "bottom"
+    | "shelf"
+    | "back"
+    | "plinth"
+    | "divider"
+    | "base_side"
+    | "base_bottom"
+    | "base_top"
+    | "cabinet_front";
   width_mm: number;
   depth_mm: number;
   thickness_mm: number;
@@ -128,7 +207,13 @@ export interface NestingResult {
 }
 
 export interface RuleSuggestion {
-  action: "set_divider_count" | "enable_back" | "verify_wall_anchor";
+  action:
+    | "set_divider_count"
+    | "align_base_cabinets"
+    | "enable_back"
+    | "create_stockless_review_package"
+    | "verify_wall_anchor"
+    | "manual_review";
   label: string;
   value: number | boolean;
   explanation: string;
@@ -147,6 +232,7 @@ export interface RuleEvaluation {
   margin_percent?: number;
   assumptions: string[];
   affected_part_ids: string[];
+  diagnostics?: Array<{ label: string; value: string; unit?: string }>;
   suggestion?: RuleSuggestion;
 }
 
@@ -202,12 +288,19 @@ export const MACHINES: readonly MachineDefinition[] = [
     workAreaMm: { x: 2_500, y: 1_300, z: 150 },
     supportedFeatures: ["outline", "drill", "groove", "pocket", "label"],
   },
+  {
+    id: "custombuild-router-5125-linuxcnc",
+    name: "Custombuild Router 5125 / LinuxCNC (storformatsvalidering)",
+    workAreaMm: { x: 5_100, y: 2_600, z: 150 },
+    supportedFeatures: ["outline", "drill", "groove", "pocket", "label"],
+  },
 ] as const;
 
 export const DEFAULT_DESIGN_SPEC: DesignSpec = {
   schema_version: "1.0",
   design_id: "demo-bokhylla-001",
   revision: 1,
+  furniture_type: "bookcase",
   width_mm: 1_200,
   height_mm: 2_100,
   depth_mm: 320,
@@ -221,7 +314,17 @@ export const DEFAULT_DESIGN_SPEC: DesignSpec = {
   back_panel: true,
   plinth: true,
   divider_count: 0,
-  reinforcement_mode: "manual",
+  bay_sizing_mode: "count",
+  target_bay_width_mm: 300,
+  bay_width_ratios: [],
+  shelf_height_ratios: [],
+  symmetry_locked: true,
+  part_overrides: {},
+  removed_part_ids: [],
+  base_cabinet_height_mm: 0,
+  base_cabinet_depth_mm: 0,
+  base_cabinet_count: 0,
+  reinforcement_mode: "auto",
   joint_system: "dado",
   edge_band_mm: 1,
   wall_anchor_verified: false,

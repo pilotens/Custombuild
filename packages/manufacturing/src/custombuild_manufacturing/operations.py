@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from typing import Never
 
 from .dfm import (
     FEATURE_TO_OPERATION,
@@ -15,6 +17,8 @@ from .dfm import (
 from .errors import ProductionBlockedError
 from .model import (
     CAMOperation,
+    DFMIssue,
+    DFMReport,
     FeatureKind,
     MachineProfile,
     NestingLayout,
@@ -24,13 +28,27 @@ from .model import (
     PartSpec,
     Point2D,
     Setup,
+    Severity,
     Side,
     coerce_part_instances,
 )
 from .profiles import tool_catalog_fingerprint
 
-OPERATIONS_SCHEMA_VERSION = "custombuild.operations.v1"
-OPERATIONS_ENGINE_VERSION = "semantic-operations-1.0.0"
+OPERATIONS_SCHEMA_VERSION = "custombuild.operations.v2"
+OPERATIONS_ENGINE_VERSION = "semantic-operations-1.2.0"
+SETUP_PLAN_ENGINE_VERSION = "setup-plan-1.0.0"
+
+
+@dataclass(frozen=True, slots=True)
+class TwoSidedRegistration:
+    """Caller-declared stock coordinates for a two-sided validation setup.
+
+    The plan deliberately carries no inferred pin diameter, fixture, WCS or
+    physical approval. Coordinates are micrometres in the stock XY frame.
+    """
+
+    method_id: str
+    points: tuple[Point2D, ...]
 
 
 def generate_operations_document(
@@ -40,6 +58,7 @@ def generate_operations_document(
     layout: NestingLayout,
     machine: MachineProfile,
     validate: bool = True,
+    two_sided_registration_by_sheet: Mapping[int, TwoSidedRegistration] | None = None,
 ) -> OperationsDocument:
     instances = coerce_part_instances(parts)
 
@@ -53,17 +72,36 @@ def generate_operations_document(
             )
 
     instance_by_id = {item.instance_id: item for item in instances}
-    setup_operations: dict[tuple[int, Side], list[CAMOperation]] = defaultdict(list)
-
-    for placement in sorted(
-        layout.placements,
-        key=lambda item: (item.sheet_index, item.y_um, item.x_um, item.instance_id),
-    ):
+    sides_by_sheet: dict[int, set[Side]] = defaultdict(set)
+    for placement in layout.placements:
         instance = instance_by_id.get(placement.instance_id)
         if instance is None:
             raise ProductionBlockedError(
                 f"placement references unknown instance {placement.instance_id}"
             )
+        sides_by_sheet[placement.sheet_index].update(
+            feature.side for feature in instance.part.features if feature.side != Side.EDGE
+        )
+
+    registrations: dict[int, TwoSidedRegistration] = {}
+    for sheet_index, sides in sorted(sides_by_sheet.items()):
+        if not {Side.A, Side.B} <= sides:
+            continue
+        plan = (two_sided_registration_by_sheet or {}).get(sheet_index)
+        registrations[sheet_index] = _require_two_sided_registration(
+            layout,
+            sheet_index,
+            plan,
+        )
+
+    setup_operations: dict[tuple[int, Side], list[CAMOperation]] = defaultdict(list)
+    release_operation_ids: set[str] = set()
+
+    for placement in sorted(
+        layout.placements,
+        key=lambda item: (item.sheet_index, item.y_um, item.x_um, item.instance_id),
+    ):
+        instance = instance_by_id[placement.instance_id]
         for feature in sorted(instance.part.features, key=lambda item: item.feature_id):
             if feature.side == Side.EDGE:
                 raise ProductionBlockedError(
@@ -114,6 +152,7 @@ def generate_operations_document(
                             source_rotation_90=placement.rotated_90,
                             corner_strategy=feature.corner_strategy,
                             corner_relief_radius_um=feature.corner_relief_radius_um,
+                            open_end_reliefs=feature.open_end_reliefs,
                             tolerance_um=feature.tolerance_um,
                             fit_clearance_um=feature.fit_clearance_um,
                         )
@@ -125,59 +164,107 @@ def generate_operations_document(
                     layout.stock.height_um,
                     feature.side,
                 )
-                setup_operations[(placement.sheet_index, feature.side)].append(
-                    CAMOperation(
-                        operation_id=f"op:{placement.instance_id}:{feature.feature_id}",
-                        setup_id=setup_id,
-                        part_id=instance.part.part_id,
-                        instance_id=placement.instance_id,
-                        feature_id=feature.feature_id,
-                        kind=operation_kind,
-                        side=feature.side,
-                        tool_id=tool.tool_id,
-                        x_um=transformed.x_um,
-                        y_um=transformed.y_um,
-                        depth_um=feature.depth_um,
-                        diameter_um=feature.diameter_um,
-                        width_um=transformed.width_um,
-                        length_um=transformed.height_um,
-                        stepdown_um=min(
-                            feature.depth_um, max(500, tool.effective_diameter_um // 2)
-                        ),
-                        stepover_ppm=400_000
-                        if operation_kind.value in {"POCKET", "GROOVE"}
-                        else None,
-                        through=feature.through,
-                        source_rotation_90=placement.rotated_90,
-                        compensation=str(feature.metadata.get("compensation"))
-                        if feature.metadata.get("compensation")
-                        else None,
-                        holding_strategy=str(feature.metadata.get("holding_strategy"))
-                        if feature.metadata.get("holding_strategy")
-                        else None,
-                        corner_strategy=feature.corner_strategy,
-                        corner_relief_radius_um=feature.corner_relief_radius_um,
-                        tolerance_um=feature.tolerance_um,
-                        fit_clearance_um=feature.fit_clearance_um,
-                    )
+                cutter_envelope = transform_rect_to_machine(
+                    feature.machining_bounds(),
+                    placement,
+                    layout.stock.height_um,
+                    feature.side,
                 )
+                operation = CAMOperation(
+                    operation_id=f"op:{placement.instance_id}:{feature.feature_id}",
+                    setup_id=setup_id,
+                    part_id=instance.part.part_id,
+                    instance_id=placement.instance_id,
+                    feature_id=feature.feature_id,
+                    kind=operation_kind,
+                    side=feature.side,
+                    tool_id=tool.tool_id,
+                    x_um=transformed.x_um,
+                    y_um=transformed.y_um,
+                    depth_um=feature.depth_um,
+                    diameter_um=feature.diameter_um,
+                    width_um=transformed.width_um,
+                    length_um=transformed.height_um,
+                    cutter_envelope_x_um=cutter_envelope.x_um,
+                    cutter_envelope_y_um=cutter_envelope.y_um,
+                    cutter_envelope_width_um=cutter_envelope.width_um,
+                    cutter_envelope_length_um=cutter_envelope.height_um,
+                    stepdown_um=min(feature.depth_um, max(500, tool.effective_diameter_um // 2)),
+                    stepover_ppm=400_000 if operation_kind.value in {"POCKET", "GROOVE"} else None,
+                    through=feature.through,
+                    source_rotation_90=placement.rotated_90,
+                    compensation=str(feature.metadata.get("compensation"))
+                    if feature.metadata.get("compensation")
+                    else None,
+                    holding_strategy=str(feature.metadata.get("holding_strategy"))
+                    if feature.metadata.get("holding_strategy")
+                    else None,
+                    corner_strategy=feature.corner_strategy,
+                    corner_relief_radius_um=feature.corner_relief_radius_um,
+                    open_end_reliefs=feature.open_end_reliefs,
+                    tolerance_um=feature.tolerance_um,
+                    fit_clearance_um=feature.fit_clearance_um,
+                )
+                setup_operations[(placement.sheet_index, feature.side)].append(operation)
+                if feature.kind == FeatureKind.OUTER_CONTOUR and feature.through:
+                    release_operation_ids.add(operation.operation_id)
 
     setups: list[Setup] = []
     operations: list[CAMOperation] = []
-    for setup_key in sorted(setup_operations, key=lambda item: (item[0], item[1].value)):
+    setup_keys = sorted(
+        setup_operations,
+        key=lambda item: (item[0], _side_sequence(item[1])),
+    )
+    for setup_key in setup_keys:
         sheet_index, side = setup_key
         current_operations = sorted(
             setup_operations[setup_key],
             key=lambda item: (
+                item.operation_id in release_operation_ids,
                 item.kind == OperationKind.CONTOUR,
                 item.tool_id,
                 item.kind.value,
                 item.operation_id,
             ),
         )
-        operations.extend(current_operations)
         tool_ids = tuple(sorted({operation.tool_id for operation in current_operations}))
-        setups.append(_make_setup(layout, machine, sheet_index, side, tool_ids))
+        setups.append(
+            _make_setup(
+                layout,
+                machine,
+                sheet_index,
+                side,
+                tool_ids,
+                registration=registrations.get(sheet_index),
+            )
+        )
+
+    for sheet_index in sorted({key[0] for key in setup_keys}):
+        sheet_operations = [
+            operation
+            for key in setup_keys
+            if key[0] == sheet_index
+            for operation in setup_operations[key]
+        ]
+        _require_compatible_global_order(
+            layout,
+            sheet_index,
+            sheet_operations,
+            release_operation_ids,
+        )
+        operations.extend(
+            sorted(
+                sheet_operations,
+                key=lambda item: (
+                    item.operation_id in release_operation_ids,
+                    _side_sequence(item.side),
+                    item.kind == OperationKind.CONTOUR,
+                    item.tool_id,
+                    item.kind.value,
+                    item.operation_id,
+                ),
+            )
+        )
 
     selected_tool_ids = {operation.tool_id for operation in operations}
     selected_tools = tuple(
@@ -205,31 +292,160 @@ def _setup_id(stock_id: str, sheet_index: int, side: Side) -> str:
     return f"setup:{stock_id}:{sheet_index + 1:03d}:{side.value}"
 
 
+def _side_sequence(side: Side) -> int:
+    """Sequence the flip side before the final A-side setup."""
+
+    return {Side.B: 0, Side.A: 1, Side.EDGE: 2}[side]
+
+
+def _require_two_sided_registration(
+    layout: NestingLayout,
+    sheet_index: int,
+    plan: TwoSidedRegistration | None,
+) -> TwoSidedRegistration:
+    if plan is None:
+        _block_setup_plan(
+            layout,
+            sheet_index,
+            code="TWO_SIDED_REGISTRATION_MISSING",
+            message=(
+                "Two-sided machining requires a caller-declared registration method "
+                "with stock-frame XY coordinates."
+            ),
+        )
+
+    method_id = plan.method_id.strip()
+    points = plan.points
+    coordinates = {(point.x_um, point.y_um) for point in points}
+    invalid_method = not method_id or any(
+        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
+        for character in method_id
+    )
+    outside_stock = any(
+        point.x_um < 0
+        or point.y_um < 0
+        or point.x_um > layout.stock.width_um
+        or point.y_um > layout.stock.height_um
+        for point in points
+    )
+    if invalid_method or len(points) < 2 or len(coordinates) != len(points) or outside_stock:
+        _block_setup_plan(
+            layout,
+            sheet_index,
+            code="TWO_SIDED_REGISTRATION_INVALID",
+            message=(
+                "Two-sided registration must name a stable method and declare at least "
+                "two unique stock-frame XY points inside the sheet."
+            ),
+            inputs={
+                "method_id": method_id,
+                "point_count": len(points),
+                "unique_point_count": len(coordinates),
+                "points_inside_stock": not outside_stock,
+            },
+        )
+    return plan
+
+
+def _require_compatible_global_order(
+    layout: NestingLayout,
+    sheet_index: int,
+    operations: list[CAMOperation],
+    release_operation_ids: set[str],
+) -> None:
+    b_release = any(
+        operation.side == Side.B and operation.operation_id in release_operation_ids
+        for operation in operations
+    )
+    a_before_release = any(
+        operation.side == Side.A and operation.operation_id not in release_operation_ids
+        for operation in operations
+    )
+    if b_release and a_before_release:
+        _block_setup_plan(
+            layout,
+            sheet_index,
+            code="SETUP_SEQUENCE_CONFLICT",
+            message=(
+                "The sheet has a through outer contour on Side B and remaining Side A work. "
+                "A single B-before-A plan cannot also keep every release contour globally last."
+            ),
+        )
+
+
+def _block_setup_plan(
+    layout: NestingLayout,
+    sheet_index: int,
+    *,
+    code: str,
+    message: str,
+    inputs: Mapping[str, object] | None = None,
+) -> Never:
+    report = DFMReport(
+        issues=(
+            DFMIssue(
+                code=code,
+                severity=Severity.BLOCK,
+                message=message,
+                setup_id=_setup_id(layout.stock.stock_id, sheet_index, Side.B),
+                inputs={"sheet_index": sheet_index, **dict(inputs or {})},
+                suggestion=(
+                    "Bind an externally specified coordinate registration and setup plan; "
+                    "do not infer WCS, pins or fixtures."
+                ),
+            ),
+        ),
+        engine_version=SETUP_PLAN_ENGINE_VERSION,
+    )
+    raise ProductionBlockedError(
+        f"CAM generation blocked by setup plan: {code}",
+        report=report,
+    )
+
+
 def _make_setup(
     layout: NestingLayout,
     machine: MachineProfile,
     sheet_index: int,
     side: Side,
     tool_ids: tuple[str, ...],
+    *,
+    registration: TwoSidedRegistration | None,
 ) -> Setup:
+    if registration is None:
+        registration_instruction = "Bind an external coordinate registration before setup."
+        probe_method = "EXTERNAL_COORDINATE_REGISTRATION_REQUIRED"
+    else:
+        coordinates = "|".join(f"{point.x_um},{point.y_um}" for point in registration.points)
+        registration_instruction = (
+            f"Use declared registration method {registration.method_id} at the bound "
+            "stock-frame coordinates; verify it during external work preparation."
+        )
+        probe_method = (
+            "DECLARED_COORDINATE_REGISTRATION;"
+            f"METHOD={registration.method_id};STOCK_XY_UM={coordinates};"
+            "EXTERNAL_SETUP_VERIFICATION_REQUIRED"
+        )
+
     steps: tuple[str, ...]
     if side == Side.B:
         orientation = "FLIP_STOCK_ABOUT_X_AXIS; MACHINE_Y=STOCK_HEIGHT-DESIGN_Y"
-        steps = (
-            "Stoppa maskinen och verifiera att spindeln är avstängd.",
-            "Vänd hela skivan runt X-axeln enligt setupbladet.",
-            "Referera om arbetsnollan och kontrollmät två registreringspunkter.",
-            "Verifiera klämmor, vakuum och säker Z innan valideringskörning.",
-        )
         wcs_index = 1
+        steps = (
+            "Stop the machine and verify that the spindle is off.",
+            "Flip the complete sheet about the X axis as defined by the validation transform.",
+            registration_instruction,
+            "Bind an external fixture plan, safe Z and keep-out verification before use.",
+        )
     else:
         orientation = "A_SIDE_UP; STOCK_ORIGIN_AT_LOWER_LEFT"
-        steps = (
-            "Placera A-sidan uppåt med stockens nedre vänstra hörn vid arbetsnollan.",
-            "Verifiera klämmor, vakuum och samtliga keep-out-zoner.",
-            "Mät materialtjocklek och verifiera säker Z innan valideringskörning.",
-        )
         wcs_index = 0
+        steps = (
+            "Place Side A up using the declared stock-coordinate convention.",
+            registration_instruction,
+            "Bind an external fixture plan and verify every keep-out zone.",
+            "Measure stock thickness and verify safe Z before validation.",
+        )
     wcs = machine.wcs_codes[min(wcs_index, len(machine.wcs_codes) - 1)]
     return Setup(
         setup_id=_setup_id(layout.stock.stock_id, sheet_index, side),
@@ -244,11 +460,11 @@ def _make_setup(
         stock_height_um=layout.stock.height_um,
         stock_thickness_um=layout.stock.thickness_um,
         safe_z_um=machine.safe_z_um,
-        reference_surface="MEASURED_STOCK_TOP_Z0",
+        reference_surface="EXTERNAL_STOCK_TOP_MEASUREMENT_REQUIRED",
         orientation=orientation,
-        fixture="VACUUM_OR_CLAMPS_AS_DECLARED_IN_KEEP_OUT_ZONES",
+        fixture="EXTERNAL_FIXTURE_PLAN_REQUIRED; DECLARED_KEEP_OUT_ZONES_ONLY",
         keep_out_zones=tuple(layout.stock.clamp_zones) + tuple(machine.keep_out_zones),
         tool_ids=tool_ids,
-        probe_method="MANUAL_OR_VERIFIED_PROBE; REFERENCE TWO XY REGISTRATION POINTS AND STOCK TOP",
+        probe_method=probe_method,
         operator_steps=steps,
     )

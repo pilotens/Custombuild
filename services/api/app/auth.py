@@ -6,14 +6,16 @@ from functools import lru_cache
 from typing import Annotated
 from urllib.parse import urlparse
 
-import httpx
+import httpx2 as httpx
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import PyJWKClient
+from sqlalchemy import select
 
 from .config import get_settings
-from .models import Role
+from .db import get_session_factory, set_tenant_context
+from .models import Membership, Role, User
 
 DEV_ORG_NORDIC = "11111111-1111-4111-8111-111111111111"
 DEV_ORG_ATELIER = "22222222-2222-4222-8222-222222222222"
@@ -67,9 +69,53 @@ def _jwk_client() -> PyJWKClient:
         raise ValueError("OIDC discovery issuer mismatch")
     jwks_uri = str(discovery.get("jwks_uri", ""))
     parsed = urlparse(jwks_uri)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("OIDC jwks_uri must use HTTPS")
+    issuer_url = urlparse(issuer)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.fragment
+        or (parsed.scheme, parsed.hostname, parsed.port)
+        != (issuer_url.scheme, issuer_url.hostname, issuer_url.port)
+    ):
+        raise ValueError("OIDC jwks_uri must use the configured issuer origin")
     return PyJWKClient(jwks_uri, cache_keys=True)
+
+
+def _resolve_oidc_principal(
+    *,
+    subject: str,
+    organization_id: str,
+    claimed_role: Role,
+    claimed_user_id: str | None,
+    email: str,
+    name: str,
+) -> Principal:
+    """Bind signed OIDC claims to one provisioned internal identity and membership."""
+
+    factory = get_session_factory()
+    with factory.begin() as session:
+        set_tenant_context(session, organization_id)
+        user = session.scalar(select(User).where(User.oidc_sub == subject))
+        if user is None or (claimed_user_id is not None and claimed_user_id != user.id):
+            raise HTTPException(status_code=403, detail="Active organization membership required")
+        membership = session.scalar(
+            select(Membership).where(
+                Membership.organization_id == organization_id,
+                Membership.user_id == user.id,
+            )
+        )
+        if membership is None or membership.role != claimed_role:
+            raise HTTPException(status_code=403, detail="Active organization membership required")
+        return Principal(
+            user_id=user.id,
+            organization_id=organization_id,
+            role=membership.role,
+            subject=subject,
+            email=email or user.email,
+            name=name or user.name,
+        )
 
 
 def _oidc_principal(token: str) -> Principal:
@@ -84,20 +130,27 @@ def _oidc_principal(token: str) -> Principal:
             issuer=settings.oidc_issuer,
             options={"require": ["exp", "iat", "sub", "organization_id", "role"]},
         )
-        return Principal(
-            user_id=str(claims.get("user_id") or claims["sub"]),
-            organization_id=str(claims["organization_id"]),
-            role=Role(str(claims["role"])),
-            subject=str(claims["sub"]),
-            email=str(claims.get("email", "")),
-            name=str(claims.get("name", claims["sub"])),
-        )
+        subject = str(claims["sub"])
+        organization_id = str(claims["organization_id"])
+        claimed_role = Role(str(claims["role"]))
+        raw_user_id = claims.get("user_id")
+        claimed_user_id = str(raw_user_id) if raw_user_id is not None else None
+        email = str(claims.get("email", ""))
+        name = str(claims.get("name", ""))
     except (jwt.PyJWTError, httpx.HTTPError, ValueError, KeyError) as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid authentication token",
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
+    return _resolve_oidc_principal(
+        subject=subject,
+        organization_id=organization_id,
+        claimed_role=claimed_role,
+        claimed_user_id=claimed_user_id,
+        email=email,
+        name=name,
+    )
 
 
 def get_principal(

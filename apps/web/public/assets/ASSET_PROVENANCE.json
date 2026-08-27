@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-13",
+  "purpose": "Original inspiration imagery for the Explore experience. These images are never used as the authoritative furniture model or manufacturing evidence.",
+  "assets": [
+    {
+      "path": "/assets/inspiration/explore-hero.jpg",
+      "label": "Inspirationsbild",
+      "generator": "OpenAI image generation",
+      "source": "Original generated image",
+      "constraints": ["no people", "no logos", "no watermark", "not an exact representation of the active DesignSpec"]
+    },
+    {
+      "path": "/assets/inspiration/concept-airy.jpg",
+      "label": "Konceptbild",
+      "generator": "OpenAI image generation",
+      "source": "Original generated image",
+      "constraints": ["no people", "no logos", "no watermark", "exact model is shown in Studio"]
+    },
+    {
+      "path": "/assets/inspiration/concept-base.jpg",
+      "label": "Konceptbild",
+      "generator": "OpenAI image generation",
+      "source": "Original generated image",
+      "constraints": ["no people", "no logos", "no watermark", "exact model is shown in Studio"]
+    },
+    {
+      "path": "/assets/inspiration/concept-rhythmic.jpg",
+      "label": "Konceptbild",
+      "generator": "OpenAI image generation",
+      "source": "Original generated image",
+      "constraints": ["no people", "no logos", "no watermark", "exact model is shown in Studio"]
+    }
+  ]
+}

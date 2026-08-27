@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
 
 from .model import (
     MachineProfile,
@@ -15,6 +16,8 @@ from .model import (
 
 REFERENCE_MACHINE_PROFILE_ID = "custombuild-router-1325-linuxcnc"
 REFERENCE_MACHINE_PROFILE_VERSION = "1.0.0-validation"
+LARGE_FORMAT_MACHINE_PROFILE_ID = "custombuild-router-5125-linuxcnc"
+LARGE_FORMAT_MACHINE_PROFILE_VERSION = "1.0.0-validation"
 REFERENCE_TOOL_LIBRARY_VERSION = "reference-tools-1.0.0-validation"
 REFERENCE_TOOL_VERSION = "1.0.0-validation"
 
@@ -103,4 +106,17 @@ def linuxcnc_reference_router_1325() -> MachineProfile:
         tool_library_version=REFERENCE_TOOL_LIBRARY_VERSION,
         wcs_codes=("G54", "G55"),
         accuracy_um=100,
+    )
+
+
+def linuxcnc_reference_router_5125() -> MachineProfile:
+    """Validation-only profile for a generic large-format three-axis router."""
+
+    return replace(
+        linuxcnc_reference_router_1325(),
+        profile_id=LARGE_FORMAT_MACHINE_PROFILE_ID,
+        name="Custombuild Reference Router 5125 / LinuxCNC",
+        version=LARGE_FORMAT_MACHINE_PROFILE_VERSION,
+        work_width_um=5_100_000,
+        work_height_um=2_600_000,
     )

@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
 from .model import (
+    EdgeBandSpec,
     FeatureKind,
     ManufacturingFeature,
     PanelAxisMapping,
@@ -15,7 +16,7 @@ from .model import (
     Side,
 )
 
-MANUFACTURING_ADAPTER_VERSION = "domain-to-manufacturing-adapter-1.0.0"
+MANUFACTURING_ADAPTER_VERSION = "domain-to-manufacturing-adapter-1.3.0"
 
 
 @runtime_checkable
@@ -39,13 +40,17 @@ _ROLE_AXES: dict[str, PanelAxisMapping] = {
     "SIDE_RIGHT": PanelAxisMapping("y", "z", "x"),
     "VERTICAL_DIVIDER": PanelAxisMapping("y", "z", "x"),
     "DIVIDER": PanelAxisMapping("y", "z", "x"),
+    "BASE_SIDE": PanelAxisMapping("y", "z", "x"),
     "TOP": PanelAxisMapping("x", "y", "z"),
     "BOTTOM": PanelAxisMapping("x", "y", "z"),
     "SHELF": PanelAxisMapping("x", "y", "z"),
+    "BASE_BOTTOM": PanelAxisMapping("x", "y", "z"),
+    "BASE_TOP": PanelAxisMapping("x", "y", "z"),
     "PLINTH": PanelAxisMapping("x", "z", "y"),
     "BASE": PanelAxisMapping("x", "y", "z"),
     "BACK": PanelAxisMapping("x", "z", "y"),
     "BACK_PANEL": PanelAxisMapping("x", "z", "y"),
+    "CABINET_FRONT": PanelAxisMapping("x", "z", "y"),
 }
 
 
@@ -103,6 +108,8 @@ def _annotate_compatible_corner_overlaps(
     joint_members: dict[str, frozenset[str]] = {}
     connections: set[frozenset[str]] = set()
     for joint in domain_joints:
+        if _enum_value(getattr(joint, "joint_type", "")) != "DADO":
+            continue
         members = frozenset(str(member.part_id) for member in getattr(joint, "members", ()))
         joint_id = str(getattr(joint, "joint_id", ""))
         if joint_id and len(members) == 2:
@@ -192,12 +199,16 @@ def adapt_domain_part(part: Any) -> PartSpec:
     if any(feature.feature_id == outline.feature_id for feature in source_features):
         raise ValueError(f"domain feature collides with derived outline ID for {part.part_id}")
     features = (*source_features, outline)
-    edge_bands = tuple(
+    edge_band_details = tuple(
         sorted(
-            _enum_value(getattr(edge_band, "edge", edge_band))
-            for edge_band in getattr(part, "edge_bands", ())
+            (
+                _adapt_edge_band(edge_band, mapping=mapping, part_id=str(part.part_id))
+                for edge_band in getattr(part, "edge_bands", ())
+            ),
+            key=lambda item: item.edge,
         )
     )
+    edge_bands = tuple(detail.edge for detail in edge_band_details)
     return PartSpec(
         part_id=str(part.part_id),
         name=_enum_value(getattr(part, "role", part.part_id)),
@@ -217,6 +228,7 @@ def adapt_domain_part(part: Any) -> PartSpec:
         raw_height_um=raw_height_um,
         axis_mapping=mapping,
         edge_bands=edge_bands,
+        edge_band_details=edge_band_details,
         metadata={
             "domain_instance_index": int(getattr(part, "instance_index", 0)),
             "domain_a_side": a_side,
@@ -277,6 +289,9 @@ def adapt_domain_feature(
             if getattr(feature, "corner_strategy", None)
             else None
         ),
+        open_end_reliefs=tuple(
+            _enum_value(value).lower() for value in getattr(feature, "open_end_reliefs", ())
+        ),
         tolerance_um=int(getattr(feature, "tolerance_um", 0)),
         fit_clearance_um=int(getattr(feature, "fit_clearance_um", 0)),
         metadata={
@@ -321,6 +336,47 @@ def _axis_mapping(
         )
     remaining = [axis for axis in ("x", "y", "z") if axis != thickness_axis]
     return PanelAxisMapping(remaining[0], remaining[1], thickness_axis)
+
+
+def _adapt_edge_band(
+    edge_band: Any,
+    *,
+    mapping: PanelAxisMapping,
+    part_id: str,
+) -> EdgeBandSpec:
+    source_face = _enum_value(getattr(edge_band, "edge", edge_band))
+    axis_and_boundary = {
+        "LEFT": ("x", "MIN"),
+        "RIGHT": ("x", "MAX"),
+        "FRONT": ("y", "MIN"),
+        "BACK": ("y", "MAX"),
+        "BOTTOM": ("z", "MIN"),
+        "TOP": ("z", "MAX"),
+    }
+    try:
+        source_axis, boundary = axis_and_boundary[source_face]
+    except KeyError as exc:
+        raise ValueError(f"part {part_id} has unsupported edge-band face {source_face}") from exc
+    if source_axis == mapping.thickness_axis:
+        raise ValueError(
+            f"part {part_id} edge-band face {source_face} is normal to panel thickness"
+        )
+    if source_axis == mapping.u_axis:
+        local_edge = f"U_{boundary}"
+    elif source_axis == mapping.v_axis:
+        local_edge = f"V_{boundary}"
+    else:
+        raise ValueError(
+            f"part {part_id} edge-band face {source_face} does not map to a panel boundary"
+        )
+    thickness = getattr(edge_band, "thickness_um", None)
+    if thickness is None:
+        raise ValueError(f"part {part_id} edge-band face {source_face} has no thickness")
+    return EdgeBandSpec(
+        edge=local_edge,
+        thickness_um=int(thickness),
+        source_face=source_face,
+    )
 
 
 def _side_from_face(face: str, mapping: PanelAxisMapping) -> Side:

@@ -10,6 +10,7 @@ from custombuild_domain import (
     DesignResult,
     FeatureKind,
     JointType,
+    PartInstance,
     PartRole,
     ReinforcementMode,
     ShelfMount,
@@ -32,7 +33,8 @@ from .models import (
     aggregate_status,
 )
 
-RULES_VERSION = "1.1.0"
+RULES_VERSION = "1.3.0"
+MAX_AUTO_VERTICAL_DIVIDERS = 16
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,13 +72,29 @@ class RuleEngine:
     version = RULES_VERSION
 
     def evaluate(self, design: DesignResult) -> RuleReport:
-        evaluations = (
+        evaluations: tuple[RuleEvaluation, ...] = (
             self._shelf_deflection(design),
             self._shelf_bending(design),
             self._joint_capacity(design),
             self._lateral_stability(design),
             self._tip_risk(design),
         )
+        cabinet_parts = tuple(
+            part
+            for part in design.parts
+            if part.role
+            in {
+                PartRole.BASE_SIDE,
+                PartRole.BASE_BOTTOM,
+                PartRole.BASE_TOP,
+                PartRole.CABINET_FRONT,
+            }
+        )
+        if cabinet_parts:
+            evaluations += (
+                self._base_support_alignment(design),
+                self._base_cabinet_hardware(cabinet_parts),
+            )
         return RuleReport(
             design_hash=design.design_hash,
             rules_version=self.version,
@@ -84,10 +102,140 @@ class RuleEngine:
             evaluations=evaluations,
         )
 
-    def _shelf_geometry(self, design: DesignResult) -> tuple[int, int, int, tuple[str, ...]]:
+    def _base_support_alignment(self, design: DesignResult) -> RuleEvaluation:
+        """Require a direct vertical load path below every upper divider."""
+
+        dividers = tuple(
+            sorted(
+                (part for part in design.parts if part.role == PartRole.DIVIDER),
+                key=lambda part: part.placement.x_um,
+            )
+        )
+        base_sides = tuple(
+            sorted(
+                (part for part in design.parts if part.role == PartRole.BASE_SIDE),
+                key=lambda part: part.placement.x_um,
+            )
+        )
+        # Full-height carcass sides are the two outer supports.  Every
+        # BASE_SIDE is therefore a real internal module boundary.
+        internal_base_sides = base_sides
+        tolerance_um = 1_000
+        unsupported = tuple(
+            divider
+            for divider in dividers
+            if not any(
+                abs(support.placement.x_um - divider.placement.x_um) <= tolerance_um
+                for support in internal_base_sides
+            )
+        )
+        target_modules = len(dividers) + 1
+        position_text = ", ".join(
+            f"{round(part.placement.x_um / 1_000)} mm" for part in unsupported
+        )
+        status = RuleStatus.PASS if not unsupported else RuleStatus.BLOCK
+        actions: tuple[SuggestedAction, ...] = ()
+        if unsupported:
+            actions = (
+                SuggestedAction(
+                    action_id=stable_id("rule-action", design.design_hash, "align-base-cabinets"),
+                    action_type=ActionType.ALIGN_BASE_CABINETS,
+                    description=(
+                        f"Skapa {target_modules} lika breda underskåpsmoduler och rikta en "
+                        "fullhöjd underskåpssida under varje övre avdelare. Nödvändiga "
+                        f"centrumlinjer från vänster ytterkant: {position_text}."
+                    ),
+                    changes=(
+                        ParameterChange(
+                            path="parameters.base_cabinet_count",
+                            before=design.spec.parameters.base_cabinet_count,
+                            after=target_modules,
+                        ),
+                    ),
+                ),
+            )
+        bottom_ids = tuple(part.part_id for part in design.parts if part.role == PartRole.BOTTOM)
+        return RuleEvaluation(
+            rule_id="CB-SUPPORT-001",
+            rule_version=self.version,
+            title="Lodrät lastväg genom underskåpen",
+            status=status,
+            applies_to_part_ids=bottom_ids
+            + tuple(part.part_id for part in (unsupported or dividers)),
+            inputs=(
+                RuleDatum(name="övre_avdelare", value=len(dividers), unit="st"),
+                RuleDatum(
+                    name="inre_underskåpssidor",
+                    value=len(internal_base_sides),
+                    unit="st",
+                ),
+                RuleDatum(
+                    name="ostödda_centrumlinjer",
+                    value=position_text or "inga",
+                ),
+            ),
+            assumptions=(
+                "Varje bärande övre avdelare ska ha en genomgående underskåpssida "
+                "på samma centrumlinje.",
+                "Mellanbottnen är inte verifierad som en fritt spännande balk för "
+                "koncentrerade laster.",
+            ),
+            trace=(
+                CalculationStep(
+                    expression="|x_övre avdelare - x_underskåpssida| ≤ 1 mm",
+                    result=str(len(unsupported)),
+                    unit="ostödda avdelare",
+                ),
+            ),
+            calculated_value=len(unsupported),
+            allowed_value=0,
+            unit="ostödda avdelare",
+            safety_margin_permille=1_000 if not unsupported else -1_000_000,
+            suggested_actions=actions,
+        )
+
+    def _base_cabinet_hardware(self, cabinet_parts: tuple[PartInstance, ...]) -> RuleEvaluation:
+        part_ids = tuple(part.part_id for part in cabinet_parts)
+        front_count = sum(1 for part in cabinet_parts if part.role == PartRole.CABINET_FRONT)
+        return RuleEvaluation(
+            rule_id="CB-HARDWARE-001",
+            rule_version=self.version,
+            title="Beslag och borrbild för underskåp",
+            status=RuleStatus.WARNING,
+            applies_to_part_ids=part_ids,
+            inputs=(RuleDatum(name="frontantal", value=front_count, unit="st"),),
+            assumptions=(
+                "Stom- och frontgeometri ingår i dellistan.",
+                "Gångjärn, öppningsvinkel, frontspel och infästning är ännu "
+                "inte valda från ett versionslåst beslagssystem.",
+            ),
+            trace=(
+                CalculationStep(
+                    expression="verifierat beslagssystem = valt och versionslåst",
+                    result="nej",
+                ),
+            ),
+            calculated_value=1,
+            allowed_value=0,
+            unit="obekräftade system",
+            safety_margin_permille=-1_000,
+            suggested_actions=(
+                SuggestedAction(
+                    action_id=stable_id("rule-action", "base-cabinet-hardware"),
+                    action_type=ActionType.VERIFY_HARDWARE_CAPACITY,
+                    description=(
+                        "Välj och verifiera gångjärn, montageplatta, frontspel "
+                        "och borrbild innan produktionsrelease."
+                    ),
+                    requires_user_evidence=True,
+                ),
+            ),
+        )
+
+    def _shelf_geometry(self, design: DesignResult) -> tuple[int, int, int, int, tuple[str, ...]]:
         shelves = tuple(part for part in design.parts if part.role == PartRole.SHELF)
         if not shelves:
-            return 0, 1, design.spec.parameters.actual_thickness_um, ()
+            return 0, 1, design.spec.parameters.actual_thickness_um, 0, ()
         spans = {
             part.part_id: self._shelf_clear_span(design, part.part_id, part.finished_size.width_um)
             for part in shelves
@@ -96,7 +244,18 @@ class RuleEngine:
         shelf_depth = min(part.finished_size.depth_um for part in shelves)
         thickness = design.spec.parameters.actual_thickness_um
         affected = tuple(part.part_id for part in shelves if spans[part.part_id] == worst_span)
-        return worst_span, shelf_depth, thickness, affected
+        bay_count = design.spec.parameters.vertical_divider_count + 1
+        representative_row = sorted(shelves, key=lambda part: part.instance_index)[:bay_count]
+        row_width = sum(part.finished_size.width_um for part in representative_row)
+        affected_width = max(
+            part.finished_size.width_um for part in shelves if part.part_id in affected
+        )
+        design_load_n = (
+            _ceil(Fraction(design.spec.parameters.shelf_load_n * affected_width, row_width))
+            if row_width
+            else 0
+        )
+        return worst_span, shelf_depth, thickness, design_load_n, affected
 
     @staticmethod
     def _shelf_clear_span(
@@ -115,43 +274,45 @@ class RuleEngine:
             return max(support_x) - min(support_x)
         return fallback_width_um
 
-    def _divider_action(
+    def _divider_actions(
         self, design: DesignResult, action_type: ActionType = ActionType.ADD_VERTICAL_DIVIDER
-    ) -> SuggestedAction:
+    ) -> tuple[SuggestedAction, ...]:
         current = design.spec.parameters.vertical_divider_count
-        return SuggestedAction(
-            action_id=stable_id("rule-action", design.design_hash, action_type.value),
-            action_type=action_type,
-            description=(
-                "Lägg till en genomgående vertikal avdelare för att korta fri spännvidd; "
-                "räkna därefter om delar, fogar, BOM, nesting och montering."
-            ),
-            changes=(
-                ParameterChange(
-                    path="parameters.vertical_divider_count",
-                    before=current,
-                    after=current + 1,
+        if current >= MAX_AUTO_VERTICAL_DIVIDERS:
+            return ()
+        return (
+            SuggestedAction(
+                action_id=stable_id("rule-action", design.design_hash, action_type.value),
+                action_type=action_type,
+                description=(
+                    "Lägg till en genomgående vertikal avdelare för att korta fri spännvidd; "
+                    "räkna därefter om delar, fogar, BOM, nesting och montering."
+                ),
+                changes=(
+                    ParameterChange(
+                        path="parameters.vertical_divider_count",
+                        before=current,
+                        after=current + 1,
+                    ),
                 ),
             ),
         )
 
     def _shelf_deflection(self, design: DesignResult) -> RuleEvaluation:
         p, material = design.spec.parameters, design.spec.material
-        span, depth, thickness, affected = self._shelf_geometry(design)
+        span, depth, thickness, design_load_n, affected = self._shelf_geometry(design)
         if not affected or p.shelf_load_n == 0:
             calculated = 0
         else:
             # δ = 5*W*L³/(32*E*b*t³), using conservative E and creep.
-            bay_count = p.vertical_divider_count + 1
             calculated = _ceil(
                 Fraction(
                     5
-                    * p.shelf_load_n
+                    * design_load_n
                     * span**3
                     * 1_000_000
                     * (1_000 + material.creep_factor_permille),
-                    bay_count
-                    * 32
+                    32
                     * material.elastic_modulus_mpa
                     * depth
                     * thickness**3
@@ -168,7 +329,7 @@ class RuleEngine:
             ()
             if status == RuleStatus.PASS
             else (
-                self._divider_action(design),
+                *self._divider_actions(design),
                 SuggestedAction(
                     action_id=stable_id(
                         "rule-action", design.design_hash, "stronger-material-deflection"
@@ -190,9 +351,7 @@ class RuleEngine:
             inputs=(
                 RuleDatum(name="fri_spännvidd", value=span, unit="µm"),
                 RuleDatum(name="hylllast_per_rad", value=p.shelf_load_n, unit="N"),
-                RuleDatum(
-                    name="lastandel_per_fack", value=p.vertical_divider_count + 1, unit="fack"
-                ),
+                RuleDatum(name="dimensionerande_facklast", value=design_load_n, unit="N"),
                 RuleDatum(name="elasticitetsmodul", value=material.elastic_modulus_mpa, unit="MPa"),
                 RuleDatum(
                     name="materialosäkerhet", value=material.property_uncertainty_permille, unit="‰"
@@ -224,12 +383,13 @@ class RuleEngine:
         )
 
     def _joint_capacity(self, design: DesignResult) -> RuleEvaluation:
-        """Screen the load path at each shelf support without inventing capacity data."""
+        """Screen local support without claiming that a plain groove locks permanently."""
 
         p, material = design.spec.parameters, design.spec.material
         shelves = tuple(part for part in design.parts if part.role == PartRole.SHELF)
         bay_count = p.vertical_divider_count + 1
-        demand_n = _ceil(Fraction(p.shelf_load_n, 2 * bay_count)) if shelves else 0
+        _, _, _, design_load_n, _ = self._shelf_geometry(design)
+        demand_n = _ceil(Fraction(design_load_n, 2)) if shelves else 0
 
         if p.shelf_mount == ShelfMount.ADJUSTABLE and shelves:
             shelf_ids = {part.part_id for part in shelves}
@@ -254,7 +414,7 @@ class RuleEngine:
             return RuleEvaluation(
                 rule_id="CB-JOINT-001",
                 rule_version=self.version,
-                title="Bärförmåga för hyllfogar och hyllbärare",
+                title="Lokalt upplag i hyllspår och hyllbärare",
                 status=RuleStatus.BLOCK,
                 applies_to_part_ids=affected_pin_part_ids,
                 inputs=(
@@ -269,15 +429,17 @@ class RuleEngine:
                     RuleDatum(name="beslagskapacitetsversion", value=None),
                 ),
                 assumptions=(
-                    "Radlasten antas fördelas lika mellan facken och reaktionen lika mellan "
+                    "Radlasten fördelas efter respektive facks bredd och reaktionen lika mellan "
                     "två stöd per hyllsegment.",
                     "Ingen leverantörskapacitet, materialkompatibilitet eller borrbild för "
                     "hyllbäraren finns i den versionshanterade katalogen.",
                     "Systemet antar därför inte ett beslagstal, inte ens vid noll angiven last.",
+                    "Lim, fogmassa, epoxy och annan adhesiv låsning är förbjuden enligt "
+                    "produktpolicyn.",
                 ),
                 trace=(
                     CalculationStep(
-                        expression="R_stöd = ceil(W_rad/(2·antal_fack))",
+                        expression="R_stöd = ceil(W_rad·fackandel/2)",
                         result=str(demand_n),
                         unit="N",
                     ),
@@ -303,6 +465,7 @@ class RuleEngine:
                         ),
                         requires_user_evidence=True,
                     ),
+                    self._dry_joining_action(design),
                 ),
             )
 
@@ -317,7 +480,7 @@ class RuleEngine:
             return RuleEvaluation(
                 rule_id="CB-JOINT-001",
                 rule_version=self.version,
-                title="Bärförmåga för hyllfogar och hyllbärare",
+                title="Lokalt upplag i hyllspår och hyllbärare",
                 status=RuleStatus.BLOCK,
                 applies_to_part_ids=affected,
                 inputs=(
@@ -339,6 +502,8 @@ class RuleEngine:
                     "En fast hylla måste ha en matchande kanonisk DADO-stödfog innan lokal "
                     "bärförmåga kan beräknas.",
                     "Ingen fogarea eller tillåten last antas när den genererade geometrin saknas.",
+                    "Ett vanligt spår är endast geometriskt upplag och får inte beskrivas som "
+                    "permanent hållning utan verifierad självlåsning eller mekanisk säkring.",
                 ),
                 trace=(
                     CalculationStep(
@@ -367,6 +532,7 @@ class RuleEngine:
                             "utred varför fast hylla saknar en matchande DADO-stödfog."
                         ),
                     ),
+                    self._dry_joining_action(design),
                 ),
             )
         else:
@@ -378,16 +544,24 @@ class RuleEngine:
             affected = tuple(sorted((worst.shelf_part_id, worst.support_part_id)))
             worst_joint_id = worst.joint_id
 
-        status = RuleStatus.PASS if not shelves else _threshold_status(demand_n, allowed_n)
-        actions: tuple[SuggestedAction, ...] = ()
-        if status != RuleStatus.PASS:
+        capacity_status = RuleStatus.PASS if not shelves else _threshold_status(demand_n, allowed_n)
+        # The current DADO contract proves geometry and local bearing only. It
+        # has no versioned retention evidence and must therefore remain a
+        # review decision even when its numeric capacity screen passes.
+        status = RuleStatus.BLOCK if capacity_status == RuleStatus.BLOCK else RuleStatus.WARNING
+        actions: tuple[SuggestedAction, ...] = (self._dry_joining_action(design),)
+        if capacity_status != RuleStatus.PASS:
             pass_demand_n = max(0, (allowed_n * 800 - 1) // 1_000)
             recommended_row_load_n = min(
                 p.shelf_load_n,
-                2 * bay_count * pass_demand_n,
+                (
+                    2 * pass_demand_n * p.shelf_load_n // design_load_n
+                    if design_load_n
+                    else p.shelf_load_n
+                ),
             )
             actions = (
-                self._divider_action(design),
+                *self._divider_actions(design),
                 SuggestedAction(
                     action_id=stable_id("rule-action", design.design_hash, "reduce-joint-load"),
                     action_type=ActionType.REDUCE_LOAD,
@@ -403,6 +577,7 @@ class RuleEngine:
                         ),
                     ),
                 ),
+                self._dry_joining_action(design),
             )
 
         effective_shear_kpa = (
@@ -415,7 +590,7 @@ class RuleEngine:
         return RuleEvaluation(
             rule_id="CB-JOINT-001",
             rule_version=self.version,
-            title="Bärförmåga för hyllfogar och hyllbärare",
+            title="Lokalt upplag i hyllspår och hyllbärare",
             status=status,
             applies_to_part_ids=affected,
             inputs=(
@@ -424,6 +599,7 @@ class RuleEngine:
                 RuleDatum(name="antal_fack", value=bay_count, unit="fack"),
                 RuleDatum(name="dimensionerande_last_per_stöd", value=demand_n, unit="N"),
                 RuleDatum(name="dimensionerande_fog_id", value=worst_joint_id),
+                RuleDatum(name="permanent_hållning_verifierad", value=False),
                 RuleDatum(name="dado_engagement", value=engagement_um, unit="µm"),
                 RuleDatum(name="bärande_längd", value=bearing_length_um, unit="µm"),
                 RuleDatum(name="bärande_area", value=bearing_area_um2, unit="µm²"),
@@ -450,19 +626,26 @@ class RuleEngine:
                 RuleDatum(name="materialkällans_titel", value=material.source.title),
             ),
             assumptions=(
-                "Radlasten antas vara jämnt fördelad mellan facken och ger halva "
+                "Radlasten fördelas efter fackbredd och ger halva "
                 "facklasten som reaktion i vardera stödfogen.",
                 "Bärande area härleds från den kanoniska fogens verkliga spårdjup gånger "
                 "hyllans överlappande djup; nominell materialtjocklek används inte som instick.",
                 "Versionspostens skjuvhållfasthet används konservativt som screening för "
                 "lokal bärning/skjuvning och reduceras för osäkerhet, krypning och "
                 "strukturell säkerhetsfaktor.",
-                "Screeningen verifierar inte lim, kantutbrott, slaglast, utmattning eller "
-                "materialsats och är inte en fogcertifiering.",
+                "Screeningen verifierar endast lokalt upplag; ett vanligt DADO-spår är inte "
+                "självlåsande och verifierar inte permanent hållning.",
+                "Fysisk montering kräver ett verifierat självlåsande torrförband eller en "
+                "versionslåst mekanisk säkring som hindrar isärdragning i omvänd "
+                "monteringsriktning.",
+                "Lim, fogmassa, epoxy och annan adhesiv låsning är förbjuden och ingår aldrig "
+                "som bärande antagande.",
+                "Screeningen verifierar inte kantutbrott, slaglast, utmattning eller "
+                "materialsats och är inte en certifiering av hela förbandet.",
             ),
             trace=(
                 CalculationStep(
-                    expression="R_stöd = ceil(W_rad/(2·antal_fack))",
+                    expression="R_stöd = ceil(W_rad·fackandel/2)",
                     result=str(demand_n),
                     unit="N",
                 ),
@@ -487,6 +670,19 @@ class RuleEngine:
             unit="N",
             safety_margin_permille=(0 if not shelves else _margin_permille(demand_n, allowed_n)),
             suggested_actions=actions,
+        )
+
+    @staticmethod
+    def _dry_joining_action(design: DesignResult) -> SuggestedAction:
+        return SuggestedAction(
+            action_id=stable_id("rule-action", design.design_hash, "verify-dry-joining-system"),
+            action_type=ActionType.VERIFY_DRY_JOINING_SYSTEM,
+            description=(
+                "Välj och versionslås ett självlåsande torrförband eller en demonterbar "
+                "mekanisk säkring som hindrar isärdragning; adhesiver är förbjudna. "
+                "Beslutet är endast designgranskning och ger inte fysisk frisläppning."
+            ),
+            requires_user_evidence=True,
         )
 
     @staticmethod
@@ -561,16 +757,15 @@ class RuleEngine:
 
     def _shelf_bending(self, design: DesignResult) -> RuleEvaluation:
         p, material = design.spec.parameters, design.spec.material
-        span, depth, thickness, affected = self._shelf_geometry(design)
-        bay_count = p.vertical_divider_count + 1
+        span, depth, thickness, design_load_n, affected = self._shelf_geometry(design)
         if not affected or p.shelf_load_n == 0:
             calculated_kpa = 0
         else:
             # sigma = 3*W*L/(2*b*t²); factor 1e9 converts the µm expression to kPa.
             calculated_kpa = _ceil(
                 Fraction(
-                    3 * p.shelf_load_n * span * 1_000_000_000,
-                    bay_count * 2 * depth * thickness**2,
+                    3 * design_load_n * span * 1_000_000_000,
+                    2 * depth * thickness**2,
                 )
             )
         allowed_kpa = (
@@ -584,7 +779,7 @@ class RuleEngine:
             ()
             if status == RuleStatus.PASS
             else (
-                self._divider_action(design),
+                *self._divider_actions(design),
                 SuggestedAction(
                     action_id=stable_id(
                         "rule-action", design.design_hash, "increase-thickness-bending"
@@ -663,7 +858,7 @@ class RuleEngine:
                     ),
                 )
             else:
-                actions = (self._divider_action(design),)
+                actions = self._divider_actions(design)
         return RuleEvaluation(
             rule_id="CB-STABILITY-001",
             rule_version=self.version,
@@ -728,7 +923,7 @@ class RuleEngine:
         geometrically_requires_anchor = p.height_um >= 4 * p.depth_um
         anchor_required = p.wall_anchor.required or geometrically_requires_anchor
         if anchor_required and not p.wall_anchor.verified:
-            status = RuleStatus.BLOCK
+            status = RuleStatus.WARNING
         elif anchor_required and p.wall_anchor.verified:
             status = RuleStatus.PASS
         elif factor_permille < 1_500:
@@ -837,9 +1032,12 @@ class RuleEngine:
             )
             if structural_failure:
                 old = current_spec.parameters.vertical_divider_count
+                if old >= MAX_AUTO_VERTICAL_DIVIDERS:
+                    break
                 candidate_parameters = self._replace_parameters(
                     current_spec.parameters,
                     vertical_divider_count=old + 1,
+                    bay_width_ratios_ppm=(),
                 )
                 candidate_spec = self._replace_spec(current_spec, candidate_parameters)
                 candidate_design = build_bookcase(candidate_spec)
@@ -923,7 +1121,7 @@ class RuleEngine:
                 continue
 
             tip = by_id["CB-TIP-001"]
-            if tip.status == RuleStatus.BLOCK and not current_spec.parameters.wall_anchor.required:
+            if tip.status != RuleStatus.PASS and not current_spec.parameters.wall_anchor.required:
                 old_anchor = current_spec.parameters.wall_anchor
                 new_anchor = WallAnchorSpec(
                     required=True,

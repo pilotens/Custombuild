@@ -17,7 +17,7 @@ from .enums import BackPanelType, ReinforcementMode
 from .models import BookcaseDesignSpec, BookcaseParameters, FrozenModel, StableKey
 from .units import mm
 
-SEMANTIC_DESIGN_VERSION = "semantic-design-1.0.0"
+SEMANTIC_DESIGN_VERSION = "semantic-design-1.1.0"
 DEFAULT_PLINTH_HEIGHT_UM = mm(80)
 
 Permille = Annotated[int, Field(strict=True, ge=0, le=1_000)]
@@ -30,6 +30,7 @@ class SemanticComponentKind(StrEnum):
     DIVIDER = "divider"
     BACK_PANEL = "back_panel"
     PLINTH = "plinth"
+    BASE_CABINET = "base_cabinet"
 
 
 class SemanticAction(StrEnum):
@@ -50,12 +51,14 @@ class SemanticSnapRelation(StrEnum):
     DIVIDER_IN_CARCASS = "divider_in_carcass"
     BACK_BEHIND_CARCASS = "back_behind_carcass"
     PLINTH_UNDER_CARCASS = "plinth_under_carcass"
+    CABINET_UNDER_SHELVES = "cabinet_under_shelves"
 
 
 class SemanticPlacementPolicy(StrEnum):
     """How the current production template resolves a semantic placement."""
 
     PARAMETRIC_EQUAL_DISTRIBUTION = "parametric_equal_distribution_v1"
+    CONSTRAINED_CUSTOM_LAYOUT = "constrained_custom_layout_v1"
 
 
 class SemanticCompilationError(ValueError):
@@ -113,9 +116,7 @@ class SemanticDesignDocument(FrozenModel):
     template_id: StableKey
     components: tuple[SemanticComponent, ...]
     snap_targets: tuple[SemanticSnapTarget, ...]
-    placement_policy: SemanticPlacementPolicy = (
-        SemanticPlacementPolicy.PARAMETRIC_EQUAL_DISTRIBUTION
-    )
+    placement_policy: SemanticPlacementPolicy = SemanticPlacementPolicy.CONSTRAINED_CUSTOM_LAYOUT
     exact_component_move_supported: bool = False
 
 
@@ -150,11 +151,73 @@ class SemanticCompilationResult(FrozenModel):
     intent: SemanticIntent
     target: SemanticSnapTarget
     changes: tuple[SemanticChange, ...]
-    placement_policy: SemanticPlacementPolicy = (
-        SemanticPlacementPolicy.PARAMETRIC_EQUAL_DISTRIBUTION
-    )
+    placement_policy: SemanticPlacementPolicy = SemanticPlacementPolicy.CONSTRAINED_CUSTOM_LAYOUT
     warnings: tuple[str, ...] = ()
     requires_engine_rebuild: bool = True
+
+
+def _equal_ratios(count: int) -> tuple[int, ...]:
+    base, remainder = divmod(1_000_000, count)
+    return tuple(base + (1 if index < remainder else 0) for index in range(count))
+
+
+def _bay_ratios(parameters: BookcaseParameters) -> tuple[int, ...]:
+    count = parameters.vertical_divider_count + 1
+    return parameters.bay_width_ratios_ppm or _equal_ratios(count)
+
+
+def _shelf_ratios(parameters: BookcaseParameters) -> tuple[int, ...]:
+    if parameters.shelf_height_ratios_ppm:
+        return parameters.shelf_height_ratios_ppm
+    return tuple(
+        ((index + 1) * 1_000_000) // (parameters.shelf_count + 1)
+        for index in range(parameters.shelf_count)
+    )
+
+
+def _boundaries(ratios: tuple[int, ...]) -> tuple[int, ...]:
+    result = [0]
+    for ratio in ratios:
+        result.append(result[-1] + ratio)
+    result[-1] = 1_000_000
+    return tuple(result)
+
+
+def _ratios_from_boundaries(boundaries: tuple[int, ...]) -> tuple[int, ...]:
+    return tuple(
+        boundaries[index + 1] - boundaries[index]
+        for index in range(len(boundaries) - 1)
+    )
+
+
+def _insert_constrained_position(
+    existing: tuple[int, ...], requested: int, minimum_gap: int
+) -> tuple[int, ...]:
+    boundaries = (0, *existing, 1_000_000)
+    for index in range(len(boundaries) - 1):
+        left, right = boundaries[index], boundaries[index + 1]
+        if requested <= right:
+            if right - left < minimum_gap * 2:
+                break
+            value = min(right - minimum_gap, max(left + minimum_gap, requested))
+            if all(abs(value - current) >= minimum_gap for current in existing):
+                return tuple(sorted((*existing, value)))
+            break
+    candidates = [
+        (right - left, (left + right) // 2)
+        for left, right in zip(boundaries, boundaries[1:], strict=False)
+        if right - left >= minimum_gap * 2
+    ]
+    if not candidates:
+        raise UnsupportedSemanticOperation("no supported opening remains for this component")
+    return tuple(sorted((*existing, max(candidates)[1])))
+
+
+def _remove_nearest_position(existing: tuple[int, ...], requested: int) -> tuple[int, ...]:
+    if not existing:
+        raise SemanticCompilationError("semantic intent does not change the current design")
+    nearest = min(range(len(existing)), key=lambda index: abs(existing[index] - requested))
+    return tuple(value for index, value in enumerate(existing) if index != nearest)
 
 
 def derive_bookcase_snap_targets(spec: BookcaseDesignSpec) -> tuple[SemanticSnapTarget, ...]:
@@ -168,14 +231,22 @@ def derive_bookcase_snap_targets(spec: BookcaseDesignSpec) -> tuple[SemanticSnap
         - 2 * thickness
         - parameters.vertical_divider_count * thickness
     )
-    base_bay_width, remainder = divmod(inner_width, bay_count)
-    usable_z_min = parameters.plinth_height_um + thickness
+    ratios = _bay_ratios(parameters)
+    bay_widths = [inner_width * ratio // 1_000_000 for ratio in ratios]
+    distributed = sum(bay_widths)
+    for index in range(inner_width - distributed):
+        bay_widths[index % bay_count] += 1
+    usable_z_min = (
+        parameters.plinth_height_um + parameters.base_cabinet_height_um
+        if parameters.base_cabinet_count
+        else parameters.plinth_height_um + thickness
+    )
     usable_z_max = parameters.height_um - thickness
     targets: list[SemanticSnapTarget] = []
     cursor_x = thickness
 
     for bay_offset in range(bay_count):
-        bay_width = base_bay_width + (1 if bay_offset < remainder else 0)
+        bay_width = bay_widths[bay_offset]
         bay_number = bay_offset + 1
         targets.append(
             SemanticSnapTarget(
@@ -242,6 +313,20 @@ def derive_bookcase_snap_targets(spec: BookcaseDesignSpec) -> tuple[SemanticSnap
                     max_z_um=max(parameters.plinth_height_um, DEFAULT_PLINTH_HEIGHT_UM),
                 ),
             ),
+            SemanticSnapTarget(
+                target_id="bookcase:cabinet:lower-zone",
+                label="Nedre förvaringszon",
+                relation=SemanticSnapRelation.CABINET_UNDER_SHELVES,
+                accepted_components=(SemanticComponentKind.BASE_CABINET,),
+                bounds=SemanticBounds(
+                    min_x_um=thickness,
+                    max_x_um=parameters.width_um - thickness,
+                    min_y_um=0,
+                    max_y_um=parameters.depth_um,
+                    min_z_um=parameters.plinth_height_um,
+                    max_z_um=max(parameters.base_cabinet_height_um, mm(680)),
+                ),
+            ),
         )
     )
     return tuple(targets)
@@ -276,6 +361,12 @@ def semantic_document_from_bookcase(spec: BookcaseDesignSpec) -> SemanticDesignD
             label="Sockel",
             count=int(parameters.plinth_height_um > 0),
         ),
+        SemanticComponent(
+            component_id="component:base-cabinets",
+            kind=SemanticComponentKind.BASE_CABINET,
+            label="Underskåp",
+            count=parameters.base_cabinet_count,
+        ),
     )
     return SemanticDesignDocument(
         design_id=spec.design_id,
@@ -306,8 +397,8 @@ def compile_semantic_intent(
         )
     if intent.action == SemanticAction.MOVE:
         raise UnsupportedSemanticOperation(
-            "the production bookcase template currently uses equally distributed rows and bays; "
-            "free movement is not yet representable in DesignSpec 1.0"
+            "MOVE requires a stable component-instance target; use the versioned shelf/divider "
+            "position command instead of a free semantic transform"
         )
 
     targets = derive_bookcase_snap_targets(spec)
@@ -327,8 +418,25 @@ def compile_semantic_intent(
 
     if intent.component_kind == SemanticComponentKind.SHELF_ROW:
         shelf_before = parameters.shelf_count
-        shelf_after = shelf_before + 1 if adding else max(0, shelf_before - 1)
-        updates["shelf_count"] = shelf_after
+        before_ratios = _shelf_ratios(parameters)
+        requested = (1_000 - intent.pointer_y_permille) * 1_000
+        try:
+            after_ratios = (
+                _insert_constrained_position(before_ratios, requested, 50_000)
+                if adding
+                else _remove_nearest_position(before_ratios, requested)
+            )
+        except UnsupportedSemanticOperation as exc:
+            raise SemanticCompilationError(
+                f"semantic intent would create an invalid bookcase: {exc}"
+            ) from exc
+        shelf_after = len(after_ratios)
+        updates.update(
+            {
+                "shelf_count": shelf_after,
+                "shelf_height_ratios_ppm": after_ratios,
+            }
+        )
         changes.append(
             SemanticChange(
                 field="shelf_count",
@@ -342,15 +450,25 @@ def compile_semantic_intent(
             )
         )
         warnings.append(
-            "DesignSpec 1.0 distributes shelf rows equally across all bays; the drop height is "
-            "an editing intent, not a direct CNC coordinate."
+            "The pointer height was compiled to a constrained shelf ratio; the geometry engine "
+            "still derives every final part and joint coordinate, so it is not a direct CNC "
+            "coordinate."
         )
     elif intent.component_kind == SemanticComponentKind.DIVIDER:
         divider_before = parameters.vertical_divider_count
-        divider_after = divider_before + 1 if adding else max(0, divider_before - 1)
+        before_positions = _boundaries(_bay_ratios(parameters))[1:-1]
+        requested = intent.pointer_x_permille * 1_000
+        after_positions = (
+            _insert_constrained_position(before_positions, requested, 80_000)
+            if adding
+            else _remove_nearest_position(before_positions, requested)
+        )
+        divider_after = len(after_positions)
+        after_boundaries = (0, *after_positions, 1_000_000)
         updates.update(
             {
                 "vertical_divider_count": divider_after,
+                "bay_width_ratios_ppm": _ratios_from_boundaries(after_boundaries),
                 "reinforcement_mode": ReinforcementMode.MANUAL,
             }
         )
@@ -377,7 +495,8 @@ def compile_semantic_intent(
             )
         )
         warnings.append(
-            "DesignSpec 1.0 redistributes all bays equally after a divider change."
+            "The pointer width was compiled to constrained bay ratios; production coordinates "
+            "are regenerated by the geometry engine."
         )
     elif intent.component_kind == SemanticComponentKind.BACK_PANEL:
         back_before = parameters.back_panel
@@ -402,6 +521,25 @@ def compile_semantic_intent(
                 before=plinth_before,
                 after=plinth_after,
                 reason="Sockelns semantiska närvaro ändrades.",
+                target_id=target.target_id,
+            )
+        )
+    elif intent.component_kind == SemanticComponentKind.BASE_CABINET:
+        cabinet_before = parameters.base_cabinet_count
+        cabinet_after = parameters.vertical_divider_count + 1 if adding else 0
+        updates.update(
+            {
+                "base_cabinet_count": cabinet_after,
+                "base_cabinet_height_um": mm(680) if adding else 0,
+                "base_cabinet_depth_um": parameters.depth_um if adding else 0,
+            }
+        )
+        changes.append(
+            SemanticChange(
+                field="base_cabinet_count",
+                before=cabinet_before,
+                after=cabinet_after,
+                reason="Underskåpsraden kopplades till den bärande fackindelningen.",
                 target_id=target.target_id,
             )
         )

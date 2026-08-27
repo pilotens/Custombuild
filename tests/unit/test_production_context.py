@@ -14,10 +14,18 @@ from custombuild_manufacturing.production_context import (
 )
 
 APP_VERSION = "test-app-1.0.0"
+BUILD_IDENTITY = {
+    "vcs_ref": "a" * 40,
+    "build_date": "2026-08-11T12:00:00+02:00",
+    "source_url": "https://github.com/pilotens/Custombuild",
+    "source_manifest_sha256": "e" * 64,
+    "dependency_lock_sha256": "b" * 64,
+}
 REQUEST = {
     "machine_profile_id": "custombuild-router-1325-linuxcnc",
     "postprocessor_id": "linuxcnc-validation-1.0.0",
     "include_step": False,
+    "include_freecad_project": False,
 }
 
 
@@ -36,11 +44,13 @@ def test_every_frozen_engine_context_field_changes_identity() -> None:
         machine_profile_id=REQUEST["machine_profile_id"],
         postprocessor_id=REQUEST["postprocessor_id"],
         app_version=APP_VERSION,
+        **BUILD_IDENTITY,
     ).context
     second = resolve_production_components(
         machine_profile_id=REQUEST["machine_profile_id"],
         postprocessor_id=REQUEST["postprocessor_id"],
         app_version=APP_VERSION,
+        **BUILD_IDENTITY,
     ).context
 
     assert first == second
@@ -54,6 +64,41 @@ def test_every_frozen_engine_context_field_changes_identity() -> None:
         assert _hash(mutated) != _hash(first), field.name
 
 
+def test_source_commit_manifest_and_dependency_lock_are_frozen_generation_inputs() -> None:
+    first = resolve_production_components(
+        machine_profile_id=REQUEST["machine_profile_id"],
+        postprocessor_id=REQUEST["postprocessor_id"],
+        app_version=APP_VERSION,
+        **BUILD_IDENTITY,
+    ).context
+    changed_commit = resolve_production_components(
+        machine_profile_id=REQUEST["machine_profile_id"],
+        postprocessor_id=REQUEST["postprocessor_id"],
+        app_version=APP_VERSION,
+        **{**BUILD_IDENTITY, "vcs_ref": "c" * 40},
+    ).context
+    changed_lock = resolve_production_components(
+        machine_profile_id=REQUEST["machine_profile_id"],
+        postprocessor_id=REQUEST["postprocessor_id"],
+        app_version=APP_VERSION,
+        **{**BUILD_IDENTITY, "dependency_lock_sha256": "d" * 64},
+    ).context
+    changed_manifest = resolve_production_components(
+        machine_profile_id=REQUEST["machine_profile_id"],
+        postprocessor_id=REQUEST["postprocessor_id"],
+        app_version=APP_VERSION,
+        **{**BUILD_IDENTITY, "source_manifest_sha256": "f" * 64},
+    ).context
+
+    assert first.schema_version == "custombuild.production-engine-context.v5"
+    assert first.fingerprint != changed_commit.fingerprint
+    assert first.fingerprint != changed_manifest.fingerprint
+    assert first.fingerprint != changed_lock.fingerprint
+    assert _hash(first) != _hash(changed_commit)
+    assert _hash(first) != _hash(changed_manifest)
+    assert _hash(first) != _hash(changed_lock)
+
+
 def test_profile_and_tool_data_drift_change_generation_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -62,6 +107,7 @@ def test_profile_and_tool_data_drift_change_generation_identity(
         machine_profile_id=REQUEST["machine_profile_id"],
         postprocessor_id=REQUEST["postprocessor_id"],
         app_version=APP_VERSION,
+        **BUILD_IDENTITY,
     ).context
     changed_tool = replace(
         original_machine.tools[0],
@@ -89,6 +135,7 @@ def test_profile_and_tool_data_drift_change_generation_identity(
             machine_profile_id=REQUEST["machine_profile_id"],
             postprocessor_id=REQUEST["postprocessor_id"],
             app_version=APP_VERSION,
+            **BUILD_IDENTITY,
         ).context
 
         assert changed.machine_profile_fingerprint != original.machine_profile_fingerprint
@@ -102,13 +149,30 @@ def test_unknown_machine_and_postprocessor_are_rejected_at_resolution() -> None:
             machine_profile_id="untrusted-machine",
             postprocessor_id=REQUEST["postprocessor_id"],
             app_version=APP_VERSION,
+            **BUILD_IDENTITY,
         )
     with pytest.raises(ProductionContextError, match="unknown or unverified postprocessor"):
         resolve_production_components(
             machine_profile_id=REQUEST["machine_profile_id"],
             postprocessor_id="untrusted-postprocessor",
             app_version=APP_VERSION,
+            **BUILD_IDENTITY,
         )
+
+
+def test_large_format_validation_profile_is_versioned_and_resolvable() -> None:
+    resolved = resolve_production_components(
+        machine_profile_id="custombuild-router-5125-linuxcnc",
+        postprocessor_id=REQUEST["postprocessor_id"],
+        app_version=APP_VERSION,
+        **BUILD_IDENTITY,
+    )
+
+    assert resolved.machine.profile_id == "custombuild-router-5125-linuxcnc"
+    assert resolved.machine.work_width_um == 5_100_000
+    assert resolved.machine.work_height_um == 2_600_000
+    assert resolved.context.machine_profile_id == resolved.machine.profile_id
+    assert resolved.context.machine_profile_fingerprint
 
 
 def test_worker_cad_dependency_version_is_part_of_runtime_guard(
@@ -128,5 +192,6 @@ def test_worker_cad_dependency_version_is_part_of_runtime_guard(
             machine_profile_id=REQUEST["machine_profile_id"],
             postprocessor_id=REQUEST["postprocessor_id"],
             app_version=APP_VERSION,
+            **BUILD_IDENTITY,
             require_cad_runtime=True,
         )

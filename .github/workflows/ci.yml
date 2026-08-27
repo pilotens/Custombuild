@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:17.5-alpine
+        image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -26,24 +26,31 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      MIGRATION_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
-      RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:api-test-password@localhost:5432/custombuild
+      MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
+      RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
+      WORKER_RLS_DATABASE_URL: postgresql+psycopg://custombuild_worker:strong-worker-database-test-password@localhost:5432/custombuild
+      TENANT_GRAPH_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
       UV_CACHE_DIR: /tmp/custombuild-uv-cache
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          version: "0.8.3"
+          version: "0.12.0"
           enable-cache: true
       - name: Install
         run: uv sync --locked --group dev --group cad
+      - name: Verify deterministic source-manifest implementation
+        run: uv run pytest tests/unit/test_source_manifest.py -q
       - name: Create least-privilege database roles
         env:
           PGPASSWORD: postgres
         run: |
           psql -h localhost -U postgres -d custombuild -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE ROLE custombuild_api LOGIN PASSWORD 'api-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
-          CREATE ROLE custombuild_worker LOGIN PASSWORD 'worker-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE BYPASSRLS;
+          CREATE ROLE custombuild_migrator LOGIN PASSWORD 'strong-migrator-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          CREATE ROLE custombuild_api LOGIN PASSWORD 'strong-api-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          CREATE ROLE custombuild_worker LOGIN PASSWORD 'strong-worker-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker;
+          GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
           SQL
       - name: Migrate
         env:
@@ -89,13 +96,27 @@ jobs:
   web:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Export immutable Compose build identity
+        run: |
+          source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
+          {
+            echo "APP_VERSION=0.1.0+${GITHUB_SHA}"
+            echo "VCS_REF=${GITHUB_SHA}"
+            echo "BUILD_DATE=$(git show -s --format=%cI "${GITHUB_SHA}")"
+            echo "SOURCE_URL=${{ github.server_url }}/${{ github.repository }}"
+            echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
+            echo "DEPENDENCY_LOCK_SHA256=$(sha256sum uv.lock | awk '{print $1}')"
+            echo "FRONTEND_LOCK_SHA256=$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+          } >> "$GITHUB_ENV"
+      - name: Verify source freeze before image build
+        run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.7.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.14.0
+          node-version: 24.19.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Generated API client drift
@@ -106,22 +127,35 @@ jobs:
       - run: pnpm --dir apps/web typecheck
       - run: pnpm --dir apps/web test
       - run: pnpm --dir apps/web build
-      - name: Install Playwright Chromium
-        run: pnpm --dir apps/web exec playwright install --with-deps chromium
-      - name: Production workspace smoke
+      - name: Install Playwright browser matrix
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
+      - name: Cross-browser production workspace smoke
         run: pnpm --dir apps/web test:e2e
       - name: Upload Playwright diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: playwright-report
+          name: playwright-and-wcag-evidence
           path: |
             apps/web/playwright-report
             apps/web/test-results
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 14
       - name: Build production web image
-        run: docker build --file apps/web/Dockerfile --tag custombuild-web:ci .
+        run: |
+          python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
+          build_date="$(git show -s --format=%cI '${{ github.sha }}')"
+          lock_sha256="$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+          docker build \
+            --file apps/web/Dockerfile \
+            --build-arg "APP_VERSION=0.1.0+${{ github.sha }}" \
+            --build-arg "VCS_REF=${{ github.sha }}" \
+            --build-arg "BUILD_DATE=${build_date}" \
+            --build-arg "SOURCE_URL=${{ github.server_url }}/${{ github.repository }}" \
+            --build-arg "SOURCE_MANIFEST_SHA256=${SOURCE_MANIFEST_SHA256}" \
+            --build-arg "FRONTEND_LOCK_SHA256=${lock_sha256}" \
+            --tag custombuild-web:ci \
+            .
       - name: Smoke production web image
         run: |
           container_id=$(docker run --rm --detach --publish 127.0.0.1:3102:3000 custombuild-web:ci)
@@ -150,20 +184,64 @@ jobs:
     env:
       COMPOSE_PROJECT_NAME: custombuild-acceptance
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Export immutable Compose build identity
+        run: |
+          source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
+          {
+            echo "APP_VERSION=0.1.0+${GITHUB_SHA}"
+            echo "VCS_REF=${GITHUB_SHA}"
+            echo "BUILD_DATE=$(git show -s --format=%cI "${GITHUB_SHA}")"
+            echo "SOURCE_URL=${{ github.server_url }}/${{ github.repository }}"
+            echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
+            echo "DEPENDENCY_LOCK_SHA256=$(sha256sum uv.lock | awk '{print $1}')"
+            echo "FRONTEND_LOCK_SHA256=$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+          } >> "$GITHUB_ENV"
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.7.0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.14.0
+          node-version: 24.19.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install live-browser Chromium
         run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Validate fail-closed external production overlay
+        env:
+          COMPOSE_PROJECT_NAME: custombuild-external-ci
+          POSTGRES_DB: custombuild
+          POSTGRES_BOOTSTRAP_USER: custombuild_bootstrap
+          POSTGRES_BOOTSTRAP_PASSWORD: strong-postgres-bootstrap-ci-secret
+          MIGRATOR_DATABASE_USER: custombuild_migrator
+          MIGRATOR_DATABASE_PASSWORD: strong-postgres-migrator-ci-secret
+          API_DATABASE_PASSWORD: strong-postgres-api-database-ci-secret
+          WORKER_DATABASE_PASSWORD: strong-postgres-worker-database-ci-secret
+          REDIS_PASSWORD: strong-production-redis-ci-secret
+          S3_ACCESS_KEY: custombuild-ci
+          S3_SECRET_KEY: strong-production-s3-ci-secret
+          S3_BUCKET: custombuild-artifacts
+          MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-postgres-migrator-ci-secret@postgres:5432/custombuild
+          DATABASE_URL: postgresql+psycopg://custombuild_api:strong-postgres-api-database-ci-secret@postgres:5432/custombuild
+          WORKER_DATABASE_URL: postgresql+psycopg://custombuild_worker:strong-postgres-worker-database-ci-secret@postgres:5432/custombuild
+          OIDC_ISSUER: https://identity.ci.invalid/
+          OIDC_AUDIENCE: custombuild-api
+          TRUSTED_PROXY_CIDRS: 172.16.0.0/12
+          CORS_ORIGINS: https://app.ci.invalid
+          ARTIFACT_SIGNING_SECRET: strong-signing-ci-secret-at-least-32-bytes # gitleaks:allow -- fixed CI-only test value
+          S3_PUBLIC_ENDPOINT: https://files.ci.invalid
+          NEXT_PUBLIC_API_URL: https://api.ci.invalid
+          NEXT_PUBLIC_OIDC_CLIENT_ID: custombuild-web
+          NEXT_PUBLIC_OIDC_REDIRECT_URI: https://app.ci.invalid/
+        run: |
+          python3 scripts/check_external_production.py --repo .
+      - name: Verify source freeze before Compose build
+        run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
       - name: Build and start complete Compose stack
-        run: docker compose --file compose.yml up --build --detach
-      - name: Live design-to-release acceptance
+        run: >-
+          docker compose --file compose.yml up --build --detach
+          --wait --wait-timeout 900
+      - name: Live design-review and blocked CAM/release acceptance
         run: >-
           python3 scripts/live_acceptance.py
           --base-url http://127.0.0.1:8000
@@ -173,9 +251,11 @@ jobs:
       - name: Live browser production acceptance
         env:
           PLAYWRIGHT_BASE_URL: http://localhost:3000
+          PLAYWRIGHT_API_URL: http://127.0.0.1:8000
+          PLAYWRIGHT_ENVIRONMENT: test
           PLAYWRIGHT_REAL_API: "1"
-          PLAYWRIGHT_RELEASE_NUMBER: UI-${{ github.run_id }}-${{ github.run_attempt }}
-        run: pnpm --dir apps/web test:e2e
+          PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+        run: pnpm --dir apps/web test:e2e -- --project=chromium-desktop
       - name: Collect Compose diagnostics
         if: failure()
         run: |
@@ -184,7 +264,7 @@ jobs:
           tail --lines=1000 compose-acceptance.log || true
       - name: Upload Compose diagnostics
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: compose-acceptance-diagnostics
           path: |

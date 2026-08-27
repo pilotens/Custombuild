@@ -7,28 +7,29 @@ notices and source-offer obligations with qualified counsel before deployment.
 
 ## Application source licence
 
-This repository currently has no top-level `LICENSE` file. Repository access
-must not be interpreted as a grant to copy, redistribute or commercially deploy
-the Custombuild application source. The repository owner must choose and add an
-application licence before any third-party distribution; dependency licences do
-not license the application itself.
+The application source is covered by the top-level proprietary `LICENSE` file.
+Repository access is not a grant to copy, redistribute, host or commercially
+deploy Custombuild. Third-party dependencies and runtime services remain subject
+to their own licences and the release gates documented below.
 
 ## Pinned runtime services
 
 | Component | Pinned image | Upstream licence | Engineering decision |
 | --- | --- | --- | --- |
-| PostgreSQL | `postgres:17.5-alpine` | PostgreSQL License | Permissive; retain copyright and licence notices. |
-| Redis | `redis:7.2.5-alpine` | BSD-3-Clause | Redis states that 7.2.x and earlier remain BSD-3-Clause. Do not upgrade this image across the 7.4 or 8.x licence boundaries without a new review. |
-| MinIO | `minio/minio:RELEASE.2025-04-22T22-12-26Z` | AGPL-3.0 | **Commercial release gate.** Decide whether the deployment and distribution model complies with AGPL-3.0, obtain an appropriate commercial licence, or replace MinIO with another S3-compatible service. |
+| PostgreSQL | Chainguard PostgreSQL 18.6, digest pinned | PostgreSQL License plus package-specific notices | Minimal non-root runtime; retain copyright and licence notices. |
+| Redis | `redis:7.2.15-alpine` | BSD-3-Clause | Redis states that 7.2.x and earlier remain BSD-3-Clause. Do not upgrade this image across the 7.4 or 8.x licence boundaries without a new review. |
+| SeaweedFS | repository-built `4.41` from a checksum-pinned source archive | Apache-2.0 | Permissive, actively maintained S3-compatible runtime; retain the Apache-2.0 licence and notices. The minimal image is built with pinned Go 1.26.6 plus checksum-locked security overrides and scanned before release. |
+| Volume init | Chainguard BusyBox, digest pinned | GPL-2.0-only plus package-specific notices | Minimal one-shot ownership initialization; run only with the explicit root UID and `CHOWN` capability, then exit. |
 
 Authoritative upstream references:
 
 - [Redis licence history](https://redis.io/legal/licenses/)
-- [MinIO AGPL-3.0 announcement](https://www.min.io/blog/from-open-source-to-free-and-open-source-minio-is-now-fully-licensed-under-gnu-agplv3)
+- [SeaweedFS Apache-2.0 licence and S3 quick start](https://github.com/seaweedfs/seaweedfs)
 - [PostgreSQL licence](https://www.postgresql.org/about/licence/)
 
-The application talks to object storage through the S3 API, so the local MinIO
-service can be replaced without changing production-domain contracts.
+The application talks to object storage through the S3 API. SeaweedFS replaced
+the discontinued MinIO runtime without changing production-domain contracts;
+the migration preserved and verified every existing object before cutover.
 
 ## Application dependency inventory
 
@@ -67,12 +68,34 @@ texts, notices and the counsel/release-owner decision with the release record.
 Tag-only container references are convenient for local development; a commercial
 deployment must pin reviewed image digests.
 
-## Release checklist
+## Automated evidence and release checklist
 
-- [ ] Generate and archive CycloneDX or SPDX SBOMs for Python, Node and all images.
-- [ ] Scan image layers as well as package-manager dependency graphs.
+`.github/workflows/supply-chain.yml` builds the three application images and the
+checksum-bound SeaweedFS image, and pulls PostgreSQL, Redis and the volume-init
+image by digest. It emits a uniquely named SPDX JSON SBOM for every image and
+blocks every High/Critical vulnerability without an `only-fixed` filter. Every external
+workflow action is pinned to an immutable commit, and release readiness rejects
+floating action tags. The scheduled run also catches newly published
+vulnerability data without waiting for a source change. These artifacts are
+engineering evidence, not a legal approval.
+
+Application base images are digest-pinned. The Python and Node build stages use
+exact upstream release digests; the Python builders resolve operating-system
+updates from an explicit dated Debian snapshot whose metadata remains verified by
+Debian's archive keyring. Final application runtimes use pinned minimal Chainguard
+images, and the worker adds exact Wolfi packages into a scanner-visible chroot.
+Release readiness rejects a return to floating base images or APT indexes. Update
+any base digest, snapshot date or Wolfi package pin only in a reviewed change that
+rebuilds all three images and reruns their SBOM and vulnerability gates. This
+narrows rebuild drift; it does not make a source revision itself a deployable
+immutable artifact. Production must promote and record the exact built image
+digest and archive the associated SBOM and scan evidence.
+
+- [x] Generate SPDX SBOM artifacts for application and pinned runtime images in CI.
+- [x] Scan image layers and language packages; block all high/critical findings.
+- [ ] Archive the successful candidate run's SBOMs and vulnerability reports with the release.
 - [ ] Resolve every `UNKNOWN`, custom, copyleft or source-available licence.
-- [ ] Decide the MinIO deployment/licensing strategy.
+- [x] Replace the unmaintained AGPL MinIO runtime with digest-pinned Apache-2.0 SeaweedFS.
 - [ ] Verify that Redis remains on an approved licence/version or approve a replacement.
 - [ ] Assemble `NOTICE` and licence text bundles for distributed artifacts/images.
 - [ ] Record source-offer, attribution and modification obligations where applicable.

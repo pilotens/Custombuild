@@ -105,3 +105,44 @@ def test_parser_ignores_codes_inside_comments() -> None:
 
     assert parsed.spindle_start_seen is False
     assert parse_gcode(payload).minimum_z_mm == Decimal("15")
+
+
+@pytest.mark.parametrize(
+    ("mode_line", "message"),
+    (
+        ("G20", "G21 millimetres"),
+        ("G91", "G90 absolute mode"),
+    ),
+)
+def test_validation_program_rejects_non_metric_or_incremental_modal_state(
+    mode_line: str,
+    message: str,
+) -> None:
+    payload = f"%\nG21\nG90\nM5\nG0 Z15\n{mode_line}\nM30\n%\n"
+
+    with pytest.raises(GCodeSafetyError, match=message):
+        validate_validation_program(payload, required_safe_z_mm=Decimal("15"))
+
+
+def test_validation_program_requires_safe_z_before_any_xy_traverse() -> None:
+    payload = "%\nG21\nG90\nM5\nG0 X10 Y10\nM30\n%\n"
+
+    with pytest.raises(GCodeSafetyError, match="without established safe Z"):
+        validate_validation_program(payload, required_safe_z_mm=Decimal("15"))
+
+
+def test_validation_program_rejects_z_below_configured_safe_height() -> None:
+    payload = "%\nG21\nG90\nM5\nG0 Z14.999\nM30\n%\n"
+
+    with pytest.raises(GCodeSafetyError, match="below required safe height"):
+        validate_validation_program(payload, required_safe_z_mm=Decimal("15"))
+
+
+def test_semicolon_comment_cannot_inject_spindle_or_cutting_words() -> None:
+    payload = "%\nG21 ; G20\nG90\nM5 ; M3 Z-10\nG0 Z15\nM30\n%\n"
+
+    parsed = validate_validation_program(payload, required_safe_z_mm=Decimal("15"))
+
+    assert parsed.units == "MM"
+    assert parsed.spindle_start_seen is False
+    assert parsed.minimum_z_mm == Decimal("15")

@@ -46,6 +46,91 @@
         "title": "ApprovalCreate",
         "type": "object"
       },
+      "ApprovalRead": {
+        "description": "Server-owned review state for restoring the production workflow.",
+        "properties": {
+          "approval_type": {
+            "enum": [
+              "design",
+              "cam"
+            ],
+            "title": "Approval Type",
+            "type": "string"
+          },
+          "approved_by": {
+            "title": "Approved By",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "generation_job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Generation Job Id"
+          },
+          "manifest_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest Sha256"
+          },
+          "overrides_json": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Overrides Json",
+            "type": "array"
+          },
+          "production_context_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Production Context Hash"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "approval_type",
+          "approved_by",
+          "reason",
+          "generation_job_id",
+          "production_context_hash",
+          "manifest_sha256",
+          "overrides_json",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ApprovalRead",
+        "type": "object"
+      },
       "ArtifactRead": {
         "properties": {
           "content_type": {
@@ -91,10 +176,10 @@
         "title": "ArtifactRead",
         "type": "object"
       },
-      "Body_inspect_import_v1_imports_inspect_post": {
+      "Body_inspect_import_v1_projects__project_id__imports_inspect_post": {
         "properties": {
           "document": {
-            "format": "binary",
+            "contentMediaType": "application/octet-stream",
             "title": "Document",
             "type": "string"
           }
@@ -102,7 +187,69 @@
         "required": [
           "document"
         ],
-        "title": "Body_inspect_import_v1_imports_inspect_post",
+        "title": "Body_inspect_import_v1_projects__project_id__imports_inspect_post",
+        "type": "object"
+      },
+      "Body_upload_external_evidence_v1_projects__project_id__evidence_post": {
+        "properties": {
+          "catalog_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "catalog_version": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Catalog Version",
+            "type": "string"
+          },
+          "design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "document": {
+            "contentMediaType": "application/octet-stream",
+            "title": "Document",
+            "type": "string"
+          },
+          "evidence_type": {
+            "enum": [
+              "wall_anchor",
+              "hardware",
+              "material_grain"
+            ],
+            "title": "Evidence Type",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "rule_id": {
+            "pattern": "^(CB|DFM)-[A-Z]+-[0-9]{3}$",
+            "title": "Rule Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "document",
+          "evidence_type",
+          "rule_id",
+          "catalog_id",
+          "catalog_version",
+          "design_hash"
+        ],
+        "title": "Body_upload_external_evidence_v1_projects__project_id__evidence_post",
         "type": "object"
       },
       "BookcasePreviewInput": {
@@ -125,6 +272,35 @@
             "default": true,
             "title": "Back Panel"
           },
+          "base_cabinet_count": {
+            "default": 0,
+            "maximum": 17.0,
+            "minimum": 0.0,
+            "title": "Base Cabinet Count",
+            "type": "integer"
+          },
+          "base_cabinet_depth_mm": {
+            "default": 0,
+            "maximum": 1200.0,
+            "minimum": 0.0,
+            "title": "Base Cabinet Depth Mm",
+            "type": "number"
+          },
+          "base_cabinet_height_mm": {
+            "default": 0,
+            "maximum": 2000.0,
+            "minimum": 0.0,
+            "title": "Base Cabinet Height Mm",
+            "type": "number"
+          },
+          "bay_width_ratios": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 17,
+            "title": "Bay Width Ratios",
+            "type": "array"
+          },
           "depth_mm": {
             "default": 320,
             "maximum": 1200.0,
@@ -145,6 +321,15 @@
             "minimum": 0.0,
             "title": "Edge Band Mm",
             "type": "number"
+          },
+          "furniture_type": {
+            "default": "bookcase",
+            "enum": [
+              "bookcase",
+              "wall_library"
+            ],
+            "title": "Furniture Type",
+            "type": "string"
           },
           "height_mm": {
             "default": 2000,
@@ -226,6 +411,14 @@
             "title": "Shelf Count",
             "type": "integer"
           },
+          "shelf_height_ratios": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 40,
+            "title": "Shelf Height Ratios",
+            "type": "array"
+          },
           "shelf_mount": {
             "default": "fixed",
             "enum": [
@@ -247,7 +440,7 @@
           },
           "width_mm": {
             "default": 900,
-            "maximum": 4000.0,
+            "maximum": 6000.0,
             "minimum": 250.0,
             "title": "Width Mm",
             "type": "number"
@@ -271,13 +464,47 @@
         "type": "string"
       },
       "DesignVersionCreate": {
+        "additionalProperties": false,
         "properties": {
+          "expected_current_revision": {
+            "minimum": 0.0,
+            "title": "Expected Current Revision",
+            "type": "integer"
+          },
+          "expected_design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Design Hash",
+            "type": "string"
+          },
+          "production_context": {
+            "$ref": "#/components/schemas/RevisionProductionContext"
+          },
+          "source_provenance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceImageSourceProvenance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "spec": {
             "$ref": "#/components/schemas/BookcasePreviewInput"
+          },
+          "template_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Template Id",
+            "type": "string"
           }
         },
         "required": [
-          "spec"
+          "template_id",
+          "spec",
+          "production_context",
+          "expected_design_hash",
+          "expected_current_revision"
         ],
         "title": "DesignVersionCreate",
         "type": "object"
@@ -326,6 +553,22 @@
             "title": "Rule Version",
             "type": "string"
           },
+          "source_import_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Import Id"
+          },
+          "source_provenance_json": {
+            "additionalProperties": true,
+            "title": "Source Provenance Json",
+            "type": "object"
+          },
           "spec_json": {
             "additionalProperties": true,
             "title": "Spec Json",
@@ -333,6 +576,15 @@
           },
           "status": {
             "$ref": "#/components/schemas/DesignStatus"
+          },
+          "template_capability_fingerprint": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Template Capability Fingerprint",
+            "type": "string"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
           },
           "template_version": {
             "title": "Template Version",
@@ -347,14 +599,109 @@
           "design_hash",
           "context_hash",
           "spec_json",
+          "source_provenance_json",
+          "source_import_id",
           "result_json",
           "engine_version",
           "template_version",
           "rule_version",
+          "template_id",
+          "template_capability_fingerprint",
           "immutable",
           "created_at"
         ],
         "title": "DesignVersionRead",
+        "type": "object"
+      },
+      "ExternalEvidenceRead": {
+        "properties": {
+          "catalog_id": {
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "catalog_version": {
+            "title": "Catalog Version",
+            "type": "string"
+          },
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "created_by": {
+            "title": "Created By",
+            "type": "string"
+          },
+          "design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "evidence_type": {
+            "enum": [
+              "wall_anchor",
+              "hardware",
+              "material_grain"
+            ],
+            "title": "Evidence Type",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "rule_id": {
+            "pattern": "^(CB|DFM)-[A-Z]+-[0-9]{3}$",
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "evidence_type",
+          "rule_id",
+          "catalog_id",
+          "catalog_version",
+          "design_hash",
+          "sha256",
+          "size_bytes",
+          "content_type",
+          "created_by",
+          "expires_at",
+          "created_at"
+        ],
+        "title": "ExternalEvidenceRead",
         "type": "object"
       },
       "GenerationRequest": {
@@ -379,6 +726,19 @@
             "maximum": 10000.0,
             "title": "Back Stock Width Mm",
             "type": "number"
+          },
+          "external_evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "External Evidence Ids",
+            "type": "array"
+          },
+          "include_freecad_project": {
+            "default": false,
+            "title": "Include Freecad Project",
+            "type": "boolean"
           },
           "include_step": {
             "default": true,
@@ -464,12 +824,23 @@
             "title": "Furniture Type Confidence",
             "type": "number"
           },
+          "image_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Image Sha256",
+            "type": "string"
+          },
           "import_id": {
+            "pattern": "^[0-9a-f-]{36}$",
             "title": "Import Id",
             "type": "string"
           },
           "media_type": {
             "title": "Media Type",
+            "type": "string"
+          },
+          "project_id": {
+            "pattern": "^[0-9a-f-]{36}$",
+            "title": "Project Id",
             "type": "string"
           },
           "size_bytes": {
@@ -491,6 +862,8 @@
         },
         "required": [
           "import_id",
+          "project_id",
+          "image_sha256",
           "media_type",
           "size_bytes",
           "furniture_type",
@@ -513,6 +886,18 @@
             "title": "Created At",
             "type": "string"
           },
+          "deadline_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deadline At"
+          },
           "design_version_id": {
             "title": "Design Version Id",
             "type": "string"
@@ -528,9 +913,33 @@
             ],
             "title": "Error"
           },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "lease_expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lease Expires At"
           },
           "production_context_hash": {
             "title": "Production Context Hash",
@@ -553,6 +962,18 @@
             ],
             "title": "Result Json"
           },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
           "status": {
             "$ref": "#/components/schemas/JobStatus"
           },
@@ -571,6 +992,10 @@
           "attempts",
           "error",
           "result_json",
+          "started_at",
+          "lease_expires_at",
+          "deadline_at",
+          "finished_at",
           "created_at",
           "updated_at"
         ],
@@ -587,6 +1012,61 @@
         ],
         "title": "JobStatus",
         "type": "string"
+      },
+      "ProductionStateRead": {
+        "description": "Complete recoverable state for the current project revision.",
+        "properties": {
+          "approvals": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalRead"
+            },
+            "title": "Approvals",
+            "type": "array"
+          },
+          "latest_job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JobRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReleaseRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesignVersionRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project_id",
+          "version",
+          "approvals",
+          "latest_job",
+          "release"
+        ],
+        "title": "ProductionStateRead",
+        "type": "object"
       },
       "ProjectCreate": {
         "properties": {
@@ -613,6 +1093,124 @@
           "name"
         ],
         "title": "ProjectCreate",
+        "type": "object"
+      },
+      "ProjectDraftRead": {
+        "properties": {
+          "design_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Design Hash"
+          },
+          "draft_revision": {
+            "title": "Draft Revision",
+            "type": "integer"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "result_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result Json"
+          },
+          "spec_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spec Json"
+          },
+          "template_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template Id"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "workspace_spec_json": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Spec Json"
+          }
+        },
+        "required": [
+          "project_id",
+          "draft_revision",
+          "template_id",
+          "design_hash",
+          "spec_json",
+          "workspace_spec_json",
+          "result_json",
+          "updated_at"
+        ],
+        "title": "ProjectDraftRead",
+        "type": "object"
+      },
+      "ProjectDraftUpdate": {
+        "additionalProperties": false,
+        "description": "A mutable workspace draft with a bounded, versioned UI-intent envelope.",
+        "properties": {
+          "expected_draft_revision": {
+            "minimum": 0.0,
+            "title": "Expected Draft Revision",
+            "type": "integer"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/BookcasePreviewInput"
+          },
+          "template_id": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Template Id",
+            "type": "string"
+          },
+          "workspace_spec": {
+            "$ref": "#/components/schemas/WorkspaceIntentV1"
+          }
+        },
+        "required": [
+          "expected_draft_revision",
+          "template_id",
+          "spec",
+          "workspace_spec"
+        ],
+        "title": "ProjectDraftUpdate",
         "type": "object"
       },
       "ProjectRead": {
@@ -665,6 +1263,137 @@
         "title": "ProjectRead",
         "type": "object"
       },
+      "ReferenceImageConfirmedInputs": {
+        "properties": {
+          "construction_assumptions_confirmed": {
+            "const": true,
+            "title": "Construction Assumptions Confirmed",
+            "type": "boolean"
+          },
+          "dimensions_measured": {
+            "const": true,
+            "title": "Dimensions Measured",
+            "type": "boolean"
+          },
+          "layout_confirmed": {
+            "const": true,
+            "title": "Layout Confirmed",
+            "type": "boolean"
+          },
+          "material_confirmed": {
+            "const": true,
+            "title": "Material Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dimensions_measured",
+          "layout_confirmed",
+          "material_confirmed",
+          "construction_assumptions_confirmed"
+        ],
+        "title": "ReferenceImageConfirmedInputs",
+        "type": "object"
+      },
+      "ReferenceImageSourceProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "confirmed_inputs": {
+            "$ref": "#/components/schemas/ReferenceImageConfirmedInputs"
+          },
+          "detected_base_cabinets": {
+            "title": "Detected Base Cabinets",
+            "type": "boolean"
+          },
+          "detected_dividers": {
+            "maximum": 16.0,
+            "minimum": 0.0,
+            "title": "Detected Dividers",
+            "type": "integer"
+          },
+          "detected_shelves": {
+            "maximum": 40.0,
+            "minimum": 0.0,
+            "title": "Detected Shelves",
+            "type": "integer"
+          },
+          "file_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "File Name",
+            "type": "string"
+          },
+          "image_height_px": {
+            "maximum": 20000.0,
+            "minimum": 160.0,
+            "title": "Image Height Px",
+            "type": "integer"
+          },
+          "image_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Image Sha256",
+            "type": "string"
+          },
+          "image_width_px": {
+            "maximum": 20000.0,
+            "minimum": 160.0,
+            "title": "Image Width Px",
+            "type": "integer"
+          },
+          "import_id": {
+            "maxLength": 36,
+            "minLength": 36,
+            "title": "Import Id",
+            "type": "string"
+          },
+          "source": {
+            "const": "reference_image",
+            "title": "Source",
+            "type": "string"
+          },
+          "verification_status": {
+            "const": "parametric_confirmed",
+            "title": "Verification Status",
+            "type": "string"
+          },
+          "verified_model_fingerprint": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Verified Model Fingerprint",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source",
+          "import_id",
+          "image_sha256",
+          "file_name",
+          "image_width_px",
+          "image_height_px",
+          "confidence",
+          "detected_shelves",
+          "detected_dividers",
+          "detected_base_cabinets",
+          "verification_status",
+          "confirmed_inputs",
+          "verified_model_fingerprint"
+        ],
+        "title": "ReferenceImageSourceProvenance",
+        "type": "object"
+      },
       "ReleaseCreate": {
         "properties": {
           "confirmation": {
@@ -701,6 +1430,11 @@
             "title": "Release Id",
             "type": "string"
           },
+          "release_kind": {
+            "const": "design_review",
+            "title": "Release Kind",
+            "type": "string"
+          },
           "release_number": {
             "title": "Release Number",
             "type": "string"
@@ -716,13 +1450,80 @@
           "release_number",
           "status",
           "manifest_sha256",
+          "release_kind",
           "machine_use"
         ],
         "title": "ReleaseRead",
         "type": "object"
       },
+      "RevisionProductionContext": {
+        "additionalProperties": false,
+        "description": "Production-affecting choices frozen when a design revision is created.",
+        "properties": {
+          "back_stock_count": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Back Stock Count",
+            "type": "integer"
+          },
+          "back_stock_height_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000.0,
+            "title": "Back Stock Height Mm",
+            "type": "number"
+          },
+          "back_stock_width_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000.0,
+            "title": "Back Stock Width Mm",
+            "type": "number"
+          },
+          "machine_profile_id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Machine Profile Id",
+            "type": "string"
+          },
+          "stock_count": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Stock Count",
+            "type": "integer"
+          },
+          "stock_height_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000.0,
+            "title": "Stock Height Mm",
+            "type": "number"
+          },
+          "stock_width_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000.0,
+            "title": "Stock Width Mm",
+            "type": "number"
+          }
+        },
+        "required": [
+          "stock_width_mm",
+          "stock_height_mm",
+          "stock_count",
+          "back_stock_width_mm",
+          "back_stock_height_mm",
+          "back_stock_count",
+          "machine_profile_id"
+        ],
+        "title": "RevisionProductionContext",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
           "loc": {
             "items": {
               "anyOf": [
@@ -756,6 +1557,14 @@
       },
       "WarningOverrideCreate": {
         "properties": {
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Evidence Ids",
+            "type": "array"
+          },
           "reason": {
             "maxLength": 2000,
             "minLength": 10,
@@ -763,7 +1572,7 @@
             "type": "string"
           },
           "rule_id": {
-            "pattern": "^CB-[A-Z]+-[0-9]{3}$",
+            "pattern": "^(?:CB-[A-Z]+-[0-9]{3}|DFM-GRAIN-001)$",
             "title": "Rule Id",
             "type": "string"
           }
@@ -773,6 +1582,369 @@
           "reason"
         ],
         "title": "WarningOverrideCreate",
+        "type": "object"
+      },
+      "WorkspaceIntentV1": {
+        "additionalProperties": false,
+        "properties": {
+          "bay_sizing_mode": {
+            "enum": [
+              "count",
+              "target_width"
+            ],
+            "title": "Bay Sizing Mode",
+            "type": "string"
+          },
+          "part_overrides": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/WorkspacePartOverride"
+            },
+            "maxProperties": 1024,
+            "propertyNames": {
+              "maxLength": 128,
+              "minLength": 1
+            },
+            "title": "Part Overrides",
+            "type": "object"
+          },
+          "production_context": {
+            "$ref": "#/components/schemas/WorkspaceProductionContext"
+          },
+          "reference_image_import": {
+            "$ref": "#/components/schemas/WorkspaceReferenceImageImport",
+            "title": "Reference Image Import"
+          },
+          "removed_part_ids": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 1024,
+            "title": "Removed Part Ids",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "custombuild.workspace-intent.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "symmetry_locked": {
+            "title": "Symmetry Locked",
+            "type": "boolean"
+          },
+          "target_bay_width_mm": {
+            "maximum": 2000.0,
+            "minimum": 50.0,
+            "title": "Target Bay Width Mm",
+            "type": "number"
+          },
+          "topology_baseline": {
+            "$ref": "#/components/schemas/WorkspaceTopologyBaseline",
+            "title": "Topology Baseline"
+          }
+        },
+        "required": [
+          "schema_version",
+          "bay_sizing_mode",
+          "target_bay_width_mm",
+          "symmetry_locked",
+          "production_context",
+          "part_overrides",
+          "removed_part_ids"
+        ],
+        "title": "WorkspaceIntentV1",
+        "type": "object"
+      },
+      "WorkspacePartOverride": {
+        "additionalProperties": false,
+        "minProperties": 1,
+        "properties": {
+          "depth_mm": {
+            "maximum": 6000.0,
+            "minimum": 1.0,
+            "title": "Depth Mm",
+            "type": "number"
+          },
+          "position_x_mm": {
+            "maximum": 6000.0,
+            "minimum": 0.0,
+            "title": "Position X Mm",
+            "type": "number"
+          },
+          "position_y_mm": {
+            "maximum": 1200.0,
+            "minimum": 0.0,
+            "title": "Position Y Mm",
+            "type": "number"
+          },
+          "position_z_mm": {
+            "maximum": 4000.0,
+            "minimum": 0.0,
+            "title": "Position Z Mm",
+            "type": "number"
+          },
+          "thickness_mm": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Thickness Mm",
+            "type": "number"
+          },
+          "width_mm": {
+            "maximum": 6000.0,
+            "minimum": 1.0,
+            "title": "Width Mm",
+            "type": "number"
+          }
+        },
+        "title": "WorkspacePartOverride",
+        "type": "object"
+      },
+      "WorkspaceProductionContext": {
+        "additionalProperties": false,
+        "properties": {
+          "back_stock_count": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Back Stock Count",
+            "type": "integer"
+          },
+          "back_stock_height_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000.0,
+            "title": "Back Stock Height Mm",
+            "type": "number"
+          },
+          "back_stock_width_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000.0,
+            "title": "Back Stock Width Mm",
+            "type": "number"
+          },
+          "machine_profile_id": {
+            "enum": [
+              "custombuild-router-1325-linuxcnc",
+              "custombuild-router-5125-linuxcnc"
+            ],
+            "title": "Machine Profile Id",
+            "type": "string"
+          },
+          "stock_count": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Stock Count",
+            "type": "integer"
+          },
+          "stock_height_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000.0,
+            "title": "Stock Height Mm",
+            "type": "number"
+          },
+          "stock_width_mm": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000.0,
+            "title": "Stock Width Mm",
+            "type": "number"
+          }
+        },
+        "required": [
+          "stock_width_mm",
+          "stock_height_mm",
+          "stock_count",
+          "back_stock_width_mm",
+          "back_stock_height_mm",
+          "back_stock_count",
+          "machine_profile_id"
+        ],
+        "title": "WorkspaceProductionContext",
+        "type": "object"
+      },
+      "WorkspaceReferenceConfirmedInputs": {
+        "additionalProperties": false,
+        "properties": {
+          "construction_assumptions_confirmed": {
+            "title": "Construction Assumptions Confirmed",
+            "type": "boolean"
+          },
+          "dimensions_measured": {
+            "title": "Dimensions Measured",
+            "type": "boolean"
+          },
+          "layout_confirmed": {
+            "title": "Layout Confirmed",
+            "type": "boolean"
+          },
+          "material_confirmed": {
+            "title": "Material Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "dimensions_measured",
+          "layout_confirmed",
+          "material_confirmed",
+          "construction_assumptions_confirmed"
+        ],
+        "title": "WorkspaceReferenceConfirmedInputs",
+        "type": "object"
+      },
+      "WorkspaceReferenceImageImport": {
+        "additionalProperties": false,
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "confirmed_inputs": {
+            "$ref": "#/components/schemas/WorkspaceReferenceConfirmedInputs"
+          },
+          "detected_base_cabinets": {
+            "title": "Detected Base Cabinets",
+            "type": "boolean"
+          },
+          "detected_dividers": {
+            "maximum": 16.0,
+            "minimum": 0.0,
+            "title": "Detected Dividers",
+            "type": "integer"
+          },
+          "detected_shelves": {
+            "maximum": 40.0,
+            "minimum": 0.0,
+            "title": "Detected Shelves",
+            "type": "integer"
+          },
+          "file_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "File Name",
+            "type": "string"
+          },
+          "image_height_px": {
+            "maximum": 20000.0,
+            "minimum": 160.0,
+            "title": "Image Height Px",
+            "type": "integer"
+          },
+          "image_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Image Sha256",
+            "type": "string"
+          },
+          "image_width_px": {
+            "maximum": 20000.0,
+            "minimum": 160.0,
+            "title": "Image Width Px",
+            "type": "integer"
+          },
+          "import_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Import Id",
+            "type": "string"
+          },
+          "source": {
+            "const": "reference_image",
+            "title": "Source",
+            "type": "string"
+          },
+          "verification_status": {
+            "default": "concept",
+            "enum": [
+              "concept",
+              "parametric_confirmed"
+            ],
+            "title": "Verification Status",
+            "type": "string"
+          },
+          "verified_model_fingerprint": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Verified Model Fingerprint",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "maxLength": 500,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "source",
+          "import_id",
+          "image_sha256",
+          "file_name",
+          "image_width_px",
+          "image_height_px",
+          "confidence",
+          "detected_shelves",
+          "detected_dividers",
+          "detected_base_cabinets",
+          "warnings"
+        ],
+        "title": "WorkspaceReferenceImageImport",
+        "type": "object"
+      },
+      "WorkspaceTopologyBaseline": {
+        "additionalProperties": false,
+        "properties": {
+          "base_cabinet_count": {
+            "maximum": 17.0,
+            "minimum": 0.0,
+            "title": "Base Cabinet Count",
+            "type": "integer"
+          },
+          "bay_width_ratios": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 17,
+            "title": "Bay Width Ratios",
+            "type": "array"
+          },
+          "divider_count": {
+            "maximum": 16.0,
+            "minimum": 0.0,
+            "title": "Divider Count",
+            "type": "integer"
+          },
+          "reinforcement_mode": {
+            "enum": [
+              "manual",
+              "auto"
+            ],
+            "title": "Reinforcement Mode",
+            "type": "string"
+          },
+          "shelf_count": {
+            "maximum": 40.0,
+            "minimum": 0.0,
+            "title": "Shelf Count",
+            "type": "integer"
+          },
+          "shelf_height_ratios": {
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 40,
+            "title": "Shelf Height Ratios",
+            "type": "array"
+          }
+        },
+        "required": [
+          "divider_count",
+          "shelf_count",
+          "base_cabinet_count",
+          "bay_width_ratios",
+          "shelf_height_ratios",
+          "reinforcement_mode"
+        ],
+        "title": "WorkspaceTopologyBaseline",
         "type": "object"
       }
     },
@@ -810,6 +1982,32 @@
           }
         },
         "summary": "Health",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "description": "Check every dependency required to accept and complete application work.",
+        "operationId": "readiness_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Readiness Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Readiness",
         "tags": [
           "operations"
         ]
@@ -901,9 +2099,53 @@
         "summary": "Joint Capabilities"
       }
     },
+    "/v1/capabilities/templates": {
+      "get": {
+        "description": "Return server-owned support claims; client assertions are never trusted.",
+        "operationId": "template_capabilities_v1_capabilities_templates_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Template Capabilities V1 Capabilities Templates Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Template Capabilities"
+      }
+    },
     "/v1/designs/autofix": {
       "post": {
         "operationId": "autofix_design_v1_designs_autofix_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -949,6 +2191,24 @@
     "/v1/designs/preview": {
       "post": {
         "operationId": "preview_design_v1_designs_preview_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -989,49 +2249,6 @@
           }
         ],
         "summary": "Preview Design"
-      }
-    },
-    "/v1/imports/inspect": {
-      "post": {
-        "operationId": "inspect_import_v1_imports_inspect_post",
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_inspect_import_v1_imports_inspect_post"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ImportInspection"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "summary": "Inspect Import"
       }
     },
     "/v1/jobs/{job_id}": {
@@ -1263,6 +2480,301 @@
           }
         ],
         "summary": "Get Project"
+      }
+    },
+    "/v1/projects/{project_id}/draft": {
+      "get": {
+        "operationId": "get_project_draft_v1_projects__project_id__draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDraftRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Project Draft"
+      },
+      "put": {
+        "operationId": "update_project_draft_v1_projects__project_id__draft_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectDraftUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectDraftRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Update Project Draft"
+      }
+    },
+    "/v1/projects/{project_id}/evidence": {
+      "get": {
+        "operationId": "list_external_evidence_v1_projects__project_id__evidence_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ExternalEvidenceRead"
+                  },
+                  "title": "Response List External Evidence V1 Projects  Project Id  Evidence Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List External Evidence"
+      },
+      "post": {
+        "operationId": "upload_external_evidence_v1_projects__project_id__evidence_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_external_evidence_v1_projects__project_id__evidence_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExternalEvidenceRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Upload External Evidence"
+      }
+    },
+    "/v1/projects/{project_id}/imports/inspect": {
+      "post": {
+        "operationId": "inspect_import_v1_projects__project_id__imports_inspect_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_inspect_import_v1_projects__project_id__imports_inspect_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportInspection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect Import"
+      }
+    },
+    "/v1/projects/{project_id}/production-state": {
+      "get": {
+        "description": "Return server-authoritative state for the project's current revision.\n\nThe web client may cache this response for responsiveness, but must use this\nendpoint to restore approvals, jobs and releases after reload or device\nchanges. Returning an empty state for a project without revisions keeps the\nfirst production visit read-only and side-effect free.",
+        "operationId": "get_production_state_v1_projects__project_id__production_state_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProductionStateRead"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Production State"
       }
     },
     "/v1/projects/{project_id}/versions": {

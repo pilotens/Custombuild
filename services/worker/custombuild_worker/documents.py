@@ -7,6 +7,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from custombuild_manufacturing import canonical_json_bytes
 from reportlab.graphics import renderPDF
 from reportlab.graphics.barcode import qr
 from reportlab.graphics.shapes import Drawing
@@ -24,6 +25,14 @@ BLOCK = HexColor("#b13a3a")
 TWO_PERSON_WEIGHT_G = 20_000
 TWO_PERSON_LENGTH_UM = 1_800_000
 ASSEMBLY_PARTS_PER_PAGE = 10
+ASSEMBLY_TOOL_CATALOG: dict[str, tuple[str, bool]] = {
+    "hex-key-4mm": ("4 mm insexnyckel", True),
+    "mallet": ("Gummiklubba", True),
+    # The graph currently names this aid but does not define dimensions,
+    # clamping capacity or an approved work instruction.  Keep it visible and
+    # unresolved instead of silently treating the identifier as a real jig.
+    "panel-positioning-jig": ("Panelpositioneringsjigg", False),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +41,34 @@ class ExplodedBox:
     semantic_key: str
     moving: bool
     bounds_um: tuple[int, int, int, int, int, int]
-DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.0.0"
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyGroupPlan:
+    step_id: str
+    moving_part_ids: tuple[str, ...]
+    weight_g: int
+    bounds_um: tuple[int, int, int, int, int, int]
+    max_dimension_um: int
+    minimum_people_floor: int
+    requires_external_lift_plan: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AssemblyManualPlan:
+    groups: tuple[AssemblyGroupPlan, ...]
+    tool_ids: tuple[str, ...]
+    unresolved_tool_ids: tuple[str, ...]
+
+    @property
+    def requires_external_work_preparation(self) -> bool:
+        return bool(self.unresolved_tool_ids) or any(
+            group.requires_external_lift_plan for group in self.groups
+        )
+
+
+DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.3.0"
+ASSEMBLY_READINESS_SCHEMA_VERSION = "custombuild.assembly-readiness.v1"
 
 
 def _canvas() -> tuple[io.BytesIO, Canvas]:
@@ -108,60 +144,193 @@ def bom_pdf(design: Any) -> bytes:
         if joint.hardware_sku
     )
     canvas.setFont("Helvetica-Bold", 9)
-    canvas.drawString(MARGIN, y, "Beslag")
+    canvas.drawString(MARGIN, y, "Beslagsidentifierare (ej katalogverifierade)")
     canvas.setFont("Helvetica", 8)
     for sku, quantity in sorted(hardware.items()):
         y -= 12
-        canvas.drawString(MARGIN, y, str(sku))
+        canvas.drawString(MARGIN, y, f"{sku} – EJ VERIFIERAD")
         canvas.drawRightString(PAGE_WIDTH - MARGIN, y, str(quantity))
     _footer(canvas, "Genererad deterministiskt från fryst DesignSpec")
     return _finish(buffer, canvas)
 
 
 def hardware_csv(design: Any) -> bytes:
-    """Return the exact joint-derived hardware demand with source joint IDs."""
+    """Return unverified identifiers plus unresolved, non-mountable fronts.
+
+    A joint currently carries only a free-form SKU and quantity. Those fields
+    are useful for traceability, but they are not a versioned mechanical
+    catalogue contract and must never be presented as verified hardware.
+    """
 
     quantities: Counter[str] = Counter()
     joint_ids: dict[str, list[str]] = {}
+    affected_part_ids: dict[str, set[str]] = {}
     for joint in design.joints:
         if not joint.hardware_sku or joint.hardware_count <= 0:
             continue
         quantities[joint.hardware_sku] += joint.hardware_count
         joint_ids.setdefault(joint.hardware_sku, []).append(joint.joint_id)
+        affected_part_ids.setdefault(joint.hardware_sku, set()).update(
+            member.part_id for member in joint.members
+        )
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
-    writer.writerow(("hardware_sku", "quantity", "source_joint_ids"))
+    writer.writerow(
+        (
+            "hardware_sku",
+            "quantity",
+            "source_joint_ids",
+            "affected_part_ids",
+            "selection_status",
+            "required_action",
+        )
+    )
     for sku, quantity in sorted(quantities.items()):
-        writer.writerow((sku, quantity, "|".join(sorted(joint_ids[sku]))))
+        writer.writerow(
+            (
+                sku,
+                quantity,
+                "|".join(sorted(joint_ids[sku])),
+                "|".join(sorted(affected_part_ids[sku])),
+                "UNVERIFIED_IDENTIFIER",
+                (
+                    "Treat this value as an unverified identifier only. Select a versioned "
+                    "mechanical catalog item and verify capacity and boring pattern; "
+                    "adhesives are prohibited."
+                ),
+            )
+        )
+    unresolved_front_ids = _unresolved_front_hardware_part_ids(design)
+    if unresolved_front_ids:
+        writer.writerow(
+            (
+                "",
+                "",
+                "",
+                "|".join(unresolved_front_ids),
+                "EXTERNAL_SELECTION_REQUIRED",
+                (
+                    "Select versioned hinges or other mechanical front hardware and verify "
+                    "the exact boring pattern; fronts are not mountable until then."
+                ),
+            )
+        )
     return output.getvalue().encode("utf-8")
+
+
+def _unresolved_front_hardware_part_ids(design: Any) -> tuple[str, ...]:
+    # No current Joint field binds hardware type, catalogue version, boring
+    # pattern or mechanical verification. Therefore even a non-empty SKU on a
+    # joint cannot make a cabinet front mountable.
+    return tuple(
+        sorted(
+            part.part_id
+            for part in design.parts
+            if str(getattr(part.role, "value", part.role)) == "cabinet_front"
+        )
+    )
 
 
 def assembly_manual_pdf(design: Any) -> bytes:
     buffer, canvas = _canvas()
     steps = design.assembly_graph.steps
     part_by_id = {part.part_id: part for part in design.parts}
-    first_page = True
+    manual_plan = _assembly_manual_plan(design)
+    y = _header(
+        canvas,
+        "START HÄR – monteringsgranskning",
+        f"Designhash {design.design_hash}",
+    )
+    canvas.setFillColor(BLOCK)
+    canvas.setFont("Helvetica-Bold", 10)
+    canvas.drawString(MARGIN, y, "EJ FRISLÄPPT SOM KUNDMANUAL ELLER FÖR FYSISK MONTERING")
+    y -= 20
+    canvas.setFillColor(INK)
+    canvas.setFont("Helvetica", 8)
+    y = _draw_wrapped_text(
+        canvas,
+        "Dokumentet är ett designgranskningsunderlag. Ansvarig montör ska fastställa "
+        "lyftplan, arbetsberedning, fixturer, infästningar och lokala säkerhetsåtgärder "
+        "innan arbetet påbörjas.",
+        MARGIN,
+        y,
+        max_chars=105,
+    )
+    y -= 5
+    canvas.setFillColor(BLOCK)
+    canvas.setFont("Helvetica-Bold", 8)
+    y = _draw_wrapped_text(
+        canvas,
+        "LIMFRI POLICY: lim, fogmassa, epoxy och annan adhesiv låsning är förbjuden. "
+        "Ett vanligt DADO-spår visar endast geometri och lokalt upplag. Fysisk montering "
+        "kräver verifierad självlåsning eller en demonterbar mekanisk säkring.",
+        MARGIN,
+        y,
+        max_chars=105,
+    )
+    y -= 5
+    canvas.setFillColor(INK)
+    canvas.setFont("Helvetica-Bold", 9)
+    canvas.drawString(MARGIN, y, "Sammanfattning")
+    y -= 14
+    canvas.setFont("Helvetica", 8)
+    canvas.drawString(MARGIN, y, f"Delar: {len(design.parts)} · Monteringssteg: {len(steps)}")
+    y -= 12
+    canvas.drawString(
+        MARGIN,
+        y,
+        f"Total konservativ bruttovikt: {design.total_weight_g / 1000:.2f} kg",
+    )
+    y -= 12
+    heaviest = max(manual_plan.groups, key=lambda item: item.weight_g, default=None)
+    if heaviest is not None:
+        canvas.drawString(
+            MARGIN,
+            y,
+            "Tyngsta rörliga grupp: "
+            f"{heaviest.weight_g / 1000:.2f} kg · "
+            f"maxmått {heaviest.max_dimension_um / 1000:g} mm",
+        )
+        y -= 12
+    unresolved = (
+        ", ".join(manual_plan.unresolved_tool_ids)
+        if manual_plan.unresolved_tool_ids
+        else "Inga i den frysta verktygslistan"
+    )
+    canvas.drawString(MARGIN, y, "Ej specificerade hjälpmedel: " + unresolved)
+    y -= 18
+    canvas.setFont("Helvetica-Bold", 9)
+    canvas.drawString(MARGIN, y, "Verktyg och hjälpmedel från AssemblyGraph")
+    y -= 14
+    canvas.setFont("Helvetica", 8)
+    for tool_id in manual_plan.tool_ids:
+        label, specified = ASSEMBLY_TOOL_CATALOG.get(tool_id, (tool_id, False))
+        status = "identifierat" if specified else "SPECIFIKATION KRÄVS"
+        canvas.drawString(MARGIN, y, f"{tool_id}: {label} – {status}")
+        y -= 12
+    if not manual_plan.tool_ids:
+        canvas.drawString(MARGIN, y, "Inga verktygs-ID:n finns i AssemblyGraph.")
+    _footer(canvas, "Designgranskning – fysisk montering kräver separat arbetsberedning")
+
+    if not steps:
+        return _finish(buffer, canvas)
+
+    group_by_step = {group.step_id: group for group in manual_plan.groups}
     for index, step in enumerate(steps or (None,), start=1):
         chunks = (
-            ((),)
-            if step is None
-            else _assembly_part_chunks(step.part_ids, ASSEMBLY_PARTS_PER_PAGE)
+            ((),) if step is None else _assembly_part_chunks(step.part_ids, ASSEMBLY_PARTS_PER_PAGE)
         )
         for chunk_index, part_ids in enumerate(chunks, start=1):
-            if not first_page:
-                canvas.showPage()
-            first_page = False
+            canvas.showPage()
             title = f"Monteringssteg {index} av {max(1, len(steps))}"
-            continuation = (
-                f" · del {chunk_index} av {len(chunks)}" if len(chunks) > 1 else ""
-            )
+            continuation = f" · del {chunk_index} av {len(chunks)}" if len(chunks) > 1 else ""
             y = _header(
                 canvas,
                 title + continuation,
                 f"Designhash {design.design_hash}",
             )
             if step is None:
-                canvas.drawString(MARGIN, y, "Inga separata fogsteg krävs.")
+                canvas.drawString(MARGIN, y, "Inga separata förbandssteg krävs.")
                 _footer(canvas, "Följ alltid arbetsplatsens lyft-, kläm- och verktygsinstruktioner")
                 continue
             chunk_parts = tuple(part_by_id[part_id] for part_id in part_ids)
@@ -192,19 +361,30 @@ def assembly_manual_pdf(design: Any) -> bytes:
             canvas.drawString(
                 MARGIN,
                 y,
-                f"AssemblyGraph-fogar i steget: {len(step.joint_ids)}; "
-                "varje fog validerad exakt en gång.",
+                f"AssemblyGraph-förband i steget: {len(step.joint_ids)}; "
+                "varje förband validerat exakt en gång.",
             )
+            y -= 12
+            group_plan = group_by_step[step.step_id]
+            canvas.drawString(
+                MARGIN,
+                y,
+                "Rörlig grupp: "
+                f"{group_plan.weight_g / 1000:.2f} kg · "
+                f"maxmått {group_plan.max_dimension_um / 1000:g} mm",
+            )
+            y -= 12
+            people_text = (
+                "minst två personer; slutligt antal och lyfthjälpmedel fastställs i lyftplan"
+                if group_plan.requires_external_lift_plan
+                else "en person enligt den konservativa MVP-gränsen; lokal riskbedömning krävs"
+            )
+            canvas.drawString(MARGIN, y, "Bemanning: " + people_text)
             y -= 12
             tools = ", ".join(step.tool_ids) if step.tool_ids else "Inga handverktyg angivna"
             canvas.drawString(MARGIN, y, "Verktyg: " + tools)
             y -= 12
-            hardware = _assembly_step_hardware(design, step)
-            hardware_text = (
-                ", ".join(f"{sku} × {quantity}" for sku, quantity in hardware)
-                if hardware
-                else "Inga lösa beslag; foggeometrin är integrerad i delarna"
-            )
+            hardware_text = _assembly_step_hardware_text(design, step)
             canvas.drawString(MARGIN, y, "Beslag: " + hardware_text)
             y -= 12
             canvas.setFillColor(MUTED)
@@ -241,21 +421,18 @@ def assembly_manual_pdf(design: Any) -> bytes:
             y = _draw_wrapped_text(
                 canvas,
                 "Klämrisk i monteringsriktningen: stöd och säkra delarna, "
-                "och håll händer borta från foglinjen.",
+                "och håll händer borta från förbandslinjen.",
                 MARGIN,
                 y,
                 max_chars=118,
                 leading=10,
             )
-            lift_parts = _two_person_lift_parts(
-                tuple(part for part in chunk_parts if part.part_id in moving_part_ids)
-            )
-            if lift_parts:
+            if group_plan.requires_external_lift_plan:
                 _draw_wrapped_text(
                     canvas,
-                    "TVÅPERSONERSLYFT enligt konservativ MVP-tröskel (≥20 kg eller ≥1800 mm): "
-                    + ", ".join(lift_parts)
-                    + ". Gör alltid lokal lyftriskbedömning.",
+                    "LYFTPLAN KRÄVS för hela den rörliga gruppen enligt konservativ "
+                    "MVP-tröskel (grupp ≥20 kg eller gruppmått ≥1800 mm). Enskilda "
+                    "delvarningar ersätter inte gruppens arbetsberedning.",
                     MARGIN,
                     y,
                     max_chars=118,
@@ -263,6 +440,67 @@ def assembly_manual_pdf(design: Any) -> bytes:
                 )
             _footer(canvas, "Följ alltid arbetsplatsens lyft-, kläm- och verktygsinstruktioner")
     return _finish(buffer, canvas)
+
+
+def assembly_readiness_json(design: Any) -> bytes:
+    """Return a machine-readable, fail-closed assembly review summary."""
+
+    plan = _assembly_manual_plan(design)
+    missing_requirements = [
+        "named_assembly_safety_approver",
+        "approved_local_work_preparation",
+    ]
+    if any(
+        str(getattr(joint.joint_type, "value", joint.joint_type)).upper() == "DADO"
+        for joint in design.joints
+    ):
+        missing_requirements.append("verified_adhesive_free_joint_retention")
+    missing_requirements.extend(
+        f"verified_cabinet_front_hardware:{part_id}"
+        for part_id in _unresolved_front_hardware_part_ids(design)
+    )
+    missing_requirements.extend(
+        f"approved_lift_plan:{group.step_id}"
+        for group in plan.groups
+        if group.requires_external_lift_plan
+    )
+    missing_requirements.extend(
+        f"approved_tool_specification:{tool_id}" for tool_id in plan.unresolved_tool_ids
+    )
+    payload = {
+        "schema_version": ASSEMBLY_READINESS_SCHEMA_VERSION,
+        "design_hash": design.design_hash,
+        "release_scope": "design_review",
+        "customer_assembly_authorized": False,
+        "physical_assembly_authorized": False,
+        "requires_external_work_preparation": True,
+        "missing_requirements": tuple(sorted(missing_requirements)),
+        "groups": tuple(
+            {
+                "step_id": group.step_id,
+                "moving_part_ids": group.moving_part_ids,
+                "weight_g": group.weight_g,
+                "bounds_um": group.bounds_um,
+                "max_dimension_um": group.max_dimension_um,
+                "minimum_people_floor": group.minimum_people_floor,
+                "requires_external_lift_plan": group.requires_external_lift_plan,
+            }
+            for group in plan.groups
+        ),
+        "tools": tuple(
+            {
+                "tool_id": tool_id,
+                "label": ASSEMBLY_TOOL_CATALOG.get(tool_id, (tool_id, False))[0],
+                "specification_status": (
+                    "IDENTIFIED"
+                    if tool_id in ASSEMBLY_TOOL_CATALOG and ASSEMBLY_TOOL_CATALOG[tool_id][1]
+                    else "EXTERNAL_SPECIFICATION_REQUIRED"
+                ),
+            }
+            for tool_id in plan.tool_ids
+        ),
+    }
+    return canonical_json_bytes(payload)
 
 
 def _assembly_part_chunks(
@@ -335,6 +573,23 @@ def _assembly_step_hardware(design: Any, step: Any) -> tuple[tuple[str, int], ..
     return tuple(sorted(quantities.items()))
 
 
+def _assembly_step_hardware_text(design: Any, step: Any) -> str:
+    unresolved_fronts = set(_unresolved_front_hardware_part_ids(design)) & set(step.part_ids)
+    if unresolved_fronts:
+        return "FRONT EJ MONTERINGSBAR: verifierat mekaniskt beslag och borrbild saknas"
+    hardware = _assembly_step_hardware(design, step)
+    if hardware:
+        identifiers = ", ".join(f"{sku} × {quantity}" for sku, quantity in hardware)
+        return (
+            f"EJ VERIFIERAT BESLAG: {identifiers}; versionsbundet mekaniskt "
+            "katalogbevis och borrbild saknas"
+        )
+    return (
+        "Inga lösa beslag. Spårgeometrin visar lokalt upplag men är inte verifierad "
+        "som permanent låsning"
+    )
+
+
 def _two_person_lift_parts(parts: tuple[Any, ...]) -> tuple[str, ...]:
     return tuple(
         part.part_id
@@ -346,6 +601,52 @@ def _two_person_lift_parts(parts: tuple[Any, ...]) -> tuple[str, ...]:
             part.finished_size.height_um,
         )
         >= TWO_PERSON_LENGTH_UM
+    )
+
+
+def _assembly_group_plan(part_by_id: dict[str, Any], step: Any) -> AssemblyGroupPlan:
+    moving_ids = tuple(sorted(step.moving_part_ids))
+    if not moving_ids:
+        raise ValueError("assembly step has no moving group")
+    try:
+        parts = tuple(part_by_id[part_id] for part_id in moving_ids)
+    except KeyError as exc:
+        raise ValueError("assembly step references a missing moving part") from exc
+    x0 = min(part.placement.x_um for part in parts)
+    y0 = min(part.placement.y_um for part in parts)
+    z0 = min(part.placement.z_um for part in parts)
+    x1 = max(part.placement.x_um + part.finished_size.width_um for part in parts)
+    y1 = max(part.placement.y_um + part.finished_size.depth_um for part in parts)
+    z1 = max(part.placement.z_um + part.finished_size.height_um for part in parts)
+    max_dimension_um = max(x1 - x0, y1 - y0, z1 - z0)
+    weight_g = sum(part.weight_g for part in parts)
+    requires_lift_plan = weight_g >= TWO_PERSON_WEIGHT_G or max_dimension_um >= TWO_PERSON_LENGTH_UM
+    return AssemblyGroupPlan(
+        step_id=step.step_id,
+        moving_part_ids=moving_ids,
+        weight_g=weight_g,
+        bounds_um=(x0, y0, z0, x1, y1, z1),
+        max_dimension_um=max_dimension_um,
+        minimum_people_floor=2 if requires_lift_plan else 1,
+        requires_external_lift_plan=requires_lift_plan,
+    )
+
+
+def _assembly_manual_plan(design: Any) -> AssemblyManualPlan:
+    part_by_id = {part.part_id: part for part in design.parts}
+    groups = tuple(_assembly_group_plan(part_by_id, step) for step in design.assembly_graph.steps)
+    tool_ids = tuple(
+        sorted({tool_id for step in design.assembly_graph.steps for tool_id in step.tool_ids})
+    )
+    unresolved = tuple(
+        tool_id
+        for tool_id in tool_ids
+        if tool_id not in ASSEMBLY_TOOL_CATALOG or not ASSEMBLY_TOOL_CATALOG[tool_id][1]
+    )
+    return AssemblyManualPlan(
+        groups=groups,
+        tool_ids=tool_ids,
+        unresolved_tool_ids=unresolved,
     )
 
 
@@ -529,7 +830,12 @@ def labels_pdf(design: Any) -> bytes:
         canvas.drawString(x + 8, y + label_height - 39, part.part_id)
         width, depth, height = _part_dimensions(part)
         canvas.drawString(x + 8, y + label_height - 52, f"{width:g} × {depth:g} × {height:g} mm")
-        widget = qr.QrCodeWidget(part.part_id)
+        canvas.drawString(
+            x + 8,
+            y + label_height - 65,
+            f"{part.material_id}@{part.material_version} · design {design.design_hash[:12]}",
+        )
+        widget = qr.QrCodeWidget(_label_qr_payload(design.design_hash, part.part_id))
         bounds = widget.getBounds()
         drawing = Drawing(
             54,
@@ -540,6 +846,25 @@ def labels_pdf(design: Any) -> bytes:
         renderPDF.draw(drawing, canvas, x + label_width - 64, y + 9)
     _footer(canvas, "Etiketter – verifiera del-ID före bearbetning och montering")
     return _finish(buffer, canvas)
+
+
+def _label_qr_payload(design_hash: str, part_id: str) -> str:
+    """Bind a physical label to the immutable design and exact instance."""
+
+    return f"custombuild:part:{design_hash}:{part_id}:001"
+
+
+def _rule_threshold_label(evaluation: Any) -> str:
+    rule_id = str(evaluation.rule_id).upper()
+    if rule_id == "CB-TIP-001":
+        return "minimikrav"
+    if rule_id == "CB-JOINT-001":
+        return "verifierad lokal kapacitet"
+    if any(token in rule_id for token in ("DEFLECTION", "BENDING", "STABILITY")):
+        return "högsta tillåtna"
+    if any(token in rule_id for token in ("HARDWARE", "SUPPORT")):
+        return "kravvärde"
+    return "gränsvärde"
 
 
 def validation_report_pdf(rule_report: Any, dfm_report: Any | None = None) -> bytes:
@@ -569,7 +894,7 @@ def validation_report_pdf(rule_report: Any, dfm_report: Any | None = None) -> by
             MARGIN + 8,
             y,
             f"Beräknat {evaluation.calculated_value} {evaluation.unit}; "
-            f"tillåtet {evaluation.allowed_value}",
+            f"{_rule_threshold_label(evaluation)} {evaluation.allowed_value}",
         )
         y -= 18
     if dfm_report is not None:
@@ -591,20 +916,31 @@ def validation_report_pdf(rule_report: Any, dfm_report: Any | None = None) -> by
 def qa_protocol_pdf(design: Any) -> bytes:
     buffer, canvas = _canvas()
     y = _header(canvas, "QA- och mätprotokoll", f"Designhash {design.design_hash}")
+    canvas.setFillColor(MUTED)
+    canvas.setFont("Helvetica", 8)
+    canvas.drawString(
+        MARGIN,
+        y,
+        "Tomma fält är avsiktliga. Ingen del eller mätning är förhandsgodkänd.",
+    )
+    y -= 18
     canvas.setFont("Helvetica", 8)
     for part in sorted(design.parts, key=lambda item: item.semantic_key):
-        if y < 65:
-            _footer(canvas, "Mät faktisk del före märkning som godkänd")
+        if y < 80:
+            _footer(canvas, "Fyll i mätvärde, resultat, signatur och datum efter kontroll")
             canvas.showPage()
             y = _header(canvas, "QA- och mätprotokoll", "Fortsättning")
         width, depth, height = _part_dimensions(part)
         canvas.setFillColor(INK)
         canvas.drawString(MARGIN, y, part.part_id[:26])
         canvas.drawString(250, y, f"{width:g} × {depth:g} × {height:g} mm")
-        canvas.rect(465, y - 3, 8, 8)
-        canvas.drawString(480, y, "OK")
-        y -= 14
-    _footer(canvas, "Mät faktisk del före märkning som godkänd")
+        y -= 11
+        canvas.setFillColor(MUTED)
+        canvas.drawString(MARGIN + 14, y, "Mätt B/D/H: ______ / ______ / ______ mm")
+        canvas.drawString(300, y, "Resultat: __________")
+        canvas.drawString(420, y, "Sign./datum: ______________")
+        y -= 17
+    _footer(canvas, "Fyll i mätvärde, resultat, signatur och datum efter kontroll")
     return _finish(buffer, canvas)
 
 

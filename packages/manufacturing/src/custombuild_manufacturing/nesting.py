@@ -131,21 +131,19 @@ def _compatible(part: PartSpec, stock: StockSheet) -> bool:
 
 
 def _normalise_grain(value: str) -> str:
-    upper = str(value).upper()
-    if upper in {"NONE", "NO_GRAIN", "ANY", "UNSPECIFIED"}:
+    upper = str(value).strip().upper()
+    if upper in {"NONE", "NO_GRAIN"}:
         return "NONE"
-    if upper in {"X", "LENGTH", "LONG", "U"}:
-        return "X"
-    if upper in {"Y", "WIDTH", "CROSS", "V"}:
-        return "Y"
     return upper
 
 
 def _grain_allows(part: PartSpec, stock: StockSheet, rotated: bool) -> bool:
     part_grain = _normalise_grain(part.grain_direction)
     stock_grain = _normalise_grain(stock.grain_direction)
-    if part_grain == "NONE" or stock_grain == "NONE":
+    if part_grain == "NONE":
         return True
+    if part_grain not in {"X", "Y"} or stock_grain not in {"X", "Y"}:
+        return False
     effective = "Y" if part_grain == "X" and rotated else part_grain
     if part_grain == "Y" and rotated:
         effective = "X"

@@ -13,6 +13,7 @@ from custombuild_domain import (
     DesignResult,
     DesignStatus,
     FeatureKind,
+    GrainDirection,
     JointType,
     PartRole,
     ReinforcementMode,
@@ -24,6 +25,8 @@ from custombuild_domain import (
     mm,
     screening_birch_plywood_6,
     screening_birch_plywood_18,
+    screening_mdf_6,
+    screening_mdf_18,
     stable_id,
     to_mm,
 )
@@ -69,6 +72,336 @@ class ExactUnitsTests(unittest.TestCase):
 
 
 class DomainValidationTests(unittest.TestCase):
+    def test_public_design_envelope_rejects_values_outside_static_caps(self) -> None:
+        cases = (
+            ("width_um", mm(250) - 1),
+            ("width_um", mm(6_000) + 1),
+            ("height_um", mm(300) - 1),
+            ("height_um", mm(4_000) + 1),
+            ("depth_um", mm(100) - 1),
+            ("depth_um", mm(1_200) + 1),
+            ("shelf_count", 41),
+            ("shelf_load_n", 5_001),
+            ("vertical_divider_count", 17),
+            ("base_cabinet_height_um", mm(2_000) + 1),
+            ("base_cabinet_depth_um", mm(1_200) + 1),
+            ("base_cabinet_count", 18),
+        )
+
+        for field, value in cases:
+            with self.subTest(field=field, value=value), self.assertRaises(ValidationError):
+                payload = BookcaseParameters().model_dump(mode="python")
+                payload[field] = value
+                BookcaseParameters.model_validate(payload)
+
+    def test_furniture_family_assertion_is_strict_and_non_mutating(self) -> None:
+        bookcase = BookcaseParameters()
+        bookcase_before = bookcase.model_dump(mode="python")
+        self.assertIs(bookcase.assert_furniture_family("bookcase"), bookcase)
+        self.assertEqual(bookcase.model_dump(mode="python"), bookcase_before)
+
+        wall_library = BookcaseParameters(
+            width_um=mm(2_400),
+            height_um=mm(2_400),
+            depth_um=mm(340),
+            shelf_count=3,
+            base_cabinet_height_um=mm(700),
+            base_cabinet_depth_um=mm(340),
+            base_cabinet_count=3,
+        )
+        wall_library_before = wall_library.model_dump(mode="python")
+        self.assertIs(
+            wall_library.assert_furniture_family("wall_library"),
+            wall_library,
+        )
+        self.assertEqual(wall_library.model_dump(mode="python"), wall_library_before)
+
+        with self.assertRaisesRegex(ValueError, "bookcase furniture cannot contain"):
+            wall_library.assert_furniture_family("bookcase")
+        with self.assertRaisesRegex(ValueError, "requires at least one base cabinet"):
+            bookcase.assert_furniture_family("wall_library")
+        with self.assertRaisesRegex(ValueError, "unsupported furniture family"):
+            bookcase.assert_furniture_family("sideboard")
+
+    def test_base_cabinet_depth_must_match_the_furniture_depth(self) -> None:
+        matching = BookcaseParameters(
+            depth_um=mm(320),
+            base_cabinet_height_um=mm(600),
+            base_cabinet_depth_um=mm(320),
+            base_cabinet_count=1,
+        )
+        self.assertEqual(matching.base_cabinet_depth_um, matching.depth_um)
+
+        for mismatched_depth_um in (mm(300), mm(520)):
+            with (
+                self.subTest(mismatched_depth_um=mismatched_depth_um),
+                self.assertRaisesRegex(
+                    ValidationError,
+                    "base cabinet depth must equal the furniture depth",
+                ),
+            ):
+                BookcaseParameters(
+                    depth_um=mm(320),
+                    base_cabinet_height_um=mm(600),
+                    base_cabinet_depth_um=mismatched_depth_um,
+                    base_cabinet_count=1,
+                )
+
+    def test_every_base_part_stays_inside_the_furniture_envelope(self) -> None:
+        cases = (
+            (900, 2000, 280, 0, 1),
+            (2400, 2400, 350, 2, 3),
+            (4200, 2600, 400, 4, 5),
+            (6000, 2600, 550, 16, 17),
+        )
+        base_roles = {
+            PartRole.BASE_SIDE,
+            PartRole.BASE_BOTTOM,
+            PartRole.CABINET_FRONT,
+            PartRole.PLINTH,
+        }
+
+        for width_mm, height_mm, depth_mm, divider_count, cabinet_count in cases:
+            with self.subTest(
+                width_mm=width_mm,
+                height_mm=height_mm,
+                depth_mm=depth_mm,
+                cabinet_count=cabinet_count,
+            ):
+                result = build_bookcase(
+                    make_spec(
+                        design_id=(
+                            f"bounded-base-{width_mm}-{height_mm}-{depth_mm}-{cabinet_count}"
+                        ),
+                        width_um=mm(width_mm),
+                        height_um=mm(height_mm),
+                        depth_um=mm(depth_mm),
+                        shelf_count=1,
+                        vertical_divider_count=divider_count,
+                        base_cabinet_height_um=mm(600),
+                        base_cabinet_depth_um=mm(depth_mm),
+                        base_cabinet_count=cabinet_count,
+                    )
+                )
+                limits = {
+                    "x": result.spec.parameters.width_um,
+                    "y": result.spec.parameters.depth_um,
+                    "z": result.spec.parameters.height_um,
+                }
+                base_parts = [part for part in result.parts if part.role in base_roles]
+                self.assertTrue(base_parts)
+                for part in base_parts:
+                    dimensions = {
+                        "x": part.finished_size.width_um,
+                        "y": part.finished_size.depth_um,
+                        "z": part.finished_size.height_um,
+                    }
+                    for axis, limit in limits.items():
+                        start = getattr(part.placement, f"{axis}_um")
+                        self.assertGreaterEqual(start, 0, (part.semantic_key, axis))
+                        self.assertLessEqual(
+                            start + dimensions[axis],
+                            limit,
+                            (part.semantic_key, axis),
+                        )
+
+                base_bottoms = [part for part in result.parts if part.role == PartRole.BASE_BOTTOM]
+                self.assertTrue(base_bottoms)
+                for base_bottom in base_bottoms:
+                    self.assertEqual(
+                        base_bottom.placement.y_um,
+                        result.spec.parameters.actual_thickness_um,
+                    )
+                    self.assertEqual(
+                        base_bottom.finished_size.depth_um,
+                        result.spec.parameters.depth_um
+                        - result.spec.parameters.actual_thickness_um,
+                    )
+
+                plinths = [part for part in result.parts if part.role == PartRole.PLINTH]
+                self.assertEqual(len(plinths), 1)
+                self.assertEqual(
+                    plinths[0].finished_size.height_um,
+                    result.spec.parameters.plinth_height_um,
+                )
+
+                joint_pairs = {
+                    frozenset(member.part_id for member in joint.members) for joint in result.joints
+                }
+                unexpected_overlaps: list[tuple[str, str]] = []
+                for first_index, first in enumerate(result.parts):
+                    for second in result.parts[first_index + 1 :]:
+                        overlaps = all(
+                            min(
+                                getattr(first.placement, f"{axis}_um")
+                                + getattr(first.finished_size, dimension),
+                                getattr(second.placement, f"{axis}_um")
+                                + getattr(second.finished_size, dimension),
+                            )
+                            > max(
+                                getattr(first.placement, f"{axis}_um"),
+                                getattr(second.placement, f"{axis}_um"),
+                            )
+                            for axis, dimension in (
+                                ("x", "width_um"),
+                                ("y", "depth_um"),
+                                ("z", "height_um"),
+                            )
+                        )
+                        if (
+                            overlaps
+                            and frozenset((first.part_id, second.part_id)) not in joint_pairs
+                        ):
+                            unexpected_overlaps.append((first.semantic_key, second.semantic_key))
+                self.assertEqual(unexpected_overlaps, [])
+
+    def test_wall_library_parts_are_complete_assembly_graph_nodes(self) -> None:
+        result = build_bookcase(
+            make_spec(
+                design_id="wall-library",
+                width_um=mm(4200),
+                height_um=mm(2600),
+                depth_um=mm(320),
+                shelf_count=5,
+                vertical_divider_count=4,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+                base_cabinet_count=4,
+            )
+        )
+
+        roles = [part.role for part in result.parts]
+        self.assertEqual(roles.count(PartRole.BASE_SIDE), 3)
+        self.assertEqual(roles.count(PartRole.BASE_BOTTOM), 4)
+        self.assertEqual(roles.count(PartRole.CABINET_FRONT), 4)
+        self.assertEqual(roles.count(PartRole.PLINTH), 1)
+        self.assertEqual(roles.count(PartRole.SHELF), 25)
+        self.assertTrue(
+            all(
+                part.placement.y_um == 0
+                for part in result.parts
+                if part.role == PartRole.CABINET_FRONT
+            )
+        )
+        used_part_ids = {
+            part_id for step in result.assembly_graph.steps for part_id in step.part_ids
+        }
+        self.assertEqual(used_part_ids, {part.part_id for part in result.parts})
+
+    def test_custom_upper_bays_drive_the_aligned_base_module_grid(self) -> None:
+        result = build_bookcase(
+            make_spec(
+                design_id="aligned-custom-wall-library",
+                width_um=mm(2400),
+                height_um=mm(2400),
+                depth_um=mm(320),
+                vertical_divider_count=2,
+                bay_width_ratios_ppm=(250_000, 500_000, 250_000),
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+                base_cabinet_count=3,
+            )
+        )
+
+        dividers = sorted(
+            (part for part in result.parts if part.role == PartRole.DIVIDER),
+            key=lambda part: part.placement.x_um,
+        )
+        internal_base_sides = sorted(
+            (part for part in result.parts if part.role == PartRole.BASE_SIDE),
+            key=lambda part: part.placement.x_um,
+        )
+        self.assertEqual(
+            [part.placement.x_um for part in internal_base_sides],
+            [part.placement.x_um for part in dividers],
+        )
+
+    def test_base_structure_has_verified_joints_load_paths_and_assembly_steps(self) -> None:
+        result = build_bookcase(
+            make_spec(
+                design_id="jointed-wall-library-base",
+                width_um=mm(4200),
+                height_um=mm(2600),
+                depth_um=mm(320),
+                shelf_count=2,
+                vertical_divider_count=4,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+                base_cabinet_count=5,
+            )
+        )
+
+        structural_parts = {
+            part.part_id: part
+            for part in result.parts
+            if part.role in {PartRole.BASE_SIDE, PartRole.BASE_BOTTOM}
+        }
+        joint_part_ids = {member.part_id for joint in result.joints for member in joint.members}
+        step_part_ids = {
+            part_id for step in result.assembly_graph.steps for part_id in step.part_ids
+        }
+        self.assertEqual(
+            len([part for part in structural_parts.values() if part.role == PartRole.BASE_SIDE]),
+            4,
+        )
+        self.assertEqual(
+            len([part for part in structural_parts.values() if part.role == PartRole.BASE_BOTTOM]),
+            5,
+        )
+        self.assertTrue(set(structural_parts) <= joint_part_ids)
+        self.assertTrue(set(structural_parts) <= step_part_ids)
+
+        upper_bottom = next(part for part in result.parts if part.role == PartRole.BOTTOM)
+        for base_side in (
+            part for part in structural_parts.values() if part.role == PartRole.BASE_SIDE
+        ):
+            self.assertTrue(
+                any(
+                    {base_side.part_id, upper_bottom.part_id}
+                    == {member.part_id for member in joint.members}
+                    and joint.joint_type == JointType.DADO
+                    for joint in result.joints
+                )
+            )
+        for base_bottom in (
+            part for part in structural_parts.values() if part.role == PartRole.BASE_BOTTOM
+        ):
+            support_joints = [
+                joint
+                for joint in result.joints
+                if base_bottom.part_id in {member.part_id for member in joint.members}
+                and joint.joint_type == JointType.DADO
+            ]
+            self.assertEqual(len(support_joints), 2)
+
+    def test_sixteen_dividers_support_seventeen_base_modules(self) -> None:
+        result = build_bookcase(
+            make_spec(
+                design_id="seventeen-base-modules",
+                width_um=mm(6000),
+                height_um=mm(2600),
+                depth_um=mm(320),
+                shelf_count=1,
+                vertical_divider_count=16,
+                base_cabinet_height_um=mm(720),
+                base_cabinet_depth_um=mm(320),
+                base_cabinet_count=17,
+            )
+        )
+
+        self.assertEqual(
+            len([part for part in result.parts if part.role == PartRole.BASE_SIDE]),
+            16,
+        )
+        self.assertEqual(
+            len([part for part in result.parts if part.role == PartRole.BASE_BOTTOM]),
+            17,
+        )
+        installed_joint_ids = {
+            joint_id for step in result.assembly_graph.steps for joint_id in step.joint_ids
+        }
+        self.assertEqual(installed_joint_ids, {joint.joint_id for joint in result.joints})
+
     def test_joint_support_matrix_blocks_unverified_primary_systems(self) -> None:
         self.assertEqual(set(BOOKCASE_JOINT_SUPPORT_MATRIX), set(JointType))
         self.assertEqual(BOOKCASE_JOINT_SUPPORT_MATRIX[JointType.DADO]["status"], "supported")
@@ -110,9 +443,7 @@ class DomainValidationTests(unittest.TestCase):
                     )
                 )
                 installed = [
-                    joint_id
-                    for step in result.assembly_graph.steps
-                    for joint_id in step.joint_ids
+                    joint_id for step in result.assembly_graph.steps for joint_id in step.joint_ids
                 ]
                 self.assertCountEqual(installed, [joint.joint_id for joint in result.joints])
                 self.assertEqual(len(installed), len(set(installed)))
@@ -179,6 +510,31 @@ class DomainValidationTests(unittest.TestCase):
 
 
 class BookcaseEngineTests(unittest.TestCase):
+    def test_catalog_directionality_controls_effective_part_grain(self) -> None:
+        mdf_design = build_bookcase(
+            BookcaseDesignSpec(
+                design_id="catalog-nondirectional-grain",
+                parameters=BookcaseParameters(),
+                material=screening_mdf_18(),
+                back_material=screening_mdf_6(),
+            )
+        )
+        self.assertTrue(mdf_design.parts)
+        self.assertEqual(
+            {part.grain_direction for part in mdf_design.parts},
+            {GrainDirection.NONE},
+        )
+
+        directional_design = build_bookcase(make_spec("catalog-directional-grain"))
+        back_parts = tuple(
+            part for part in directional_design.parts if part.role == PartRole.BACK
+        )
+        self.assertTrue(back_parts)
+        self.assertEqual(
+            {part.grain_direction for part in back_parts},
+            {GrainDirection.Z},
+        )
+
     def test_default_build_has_all_carcass_parts(self) -> None:
         result = build_bookcase(make_spec())
         roles = {part.role for part in result.parts}
@@ -276,6 +632,30 @@ class BookcaseEngineTests(unittest.TestCase):
             result.spec.parameters.height_um,
         )
 
+    def test_custom_bay_and_shelf_ratios_drive_production_geometry(self) -> None:
+        result = build_bookcase(
+            make_spec(
+                width_um=mm(2000),
+                height_um=mm(2200),
+                vertical_divider_count=2,
+                shelf_count=3,
+                bay_width_ratios_ppm=(200_000, 600_000, 200_000),
+                shelf_height_ratios_ppm=(200_000, 500_000, 800_000),
+            )
+        )
+        shelves = [part for part in result.parts if part.role == PartRole.SHELF]
+        first_row = sorted(
+            (part for part in shelves if part.instance_index < 3),
+            key=lambda part: part.placement.x_um,
+        )
+        row_levels = sorted({part.placement.z_um for part in shelves})
+
+        self.assertEqual(len(first_row), 3)
+        self.assertGreater(first_row[1].finished_size.width_um, first_row[0].finished_size.width_um)
+        self.assertEqual(first_row[0].finished_size.width_um, first_row[2].finished_size.width_um)
+        self.assertEqual(len(row_levels), 3)
+        self.assertGreater(row_levels[1] - row_levels[0], mm(400))
+
     def test_assembly_graph_references_every_part_and_joint_once(self) -> None:
         result = build_bookcase(make_spec(vertical_divider_count=1))
         self.assertEqual(
@@ -289,8 +669,7 @@ class BookcaseEngineTests(unittest.TestCase):
         self.assertEqual(len(step_joint_ids), len(set(step_joint_ids)))
         self.assertTrue(
             all(
-                step.moving_part_ids
-                and set(step.moving_part_ids) <= set(step.part_ids)
+                step.moving_part_ids and set(step.moving_part_ids) <= set(step.part_ids)
                 for step in result.assembly_graph.steps
             )
         )
@@ -351,6 +730,37 @@ class BookcaseEngineTests(unittest.TestCase):
             )
         )
 
+        left_side = next(part for part in result.parts if part.role == PartRole.LEFT_SIDE)
+        closing_step = next(
+            item
+            for item in result.assembly_graph.steps
+            if left_side.part_id in item.moving_part_ids
+        )
+        self.assertIn("spåranslutning", closing_step.checkpoint)
+        self.assertIn("verifierar inte permanent hållning", closing_step.checkpoint)
+
+    def test_cabinet_front_is_explicitly_not_mountable_without_hardware(self) -> None:
+        result = build_bookcase(
+            make_spec(
+                width_um=mm(2_400),
+                height_um=mm(2_400),
+                depth_um=mm(340),
+                vertical_divider_count=2,
+                base_cabinet_height_um=mm(600),
+                base_cabinet_depth_um=mm(340),
+                base_cabinet_count=3,
+            )
+        )
+        by_id = {part.part_id: part for part in result.parts}
+        front_steps = [
+            step
+            for step in result.assembly_graph.steps
+            if any(by_id[part_id].role == PartRole.CABINET_FRONT for part_id in step.part_ids)
+        ]
+
+        self.assertEqual(len(front_steps), 3)
+        self.assertTrue(all("FRONT EJ MONTERINGSBAR" in step.checkpoint for step in front_steps))
+
     def test_surface_back_is_one_incoming_group_after_carcass_closure(self) -> None:
         result = build_bookcase(make_spec(back_panel=BackPanelType.SURFACE_MOUNTED))
         back = next(part for part in result.parts if part.role == PartRole.BACK)
@@ -360,9 +770,7 @@ class BookcaseEngineTests(unittest.TestCase):
             if back.part_id in {member.part_id for member in joint.members}
         }
         step = next(
-            item
-            for item in result.assembly_graph.steps
-            if set(item.joint_ids) == back_joint_ids
+            item for item in result.assembly_graph.steps if set(item.joint_ids) == back_joint_ids
         )
 
         self.assertEqual(step.direction.value, "-y")
@@ -397,8 +805,7 @@ class BookcaseEngineTests(unittest.TestCase):
         self.assertEqual(len(shelf_steps), result.spec.parameters.shelf_count * 2)
         self.assertTrue(
             all(
-                {by_id[part_id].role for part_id in step.moving_part_ids}
-                == {PartRole.SHELF}
+                {by_id[part_id].role for part_id in step.moving_part_ids} == {PartRole.SHELF}
                 and tuple(item.value for item in step.motion_path) == ("+y", "-z")
                 for step in shelf_steps
             )
@@ -415,9 +822,7 @@ class BookcaseEngineTests(unittest.TestCase):
             == {PartRole.DIVIDER, PartRole.SHELF}
         )
         expected = {
-            part.part_id
-            for part in result.parts
-            if part.role in {PartRole.DIVIDER, PartRole.SHELF}
+            part.part_id for part in result.parts if part.role in {PartRole.DIVIDER, PartRole.SHELF}
         }
         self.assertEqual(set(module_step.moving_part_ids), expected)
 
@@ -541,6 +946,46 @@ class BookcaseEngineTests(unittest.TestCase):
         plinth = by_key["plinth"]
         self.assertEqual(plinth.finished_size.height_um, mm(86))
 
+    def test_inset_back_keeps_dogbone_clearance_without_moving_fronts_or_joint_depth(self) -> None:
+        result = build_bookcase(make_spec(vertical_divider_count=1, shelf_count=1))
+        by_key = {part.semantic_key: part for part in result.parts}
+        by_id = {part.part_id: part for part in result.parts}
+        shelf = by_key["shelf-r0-b0"]
+        divider = by_key["divider-0"]
+        left_side = by_key["left-side"]
+        back = by_key["back"]
+
+        self.assertEqual(shelf.finished_size.depth_um, mm(298))
+        self.assertEqual(divider.finished_size.depth_um, mm(298))
+        self.assertEqual((shelf.placement.y_um, divider.placement.y_um), (0, 0))
+
+        def groove_for(first_part_id: str, second_part_id: str):
+            joint = next(
+                item
+                for item in result.joints
+                if {member.part_id for member in item.members} == {first_part_id, second_part_id}
+            )
+            cut_member = next(member for member in joint.members if member.feature_ids)
+            owner = by_id[cut_member.part_id]
+            return next(
+                feature
+                for feature in owner.features
+                if feature.feature_id == cut_member.feature_ids[0]
+            )
+
+        shelf_groove = groove_for(left_side.part_id, shelf.part_id)
+        back_groove = groove_for(left_side.part_id, back.part_id)
+        shelf_end_um = shelf_groove.origin.y_um + (shelf_groove.dimensions.width_um or 0)
+        tolerance_adjusted_clearance_um = (
+            back_groove.origin.y_um
+            - shelf_end_um
+            - shelf_groove.tolerance_um
+            - back_groove.tolerance_um
+        )
+
+        self.assertGreater(tolerance_adjusted_clearance_um, mm(3))
+        self.assertEqual(shelf_groove.dimensions.depth_um, mm(6))
+
     def test_every_dado_groove_contains_the_mate_with_defined_depth_and_fit(self) -> None:
         result = build_bookcase(make_spec(vertical_divider_count=1, shelf_count=1))
         by_id = {part.part_id: part for part in result.parts}
@@ -631,8 +1076,17 @@ class BookcaseEngineTests(unittest.TestCase):
                 feature.dimensions.width_um,
                 feature.dimensions.length_um,
             )
-            for axis, feature_length in zip(owner_panel_axes, feature_lengths, strict=True):
+            expected_open_ends: list[str] = []
+            open_end_labels = (("u_min", "u_max"), ("v_min", "v_max"))
+            for index, (axis, feature_length) in enumerate(
+                zip(owner_panel_axes, feature_lengths, strict=True)
+            ):
                 self.assertIsNotNone(feature_length)
+                local_start = getattr(feature.origin, f"{axis}_um")
+                if local_start == 0:
+                    expected_open_ends.append(open_end_labels[index][0])
+                if local_start + int(feature_length) == dimensions(owner)[axis]:
+                    expected_open_ends.append(open_end_labels[index][1])
                 groove_start = placement(owner, axis) + getattr(feature.origin, f"{axis}_um")
                 groove_interval = (groove_start, groove_start + int(feature_length))
                 mate_interval = interval(mate, axis)
@@ -653,6 +1107,10 @@ class BookcaseEngineTests(unittest.TestCase):
                             min(interval(owner, axis)[1], mate_interval[1]),
                         ),
                     )
+            self.assertEqual(
+                tuple(item.value for item in feature.open_end_reliefs),
+                tuple(expected_open_ends),
+            )
 
         self.assertTrue(
             {

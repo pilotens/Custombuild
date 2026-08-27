@@ -21,6 +21,8 @@ def _intent(
     action: domain.SemanticAction = domain.SemanticAction.ADD,
     source: domain.SemanticIntentSource = domain.SemanticIntentSource.USER_DRAG,
     rationale: str | None = None,
+    pointer_x_permille: int = 500,
+    pointer_y_permille: int = 500,
 ) -> domain.SemanticIntent:
     return domain.SemanticIntent(
         intent_id=f"intent-{action.value}-{component.value}",
@@ -29,6 +31,8 @@ def _intent(
         target_id=target_id,
         source=source,
         rationale=rationale,
+        pointer_x_permille=pointer_x_permille,
+        pointer_y_permille=pointer_y_permille,
     )
 
 
@@ -224,7 +228,7 @@ def test_invalid_compiled_geometry_is_rejected() -> None:
         )
 
 
-def test_free_move_fails_closed_until_designspec_supports_custom_positions() -> None:
+def test_free_move_fails_closed_until_intent_names_a_stable_component_instance() -> None:
     spec = _spec()
     intent = _intent(
         domain.SemanticComponentKind.SHELF_ROW,
@@ -234,3 +238,51 @@ def test_free_move_fails_closed_until_designspec_supports_custom_positions() -> 
 
     with pytest.raises(domain.UnsupportedSemanticOperation):
         domain.compile_semantic_intent(spec, intent)
+
+
+def test_pointer_height_compiles_to_a_constrained_shelf_ratio() -> None:
+    result = domain.compile_semantic_intent(
+        _spec(),
+        _intent(
+            domain.SemanticComponentKind.SHELF_ROW,
+            "bookcase:shelf:bay:1",
+            pointer_y_permille=250,
+        ),
+    )
+
+    assert result.spec.parameters.shelf_count == 6
+    assert 750_000 in result.spec.parameters.shelf_height_ratios_ppm
+
+
+def test_pointer_width_compiles_to_unequal_server_validated_bays() -> None:
+    result = domain.compile_semantic_intent(
+        _spec(),
+        _intent(
+            domain.SemanticComponentKind.DIVIDER,
+            "bookcase:divider:carcass",
+            pointer_x_permille=300,
+        ),
+    )
+
+    assert result.spec.parameters.vertical_divider_count == 1
+    assert result.spec.parameters.bay_width_ratios_ppm == (300_000, 700_000)
+
+
+def test_lower_cabinet_semantics_follow_the_current_bays() -> None:
+    spec = _spec(
+        domain.BookcaseParameters(
+            width_um=domain.mm(2400),
+            height_um=domain.mm(2400),
+            depth_um=domain.mm(350),
+            vertical_divider_count=2,
+            bay_width_ratios_ppm=(250_000, 500_000, 250_000),
+        )
+    )
+    result = domain.compile_semantic_intent(
+        spec,
+        _intent(domain.SemanticComponentKind.BASE_CABINET, "bookcase:cabinet:lower-zone"),
+    )
+
+    assert result.spec.parameters.base_cabinet_count == 3
+    assert result.spec.parameters.base_cabinet_height_um == domain.mm(680)
+    assert result.spec.parameters.base_cabinet_depth_um == domain.mm(350)

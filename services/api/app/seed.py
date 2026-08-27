@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from custombuild_domain import resolve_template_capability
 from custombuild_rules import RULES_VERSION
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -122,6 +123,11 @@ def seed_development(session: Session) -> None:
                 for material in (spec.material, spec.back_material)
                 if material is not None
             ]
+            template_capability = resolve_template_capability("shelving")
+            presented = {
+                **presented,
+                "template_capability": template_capability.snapshot(),
+            }
             session.add(
                 DesignVersion(
                     id=version_id,
@@ -136,6 +142,7 @@ def seed_development(session: Session) -> None:
                             "engine_version": result.engine_version,
                             "template_version": result.template_version,
                             "rule_version": f"bookcase-rules@{RULES_VERSION}",
+                            "template_capability": template_capability.snapshot(),
                             "materials": sorted(
                                 materials,
                                 key=lambda item: (item["material_id"], item["version"]),
@@ -146,6 +153,10 @@ def seed_development(session: Session) -> None:
                     result_json=presented,
                     engine_version=result.engine_version,
                     template_version=f"bookcase@{result.template_version}",
+                    template_id=template_capability.template_id,
+                    template_capability_fingerprint=(
+                        template_capability.capability_fingerprint
+                    ),
                     rule_version=f"bookcase-rules@{RULES_VERSION}",
                     created_by=user_id,
                 )

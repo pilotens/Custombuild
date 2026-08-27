@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "custombuild-rule-engine"
 version = "0.1.0"
 description = "Deterministic structural screening rules for Custombuild"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.13,<3.14"
 dependencies = [
   "custombuild-domain==0.1.0",
   "pydantic==2.13.4",

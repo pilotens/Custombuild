@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Iterator
 from functools import lru_cache
+from typing import Any
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -16,10 +17,36 @@ class Base(DeclarativeBase):
 
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    url = get_settings().database_url
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    pool_args = {"poolclass": StaticPool} if url.endswith(":memory:") else {}
+    settings = get_settings()
+    url = settings.database_url
+    connect_args: dict[str, Any] = {}
+    pool_args: dict[str, Any] = {}
+    if url.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+        if url.endswith(":memory:"):
+            pool_args["poolclass"] = StaticPool
+    elif url.startswith("postgresql"):
+        connect_args["connect_timeout"] = settings.readiness_timeout_seconds
     return create_engine(url, pool_pre_ping=True, connect_args=connect_args, **pool_args)
+
+
+@lru_cache(maxsize=1)
+def get_readiness_engine() -> Engine:
+    settings = get_settings()
+    if not settings.database_url.startswith("postgresql"):
+        return get_engine()
+    timeout = settings.readiness_timeout_seconds
+    return create_engine(
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=1,
+        max_overflow=0,
+        pool_timeout=float(timeout),
+        connect_args={
+            "connect_timeout": timeout,
+            "options": f"-c statement_timeout={timeout * 1000}",
+        },
+    )
 
 
 @lru_cache(maxsize=1)
@@ -27,7 +54,7 @@ def get_session_factory() -> sessionmaker[Session]:
     return sessionmaker(bind=get_engine(), expire_on_commit=False, autoflush=False)
 
 
-def session_scope() -> Generator[Session, None, None]:
+def session_scope() -> Iterator[Session]:
     session = get_session_factory()()
     try:
         yield session

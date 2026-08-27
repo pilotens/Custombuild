@@ -13,6 +13,7 @@ from .enums import (
     GrainDirection,
     JointType,
     MaterialType,
+    OpenEndRelief,
     PartRole,
     ReinforcementMode,
     ShelfMount,
@@ -23,10 +24,20 @@ PositiveUm = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeUm = Annotated[int, Field(strict=True, ge=0)]
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+RatioPpm = Annotated[int, Field(strict=True, gt=0, le=1_000_000)]
 StableKey = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$")]
+BookcaseWidthUm = Annotated[int, Field(strict=True, ge=mm(250), le=mm(6_000))]
+BookcaseHeightUm = Annotated[int, Field(strict=True, ge=mm(300), le=mm(4_000))]
+BookcaseDepthUm = Annotated[int, Field(strict=True, ge=mm(100), le=mm(1_200))]
+BookcaseShelfCount = Annotated[int, Field(strict=True, ge=0, le=40)]
+BookcaseShelfLoadN = Annotated[int, Field(strict=True, ge=0, le=5_000)]
+BookcaseDividerCount = Annotated[int, Field(strict=True, ge=0, le=16)]
+BaseCabinetHeightUm = Annotated[int, Field(strict=True, ge=0, le=mm(2_000))]
+BaseCabinetDepthUm = Annotated[int, Field(strict=True, ge=0, le=mm(1_200))]
+BaseCabinetCount = Annotated[int, Field(strict=True, ge=0, le=17)]
 
-BOOKCASE_ENGINE_VERSION = "0.2.0"
-BOOKCASE_TEMPLATE_VERSION = "1.0.0"
+BOOKCASE_ENGINE_VERSION = "0.6.0"
+BOOKCASE_TEMPLATE_VERSION = "1.1.0"
 
 
 class FrozenModel(BaseModel):
@@ -94,15 +105,20 @@ class WallAnchorSpec(FrozenModel):
 
 
 class BookcaseParameters(FrozenModel):
-    width_um: PositiveUm = mm(900)
-    height_um: PositiveUm = mm(2_000)
-    depth_um: PositiveUm = mm(320)
+    width_um: BookcaseWidthUm = mm(900)
+    height_um: BookcaseHeightUm = mm(2_000)
+    depth_um: BookcaseDepthUm = mm(320)
     nominal_thickness_um: PositiveUm = mm(18)
     actual_thickness_um: PositiveUm = mm(18)
-    shelf_count: NonNegativeInt = 5
+    shelf_count: BookcaseShelfCount = 5
     shelf_mount: ShelfMount = ShelfMount.FIXED
-    shelf_load_n: NonNegativeInt = 300
-    vertical_divider_count: NonNegativeInt = 0
+    shelf_load_n: BookcaseShelfLoadN = 300
+    vertical_divider_count: BookcaseDividerCount = 0
+    bay_width_ratios_ppm: tuple[RatioPpm, ...] = ()
+    shelf_height_ratios_ppm: tuple[RatioPpm, ...] = ()
+    base_cabinet_height_um: BaseCabinetHeightUm = 0
+    base_cabinet_depth_um: BaseCabinetDepthUm = 0
+    base_cabinet_count: BaseCabinetCount = 0
     back_panel: BackPanelType = BackPanelType.INSET_GROOVE
     back_thickness_um: PositiveUm = mm(6)
     plinth_height_um: NonNegativeUm = mm(80)
@@ -143,12 +159,49 @@ class BookcaseParameters(FrozenModel):
         if inner_width <= 0:
             raise ValueError("vertical dividers consume all internal width")
         bay_count = self.vertical_divider_count + 1
+        if self.bay_width_ratios_ppm:
+            if len(self.bay_width_ratios_ppm) != bay_count:
+                raise ValueError("bay width ratios must match the number of bays")
+            ratio_total = sum(self.bay_width_ratios_ppm)
+            if any(value * 100 < ratio_total * 8 for value in self.bay_width_ratios_ppm):
+                raise ValueError("every custom bay must be at least 8 percent of the inner width")
+        if self.shelf_height_ratios_ppm:
+            if len(self.shelf_height_ratios_ppm) != self.shelf_count:
+                raise ValueError("shelf height ratios must match the shelf count")
+            if any(
+                value < 50_000
+                or value > 950_000
+                or (index > 0 and value - self.shelf_height_ratios_ppm[index - 1] < 50_000)
+                for index, value in enumerate(self.shelf_height_ratios_ppm)
+            ):
+                raise ValueError(
+                    "custom shelf centres must be ordered and separated by at least 5 percent"
+                )
         minimum_shelf_width = 2 * self.shelf_side_clearance_um + mm(40)
         if inner_width // bay_count <= minimum_shelf_width:
             raise ValueError("divider layout leaves an unmanufacturable shelf width")
-        inner_height = self.height_um - self.plinth_height_um - 2 * t
-        if inner_height - self.shelf_count * t < (self.shelf_count + 1) * mm(40):
+        shelf_zone_bottom = (
+            self.plinth_height_um + self.base_cabinet_height_um
+            if self.base_cabinet_count
+            else self.plinth_height_um + t
+        )
+        shelf_zone_height = self.height_um - t - shelf_zone_bottom
+        if shelf_zone_height - self.shelf_count * t < (self.shelf_count + 1) * mm(40):
             raise ValueError("shelf layout leaves an unmanufacturable opening height")
+        if self.base_cabinet_count:
+            if self.base_cabinet_height_um < mm(300):
+                raise ValueError("base cabinet height must be at least 300 mm")
+            if self.base_cabinet_depth_um != self.depth_um:
+                raise ValueError("base cabinet depth must equal the furniture depth")
+            if self.base_cabinet_height_um >= self.height_um - t - mm(200):
+                raise ValueError("base cabinet leaves no usable upper shelving zone")
+            base_opening = (
+                self.width_um - (self.base_cabinet_count + 1) * t
+            ) // self.base_cabinet_count
+            if base_opening < mm(200):
+                raise ValueError("base cabinet layout leaves an unmanufacturable module width")
+        elif self.base_cabinet_height_um or self.base_cabinet_depth_um:
+            raise ValueError("base cabinet dimensions require at least one cabinet module")
         if (
             self.back_panel == BackPanelType.INSET_GROOVE
             and self.depth_um <= self.back_thickness_um + mm(12)
@@ -159,6 +212,29 @@ class BookcaseParameters(FrozenModel):
         if not 1_000 <= self.structural_safety_factor_permille <= 5_000:
             raise ValueError("structural safety factor must be between 1.0 and 5.0")
         return self
+
+    def assert_furniture_family(self, furniture_type: str) -> BookcaseParameters:
+        """Reject family-incoherent parameters without normalizing or mutating them."""
+
+        if furniture_type == "bookcase":
+            if (
+                self.base_cabinet_count != 0
+                or self.base_cabinet_height_um != 0
+                or self.base_cabinet_depth_um != 0
+            ):
+                raise ValueError("bookcase furniture cannot contain base cabinets")
+            return self
+        if furniture_type == "wall_library":
+            if self.base_cabinet_count < 1:
+                raise ValueError("wall-library furniture requires at least one base cabinet")
+            if self.base_cabinet_height_um < mm(300):
+                raise ValueError("wall-library base cabinet height must be at least 300 mm")
+            if self.base_cabinet_depth_um != self.depth_um:
+                raise ValueError("wall-library base cabinet depth must equal furniture depth")
+            if self.base_cabinet_height_um >= self.height_um - self.actual_thickness_um - mm(200):
+                raise ValueError("wall-library base cabinet leaves no usable upper shelving zone")
+            return self
+        raise ValueError(f"unsupported furniture family: {furniture_type!r}")
 
 
 class BookcaseDesignSpec(FrozenModel):
@@ -259,11 +335,16 @@ class ManufacturingFeature(FrozenModel):
     fit_clearance_um: NonNegativeUm = 0
     corner_strategy: StableKey | None = None
     requires_square_corners: bool = False
+    open_end_reliefs: tuple[OpenEndRelief, ...] = ()
 
     @model_validator(mode="after")
     def validate_pattern(self) -> ManufacturingFeature:
         if self.pattern_count > 1 and self.pitch_um is None:
             raise ValueError("a feature pattern with multiple items needs a pitch")
+        if len(set(self.open_end_reliefs)) != len(self.open_end_reliefs):
+            raise ValueError("open-end relief declarations must be unique")
+        if self.open_end_reliefs and self.corner_strategy != "dogbone-v1":
+            raise ValueError("open-end reliefs require the versioned dogbone-v1 strategy")
         return self
 
 
@@ -428,13 +509,34 @@ class DesignResult(FrozenModel):
             raise ValueError("assembly graph and part collection differ")
         if {edge.joint_id for edge in self.assembly_graph.edges} != joint_ids:
             raise ValueError("assembly graph and joint collection differ")
-        feature_ids = {feature.feature_id for part in self.parts for feature in part.features}
+        features = tuple(feature for part in self.parts for feature in part.features)
+        feature_ids = {feature.feature_id for feature in features}
+        if len(feature_ids) != len(features):
+            raise ValueError("design result has duplicate manufacturing feature IDs")
+        feature_by_id = {feature.feature_id: feature for feature in features}
+        referenced_features: dict[str, str] = {}
         for joint in self.joints:
-            referenced = {
-                feature_id for member in joint.members for feature_id in member.feature_ids
-            }
-            if not referenced <= feature_ids:
-                raise ValueError("joint references a missing manufacturing feature")
+            for member in joint.members:
+                if member.part_id not in part_ids:
+                    raise ValueError("joint references a missing part")
+                for feature_id in member.feature_ids:
+                    feature = feature_by_id.get(feature_id)
+                    if feature is None:
+                        raise ValueError("joint references a missing manufacturing feature")
+                    if feature.part_id != member.part_id:
+                        raise ValueError("joint member references another part's feature")
+                    if feature.joint_id != joint.joint_id:
+                        raise ValueError("joint member references a feature owned by another joint")
+                    previous_joint = referenced_features.setdefault(feature_id, joint.joint_id)
+                    if previous_joint != joint.joint_id:
+                        raise ValueError("manufacturing feature is referenced by multiple joints")
+        for feature in features:
+            if feature.joint_id is None:
+                continue
+            if feature.joint_id not in joint_ids:
+                raise ValueError("manufacturing feature references a missing joint")
+            if referenced_features.get(feature.feature_id) != feature.joint_id:
+                raise ValueError("joint-owned manufacturing feature is absent from its joint")
         if sum(part.weight_g for part in self.parts) != self.total_weight_g:
             raise ValueError("total design weight does not equal the part weights")
         return self

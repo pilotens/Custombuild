@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
 from custombuild_manufacturing import (
     DeterministicNester,
     NestingLayout,
@@ -52,6 +55,62 @@ def test_nesting_rotates_only_when_required_and_is_reproducible() -> None:
     assert placement.rotated_90 is True
     assert (placement.width_um, placement.height_um) == (900_000, 550_000)
     assert (placement.x_um, placement.y_um) == (10_000, 10_000)
+
+
+def test_nesting_does_not_rotate_a_grain_bound_part_onto_same_grain_stock() -> None:
+    source = PartSpec(
+        "grain-bound-panel",
+        "grain-bound-panel",
+        550_000,
+        900_000,
+        18_000,
+        "mdf",
+        "v1",
+        grain_direction="X",
+    )
+    source_stock = StockSheet(
+        "grain-bound-sheet",
+        "mdf",
+        "v1",
+        1_000_000,
+        600_000,
+        18_000,
+        margin_um=10_000,
+        kerf_um=5_000,
+        grain_direction="X",
+    )
+
+    layout = DeterministicNester().nest((source,), source_stock)
+    issues = validate_layout(layout, expand_part_instances((source,)))
+
+    assert layout.placements == ()
+    assert layout.unplaced_instance_ids == ("grain-bound-panel:001",)
+    assert {issue.code for issue in issues} == {"NESTING_UNPLACED"}
+
+
+@pytest.mark.parametrize(
+    "unbound_stock_axis",
+    ("NONE", "ANY", "UNSPECIFIED", "UNKNOWN", "", "LENGTH"),
+)
+def test_directional_part_never_uses_an_unbound_stock_axis(
+    unbound_stock_axis: str,
+) -> None:
+    source = PartSpec(
+        "directional-panel",
+        "directional-panel",
+        550_000,
+        900_000,
+        18_000,
+        "mdf",
+        "v1",
+        grain_direction="X",
+    )
+    source_stock = replace(stock(), grain_direction=unbound_stock_axis)
+
+    layout = DeterministicNester().nest((source,), source_stock)
+
+    assert layout.placements == ()
+    assert layout.unplaced_instance_ids == ("directional-panel:001",)
 
 
 def test_layout_validation_detects_overlap_including_kerf_clearance() -> None:

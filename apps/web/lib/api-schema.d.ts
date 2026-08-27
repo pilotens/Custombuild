@@ -21,6 +21,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readiness
+         * @description Check every dependency required to accept and complete application work.
+         */
+        get: operations["readiness_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/artifacts/{artifact_id}/download": {
         parameters: {
             query?: never;
@@ -58,6 +78,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/capabilities/templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Template Capabilities
+         * @description Return server-owned support claims; client assertions are never trusted.
+         */
+        get: operations["template_capabilities_v1_capabilities_templates_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/designs/autofix": {
         parameters: {
             query?: never;
@@ -86,23 +126,6 @@ export interface paths {
         put?: never;
         /** Preview Design */
         post: operations["preview_design_v1_designs_preview_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/imports/inspect": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Inspect Import */
-        post: operations["inspect_import_v1_imports_inspect_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -187,6 +210,84 @@ export interface paths {
         };
         /** Get Project */
         get: operations["get_project_v1_projects__project_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Project Draft */
+        get: operations["get_project_draft_v1_projects__project_id__draft_get"];
+        /** Update Project Draft */
+        put: operations["update_project_draft_v1_projects__project_id__draft_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List External Evidence */
+        get: operations["list_external_evidence_v1_projects__project_id__evidence_get"];
+        put?: never;
+        /** Upload External Evidence */
+        post: operations["upload_external_evidence_v1_projects__project_id__evidence_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/imports/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Inspect Import */
+        post: operations["inspect_import_v1_projects__project_id__imports_inspect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/projects/{project_id}/production-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Production State
+         * @description Return server-authoritative state for the project's current revision.
+         *
+         *     The web client may cache this response for responsiveness, but must use this
+         *     endpoint to restore approvals, jobs and releases after reload or device
+         *     changes. Returning an empty state for a project without revisions keeps the
+         *     first production visit read-only and side-effect free.
+         */
+        get: operations["get_production_state_v1_projects__project_id__production_state_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -316,6 +417,41 @@ export interface components {
             /** Warning Overrides */
             warning_overrides?: components["schemas"]["WarningOverrideCreate"][];
         };
+        /**
+         * ApprovalRead
+         * @description Server-owned review state for restoring the production workflow.
+         */
+        ApprovalRead: {
+            /**
+             * Approval Type
+             * @enum {string}
+             */
+            approval_type: "design" | "cam";
+            /** Approved By */
+            approved_by: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Generation Job Id */
+            generation_job_id: string | null;
+            /** Manifest Sha256 */
+            manifest_sha256: string | null;
+            /** Overrides Json */
+            overrides_json: {
+                [key: string]: unknown;
+            }[];
+            /** Production Context Hash */
+            production_context_hash: string | null;
+            /** Reason */
+            reason: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** ArtifactRead */
         ArtifactRead: {
             /** Content Type */
@@ -333,13 +469,30 @@ export interface components {
             /** Size Bytes */
             size_bytes: number;
         };
-        /** Body_inspect_import_v1_imports_inspect_post */
-        Body_inspect_import_v1_imports_inspect_post: {
-            /**
-             * Document
-             * Format: binary
-             */
+        /** Body_inspect_import_v1_projects__project_id__imports_inspect_post */
+        Body_inspect_import_v1_projects__project_id__imports_inspect_post: {
+            /** Document */
             document: string;
+        };
+        /** Body_upload_external_evidence_v1_projects__project_id__evidence_post */
+        Body_upload_external_evidence_v1_projects__project_id__evidence_post: {
+            /** Catalog Id */
+            catalog_id: string;
+            /** Catalog Version */
+            catalog_version: string;
+            /** Design Hash */
+            design_hash: string;
+            /** Document */
+            document: string;
+            /**
+             * Evidence Type
+             * @enum {string}
+             */
+            evidence_type: "wall_anchor" | "hardware" | "material_grain";
+            /** Expires At */
+            expires_at?: string | null;
+            /** Rule Id */
+            rule_id: string;
         };
         /** BookcasePreviewInput */
         BookcasePreviewInput: {
@@ -348,6 +501,23 @@ export interface components {
              * @default true
              */
             back_panel: boolean | ("none" | "surface_mounted" | "inset_groove");
+            /**
+             * Base Cabinet Count
+             * @default 0
+             */
+            base_cabinet_count: number;
+            /**
+             * Base Cabinet Depth Mm
+             * @default 0
+             */
+            base_cabinet_depth_mm: number;
+            /**
+             * Base Cabinet Height Mm
+             * @default 0
+             */
+            base_cabinet_height_mm: number;
+            /** Bay Width Ratios */
+            bay_width_ratios?: number[];
             /**
              * Depth Mm
              * @default 320
@@ -363,6 +533,12 @@ export interface components {
              * @default 1
              */
             edge_band_mm: number;
+            /**
+             * Furniture Type
+             * @default bookcase
+             * @enum {string}
+             */
+            furniture_type: "bookcase" | "wall_library";
             /**
              * Height Mm
              * @default 2000
@@ -416,6 +592,8 @@ export interface components {
              * @default 5
              */
             shelf_count: number;
+            /** Shelf Height Ratios */
+            shelf_height_ratios?: number[];
             /**
              * Shelf Mount
              * @default fixed
@@ -445,7 +623,15 @@ export interface components {
         DesignStatus: "concept" | "draft" | "design_validated" | "cam_validated" | "approved" | "released" | "superseded" | "archived";
         /** DesignVersionCreate */
         DesignVersionCreate: {
+            /** Expected Current Revision */
+            expected_current_revision: number;
+            /** Expected Design Hash */
+            expected_design_hash: string;
+            production_context: components["schemas"]["RevisionProductionContext"];
+            source_provenance?: components["schemas"]["ReferenceImageSourceProvenance"] | null;
             spec: components["schemas"]["BookcasePreviewInput"];
+            /** Template Id */
+            template_id: string;
         };
         /** DesignVersionRead */
         DesignVersionRead: {
@@ -474,13 +660,58 @@ export interface components {
             revision: number;
             /** Rule Version */
             rule_version: string;
+            /** Source Import Id */
+            source_import_id: string | null;
+            /** Source Provenance Json */
+            source_provenance_json: {
+                [key: string]: unknown;
+            };
             /** Spec Json */
             spec_json: {
                 [key: string]: unknown;
             };
             status: components["schemas"]["DesignStatus"];
+            /** Template Capability Fingerprint */
+            template_capability_fingerprint: string;
+            /** Template Id */
+            template_id: string;
             /** Template Version */
             template_version: string;
+        };
+        /** ExternalEvidenceRead */
+        ExternalEvidenceRead: {
+            /** Catalog Id */
+            catalog_id: string;
+            /** Catalog Version */
+            catalog_version: string;
+            /** Content Type */
+            content_type: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Created By */
+            created_by: string;
+            /** Design Hash */
+            design_hash: string;
+            /**
+             * Evidence Type
+             * @enum {string}
+             */
+            evidence_type: "wall_anchor" | "hardware" | "material_grain";
+            /** Expires At */
+            expires_at: string | null;
+            /** Id */
+            id: string;
+            /** Project Id */
+            project_id: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Sha256 */
+            sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
         };
         /** GenerationRequest */
         GenerationRequest: {
@@ -499,6 +730,13 @@ export interface components {
              * @default 2440
              */
             back_stock_width_mm: number;
+            /** External Evidence Ids */
+            external_evidence_ids?: string[];
+            /**
+             * Include Freecad Project
+             * @default false
+             */
+            include_freecad_project: boolean;
             /**
              * Include Step
              * @default true
@@ -550,10 +788,14 @@ export interface components {
             furniture_type: "bookcase" | null;
             /** Furniture Type Confidence */
             furniture_type_confidence: number;
+            /** Image Sha256 */
+            image_sha256: string;
             /** Import Id */
             import_id: string;
             /** Media Type */
             media_type: string;
+            /** Project Id */
+            project_id: string;
             /** Size Bytes */
             size_bytes: number;
             /**
@@ -573,12 +815,18 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Deadline At */
+            deadline_at: string | null;
             /** Design Version Id */
             design_version_id: string;
             /** Error */
             error: string | null;
+            /** Finished At */
+            finished_at: string | null;
             /** Id */
             id: string;
+            /** Lease Expires At */
+            lease_expires_at: string | null;
             /** Production Context Hash */
             production_context_hash: string;
             /** Production Engine Context Json */
@@ -589,6 +837,8 @@ export interface components {
             result_json: {
                 [key: string]: unknown;
             } | null;
+            /** Started At */
+            started_at: string | null;
             status: components["schemas"]["JobStatus"];
             /**
              * Updated At
@@ -601,6 +851,19 @@ export interface components {
          * @enum {string}
          */
         JobStatus: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+        /**
+         * ProductionStateRead
+         * @description Complete recoverable state for the current project revision.
+         */
+        ProductionStateRead: {
+            /** Approvals */
+            approvals: components["schemas"]["ApprovalRead"][];
+            latest_job: components["schemas"]["JobRead"] | null;
+            /** Project Id */
+            project_id: string;
+            release: components["schemas"]["ReleaseRead"] | null;
+            version: components["schemas"]["DesignVersionRead"] | null;
+        };
         /** ProjectCreate */
         ProjectCreate: {
             /**
@@ -616,6 +879,46 @@ export interface components {
             furniture_type: "bookcase";
             /** Name */
             name: string;
+        };
+        /** ProjectDraftRead */
+        ProjectDraftRead: {
+            /** Design Hash */
+            design_hash: string | null;
+            /** Draft Revision */
+            draft_revision: number;
+            /** Project Id */
+            project_id: string;
+            /** Result Json */
+            result_json: {
+                [key: string]: unknown;
+            } | null;
+            /** Spec Json */
+            spec_json: {
+                [key: string]: unknown;
+            } | null;
+            /** Template Id */
+            template_id: string | null;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /** Workspace Spec Json */
+            workspace_spec_json: {
+                [key: string]: unknown;
+            } | null;
+        };
+        /**
+         * ProjectDraftUpdate
+         * @description A mutable workspace draft with a bounded, versioned UI-intent envelope.
+         */
+        ProjectDraftUpdate: {
+            /** Expected Draft Revision */
+            expected_draft_revision: number;
+            spec: components["schemas"]["BookcasePreviewInput"];
+            /** Template Id */
+            template_id: string;
+            workspace_spec: components["schemas"]["WorkspaceIntentV1"];
         };
         /** ProjectRead */
         ProjectRead: {
@@ -642,6 +945,65 @@ export interface components {
              */
             updated_at: string;
         };
+        /** ReferenceImageConfirmedInputs */
+        ReferenceImageConfirmedInputs: {
+            /**
+             * Construction Assumptions Confirmed
+             * @constant
+             */
+            construction_assumptions_confirmed: true;
+            /**
+             * Dimensions Measured
+             * @constant
+             */
+            dimensions_measured: true;
+            /**
+             * Layout Confirmed
+             * @constant
+             */
+            layout_confirmed: true;
+            /**
+             * Material Confirmed
+             * @constant
+             */
+            material_confirmed: true;
+        };
+        /** ReferenceImageSourceProvenance */
+        ReferenceImageSourceProvenance: {
+            /** Confidence */
+            confidence: number;
+            confirmed_inputs: components["schemas"]["ReferenceImageConfirmedInputs"];
+            /** Detected Base Cabinets */
+            detected_base_cabinets: boolean;
+            /** Detected Dividers */
+            detected_dividers: number;
+            /** Detected Shelves */
+            detected_shelves: number;
+            /** File Name */
+            file_name: string;
+            /** Image Height Px */
+            image_height_px: number;
+            /** Image Sha256 */
+            image_sha256: string;
+            /** Image Width Px */
+            image_width_px: number;
+            /** Import Id */
+            import_id: string;
+            /**
+             * Source
+             * @constant
+             */
+            source: "reference_image";
+            /**
+             * Verification Status
+             * @constant
+             */
+            verification_status: "parametric_confirmed";
+            /** Verified Model Fingerprint */
+            verified_model_fingerprint: string;
+            /** Warnings */
+            warnings?: string[];
+        };
         /** ReleaseCreate */
         ReleaseCreate: {
             /**
@@ -663,6 +1025,11 @@ export interface components {
             manifest_sha256: string;
             /** Release Id */
             release_id: string;
+            /**
+             * Release Kind
+             * @constant
+             */
+            release_kind: "design_review";
             /** Release Number */
             release_number: string;
             /**
@@ -671,8 +1038,32 @@ export interface components {
              */
             status: "released";
         };
+        /**
+         * RevisionProductionContext
+         * @description Production-affecting choices frozen when a design revision is created.
+         */
+        RevisionProductionContext: {
+            /** Back Stock Count */
+            back_stock_count: number;
+            /** Back Stock Height Mm */
+            back_stock_height_mm: number;
+            /** Back Stock Width Mm */
+            back_stock_width_mm: number;
+            /** Machine Profile Id */
+            machine_profile_id: string;
+            /** Stock Count */
+            stock_count: number;
+            /** Stock Height Mm */
+            stock_height_mm: number;
+            /** Stock Width Mm */
+            stock_width_mm: number;
+        };
         /** ValidationError */
         ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
             /** Location */
             loc: (string | number)[];
             /** Message */
@@ -682,10 +1073,141 @@ export interface components {
         };
         /** WarningOverrideCreate */
         WarningOverrideCreate: {
+            /** Evidence Ids */
+            evidence_ids?: string[];
             /** Reason */
             reason: string;
             /** Rule Id */
             rule_id: string;
+        };
+        /** WorkspaceIntentV1 */
+        WorkspaceIntentV1: {
+            /**
+             * Bay Sizing Mode
+             * @enum {string}
+             */
+            bay_sizing_mode: "count" | "target_width";
+            /** Part Overrides */
+            part_overrides: {
+                [key: string]: components["schemas"]["WorkspacePartOverride"];
+            };
+            production_context: components["schemas"]["WorkspaceProductionContext"];
+            /** Reference Image Import */
+            reference_image_import?: components["schemas"]["WorkspaceReferenceImageImport"];
+            /** Removed Part Ids */
+            removed_part_ids: string[];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "custombuild.workspace-intent.v1";
+            /** Symmetry Locked */
+            symmetry_locked: boolean;
+            /** Target Bay Width Mm */
+            target_bay_width_mm: number;
+            /** Topology Baseline */
+            topology_baseline?: components["schemas"]["WorkspaceTopologyBaseline"];
+        };
+        /** WorkspacePartOverride */
+        WorkspacePartOverride: {
+            /** Depth Mm */
+            depth_mm?: number;
+            /** Position X Mm */
+            position_x_mm?: number;
+            /** Position Y Mm */
+            position_y_mm?: number;
+            /** Position Z Mm */
+            position_z_mm?: number;
+            /** Thickness Mm */
+            thickness_mm?: number;
+            /** Width Mm */
+            width_mm?: number;
+        };
+        /** WorkspaceProductionContext */
+        WorkspaceProductionContext: {
+            /** Back Stock Count */
+            back_stock_count: number;
+            /** Back Stock Height Mm */
+            back_stock_height_mm: number;
+            /** Back Stock Width Mm */
+            back_stock_width_mm: number;
+            /**
+             * Machine Profile Id
+             * @enum {string}
+             */
+            machine_profile_id: "custombuild-router-1325-linuxcnc" | "custombuild-router-5125-linuxcnc";
+            /** Stock Count */
+            stock_count: number;
+            /** Stock Height Mm */
+            stock_height_mm: number;
+            /** Stock Width Mm */
+            stock_width_mm: number;
+        };
+        /** WorkspaceReferenceConfirmedInputs */
+        WorkspaceReferenceConfirmedInputs: {
+            /** Construction Assumptions Confirmed */
+            construction_assumptions_confirmed: boolean;
+            /** Dimensions Measured */
+            dimensions_measured: boolean;
+            /** Layout Confirmed */
+            layout_confirmed: boolean;
+            /** Material Confirmed */
+            material_confirmed: boolean;
+        };
+        /** WorkspaceReferenceImageImport */
+        WorkspaceReferenceImageImport: {
+            /** Confidence */
+            confidence: number;
+            confirmed_inputs?: components["schemas"]["WorkspaceReferenceConfirmedInputs"];
+            /** Detected Base Cabinets */
+            detected_base_cabinets: boolean;
+            /** Detected Dividers */
+            detected_dividers: number;
+            /** Detected Shelves */
+            detected_shelves: number;
+            /** File Name */
+            file_name: string;
+            /** Image Height Px */
+            image_height_px: number;
+            /** Image Sha256 */
+            image_sha256: string;
+            /** Image Width Px */
+            image_width_px: number;
+            /** Import Id */
+            import_id: string;
+            /**
+             * Source
+             * @constant
+             */
+            source: "reference_image";
+            /**
+             * Verification Status
+             * @default concept
+             * @enum {string}
+             */
+            verification_status: "concept" | "parametric_confirmed";
+            /** Verified Model Fingerprint */
+            verified_model_fingerprint?: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /** WorkspaceTopologyBaseline */
+        WorkspaceTopologyBaseline: {
+            /** Base Cabinet Count */
+            base_cabinet_count: number;
+            /** Bay Width Ratios */
+            bay_width_ratios: number[];
+            /** Divider Count */
+            divider_count: number;
+            /**
+             * Reinforcement Mode
+             * @enum {string}
+             */
+            reinforcement_mode: "manual" | "auto";
+            /** Shelf Count */
+            shelf_count: number;
+            /** Shelf Height Ratios */
+            shelf_height_ratios: number[];
         };
     };
     responses: never;
@@ -697,6 +1219,28 @@ export interface components {
 export type $defs = Record<string, never>;
 export interface operations {
     health_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+    };
+    readiness_ready_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -774,9 +1318,33 @@ export interface operations {
             };
         };
     };
-    autofix_design_v1_designs_autofix_post: {
+    template_capabilities_v1_capabilities_templates_get: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    autofix_design_v1_designs_autofix_post: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -811,7 +1379,9 @@ export interface operations {
     };
     preview_design_v1_designs_preview_post: {
         parameters: {
-            query?: never;
+            query?: {
+                project_id?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -831,39 +1401,6 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    inspect_import_v1_imports_inspect_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": components["schemas"]["Body_inspect_import_v1_imports_inspect_post"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ImportInspection"];
                 };
             };
             /** @description Validation Error */
@@ -1032,6 +1569,204 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_project_draft_v1_projects__project_id__draft_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectDraftRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_project_draft_v1_projects__project_id__draft_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProjectDraftUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProjectDraftRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_external_evidence_v1_projects__project_id__evidence_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalEvidenceRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_external_evidence_v1_projects__project_id__evidence_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_external_evidence_v1_projects__project_id__evidence_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExternalEvidenceRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_import_v1_projects__project_id__imports_inspect_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_inspect_import_v1_projects__project_id__imports_inspect_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportInspection"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_production_state_v1_projects__project_id__production_state_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProductionStateRead"];
                 };
             };
             /** @description Validation Error */

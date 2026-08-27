@@ -1,12 +1,12 @@
 {
   "schema_version": "custombuild.template.v1",
   "template_id": "bookcase",
-  "template_version": "1.0.0",
+  "template_version": "1.1.0",
   "furniture_type": "bookcase",
   "coordinate_system": "RH_X_WIDTH_Y_DEPTH_Z_HEIGHT",
   "persisted_unit": "um",
   "parameters": [
-    {"key":"width_um","value_type":"integer","unit":"um","default":900000,"minimum":250000,"maximum":4000000},
+    {"key":"width_um","value_type":"integer","unit":"um","default":900000,"minimum":250000,"maximum":6000000},
     {"key":"height_um","value_type":"integer","unit":"um","default":2000000,"minimum":300000,"maximum":4000000},
     {"key":"depth_um","value_type":"integer","unit":"um","default":320000,"minimum":100000,"maximum":1200000},
     {"key":"nominal_thickness_um","value_type":"integer","unit":"um","default":18000,"minimum":6000,"maximum":40000},
@@ -16,6 +16,9 @@
     {"key":"shelf_mount","value_type":"enum","unit":"none","default":"fixed","enum_values":["fixed","adjustable"]},
     {"key":"shelf_load_n","value_type":"integer","unit":"N","default":300,"minimum":0,"maximum":5000},
     {"key":"vertical_divider_count","value_type":"integer","unit":"count","default":0,"minimum":0,"maximum":16},
+    {"key":"base_cabinet_height_um","value_type":"integer","unit":"um","default":0,"minimum":0,"maximum":2000000},
+    {"key":"base_cabinet_depth_um","value_type":"integer","unit":"um","default":0,"minimum":0,"maximum":1200000},
+    {"key":"base_cabinet_count","value_type":"integer","unit":"count","default":0,"minimum":0,"maximum":17},
     {"key":"back_panel","value_type":"enum","unit":"none","default":"inset_groove","enum_values":["none","surface_mounted","inset_groove"]},
     {"key":"plinth_height_um","value_type":"integer","unit":"um","default":80000,"minimum":0,"maximum":500000},
     {"key":"edge_band_thickness_um","value_type":"integer","unit":"um","default":1000,"minimum":0,"maximum":5000},
@@ -25,7 +28,7 @@
   ],
   "derived_dimensions": [
     {"key":"inner_width_um","expression":"width_um - 2 * actual_thickness_um","unit":"um","dependencies":["width_um","actual_thickness_um"]},
-    {"key":"inner_height_um","expression":"height_um - plinth_height_um - 2 * actual_thickness_um","unit":"um","dependencies":["height_um","plinth_height_um","actual_thickness_um"]},
+    {"key":"inner_height_um","expression":"height_um - (base_cabinet_count == 0 ? plinth_height_um + actual_thickness_um : plinth_height_um + base_cabinet_height_um) - actual_thickness_um","unit":"um","dependencies":["height_um","plinth_height_um","actual_thickness_um","base_cabinet_height_um","base_cabinet_count"]},
     {"key":"bay_count","expression":"vertical_divider_count + 1","unit":"count","dependencies":["vertical_divider_count"]},
     {"key":"free_span_um","expression":"(inner_width_um - vertical_divider_count * actual_thickness_um) / bay_count","unit":"um","dependencies":["inner_width_um","vertical_divider_count","actual_thickness_um","bay_count"]}
   ],
@@ -43,18 +46,23 @@
     {"role":"bottom","multiplicity_expression":"1","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","left","right"],"machine_operations":["contour","groove"]},
     {"role":"shelf","multiplicity_expression":"shelf_count * bay_count","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","left","right"],"machine_operations":["contour","drill"]},
     {"role":"divider","multiplicity_expression":"vertical_divider_count","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour","groove"]},
+    {"role":"base_side","multiplicity_expression":"base_cabinet_count == 0 ? 0 : base_cabinet_count - 1","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour","groove"]},
+    {"role":"base_bottom","multiplicity_expression":"base_cabinet_count","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","left","right"],"machine_operations":["contour"]},
+    {"role":"cabinet_front","multiplicity_expression":"base_cabinet_count","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour"]},
     {"role":"back","multiplicity_expression":"back_panel == 'none' ? 0 : 1","material_compatibility":["sheet_good"],"named_edges":["top","bottom","left","right"],"machine_operations":["contour"]},
     {"role":"plinth","multiplicity_expression":"plinth_height_um == 0 ? 0 : 1","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour"]}
   ],
   "compatible_material_types": ["sheet_good", "solid_wood"],
   "joint_systems": ["dado"],
   "rules": [
-    {"rule_id":"CB-DEFLECTION-001","version":"1.1.0","severity_can_block":true},
-    {"rule_id":"CB-BENDING-001","version":"1.1.0","severity_can_block":true},
-    {"rule_id":"CB-JOINT-001","version":"1.1.0","severity_can_block":true},
-    {"rule_id":"CB-STABILITY-001","version":"1.1.0","severity_can_block":true},
-    {"rule_id":"CB-TIP-001","version":"1.1.0","severity_can_block":true}
+    {"rule_id":"CB-DEFLECTION-001","version":"1.3.0","severity_can_block":true},
+    {"rule_id":"CB-BENDING-001","version":"1.3.0","severity_can_block":true},
+    {"rule_id":"CB-JOINT-001","version":"1.3.0","severity_can_block":true},
+    {"rule_id":"CB-STABILITY-001","version":"1.3.0","severity_can_block":true},
+    {"rule_id":"CB-TIP-001","version":"1.3.0","severity_can_block":true},
+    {"rule_id":"CB-SUPPORT-001","version":"1.3.0","severity_can_block":true},
+    {"rule_id":"CB-HARDWARE-001","version":"1.3.0","severity_can_block":true}
   ],
-  "assembly_graph_version": "1.0.0",
-  "manufacturing_feature_version": "1.0.0"
+  "assembly_graph_version": "1.1.0",
+  "manufacturing_feature_version": "1.1.0"
 }

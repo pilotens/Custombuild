@@ -1,4 +1,4 @@
-.PHONY: install test test-web coverage-gates lint typecheck build check openapi contracts golden e2e-list
+.PHONY: install test test-web coverage-gates lint typecheck build check openapi contracts golden e2e-list encoding environment-contract external-production-contract release-readiness source-manifest backup-freshness
 
 PYTHONPATHS := packages/domain/src:packages/rule-engine/src:packages/manufacturing/src:packages/template-sdk/src:cad/src:cam/src:postprocessors/src:services/api:services/worker
 
@@ -41,4 +41,24 @@ golden:
 e2e-list:
 	pnpm --dir apps/web exec playwright test --list
 
-check: lint typecheck test test-web coverage-gates golden contracts build e2e-list
+encoding:
+	uv run python scripts/check_text_encoding.py .
+
+environment-contract:
+	uv run python scripts/check_environment_isolation.py compose.yml
+
+external-production-contract:
+	uv run python scripts/check_external_production.py --repo .
+
+release-readiness:
+	uv run python scripts/release_readiness.py
+
+source-manifest:
+	uv run python scripts/source_manifest.py --repo .
+
+BACKUP_ROOT ?= test-results/backups
+
+backup-freshness:
+	uv run python scripts/backup_freshness.py --root $(BACKUP_ROOT) --max-age-hours 24 --verify-payloads
+
+check: lint typecheck test test-web coverage-gates golden contracts build e2e-list encoding environment-contract source-manifest

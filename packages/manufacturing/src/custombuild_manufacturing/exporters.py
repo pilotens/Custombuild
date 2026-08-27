@@ -20,7 +20,7 @@ from .model import (
 )
 
 DXF_LAYERS = ("OUTLINE", "DRILL", "POCKET", "GROOVE", "EDGE_BAND", "LABEL")
-ARTIFACT_EXPORTERS_VERSION = "manufacturing-exporters-1.0.0"
+ARTIFACT_EXPORTERS_VERSION = "manufacturing-exporters-1.3.0"
 
 
 def dxf_for_part(part: PartSpec, side: Side) -> bytes:
@@ -120,6 +120,14 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
         "$ACADVER",
         "1",
         "AC1027",
+        "9",
+        "$INSUNITS",
+        "70",
+        "4",
+        "9",
+        "$MEASUREMENT",
+        "70",
+        "1",
         "0",
         "ENDSEC",
         "0",
@@ -130,11 +138,38 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
         "TABLE",
         "2",
         "LAYER",
+        "5",
+        "2",
+        "330",
+        "0",
+        "100",
+        "AcDbSymbolTable",
         "70",
         str(len(DXF_LAYERS)),
     ]
     for index, layer in enumerate(DXF_LAYERS, start=1):
-        tokens.extend(("0", "LAYER", "2", layer, "70", "0", "62", str(index), "6", "CONTINUOUS"))
+        tokens.extend(
+            (
+                "0",
+                "LAYER",
+                "5",
+                f"{0x10 + index:X}",
+                "330",
+                "2",
+                "100",
+                "AcDbSymbolTableRecord",
+                "100",
+                "AcDbLayerTableRecord",
+                "2",
+                layer,
+                "70",
+                "0",
+                "62",
+                str(index),
+                "6",
+                "CONTINUOUS",
+            )
+        )
     tokens.extend(("0", "ENDTAB", "0", "ENDSEC", "0", "SECTION", "2", "ENTITIES"))
     tokens.extend(("999", f"CUSTOMBUILD_SIDE:{side.value}"))
     tokens.extend(entities)
@@ -234,11 +269,16 @@ def _corner_relief_points(feature: ManufacturingFeature) -> tuple[tuple[int, int
             f"feature {feature.feature_id} has an unsupported or incomplete corner strategy"
         )
     bounds = feature.bounds()
-    return (
-        (bounds.x_um, bounds.y_um),
-        (bounds.right_um, bounds.y_um),
-        (bounds.x_um, bounds.top_um),
-        (bounds.right_um, bounds.top_um),
+    declared = set(feature.open_end_reliefs)
+    return tuple(
+        (x_um, y_um)
+        for x_um, y_um, u_boundary, v_boundary in (
+            (bounds.x_um, bounds.y_um, "u_min", "v_min"),
+            (bounds.right_um, bounds.y_um, "u_max", "v_min"),
+            (bounds.x_um, bounds.top_um, "u_min", "v_max"),
+            (bounds.right_um, bounds.top_um, "u_max", "v_max"),
+        )
+        if not {u_boundary, v_boundary} <= declared
     )
 
 
@@ -282,6 +322,11 @@ def bom_csv(parts: Iterable[PartSpec]) -> bytes:
             "material_version",
             "grain_direction",
             "edge_bands",
+            "edge_band_thicknesses_mm",
+            "edge_band_source_faces",
+            "edge_band_catalog_refs",
+            "edge_band_attachment_methods",
+            "edge_band_procurement_statuses",
             "conservative_gross_weight_g_each",
         )
     )
@@ -297,7 +342,19 @@ def bom_csv(parts: Iterable[PartSpec]) -> bytes:
                 part.material_id,
                 part.material_version,
                 part.grain_direction,
-                "|".join(sorted(part.edge_bands)),
+                "|".join(part.edge_bands),
+                "|".join(um_to_mm(detail.thickness_um) for detail in part.edge_band_details),
+                "|".join(detail.source_face for detail in part.edge_band_details),
+                "|".join(
+                    (
+                        f"{detail.catalog_id}@{detail.catalog_version}"
+                        if detail.catalog_id is not None
+                        else "UNRESOLVED"
+                    )
+                    for detail in part.edge_band_details
+                ),
+                "|".join(detail.attachment_method for detail in part.edge_band_details),
+                "|".join(detail.procurement_status for detail in part.edge_band_details),
                 part.weight_g,
             )
         )
@@ -552,7 +609,20 @@ def _dxf_rectangle(layer: str, x_um: int, y_um: int, width_um: int, height_um: i
         (x_um + width_um, y_um + height_um),
         (x_um, y_um + height_um),
     )
-    tokens = ["0", "LWPOLYLINE", "8", layer, "90", "4", "70", "1"]
+    tokens = [
+        "0",
+        "LWPOLYLINE",
+        "100",
+        "AcDbEntity",
+        "8",
+        layer,
+        "100",
+        "AcDbPolyline",
+        "90",
+        "4",
+        "70",
+        "1",
+    ]
     for x_value, y_value in points:
         tokens.extend(("10", um_to_mm(x_value), "20", um_to_mm(y_value)))
     return tokens
@@ -562,8 +632,12 @@ def _dxf_line(layer: str, x1_um: int, y1_um: int, x2_um: int, y2_um: int) -> lis
     return [
         "0",
         "LINE",
+        "100",
+        "AcDbEntity",
         "8",
         layer,
+        "100",
+        "AcDbLine",
         "10",
         um_to_mm(x1_um),
         "20",
@@ -579,8 +653,12 @@ def _dxf_circle(layer: str, x_um: int, y_um: int, radius_um: int) -> list[str]:
     return [
         "0",
         "CIRCLE",
+        "100",
+        "AcDbEntity",
         "8",
         layer,
+        "100",
+        "AcDbCircle",
         "10",
         um_to_mm(x_um),
         "20",
@@ -594,8 +672,12 @@ def _dxf_text_entity(layer: str, x_um: int, y_um: int, value: str, height_um: in
     return [
         "0",
         "TEXT",
+        "100",
+        "AcDbEntity",
         "8",
         layer,
+        "100",
+        "AcDbText",
         "10",
         um_to_mm(x_um),
         "20",
@@ -613,13 +695,13 @@ def _dxf_text(value: str) -> str:
 
 def _edge_line(edge: str, width_um: int, height_um: int) -> tuple[int, int, int, int] | None:
     normalised = edge.upper()
-    if normalised in {"NORTH", "TOP", "BACK"}:
+    if normalised in {"NORTH", "TOP", "BACK", "V_MAX"}:
         return (0, height_um, width_um, height_um)
-    if normalised in {"SOUTH", "BOTTOM", "FRONT"}:
+    if normalised in {"SOUTH", "BOTTOM", "FRONT", "V_MIN"}:
         return (0, 0, width_um, 0)
-    if normalised in {"WEST", "LEFT"}:
+    if normalised in {"WEST", "LEFT", "U_MIN"}:
         return (0, 0, 0, height_um)
-    if normalised in {"EAST", "RIGHT"}:
+    if normalised in {"EAST", "RIGHT", "U_MAX"}:
         return (width_um, 0, width_um, height_um)
     return None
 

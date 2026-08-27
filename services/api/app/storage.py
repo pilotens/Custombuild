@@ -4,13 +4,36 @@ import hashlib
 import hmac
 import re
 import time
+from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import Any, Never
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 
 from .config import get_settings
+
+_OBJECT_STREAM_CHUNK_BYTES = 1024 * 1024
+
+
+class ArtifactIntegrityError(Exception):
+    """The persisted artifact no longer matches its checksum-bound record."""
+
+
+class ArtifactStorageUnavailableError(Exception):
+    """Artifact storage could not be verified without risking destructive repair."""
+
+
+@dataclass(frozen=True, slots=True)
+class StoredObjectExpectation:
+    object_key: str
+    sha256: str
+    size_bytes: int
+    content_type: str
+    required_metadata: tuple[tuple[str, str], ...] = ()
 
 
 def sign_artifact_access(artifact_id: str, organization_id: str, expires_at: int) -> str:
@@ -39,6 +62,381 @@ def s3_client() -> Any:
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
         region_name="us-east-1",
+        config=Config(
+            signature_version="s3v4",
+            s3={"addressing_style": "path"},
+        ),
+    )
+
+
+@lru_cache(maxsize=1)
+def internal_s3_client() -> Any:
+    """Return the private S3 client used only for server-side integrity checks."""
+
+    settings = get_settings()
+    return boto3.client(
+        "s3",
+        endpoint_url=settings.s3_endpoint,
+        aws_access_key_id=settings.s3_access_key,
+        aws_secret_access_key=settings.s3_secret_key,
+        region_name="us-east-1",
+        config=Config(
+            signature_version="s3v4",
+            connect_timeout=2,
+            read_timeout=5,
+            retries={"mode": "standard", "max_attempts": 1},
+            s3={"addressing_style": "path"},
+        ),
+    )
+
+
+def _raise_storage_error(exc: Exception) -> Never:
+    if isinstance(exc, ClientError):
+        response = exc.response if isinstance(exc.response, dict) else {}
+        metadata = response.get("ResponseMetadata", {})
+        status_code = metadata.get("HTTPStatusCode") if isinstance(metadata, dict) else None
+        error = response.get("Error", {})
+        error_code = str(error.get("Code", "")) if isinstance(error, dict) else ""
+        missing_key = error_code in {"NoSuchKey", "NotFound"} or (
+            status_code == 404 and error_code in {"", "404"}
+        )
+        if missing_key:
+            raise ArtifactIntegrityError("artifact object is missing") from None
+    raise ArtifactStorageUnavailableError("artifact storage is temporarily unavailable") from None
+
+
+def _call_s3(operation: Any, **kwargs: Any) -> dict[str, Any]:
+    try:
+        response = operation(**kwargs)
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+    if not isinstance(response, dict):
+        raise ArtifactStorageUnavailableError("artifact storage returned an invalid response")
+    return response
+
+
+def _valid_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _require_object_headers(response: dict[str, Any], expectation: StoredObjectExpectation) -> None:
+    try:
+        content_length = int(response["ContentLength"])
+        content_type = str(response["ContentType"]).strip().lower()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ArtifactIntegrityError("artifact object metadata is incomplete") from exc
+    if content_length != expectation.size_bytes:
+        raise ArtifactIntegrityError("artifact object size does not match its record")
+    if content_type != expectation.content_type.strip().lower():
+        raise ArtifactIntegrityError("artifact object content type does not match its record")
+    if expectation.required_metadata:
+        raw_metadata = response.get("Metadata")
+        if not isinstance(raw_metadata, Mapping):
+            raise ArtifactIntegrityError("artifact object binding metadata is missing")
+        metadata = {
+            str(key).strip().lower(): str(value).strip()
+            for key, value in raw_metadata.items()
+        }
+        if any(metadata.get(key) != value for key, value in expectation.required_metadata):
+            raise ArtifactIntegrityError("artifact object binding metadata does not match")
+
+
+def _stream_sha256(body: Any) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size_bytes = 0
+    try:
+        while True:
+            chunk = body.read(_OBJECT_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise ArtifactStorageUnavailableError("artifact storage returned an invalid body")
+            digest.update(chunk)
+            size_bytes += len(chunk)
+    except ArtifactStorageUnavailableError:
+        raise
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            try:
+                close()
+            except (BotoCoreError, ClientError, OSError) as exc:
+                _raise_storage_error(exc)
+    return digest.hexdigest(), size_bytes
+
+
+def verify_stored_object(
+    expectation: StoredObjectExpectation,
+    *,
+    stream_hash: bool,
+) -> None:
+    """Verify one object without exposing its key or provider error details."""
+
+    settings = get_settings()
+    try:
+        client = internal_s3_client()
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+    _verify_object_with_client(
+        client,
+        bucket=settings.s3_bucket,
+        expectation=expectation,
+        stream_hash=stream_hash,
+    )
+
+
+def read_verified_stored_object(
+    expectation: StoredObjectExpectation,
+    *,
+    max_bytes: int,
+) -> bytes:
+    """Read one small artifact once while proving its bounded persisted bytes."""
+
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    if expectation.size_bytes > max_bytes:
+        raise ArtifactIntegrityError("artifact object exceeds its review size limit")
+    settings = get_settings()
+    try:
+        client = internal_s3_client()
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+    return _read_verified_object_with_client(
+        client,
+        bucket=settings.s3_bucket,
+        expectation=expectation,
+        max_bytes=max_bytes,
+    )
+
+
+def _read_verified_object_with_client(
+    client: Any,
+    *,
+    bucket: str,
+    expectation: StoredObjectExpectation,
+    max_bytes: int,
+) -> bytes:
+    if (
+        not expectation.object_key
+        or not _valid_sha256(expectation.sha256)
+        or expectation.size_bytes <= 0
+        or expectation.size_bytes > max_bytes
+        or not expectation.content_type.strip()
+    ):
+        raise ArtifactIntegrityError("artifact record is invalid or exceeds its review limit")
+    if not bucket:
+        raise ArtifactIntegrityError("artifact bucket is invalid")
+    response = _call_s3(
+        client.get_object,
+        Bucket=bucket,
+        Key=expectation.object_key,
+    )
+    _require_object_headers(response, expectation)
+    body = response.get("Body")
+    if body is None:
+        raise ArtifactStorageUnavailableError("artifact storage returned no body")
+    payload = bytearray()
+    try:
+        while True:
+            remaining = max_bytes + 1 - len(payload)
+            if remaining <= 0:
+                raise ArtifactIntegrityError("artifact object exceeds its review size limit")
+            chunk = body.read(min(_OBJECT_STREAM_CHUNK_BYTES, remaining))
+            if not chunk:
+                break
+            if not isinstance(chunk, bytes):
+                raise ArtifactStorageUnavailableError("artifact storage returned an invalid body")
+            payload.extend(chunk)
+            if len(payload) > max_bytes:
+                raise ArtifactIntegrityError("artifact object exceeds its review size limit")
+    except (ArtifactIntegrityError, ArtifactStorageUnavailableError):
+        raise
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+    finally:
+        close = getattr(body, "close", None)
+        if callable(close):
+            try:
+                close()
+            except (BotoCoreError, ClientError, OSError) as exc:
+                _raise_storage_error(exc)
+    content = bytes(payload)
+    if len(content) != expectation.size_bytes or not hmac.compare_digest(
+        hashlib.sha256(content).hexdigest(), expectation.sha256
+    ):
+        raise ArtifactIntegrityError("artifact object checksum does not match its record")
+    return content
+
+
+def _verify_object_with_client(
+    client: Any,
+    *,
+    bucket: str,
+    expectation: StoredObjectExpectation,
+    stream_hash: bool,
+) -> None:
+    if (
+        not expectation.object_key
+        or not _valid_sha256(expectation.sha256)
+        or expectation.size_bytes <= 0
+        or not expectation.content_type.strip()
+    ):
+        raise ArtifactIntegrityError("artifact record is invalid")
+    if not bucket:
+        raise ArtifactIntegrityError("artifact bucket is invalid")
+    parameters = {"Bucket": bucket, "Key": expectation.object_key}
+    head = _call_s3(client.head_object, **parameters)
+    _require_object_headers(head, expectation)
+    metadata = head.get("Metadata")
+    stored_digest = str(metadata.get("sha256", "")).lower() if isinstance(metadata, dict) else ""
+    if stored_digest:
+        if not _valid_sha256(stored_digest) or not hmac.compare_digest(
+            stored_digest, expectation.sha256
+        ):
+            raise ArtifactIntegrityError("artifact object checksum does not match its record")
+        if not stream_hash:
+            return
+
+    response = _call_s3(client.get_object, **parameters)
+    _require_object_headers(response, expectation)
+    body = response.get("Body")
+    if body is None:
+        raise ArtifactStorageUnavailableError("artifact storage returned no body")
+    digest, size_bytes = _stream_sha256(body)
+    if size_bytes != expectation.size_bytes or not hmac.compare_digest(digest, expectation.sha256):
+        raise ArtifactIntegrityError("artifact object checksum does not match its record")
+
+
+def _is_conditional_create_conflict(exc: ClientError) -> bool:
+    response = exc.response if isinstance(exc.response, dict) else {}
+    response_metadata = response.get("ResponseMetadata", {})
+    status_code = (
+        response_metadata.get("HTTPStatusCode") if isinstance(response_metadata, dict) else None
+    )
+    error = response.get("Error", {})
+    error_code = str(error.get("Code", "")) if isinstance(error, dict) else ""
+    return status_code in {409, 412} or error_code in {
+        "PreconditionFailed",
+        "ConditionalRequestConflict",
+    }
+
+
+def store_create_once_object(
+    client: Any,
+    *,
+    bucket: str,
+    object_key: str,
+    content: bytes,
+    content_type: str,
+    sha256: str,
+    metadata: Mapping[str, str] | None = None,
+) -> None:
+    """Conditionally create an object and prove that its stored bytes are exact.
+
+    A 409/412 race is idempotent only when a fresh HEAD plus streamed checksum
+    proves the existing object has the requested digest, size and content type.
+    Provider, authorization and transient failures remain availability errors.
+    """
+
+    raw_metadata = dict(metadata or {})
+    normalized_metadata = {
+        str(key).strip().lower(): str(value).strip()
+        for key, value in raw_metadata.items()
+    }
+    if (
+        not bucket
+        or not object_key
+        or not content
+        or not content_type
+        or not _valid_sha256(sha256)
+        or any(
+            not isinstance(key, str) or not isinstance(value, str)
+            for key, value in raw_metadata.items()
+        )
+        or len(normalized_metadata) != len(raw_metadata)
+        or any(
+            not key
+            or re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", key) is None
+            or not value
+            or key in {"sha256", "immutable"}
+            for key, value in normalized_metadata.items()
+        )
+    ):
+        raise ArtifactIntegrityError("immutable object metadata is invalid")
+    if not hmac.compare_digest(hashlib.sha256(content).hexdigest(), sha256):
+        raise ArtifactIntegrityError("immutable object checksum does not match its content")
+    expectation = StoredObjectExpectation(
+        object_key=object_key,
+        sha256=sha256,
+        size_bytes=len(content),
+        content_type=content_type,
+        required_metadata=tuple(sorted(normalized_metadata.items())),
+    )
+    try:
+        client.put_object(
+            Bucket=bucket,
+            Key=object_key,
+            Body=content,
+            ContentLength=len(content),
+            ContentType=content_type,
+            Metadata={
+                "sha256": sha256,
+                "immutable": "true",
+                **normalized_metadata,
+            },
+            IfNoneMatch="*",
+        )
+    except ClientError as exc:
+        if not _is_conditional_create_conflict(exc):
+            _raise_storage_error(exc)
+    except (BotoCoreError, OSError) as exc:
+        _raise_storage_error(exc)
+    _verify_object_with_client(
+        client,
+        bucket=bucket,
+        expectation=expectation,
+        stream_hash=True,
+    )
+
+
+def store_evidence_object(
+    object_key: str,
+    content: bytes,
+    content_type: str,
+    sha256: str,
+) -> None:
+    """Persist external evidence with the same create-once proof as source assets."""
+
+    store_immutable_object(object_key, content, content_type, sha256)
+
+
+def store_immutable_object(
+    object_key: str,
+    content: bytes,
+    content_type: str,
+    sha256: str,
+) -> None:
+    """Create a checksum-addressed object once and verify the persisted bytes.
+
+    A conditional write prevents a later request from replacing an existing
+    source object.  A raced/idempotent upload is accepted only when the bytes
+    already stored under the address still match the server-computed digest.
+    """
+
+    settings = get_settings()
+    try:
+        client = internal_s3_client()
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+    store_create_once_object(
+        client,
+        bucket=settings.s3_bucket,
+        object_key=object_key,
+        content=content,
+        content_type=content_type,
+        sha256=sha256,
     )
 
 

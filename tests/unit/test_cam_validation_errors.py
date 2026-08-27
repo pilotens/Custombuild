@@ -131,6 +131,10 @@ def test_area_operation_validation_and_removal_envelope_branches() -> None:
         diameter_um=None,
         width_um=None,
         length_um=None,
+        cutter_envelope_x_um=100_000,
+        cutter_envelope_y_um=100_000,
+        cutter_envelope_width_um=20_000,
+        cutter_envelope_length_um=30_000,
     )
     outside = replace(
         missing_extent,
@@ -139,6 +143,10 @@ def test_area_operation_validation_and_removal_envelope_branches() -> None:
         y_um=590_000,
         width_um=20_000,
         length_um=20_000,
+        cutter_envelope_x_um=990_000,
+        cutter_envelope_y_um=590_000,
+        cutter_envelope_width_um=20_000,
+        cutter_envelope_length_um=20_000,
     )
     invalid = replace(document, operations=(missing_extent, outside))
 
@@ -154,6 +162,10 @@ def test_area_operation_validation_and_removal_envelope_branches() -> None:
         y_um=100_000,
         width_um=20_000,
         length_um=30_000,
+        cutter_envelope_x_um=100_000,
+        cutter_envelope_y_um=100_000,
+        cutter_envelope_width_um=20_000,
+        cutter_envelope_length_um=30_000,
     )
     area_document = replace(document, operations=(valid_area,))
     envelope = theoretical_removal_envelopes(area_document)[0]
@@ -167,15 +179,15 @@ def test_area_operation_validation_and_removal_envelope_branches() -> None:
         (b"\xff", "invalid UTF-8"),
         ("[]", "JSON object"),
         ('{"schema_version":"wrong"}', "schema_version"),
-        ('{"schema_version":"custombuild.operations.v1","mode":"PRODUCTION"}', "validation-only"),
+        ('{"schema_version":"custombuild.operations.v2","mode":"PRODUCTION"}', "validation-only"),
         (
-            '{"schema_version":"custombuild.operations.v1","mode":"VALIDATION"}',
+            '{"schema_version":"custombuild.operations.v2","mode":"VALIDATION"}',
             "missing design_hash",
         ),
         (
             json.dumps(
                 {
-                    "schema_version": "custombuild.operations.v1",
+                    "schema_version": "custombuild.operations.v2",
                     "mode": "VALIDATION",
                     "design_hash": "x",
                     "machine_profile_id": "m",

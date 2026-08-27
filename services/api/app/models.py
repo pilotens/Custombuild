@@ -11,6 +11,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -101,13 +102,25 @@ class Membership(IdMixin, TimestampMixin, TenantMixin, Base):
 
 class Project(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "projects"
-    __table_args__ = (UniqueConstraint("organization_id", "name"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "name"),
+        UniqueConstraint("organization_id", "id", name="uq_projects_org_id"),
+    )
 
     name: Mapped[str] = mapped_column(String(180))
     description: Mapped[str] = mapped_column(Text, default="")
     furniture_type: Mapped[str] = mapped_column(String(80), default="bookcase")
     current_revision: Mapped[int] = mapped_column(Integer, default=0)
+    draft_revision: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    draft_template_id: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    draft_design_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    draft_spec_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    draft_workspace_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    draft_result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    draft_updated_by: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id"), nullable=True
+    )
 
     versions: Mapped[list[DesignVersion]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="DesignVersion.revision"
@@ -116,11 +129,27 @@ class Project(IdMixin, TimestampMixin, TenantMixin, Base):
 
 class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "design_versions"
-    __table_args__ = (UniqueConstraint("project_id", "revision"),)
-
-    project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    __table_args__ = (
+        UniqueConstraint("project_id", "revision"),
+        UniqueConstraint("organization_id", "id", name="uq_design_versions_org_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "project_id"],
+            ["projects.organization_id", "projects.id"],
+            name="fk_design_versions_org_project",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "project_id", "source_import_id"],
+            [
+                "imported_assets.organization_id",
+                "imported_assets.project_id",
+                "imported_assets.id",
+            ],
+            ondelete="RESTRICT",
+        ),
     )
+
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
     revision: Mapped[int] = mapped_column(Integer)
     status: Mapped[DesignStatus] = mapped_column(
         Enum(DesignStatus, native_enum=False), default=DesignStatus.draft
@@ -128,9 +157,17 @@ class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     design_hash: Mapped[str] = mapped_column(String(64), index=True)
     context_hash: Mapped[str] = mapped_column(String(64), index=True)
     spec_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    source_provenance_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    source_import_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True, index=True
+    )
     result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     engine_version: Mapped[str] = mapped_column(String(40), default="0.1.0")
     template_version: Mapped[str] = mapped_column(String(40), default="bookcase@1.0.0")
+    template_id: Mapped[str] = mapped_column(String(80), default="shelving")
+    template_capability_fingerprint: Mapped[str] = mapped_column(
+        String(64), default="0" * 64
+    )
     rule_version: Mapped[str] = mapped_column(String(40), default="unversioned")
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     immutable: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -138,13 +175,46 @@ class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     project: Mapped[Project] = relationship(back_populates="versions")
 
 
+class ImportedAsset(IdMixin, TimestampMixin, TenantMixin, Base):
+    """Immutable reference input owned by one exact tenant project."""
+
+    __tablename__ = "imported_assets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "project_id", "sha256"),
+        UniqueConstraint("organization_id", "project_id", "id"),
+        ForeignKeyConstraint(
+            ["organization_id", "project_id"],
+            ["projects.organization_id", "projects.id"],
+            name="fk_imported_assets_org_project",
+            ondelete="CASCADE",
+        ),
+        Index("ix_imported_assets_project_created", "project_id", "created_at"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    object_key: Mapped[str] = mapped_column(String(512))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    media_type: Mapped[str] = mapped_column(String(160))
+    original_filename: Mapped[str] = mapped_column(String(255))
+    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+
+
 class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "generation_jobs"
-    __table_args__ = (UniqueConstraint("organization_id", "idempotency_key"),)
-
-    design_version_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("design_versions.id", ondelete="CASCADE"), index=True
+    __table_args__ = (
+        UniqueConstraint("organization_id", "idempotency_key"),
+        UniqueConstraint("organization_id", "id", name="uq_generation_jobs_org_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_generation_jobs_org_design_version",
+            ondelete="CASCADE",
+        ),
+        Index("ix_generation_jobs_status_lease_expires_at", "status", "lease_expires_at"),
     )
+
+    design_version_id: Mapped[str] = mapped_column(String(36), index=True)
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus, native_enum=False), default=JobStatus.queued, index=True
     )
@@ -154,6 +224,11 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
     request_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -167,16 +242,26 @@ class OutboxEvent(IdMixin, TimestampMixin, TenantMixin, Base):
     topic: Mapped[str] = mapped_column(String(100))
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dead_lettered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Artifact(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "artifacts"
-    __table_args__ = (UniqueConstraint("generation_job_id", "kind"),)
-
-    generation_job_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("generation_jobs.id", ondelete="CASCADE"), index=True
+    __table_args__ = (
+        UniqueConstraint("generation_job_id", "kind"),
+        ForeignKeyConstraint(
+            ["organization_id", "generation_job_id"],
+            ["generation_jobs.organization_id", "generation_jobs.id"],
+            name="fk_artifacts_org_generation_job",
+            ondelete="CASCADE",
+        ),
     )
+
+    generation_job_id: Mapped[str] = mapped_column(String(36), index=True)
     kind: Mapped[str] = mapped_column(String(80))
     object_key: Mapped[str] = mapped_column(String(512))
     sha256: Mapped[str] = mapped_column(String(64))
@@ -184,19 +269,62 @@ class Artifact(IdMixin, TimestampMixin, TenantMixin, Base):
     content_type: Mapped[str] = mapped_column(String(160))
 
 
+class ExternalEvidence(IdMixin, TimestampMixin, TenantMixin, Base):
+    """Immutable, checksum-bound evidence for one exact project design hash."""
+
+    __tablename__ = "external_evidence"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "project_id"],
+            ["projects.organization_id", "projects.id"],
+            name="fk_external_evidence_org_project",
+            ondelete="CASCADE",
+        ),
+        Index("ix_external_evidence_project_type", "project_id", "evidence_type"),
+    )
+
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    evidence_type: Mapped[str] = mapped_column(String(40))
+    rule_id: Mapped[str] = mapped_column(String(40))
+    catalog_id: Mapped[str] = mapped_column(String(160))
+    catalog_version: Mapped[str] = mapped_column(String(80))
+    design_hash: Mapped[str] = mapped_column(String(64), index=True)
+    object_key: Mapped[str] = mapped_column(String(512))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    content_type: Mapped[str] = mapped_column(String(160))
+    created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
 class Approval(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "approvals"
-    __table_args__ = (UniqueConstraint("design_version_id", "approval_type"),)
-
-    design_version_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("design_versions.id", ondelete="CASCADE")
+    __table_args__ = (
+        UniqueConstraint("design_version_id", "approval_type"),
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_approvals_org_design_version",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "generation_job_id"],
+            ["generation_jobs.organization_id", "generation_jobs.id"],
+            name="fk_approvals_org_generation_job",
+            ondelete="CASCADE",
+        ),
     )
+
+    design_version_id: Mapped[str] = mapped_column(String(36))
     approval_type: Mapped[str] = mapped_column(String(80))
     approved_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     reason: Mapped[str] = mapped_column(Text)
-    generation_job_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("generation_jobs.id", ondelete="CASCADE"), nullable=True
-    )
+    generation_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     production_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     overrides_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
@@ -204,11 +332,17 @@ class Approval(IdMixin, TimestampMixin, TenantMixin, Base):
 
 class Release(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "releases"
-    __table_args__ = (UniqueConstraint("design_version_id"),)
-
-    design_version_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("design_versions.id", ondelete="CASCADE")
+    __table_args__ = (
+        UniqueConstraint("design_version_id"),
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_releases_org_design_version",
+            ondelete="CASCADE",
+        ),
     )
+
+    design_version_id: Mapped[str] = mapped_column(String(36))
     release_number: Mapped[str] = mapped_column(String(80))
     released_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     manifest_sha256: Mapped[str] = mapped_column(String(64))
@@ -275,79 +409,211 @@ class PostprocessorVersion(VersionedCatalog, Base):
 
 class DesignRecord(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "designs"
-    project_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("projects.id", ondelete="CASCADE")
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "project_id"],
+            ["projects.organization_id", "projects.id"],
+            name="fk_designs_org_project",
+            ondelete="CASCADE",
+        ),
     )
+    project_id: Mapped[str] = mapped_column(String(36))
     name: Mapped[str] = mapped_column(String(180))
 
 
 class ProductionRecord(IdMixin, TimestampMixin, TenantMixin):
-    design_version_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("design_versions.id", ondelete="CASCADE"), index=True
-    )
+    design_version_id: Mapped[str] = mapped_column(String(36), index=True)
     stable_key: Mapped[str] = mapped_column(String(160))
     data_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class ParameterDefinition(ProductionRecord, Base):
     __tablename__ = "parameter_definitions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_parameter_definitions_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class ParameterValue(ProductionRecord, Base):
     __tablename__ = "parameter_values"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_parameter_values_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class Part(ProductionRecord, Base):
     __tablename__ = "parts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_parts_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class PartFace(ProductionRecord, Base):
     __tablename__ = "part_faces"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_part_faces_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class ManufacturingFeature(ProductionRecord, Base):
     __tablename__ = "manufacturing_features"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_manufacturing_features_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class Constraint(ProductionRecord, Base):
     __tablename__ = "constraints"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_constraints_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class LoadCase(ProductionRecord, Base):
     __tablename__ = "load_cases"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_load_cases_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class RuleEvaluationRecord(ProductionRecord, Base):
     __tablename__ = "rule_evaluations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_rule_evaluations_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class AssemblyGraphRecord(ProductionRecord, Base):
     __tablename__ = "assembly_graphs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_assembly_graphs_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class AssemblyStepRecord(ProductionRecord, Base):
     __tablename__ = "assembly_steps"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_assembly_steps_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class BOMLine(ProductionRecord, Base):
     __tablename__ = "bom_lines"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_bom_lines_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class CutListLine(ProductionRecord, Base):
     __tablename__ = "cut_list_lines"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_cut_list_lines_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class NestingLayout(ProductionRecord, Base):
     __tablename__ = "nesting_layouts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_nesting_layouts_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class SetupRecord(ProductionRecord, Base):
     __tablename__ = "setups"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_setups_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class CAMOperationRecord(ProductionRecord, Base):
     __tablename__ = "cam_operations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_cam_operations_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )
 
 
 class Toolpath(ProductionRecord, Base):
     __tablename__ = "toolpaths"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id"],
+            ["design_versions.organization_id", "design_versions.id"],
+            name="fk_toolpaths_org_design_version",
+            ondelete="CASCADE",
+        ),
+    )

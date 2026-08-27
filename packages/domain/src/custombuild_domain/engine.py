@@ -9,6 +9,7 @@ from .enums import (
     FeatureKind,
     GrainDirection,
     JointType,
+    OpenEndRelief,
     PartRole,
     ShelfMount,
 )
@@ -35,6 +36,11 @@ from .units import mm
 DADO_FIT_CLEARANCE_UM = mm("0.5")
 DADO_FEATURE_TOLERANCE_UM = mm("0.05")
 DADO_MAX_DEPTH_UM = mm(12)
+DADO_CORNER_RELIEF_RADIUS_UM = mm(3)
+# The inset back starts 12 mm from the rear edge. Four millimetres between
+# shelf/divider ends and that line keeps the 3 mm dogbone envelope separated
+# even after the versioned 0.05 mm machining tolerance is applied.
+INSET_BACK_RELIEF_CLEARANCE_UM = mm(4)
 
 
 class BookcaseEngine:
@@ -73,7 +79,13 @@ class BookcaseEngine:
             p.back_thickness_um if p.back_panel == BackPanelType.SURFACE_MOUNTED else 0
         )
         inner_width = p.width_um - 2 * t
-        inner_height = p.height_um - p.plinth_height_um - 2 * t
+        shelf_zone_bottom = (
+            p.plinth_height_um + p.base_cabinet_height_um
+            if p.base_cabinet_count
+            else p.plinth_height_um + t
+        )
+        bottom_z = shelf_zone_bottom - t
+        inner_height = p.height_um - shelf_zone_bottom - t
         dado_depth = self._dado_depth(t)
         carcass_side_inset = dado_depth if p.joint_system == JointType.DADO else 0
         fixed_shelf_inset = (
@@ -82,7 +94,7 @@ class BookcaseEngine:
             else 0
         )
         shelf_depth = (
-            p.depth_um - mm(12) - p.back_thickness_um - mm(2)
+            p.depth_um - mm(12) - p.back_thickness_um - INSET_BACK_RELIEF_CLEARANCE_UM
             if p.back_panel == BackPanelType.INSET_GROOVE
             else case_depth - mm(2)
         )
@@ -105,6 +117,17 @@ class BookcaseEngine:
                 if role == PartRole.BACK and spec.back_material is not None
                 else spec.material
             )
+            # Part orientation is a design intent, while material directionality
+            # is a versioned catalogue property. A catalogue-declared
+            # non-directional sheet must not inherit an artificial X/Y panel
+            # constraint merely from its placement in the furniture assembly.
+            # Conversely, directional materials retain the role-specific axis
+            # so manufacturing can bind it to an exact stock-sheet axis.
+            effective_grain = (
+                GrainDirection.NONE
+                if part_material.grain_direction == GrainDirection.NONE
+                else grain
+            )
             allowance = part_material.machining_allowance_um
             part_thickness = p.back_thickness_um if role == PartRole.BACK else t
             raw = self._raw_size(size, part_thickness, allowance)
@@ -126,7 +149,7 @@ class BookcaseEngine:
                     material_id=part_material.material_id,
                     material_version=part_material.version,
                     actual_thickness_um=t if role != PartRole.BACK else p.back_thickness_um,
-                    grain_direction=grain,
+                    grain_direction=effective_grain,
                     visible_faces=visible,
                     edge_bands=bands,
                     weight_g=self._weight_g(size, part_material.density_kg_m3),
@@ -162,7 +185,7 @@ class BookcaseEngine:
                 depth_um=case_depth,
                 height_um=t,
             ),
-            Placement(x_um=t - carcass_side_inset, z_um=p.plinth_height_um),
+            Placement(x_um=t - carcass_side_inset, z_um=bottom_z),
             grain=GrainDirection.X,
             visible=(FaceName.FRONT,),
             band_front=True,
@@ -182,7 +205,12 @@ class BookcaseEngine:
             band_front=True,
         )
 
-        bay_widths = self._bay_widths(inner_width, t, p.vertical_divider_count)
+        bay_widths = self._bay_widths(
+            inner_width,
+            t,
+            p.vertical_divider_count,
+            p.bay_width_ratios_ppm,
+        )
         bay_starts: list[int] = []
         cursor = t
         for bay_index, width in enumerate(bay_widths):
@@ -199,7 +227,7 @@ class BookcaseEngine:
                         depth_um=shelf_depth,
                         height_um=inner_height + 2 * dado_depth,
                     ),
-                    Placement(x_um=cursor, z_um=p.plinth_height_um + t - dado_depth),
+                    Placement(x_um=cursor, z_um=shelf_zone_bottom - dado_depth),
                     grain=GrainDirection.Z,
                     visible=(FaceName.FRONT,),
                     band_front=True,
@@ -207,7 +235,11 @@ class BookcaseEngine:
                 cursor += t
 
         shelf_z_values = self._shelf_positions(
-            p.plinth_height_um + t, inner_height, t, p.shelf_count
+            shelf_zone_bottom,
+            inner_height,
+            t,
+            p.shelf_count,
+            p.shelf_height_ratios_ppm,
         )
         shelf_instance_index = 0
         for row, z_um in enumerate(shelf_z_values):
@@ -234,6 +266,104 @@ class BookcaseEngine:
                 )
                 shelf_instance_index += 1
 
+        if p.base_cabinet_count:
+            # When the lower modules and upper bays have the same count, they
+            # share one structural grid. This preserves custom bay ratios and
+            # puts every upper divider directly on a full-height base side.
+            base_openings = (
+                bay_widths
+                if p.base_cabinet_count == len(bay_widths)
+                else self._bay_widths(
+                    p.width_um - 2 * t,
+                    t,
+                    p.base_cabinet_count - 1,
+                )
+            )
+            # The full-height carcass sides are the two outer supports.  Only
+            # internal cabinet boundaries need separate BASE_SIDE parts; the
+            # previous N+1 layout duplicated both outer carcass sides as
+            # coincident solids and provided no physical load-path joints.
+            base_boundary_positions = [0]
+            cursor = 0
+            for opening_width in base_openings:
+                cursor += t + opening_width
+                base_boundary_positions.append(cursor)
+
+            base_side_height = p.base_cabinet_height_um - t + dado_depth
+            for side_index, x_um in enumerate(base_boundary_positions[1:-1], start=1):
+                add(
+                    f"base-side-{side_index}",
+                    PartRole.BASE_SIDE,
+                    side_index,
+                    Dimensions3D(
+                        width_um=t,
+                        depth_um=p.base_cabinet_depth_um,
+                        # The top edge enters a verified dado in the upper
+                        # bottom.  That makes each internal side a direct
+                        # vertical load path instead of a merely coincident
+                        # visual panel.
+                        height_um=base_side_height,
+                    ),
+                    Placement(x_um=x_um, z_um=p.plinth_height_um),
+                    grain=GrainDirection.Z,
+                    visible=(FaceName.FRONT,),
+                    band_front=True,
+                )
+
+            front_gap = mm(2)
+            front_z = p.plinth_height_um + t + front_gap
+            front_height = p.base_cabinet_height_um - 2 * t - 2 * front_gap
+            for cabinet_index, opening_width in enumerate(base_openings):
+                opening_x = base_boundary_positions[cabinet_index] + t
+                add(
+                    f"base-bottom-{cabinet_index}",
+                    PartRole.BASE_BOTTOM,
+                    cabinet_index,
+                    Dimensions3D(
+                        # Each end enters the adjacent full-height or internal
+                        # support by the canonical dado depth.
+                        width_um=opening_width + 2 * dado_depth,
+                        # The lower bottom starts behind the front plane. Its
+                        # requested depth therefore includes the inset-front
+                        # thickness without creating a coincident solid.
+                        depth_um=p.base_cabinet_depth_um - t,
+                        height_um=t,
+                    ),
+                    Placement(
+                        x_um=opening_x - dado_depth,
+                        y_um=t,
+                        z_um=p.plinth_height_um,
+                    ),
+                    grain=GrainDirection.X,
+                    visible=(FaceName.A, FaceName.FRONT),
+                    band_front=True,
+                )
+                add(
+                    f"cabinet-front-{cabinet_index}",
+                    PartRole.CABINET_FRONT,
+                    cabinet_index,
+                    Dimensions3D(
+                        width_um=opening_width - 2 * front_gap,
+                        depth_um=t,
+                        # The front is an inset panel in the clear opening. It
+                        # must not occupy the base-bottom or upper-bottom
+                        # solids that frame that opening.
+                        height_um=front_height,
+                    ),
+                    Placement(
+                        x_um=opening_x + front_gap,
+                        z_um=front_z,
+                    ),
+                    grain=GrainDirection.Z,
+                    visible=(FaceName.FRONT,),
+                    # FRONT is the panel face (its thickness normal), not one
+                    # of the four bandable panel boundaries.  A supplier-
+                    # backed perimeter-band specification is still required
+                    # before physical manufacture and must not be invented by
+                    # the geometry generator.
+                    band_front=False,
+                )
+
         if p.back_panel == BackPanelType.SURFACE_MOUNTED:
             add(
                 "back",
@@ -259,7 +389,7 @@ class BookcaseEngine:
                 Placement(
                     x_um=t - dado_depth,
                     y_um=p.depth_um - mm(12) - p.back_thickness_um,
-                    z_um=p.plinth_height_um + t - dado_depth,
+                    z_um=shelf_zone_bottom - dado_depth,
                 ),
                 grain=GrainDirection.Z,
                 visible=(FaceName.BACK,),
@@ -273,7 +403,14 @@ class BookcaseEngine:
                 Dimensions3D(
                     width_um=inner_width,
                     depth_um=t,
-                    height_um=p.plinth_height_um + dado_depth,
+                    # With base cabinets the plinth ends exactly at the
+                    # lower-panel datum. The no-base carcass retains its dado
+                    # tongue into the main bottom.
+                    height_um=(
+                        p.plinth_height_um
+                        if p.base_cabinet_count
+                        else p.plinth_height_um + dado_depth
+                    ),
                 ),
                 Placement(x_um=t),
                 grain=GrainDirection.X,
@@ -308,9 +445,25 @@ class BookcaseEngine:
         return max(1, (numerator + denominator - 1) // denominator)
 
     @staticmethod
-    def _bay_widths(inner_width_um: int, thickness_um: int, divider_count: int) -> tuple[int, ...]:
+    def _bay_widths(
+        inner_width_um: int,
+        thickness_um: int,
+        divider_count: int,
+        ratios_ppm: tuple[int, ...] = (),
+    ) -> tuple[int, ...]:
         bay_count = divider_count + 1
         available = inner_width_um - divider_count * thickness_um
+        if ratios_ppm and len(ratios_ppm) == bay_count:
+            total = sum(ratios_ppm)
+            widths = [(available * ratio) // total for ratio in ratios_ppm]
+            remainder = available - sum(widths)
+            order = sorted(
+                range(bay_count),
+                key=lambda index: (-(available * ratios_ppm[index] % total), index),
+            )
+            for index in order[:remainder]:
+                widths[index] += 1
+            return tuple(widths)
         base, remainder = divmod(available, bay_count)
         return tuple(base + (1 if index < remainder else 0) for index in range(bay_count))
 
@@ -320,9 +473,17 @@ class BookcaseEngine:
         inner_height_um: int,
         thickness_um: int,
         shelf_count: int,
+        ratios_ppm: tuple[int, ...] = (),
     ) -> tuple[int, ...]:
         if shelf_count == 0:
             return ()
+        if ratios_ppm and len(ratios_ppm) == shelf_count:
+            return tuple(
+                bottom_surface_z_um
+                + (inner_height_um * ratio + 500_000) // 1_000_000
+                - thickness_um // 2
+                for ratio in ratios_ppm
+            )
         clear_total = inner_height_um - shelf_count * thickness_um
         opening, remainder = divmod(clear_total, shelf_count + 1)
         cursor = bottom_surface_z_um
@@ -340,7 +501,12 @@ class BookcaseEngine:
     ) -> tuple[tuple[PartInstance, ...], tuple[Joint, ...]]:
         p = spec.parameters
         inner_width = p.width_um - 2 * p.actual_thickness_um
-        inner_height = p.height_um - p.plinth_height_um - 2 * p.actual_thickness_um
+        shelf_zone_bottom = (
+            p.plinth_height_um + p.base_cabinet_height_um
+            if p.base_cabinet_count
+            else p.plinth_height_um + p.actual_thickness_um
+        )
+        inner_height = p.height_um - shelf_zone_bottom - p.actual_thickness_um
         by_key = {part.semantic_key: part for part in parts}
         feature_map: dict[str, list[ManufacturingFeature]] = defaultdict(list)
         joints: list[Joint] = []
@@ -410,7 +576,7 @@ class BookcaseEngine:
             FaceName.RIGHT,
             FaceName.LEFT,
             AssemblyDirection.POS_X,
-            Point3D(x_um=p.actual_thickness_um, z_um=p.plinth_height_um),
+            Point3D(x_um=p.actual_thickness_um, z_um=bottom.placement.z_um),
         )
         join(
             "bottom-right",
@@ -420,7 +586,7 @@ class BookcaseEngine:
             FaceName.LEFT,
             FaceName.RIGHT,
             AssemblyDirection.NEG_X,
-            Point3D(x_um=p.width_um - p.actual_thickness_um, z_um=p.plinth_height_um),
+            Point3D(x_um=p.width_um - p.actual_thickness_um, z_um=bottom.placement.z_um),
         )
         join(
             "top-left",
@@ -514,6 +680,65 @@ class BookcaseEngine:
                     z_um=shelf.placement.z_um,
                 ),
             )
+
+        base_bottoms = tuple(
+            sorted(
+                (part for part in parts if part.role == PartRole.BASE_BOTTOM),
+                key=lambda item: item.instance_index,
+            )
+        )
+        if base_bottoms:
+            for cabinet_index, base_bottom in enumerate(base_bottoms):
+                left_support = left if cabinet_index == 0 else by_key[f"base-side-{cabinet_index}"]
+                right_support = (
+                    right
+                    if cabinet_index == len(base_bottoms) - 1
+                    else by_key[f"base-side-{cabinet_index + 1}"]
+                )
+                join(
+                    f"base-bottom-{cabinet_index}-left-support",
+                    left_support.semantic_key,
+                    base_bottom.semantic_key,
+                    JointType.DADO,
+                    FaceName.RIGHT,
+                    FaceName.LEFT,
+                    AssemblyDirection.POS_X,
+                    Point3D(
+                        x_um=left_support.placement.x_um + left_support.finished_size.width_um,
+                        z_um=base_bottom.placement.z_um,
+                    ),
+                )
+                join(
+                    f"base-bottom-{cabinet_index}-right-support",
+                    right_support.semantic_key,
+                    base_bottom.semantic_key,
+                    JointType.DADO,
+                    FaceName.LEFT,
+                    FaceName.RIGHT,
+                    AssemblyDirection.NEG_X,
+                    Point3D(
+                        x_um=right_support.placement.x_um,
+                        z_um=base_bottom.placement.z_um,
+                    ),
+                )
+
+            for base_side in sorted(
+                (part for part in parts if part.role == PartRole.BASE_SIDE),
+                key=lambda item: item.instance_index,
+            ):
+                join(
+                    f"{base_side.semantic_key}-upper-bottom",
+                    "bottom",
+                    base_side.semantic_key,
+                    JointType.DADO,
+                    FaceName.BOTTOM,
+                    FaceName.TOP,
+                    AssemblyDirection.POS_Z,
+                    Point3D(
+                        x_um=base_side.placement.x_um,
+                        z_um=bottom.placement.z_um,
+                    ),
+                )
 
         if "back" in by_key:
             back_kind = (
@@ -622,7 +847,7 @@ class BookcaseEngine:
                     first_feature_dimensions=feature_dimensions,
                 )
 
-        if "plinth" in by_key:
+        if "plinth" in by_key and not p.base_cabinet_count:
             join(
                 "plinth-bottom",
                 "bottom",
@@ -718,11 +943,28 @@ class BookcaseEngine:
             if dado_geometry is not None
             else first_dimensions_override or dimensions(first_kind, first, second)
         )
+        first_pitch = mm(32) if first_pattern > 1 else None
+        second_pitch = mm(32) if second_pattern > 1 else None
+        first_origin = (
+            dado_geometry[1]
+            if dado_geometry is not None
+            else BookcaseEngine._feature_origin(
+                first,
+                first_kind,
+                first_dimensions,
+                mating,
+                first_pattern,
+                first_pitch,
+            )
+        )
+        first_open_end_reliefs = (
+            BookcaseEngine._open_end_reliefs(first, first_dimensions, first_origin)
+            if kind == JointType.DADO
+            else ()
+        )
         second_dimensions = (
             dimensions(second_kind, second, first) if second_kind is not None else None
         )
-        first_pitch = mm(32) if first_pattern > 1 else None
-        second_pitch = mm(32) if second_pattern > 1 else None
         return (
             ManufacturingFeature(
                 feature_id=first_id,
@@ -730,18 +972,7 @@ class BookcaseEngine:
                 joint_id=joint_id,
                 kind=first_kind,
                 face=first_face,
-                origin=(
-                    dado_geometry[1]
-                    if dado_geometry is not None
-                    else BookcaseEngine._feature_origin(
-                        first,
-                        first_kind,
-                        first_dimensions,
-                        mating,
-                        first_pattern,
-                        first_pitch,
-                    )
-                ),
+                origin=first_origin,
                 dimensions=first_dimensions,
                 pattern_count=first_pattern,
                 pitch_um=first_pitch,
@@ -749,6 +980,7 @@ class BookcaseEngine:
                 fit_clearance_um=(DADO_FIT_CLEARANCE_UM if kind == JointType.DADO else 0),
                 corner_strategy="dogbone-v1" if kind == JointType.DADO else None,
                 requires_square_corners=kind == JointType.DADO,
+                open_end_reliefs=first_open_end_reliefs,
             ),
             ManufacturingFeature(
                 feature_id=second_id,
@@ -872,6 +1104,7 @@ class BookcaseEngine:
             if face_sign < 0
             else (owner_normal[1] - depth_um, owner_normal[1])
         )
+
         actual_normal = (
             max(owner_normal[0], mate_normal[0]),
             min(owner_normal[1], mate_normal[1]),
@@ -914,7 +1147,7 @@ class BookcaseEngine:
                 width_um=global_lengths[panel_axes[0]],
                 depth_um=depth_um,
                 length_um=global_lengths[panel_axes[1]],
-                radius_um=mm(3),
+                radius_um=DADO_CORNER_RELIEF_RADIUS_UM,
             ),
             Point3D(
                 x_um=local_coordinates["x"],
@@ -922,6 +1155,39 @@ class BookcaseEngine:
                 z_um=local_coordinates["z"],
             ),
         )
+
+    @staticmethod
+    def _open_end_reliefs(
+        owner: PartInstance,
+        dimensions: FeatureDimensions,
+        origin: Point3D,
+    ) -> tuple[OpenEndRelief, ...]:
+        """Declare only dado exits whose nominal rectangle is exactly edge-flush."""
+
+        panel_axes = BookcaseEngine._panel_axes(owner)
+        owner_dimensions = BookcaseEngine._axis_dimensions(owner)
+        starts = {axis: int(getattr(origin, f"{axis}_um")) for axis in panel_axes}
+        extents = {
+            panel_axes[0]: dimensions.width_um,
+            panel_axes[1]: dimensions.length_um,
+        }
+        if any(extent is None for extent in extents.values()):
+            raise ValueError("open-end relief declaration requires rectangular dado dimensions")
+
+        declarations: list[OpenEndRelief] = []
+        labels = (
+            (OpenEndRelief.U_MIN, OpenEndRelief.U_MAX),
+            (OpenEndRelief.V_MIN, OpenEndRelief.V_MAX),
+        )
+        for index, axis in enumerate(panel_axes):
+            extent = extents[axis]
+            assert extent is not None
+            start = starts[axis]
+            if start == 0:
+                declarations.append(labels[index][0])
+            if start + extent == owner_dimensions[axis]:
+                declarations.append(labels[index][1])
+        return tuple(declarations)
 
     @staticmethod
     def _fit_interval(
@@ -953,18 +1219,40 @@ class BookcaseEngine:
     @staticmethod
     def _physical_face(part: PartInstance, face: FaceName) -> tuple[str, int]:
         if face == FaceName.A:
-            if part.role in {PartRole.LEFT_SIDE, PartRole.RIGHT_SIDE, PartRole.DIVIDER}:
+            if part.role in {
+                PartRole.LEFT_SIDE,
+                PartRole.RIGHT_SIDE,
+                PartRole.DIVIDER,
+                PartRole.BASE_SIDE,
+            }:
                 face = FaceName.LEFT
-            elif part.role in {PartRole.TOP, PartRole.BOTTOM, PartRole.SHELF}:
+            elif part.role in {
+                PartRole.TOP,
+                PartRole.BOTTOM,
+                PartRole.SHELF,
+                PartRole.BASE_BOTTOM,
+                PartRole.BASE_TOP,
+            }:
                 face = FaceName.BOTTOM
-            elif part.role in {PartRole.BACK, PartRole.PLINTH}:
+            elif part.role in {PartRole.BACK, PartRole.PLINTH, PartRole.CABINET_FRONT}:
                 face = FaceName.FRONT
         elif face == FaceName.B:
-            if part.role in {PartRole.LEFT_SIDE, PartRole.RIGHT_SIDE, PartRole.DIVIDER}:
+            if part.role in {
+                PartRole.LEFT_SIDE,
+                PartRole.RIGHT_SIDE,
+                PartRole.DIVIDER,
+                PartRole.BASE_SIDE,
+            }:
                 face = FaceName.RIGHT
-            elif part.role in {PartRole.TOP, PartRole.BOTTOM, PartRole.SHELF}:
+            elif part.role in {
+                PartRole.TOP,
+                PartRole.BOTTOM,
+                PartRole.SHELF,
+                PartRole.BASE_BOTTOM,
+                PartRole.BASE_TOP,
+            }:
                 face = FaceName.TOP
-            elif part.role in {PartRole.BACK, PartRole.PLINTH}:
+            elif part.role in {PartRole.BACK, PartRole.PLINTH, PartRole.CABINET_FRONT}:
                 face = FaceName.BACK
         try:
             return {
@@ -1014,6 +1302,13 @@ class BookcaseEngine:
             )
             if feature.dimensions != expected_dimensions or feature.origin != expected_origin:
                 raise ValueError(f"dado feature geometry diverges for joint {joint.joint_id}")
+            expected_open_ends = BookcaseEngine._open_end_reliefs(
+                by_id[cut_member.part_id], expected_dimensions, expected_origin
+            )
+            if feature.open_end_reliefs != expected_open_ends:
+                raise ValueError(
+                    f"dado open-end relief declaration diverges for joint {joint.joint_id}"
+                )
             if feature.tolerance_um * 2 >= joint.tolerance_um:
                 raise ValueError(
                     f"dado machining tolerance consumes fit for joint {joint.joint_id}"
@@ -1029,9 +1324,14 @@ class BookcaseEngine:
 
     @staticmethod
     def _panel_axes(part: PartInstance) -> tuple[str, str]:
-        if part.role in {PartRole.LEFT_SIDE, PartRole.RIGHT_SIDE, PartRole.DIVIDER}:
+        if part.role in {
+            PartRole.LEFT_SIDE,
+            PartRole.RIGHT_SIDE,
+            PartRole.DIVIDER,
+            PartRole.BASE_SIDE,
+        }:
             return ("y", "z")
-        if part.role in {PartRole.BACK, PartRole.PLINTH}:
+        if part.role in {PartRole.BACK, PartRole.PLINTH, PartRole.CABINET_FRONT}:
             return ("x", "z")
         return ("x", "y")
 
@@ -1098,9 +1398,7 @@ class BookcaseEngine:
                 return
             joint_ids = tuple(joint.joint_id for joint in current)
             moving_part_ids = tuple(sorted({part.part_id for part in moving_parts}))
-            joint_part_ids = {
-                member.part_id for joint in current for member in joint.members
-            }
+            joint_part_ids = {member.part_id for joint in current for member in joint.members}
             if not moving_part_ids or not set(moving_part_ids) <= set(by_id):
                 raise ValueError("assembly step moving group must belong to the design")
             part_ids = tuple(sorted(joint_part_ids | set(moving_part_ids)))
@@ -1127,6 +1425,61 @@ class BookcaseEngine:
             )
             used.update(joint_ids)
 
+        # Build the internal lower-cabinet bank from left to right while both
+        # full-height outer sides remain open.  Each internal side captures the
+        # left bottom first; the next bottom then enters its open right groove.
+        # The existing carcass-side steps close the two remaining outer joints.
+        base_sides = tuple(
+            sorted(
+                (part for part in parts if part.role == PartRole.BASE_SIDE),
+                key=lambda item: item.instance_index,
+            )
+        )
+        for base_side in base_sides:
+            side_index = base_side.instance_index
+            left_bottom = by_key[f"base-bottom-{side_index - 1}"]
+            right_bottom = by_key[f"base-bottom-{side_index}"]
+            add_step(
+                tuple(
+                    joint
+                    for joint in joints
+                    if names(joint) == {base_side.semantic_key, left_bottom.semantic_key}
+                ),
+                AssemblyDirection.NEG_X,
+                (
+                    "För underskåpssidan från höger över vänster bottenkant och "
+                    "kontrollera fullt spårinstick."
+                ),
+                moving_parts=(base_side,),
+            )
+            add_step(
+                tuple(
+                    joint
+                    for joint in joints
+                    if names(joint) == {base_side.semantic_key, right_bottom.semantic_key}
+                ),
+                AssemblyDirection.NEG_X,
+                "För nästa underskåpsbotten från höger in i sidans öppna spår.",
+                moving_parts=(right_bottom,),
+            )
+
+        add_step(
+            tuple(
+                joint
+                for joint in joints
+                if "bottom" in names(joint)
+                and any(
+                    by_id[member.part_id].role == PartRole.BASE_SIDE for member in joint.members
+                )
+            ),
+            AssemblyDirection.NEG_Z,
+            (
+                "Sänk överdelens botten över samtliga interna underskåpssidor och "
+                "kontrollera den sammanhängande lodräta lastvägen."
+            ),
+            moving_parts=(by_key["bottom"],),
+        )
+
         # Build the captured-panel subassembly while both carcass sides remain
         # open.  This prevents a fixed shelf or inset back from being trapped by
         # a closed frame.  Several joints intentionally belong to one movement.
@@ -1134,8 +1487,7 @@ class BookcaseEngine:
             tuple(
                 joint
                 for joint in joints
-                if names(joint) == {"bottom", "plinth"}
-                and joint.joint_type == JointType.DADO
+                if names(joint) == {"bottom", "plinth"} and joint.joint_type == JointType.DADO
             ),
             AssemblyDirection.NEG_Z,
             "Sänk botten över sockelns övre tappkant och kontrollera full anliggning.",
@@ -1163,8 +1515,7 @@ class BookcaseEngine:
                     joint
                     for joint in shelf_joints
                     if any(
-                        member.part_id == divider.part_id
-                        and member.mating_face == FaceName.LEFT
+                        member.part_id == divider.part_id and member.mating_face == FaceName.LEFT
                         for member in joint.members
                     )
                 )
@@ -1172,8 +1523,7 @@ class BookcaseEngine:
                     joint
                     for joint in shelf_joints
                     if any(
-                        member.part_id == divider.part_id
-                        and member.mating_face == FaceName.RIGHT
+                        member.part_id == divider.part_id and member.mating_face == FaceName.RIGHT
                         for member in joint.members
                     )
                 )
@@ -1205,10 +1555,7 @@ class BookcaseEngine:
                     add_step(
                         left_joints,
                         AssemblyDirection.NEG_X,
-                        (
-                            "För in avdelaren från höger över föregående facks "
-                            "exponerade hylländar."
-                        ),
+                        ("För in avdelaren från höger över föregående facks exponerade hylländar."),
                         moving_parts=(divider,),
                     )
                 add_step(
@@ -1227,9 +1574,7 @@ class BookcaseEngine:
                 for joint in joints
                 if joint.joint_id in used
                 and joint.joint_type == JointType.DADO
-                and any(
-                    by_id[item.part_id].role == PartRole.DIVIDER for item in joint.members
-                )
+                and any(by_id[item.part_id].role == PartRole.DIVIDER for item in joint.members)
                 for member in joint.members
                 if by_id[member.part_id].role == PartRole.SHELF
             )
@@ -1245,9 +1590,7 @@ class BookcaseEngine:
                 ),
                 AssemblyDirection.NEG_Z,
                 "Sänk avdelar-/hyllmodulen i bottens samtliga spår samtidigt.",
-                moving_parts=tuple(
-                    by_id[part_id] for part_id in sorted(divider_module_part_ids)
-                ),
+                moving_parts=tuple(by_id[part_id] for part_id in sorted(divider_module_part_ids)),
             )
 
         back = by_key.get("back")
@@ -1263,11 +1606,7 @@ class BookcaseEngine:
             joint for joint in back_joints if joint.joint_type == JointType.RABBET
         )
         add_step(
-            tuple(
-                joint
-                for joint in captured_back_joints
-                if names(joint) == {"back", "bottom"}
-            ),
+            tuple(joint for joint in captured_back_joints if names(joint) == {"back", "bottom"}),
             AssemblyDirection.NEG_Z,
             "Sänk ryggens nederkant i bottenspåret innan topp eller gavlar monteras.",
             moving_parts=(back,) if back is not None else (),
@@ -1301,7 +1640,10 @@ class BookcaseEngine:
             (
                 "left-side",
                 AssemblyDirection.POS_X,
-                "Stäng stommen med vänster gavel och kontrollera varje fog visuellt.",
+                (
+                    "Stäng stommen med vänster gavel och kontrollera varje spåranslutning "
+                    "visuellt. Kontroll av instick verifierar inte permanent hållning."
+                ),
             ),
         ):
             add_step(
@@ -1356,6 +1698,33 @@ class BookcaseEngine:
             raise ValueError(
                 "no verified assembly sequence exists for joints: "
                 + ", ".join(sorted(unused_joint_ids))
+            )
+
+        covered_part_ids = {part_id for step in steps_list for part_id in step.part_ids}
+        for part in sorted(parts, key=lambda item: item.semantic_key):
+            if part.part_id in covered_part_ids:
+                continue
+            is_front = part.role == PartRole.CABINET_FRONT
+            steps_list.append(
+                AssemblyStep(
+                    step_number=len(steps_list) + 1,
+                    step_id=stable_id("assembly-step", part.part_id, "hardware-pending"),
+                    part_ids=(part.part_id,),
+                    moving_part_ids=(part.part_id,),
+                    joint_ids=(),
+                    direction=(AssemblyDirection.NEG_Y if is_front else AssemblyDirection.NEG_Z),
+                    motion_path=(AssemblyDirection.NEG_Y if is_front else AssemblyDirection.NEG_Z,),
+                    tool_ids=(),
+                    checkpoint=(
+                        "FRONT EJ MONTERINGSBAR: montera inte förrän mekaniskt beslag, spel "
+                        "och borrbild har verifierats."
+                        if is_front
+                        else (
+                            "Placera moduldelen enligt ritning; infästningen inväntar "
+                            "verifierat beslagssystem."
+                        )
+                    ),
+                )
             )
 
         steps = tuple(steps_list)

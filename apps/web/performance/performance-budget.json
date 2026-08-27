@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "purpose": "Reproducible frontend regression baseline; not a workstation FPS claim or a server latency SLO.",
+  "fixtures": {
+    "normal_5x5": {
+      "width_mm": 2400,
+      "height_mm": 2400,
+      "depth_mm": 340,
+      "bay_count": 5,
+      "shelf_count": 5,
+      "base_cabinet_count": 5
+    },
+    "maximum_supported": {
+      "width_mm": 6000,
+      "height_mm": 4000,
+      "depth_mm": 1200,
+      "divider_count": 16,
+      "bay_count": 17,
+      "shelf_count": 40,
+      "base_cabinet_count": 17,
+      "expected_part_count": 752
+    }
+  },
+  "sampling": {
+    "warmup_iterations": 20,
+    "sample_count": 31,
+    "minimum_sample_duration_ms": 12,
+    "maximum_batch_iterations": 256,
+    "statistics": [
+      "median_ms",
+      "p95_ms"
+    ]
+  },
+  "budgets": {
+    "local_resolve_design": {
+      "normal_5x5": {
+        "median_ms": 5,
+        "p95_ms": 15
+      },
+      "maximum_supported": {
+        "median_ms": 50,
+        "p95_ms": 125
+      },
+      "maximum_to_normal_p95_ratio": 80
+    },
+    "local_numeric_edit_5mm": {
+      "normal_5x5": {
+        "median_ms": 5,
+        "p95_ms": 15
+      }
+    },
+    "chromium_interaction": {
+      "selection_p95_ms": 3000,
+      "mode_switch_p95_ms": 5000,
+      "numeric_edit_5mm_p95_ms": 4000
+    }
+  },
+  "server_preview": {
+    "debounce_ms": 500,
+    "network_latency_is_gated": false,
+    "reason": "Network and backend scheduling are environment-dependent; this segment records the source debounce contract only."
+  }
+}

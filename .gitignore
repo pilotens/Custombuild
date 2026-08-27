@@ -16,6 +16,7 @@ node_modules/
 playwright-report/
 test-results/
 tmp/
+.tmp-*
 dist/
 build/
 artifacts/
