@@ -122,6 +122,19 @@ used by that reviewed proxy. The proxy must replace `X-Forwarded-For` with one
 canonical client IP; untrusted peers and ambiguous forwarding chains deliberately
 fall back to the socket peer's shared rate-limit bucket.
 
+The web image contains no deployment-specific API, demo-token or OIDC build
+arguments. At request time the Next server reads only the explicitly public
+`CUSTOMBUILD_WEB_API_URL`, `CUSTOMBUILD_WEB_DEMO_TOKEN`,
+`CUSTOMBUILD_WEB_OIDC_ISSUER`, `CUSTOMBUILD_WEB_OIDC_CLIENT_ID` and
+`CUSTOMBUILD_WEB_OIDC_REDIRECT_URI` values, validates them and passes that exact
+allow-list to the browser. `APP_ENV=production` requires an HTTPS API origin, a
+complete HTTPS OIDC public-client tuple and an empty demo token. Invalid runtime
+configuration fails the document request and container healthcheck; it never
+falls back to local authentication. Do not place a client secret, database URL,
+object-store credential or other private value in any `CUSTOMBUILD_WEB_*` value.
+Changing these environment values must not rebuild the image, which allows the
+same tested web digest to be promoted between environments.
+
 Inject database, OIDC and object-store secrets through the deployment secret
 manager; never commit `.env`. Export structured logs and OpenTelemetry at the
 platform layer. Alert on repeated job failures, RLS violations, artifact hash
@@ -162,11 +175,12 @@ it must not be replaced by an ad hoc working-tree hash. `SOURCE_MANIFEST_SHA256`
 separately identifies the exact shared application sources consumed by the three
 Dockerfiles: root dependency manifests plus `apps/web`, `packages`, `cad`, `cam`,
 `postprocessors`, `services`, and `scripts`. It includes uncommitted files and applies
-`.dockerignore` (notably excluding the live `apps/web/e2e` harness), while intentionally
-excluding deployment-only Compose/environment files so one tested image can be promoted
-between isolated environments. The canonical manifest contains sorted paths, file
-types, normalized portable permission modes, sizes and content hashes, with no host,
-clock or filesystem timestamp metadata.
+`.dockerignore` (notably excluding the live `apps/web/e2e` harness). Reviewed Compose
+and workflow controls are included, while deployment environment values are not; the
+same tested image can therefore be promoted between isolated environments without
+rebuilding. The canonical manifest contains sorted paths, file types, normalized
+portable permission modes, sizes and content hashes, with no host, clock or filesystem
+timestamp metadata.
 
 Freeze a local candidate only after all source edits are complete. On PowerShell:
 
@@ -212,7 +226,7 @@ deployment-platform responsibilities until a registry and trust root have been s
 Register the web application as an OIDC public client with Authorization Code and
 PKCE (`S256`). The callback URI must be the public web origin's exact root (for
 example `https://app.example.com/`); no separate `/callback` route is implemented.
-Configure the same issuer in the API and web build. Discovery authorization and
+Configure the same issuer in the API and web runtime. Discovery authorization and
 token endpoints must stay on that issuer's HTTPS origin, and no browser client
 secret may be provided. Before allowing a CAM reviewer to
 lock a revision, confirm that the job exposes `operations`,

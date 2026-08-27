@@ -558,6 +558,40 @@ describe("API preview normalization", () => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("production API contract", () => {
+  it("uses a public development token only after an OIDC session token", async () => {
+    const tokenKey = "custombuild:oidc:access-token";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      JSON.stringify([]),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const api = new CustombuildApiClient(
+      "https://api.example.test",
+      undefined,
+      "public-development-token",
+    );
+
+    await api.listProjects();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.test/v1/projects",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer public-development-token" }),
+      }),
+    );
+
+    window.sessionStorage.setItem(tokenKey, JSON.stringify({
+      accessToken: "signed-oidc-session-token",
+      expiresAt: Date.now() + 120_000,
+    }));
+    await api.listProjects();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "https://api.example.test/v1/projects",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer signed-oidc-session-token" }),
+      }),
+    );
+    window.sessionStorage.removeItem(tokenKey);
+  });
+
   it("binds a fetched draft to the explicitly requested project", async () => {
     const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(

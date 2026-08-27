@@ -392,6 +392,10 @@ def test_postgres_init_rejects_role_name_substitution(
 def test_compose_routes_production_mode_through_every_startup_guard() -> None:
     compose = Path("compose.yml").read_text(encoding="utf-8")
 
+    # PostgreSQL, migration, API, worker and scheduler retain their local
+    # default. Web distinguishes unset from explicitly blank so blank cannot
+    # silently weaken a production server to development mode.
     assert compose.count("APP_ENV: ${APP_ENV:-development}") == 5
+    assert compose.count("APP_ENV: ${APP_ENV-development}") == 1
     assert compose.count('SEED_DEVELOPMENT_DATA: "true"') == 1
     assert 'command: ["python", "-m", "scripts.run_migrations"]' in compose

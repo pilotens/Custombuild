@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { NextRequest } from "next/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildContentSecurityPolicy,
   config,
@@ -12,6 +12,8 @@ import {
 const TEST_NONCE = createNonce("00000000-0000-4000-8000-000000000000");
 const NEXT_IMAGE_FILL_STYLE =
   "position:absolute;height:100%;width:100%;left:0;top:0;right:0;bottom:0;color:transparent";
+
+afterEach(() => vi.unstubAllEnvs());
 
 function directive(policy: string, name: string): string {
   return policy.split("; ").find((candidate) => candidate.startsWith(`${name} `)) ?? "";
@@ -26,9 +28,12 @@ describe("request-specific Content Security Policy", () => {
   it("uses a production nonce without either unsafe escape hatch", () => {
     const policy = buildContentSecurityPolicy(
       TEST_NONCE,
-      "https://api.example.test/v1",
+      {
+        appEnv: "production",
+        apiUrl: "https://api.example.test",
+        oidcIssuer: "https://identity.example.test/realms/custombuild",
+      },
       false,
-      "https://identity.example.test/realms/custombuild",
     );
 
     expect(policy).not.toContain("'unsafe-inline'");
@@ -48,12 +53,15 @@ describe("request-specific Content Security Policy", () => {
     expect(policy).toContain(
       "connect-src 'self' https://api.example.test https://identity.example.test",
     );
-    expect(policy).not.toContain("https://api.example.test/v1");
     expect(policy).not.toContain("ws:");
   });
 
   it("keeps only the allowances required by the local development compiler", () => {
-    const policy = buildContentSecurityPolicy(TEST_NONCE, "http://localhost:8000", true);
+    const policy = buildContentSecurityPolicy(
+      TEST_NONCE,
+      { appEnv: "development", apiUrl: "http://localhost:8000" },
+      true,
+    );
 
     expect(directive(policy, "script-src")).toContain("'unsafe-eval'");
     expect(directive(policy, "script-src")).not.toContain("'unsafe-inline'");
@@ -61,32 +69,23 @@ describe("request-specific Content Security Policy", () => {
     expect(policy).toContain("connect-src 'self' http://localhost:8000 ws: wss:");
   });
 
-  it("rejects malformed origins, credentials, and an insecure OIDC issuer", () => {
-    expect(buildContentSecurityPolicy(TEST_NONCE, "javascript:alert(1)", false)).not.toContain(
-      "javascript:",
-    );
-    expect(buildContentSecurityPolicy(TEST_NONCE, "not a URL", false)).toContain(
-      "connect-src 'self'",
-    );
-    expect(
-      buildContentSecurityPolicy(TEST_NONCE, undefined, false, "http://identity.example.test"),
-    ).not.toContain("identity.example.test");
-    expect(
-      buildContentSecurityPolicy(
-        TEST_NONCE,
-        undefined,
-        false,
-        "https://user:secret@identity.example.test",
-      ),
-    ).not.toContain("identity.example.test");
+  it("does not add destinations when the validated runtime has none", () => {
+    expect(buildContentSecurityPolicy(
+      TEST_NONCE,
+      { appEnv: "test" },
+      false,
+    )).toContain("connect-src 'self'");
   });
 
   it("deduplicates API and OIDC destinations on the same origin", () => {
     const policy = buildContentSecurityPolicy(
       TEST_NONCE,
-      "https://platform.example.test/api",
+      {
+        appEnv: "production",
+        apiUrl: "https://platform.example.test",
+        oidcIssuer: "https://platform.example.test/identity",
+      },
       false,
-      "https://platform.example.test/identity",
     );
 
     expect(policy.match(/https:\/\/platform\.example\.test/g)).toHaveLength(1);
@@ -100,6 +99,19 @@ describe("request-specific Content Security Policy", () => {
     expect(first).toMatch(/'nonce-[A-Za-z0-9+/]+={0,2}'/);
     expect(second).toMatch(/'nonce-[A-Za-z0-9+/]+={0,2}'/);
     expect(first).not.toBe(second);
+  });
+
+  it("fails before serving a document with invalid production runtime config", () => {
+    vi.stubEnv("APP_ENV", "production");
+    vi.stubEnv("CUSTOMBUILD_WEB_API_URL", "http://api.example.test");
+    vi.stubEnv("CUSTOMBUILD_WEB_DEMO_TOKEN", "");
+    vi.stubEnv("CUSTOMBUILD_WEB_OIDC_ISSUER", "https://identity.example.test");
+    vi.stubEnv("CUSTOMBUILD_WEB_OIDC_CLIENT_ID", "custombuild-web");
+    vi.stubEnv("CUSTOMBUILD_WEB_OIDC_REDIRECT_URI", "https://app.example.test/");
+
+    expect(() => proxy(new NextRequest("https://app.example.test/"))).toThrow(
+      "tillåten säker URL",
+    );
   });
 
   it("covers document routes but skips static assets and prefetch requests", () => {

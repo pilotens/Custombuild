@@ -1,3 +1,5 @@
+import type { PublicRuntimeConfig } from "./runtime-config";
+
 const ACCESS_TOKEN_KEY = "custombuild:oidc:access-token";
 const PKCE_STATE_KEY = "custombuild:oidc:state";
 const PKCE_VERIFIER_KEY = "custombuild:oidc:verifier";
@@ -13,18 +15,21 @@ export interface OidcDiscovery {
   token_endpoint: string;
 }
 
-function configuredIssuer(): string | undefined {
-  return process.env.NEXT_PUBLIC_OIDC_ISSUER?.replace(/\/$/, "");
+function configuredIssuer(config: PublicRuntimeConfig): string | undefined {
+  return config.oidcIssuer?.replace(/\/$/, "");
 }
 
-function configuredClientId(): string | undefined {
-  return process.env.NEXT_PUBLIC_OIDC_CLIENT_ID;
+function configuredClientId(config: PublicRuntimeConfig): string | undefined {
+  return config.oidcClientId;
 }
 
-function redirectUri(): string {
-  if (typeof window === "undefined") return "";
-  const expected = new URL("/", window.location.origin);
-  const configured = new URL(process.env.NEXT_PUBLIC_OIDC_REDIRECT_URI || expected.href);
+export function oidcRedirectUri(
+  config: PublicRuntimeConfig,
+  browserOrigin = typeof window === "undefined" ? undefined : window.location.origin,
+): string {
+  if (!browserOrigin) return "";
+  const expected = new URL("/", browserOrigin);
+  const configured = new URL(config.oidcRedirectUri || expected.href);
   if (
     configured.protocol !== "https:"
     || configured.origin !== expected.origin
@@ -104,8 +109,8 @@ export function validateOidcDiscovery(
   };
 }
 
-async function discovery(): Promise<OidcDiscovery> {
-  const issuer = configuredIssuer();
+async function discovery(config: PublicRuntimeConfig): Promise<OidcDiscovery> {
+  const issuer = configuredIssuer(config);
   if (!issuer) throw new Error("OIDC-utfärdare är inte konfigurerad.");
   const issuerUrl = assertHttpsEndpoint(issuer, "OIDC-utfärdaren");
   if (issuerUrl.search || issuerUrl.hash) {
@@ -121,8 +126,12 @@ async function discovery(): Promise<OidcDiscovery> {
   return validateOidcDiscovery(payload, issuer);
 }
 
-export function oidcConfigured(): boolean {
-  return Boolean(configuredIssuer() && configuredClientId());
+export function oidcConfigured(config: PublicRuntimeConfig): boolean {
+  return Boolean(
+    configuredIssuer(config)
+    && configuredClientId(config)
+    && config.oidcRedirectUri,
+  );
 }
 
 export function getStoredAccessToken(): string | undefined {
@@ -142,17 +151,17 @@ export function getStoredAccessToken(): string | undefined {
   }
 }
 
-export async function beginOidcLogin(): Promise<void> {
-  const clientId = configuredClientId();
+export async function beginOidcLogin(config: PublicRuntimeConfig): Promise<void> {
+  const clientId = configuredClientId(config);
   if (!clientId) throw new Error("OIDC client-id är inte konfigurerat.");
-  const config = await discovery();
+  const discoveryConfig = await discovery(config);
   const state = randomBase64Url();
   const verifier = randomBase64Url(48);
   window.sessionStorage.setItem(PKCE_STATE_KEY, state);
   window.sessionStorage.setItem(PKCE_VERIFIER_KEY, verifier);
-  const authorization = new URL(config.authorization_endpoint);
+  const authorization = new URL(discoveryConfig.authorization_endpoint);
   authorization.searchParams.set("client_id", clientId);
-  authorization.searchParams.set("redirect_uri", redirectUri());
+  authorization.searchParams.set("redirect_uri", oidcRedirectUri(config));
   authorization.searchParams.set("response_type", "code");
   authorization.searchParams.set("scope", "openid profile email");
   authorization.searchParams.set("state", state);
@@ -161,7 +170,7 @@ export async function beginOidcLogin(): Promise<void> {
   window.location.assign(authorization);
 }
 
-export async function completeOidcCallback(): Promise<boolean> {
+export async function completeOidcCallback(config: PublicRuntimeConfig): Promise<boolean> {
   if (typeof window === "undefined") return false;
   const current = new URL(window.location.href);
   const code = current.searchParams.get("code");
@@ -172,17 +181,17 @@ export async function completeOidcCallback(): Promise<boolean> {
   if (!code || !returnedState || !expectedState || returnedState !== expectedState || !verifier) {
     throw new Error("OIDC-inloggningen kunde inte verifieras. Försök igen.");
   }
-  const clientId = configuredClientId();
+  const clientId = configuredClientId(config);
   if (!clientId) throw new Error("OIDC client-id är inte konfigurerat.");
-  const config = await discovery();
-  const response = await fetch(config.token_endpoint, {
+  const discoveryConfig = await discovery(config);
+  const response = await fetch(discoveryConfig.token_endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     credentials: "omit",
     body: new URLSearchParams({
       grant_type: "authorization_code",
       client_id: clientId,
-      redirect_uri: redirectUri(),
+      redirect_uri: oidcRedirectUri(config),
       code,
       code_verifier: verifier,
     }),

@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import { loadPublicRuntimeConfig, type PublicRuntimeConfig } from "./lib/runtime-config";
 
 // Next Image's `fill` mode emits this one fixed positioning attribute during
 // SSR. Keep the exception content-addressed instead of permitting arbitrary
@@ -32,13 +33,12 @@ export function createNonce(uuid = crypto.randomUUID()): string {
 
 export function buildContentSecurityPolicy(
   nonce: string,
-  apiUrl = process.env.NEXT_PUBLIC_API_URL,
+  runtimeConfig: PublicRuntimeConfig = loadPublicRuntimeConfig(),
   development = process.env.NODE_ENV === "development",
-  oidcIssuer = process.env.NEXT_PUBLIC_OIDC_ISSUER,
 ): string {
   const configuredOrigins = [
-    configuredOrigin(apiUrl),
-    configuredOrigin(oidcIssuer, { httpsOnly: true }),
+    configuredOrigin(runtimeConfig.apiUrl),
+    configuredOrigin(runtimeConfig.oidcIssuer, { httpsOnly: true }),
   ].filter((origin): origin is string => Boolean(origin));
   const connectSources = [
     "'self'",
@@ -81,7 +81,10 @@ export function buildContentSecurityPolicy(
 
 export function proxy(request: NextRequest) {
   const nonce = createNonce();
-  const contentSecurityPolicy = buildContentSecurityPolicy(nonce);
+  // Parsing is intentionally repeated at the document boundary: an invalid
+  // production runtime must fail before a weaker CSP or client config is served.
+  const runtimeConfig = loadPublicRuntimeConfig();
+  const contentSecurityPolicy = buildContentSecurityPolicy(nonce, runtimeConfig);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", contentSecurityPolicy);

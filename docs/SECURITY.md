@@ -17,7 +17,10 @@
   sessions are introduced later, synchronizer-token CSRF protection is required.
 - The production browser uses OIDC Authorization Code + PKCE as a public client.
   Its access token is retained only for the browser tab in `sessionStorage` and
-  is removed on expiry or logout. No client secret is embedded in the web build.
+  is removed on expiry or logout. No client secret is embedded in the web build
+  or accepted by its public runtime-config allow-list. API/OIDC destinations are
+  server-read when the container handles a request, so production configuration
+  does not create a different image digest.
 - Each document response gets a cryptographically random CSP nonce in the Next.js
   request proxy. Production permits inline framework scripts and style elements only
   through that nonce. Script attributes remain forbidden; style attributes are
@@ -41,6 +44,10 @@
   `compose.external-production.yml`, then run
   `python scripts/check_external_production.py --repo .`; a non-zero result is a
   deployment blocker and includes the missing operator action without echoing secrets.
+  The web runtime additionally requires `APP_ENV=production`, an exact HTTPS API
+  origin, a complete HTTPS OIDC issuer/client-id/root-callback tuple and an empty
+  `CUSTOMBUILD_WEB_DEMO_TOKEN`. Partial or malformed configuration blocks the
+  document before either CSP or client configuration is served.
   The preflight recomputes the canonical build/control source manifest
   (Docker-visible application inputs plus the release-control workflows),
   verifies its SHA-256 across every application image, and keeps that identity separate from the

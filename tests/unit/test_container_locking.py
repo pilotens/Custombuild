@@ -107,6 +107,56 @@ def test_web_image_binds_the_verified_frontend_lock() -> None:
     assert "sha256sum uv.lock" not in source
 
 
+def test_web_public_configuration_is_runtime_only() -> None:
+    dockerfile = Path("apps/web/Dockerfile").read_text(encoding="utf-8")
+    compose = yaml.safe_load(Path("compose.yml").read_text(encoding="utf-8"))
+    external = yaml.safe_load(
+        Path("compose.external-production.yml").read_text(encoding="utf-8")
+    )
+    runtime_keys = {
+        "CUSTOMBUILD_WEB_API_URL",
+        "CUSTOMBUILD_WEB_DEMO_TOKEN",
+        "CUSTOMBUILD_WEB_OIDC_ISSUER",
+        "CUSTOMBUILD_WEB_OIDC_CLIENT_ID",
+        "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
+    }
+
+    assert "NEXT_PUBLIC_" not in dockerfile
+    assert "APP_ENV=production" in dockerfile
+    assert runtime_keys.isdisjoint(compose["services"]["web"]["build"]["args"])
+    assert runtime_keys <= set(compose["services"]["web"]["environment"])
+    assert runtime_keys.isdisjoint(external["services"]["web"]["build"]["args"])
+    assert runtime_keys <= set(external["services"]["web"]["environment"])
+    assert external["services"]["web"]["environment"]["APP_ENV"] == "production"
+    assert external["services"]["web"]["environment"]["CUSTOMBUILD_WEB_DEMO_TOKEN"] == ""
+    web_probe = compose["services"]["web"]["healthcheck"]["test"]
+    assert "http://127.0.0.1:3000/" in web_probe[-1]
+    assert "response.statusCode === 200" in web_probe[-1]
+
+
+def test_web_image_smoke_covers_valid_and_blank_runtime_configuration() -> None:
+    workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    positive = workflow.index("- name: Smoke production web image")
+    negative = workflow.index("- name: Reject blank production web runtime")
+
+    assert positive < negative
+    positive_smoke = workflow[positive:negative]
+    for required in (
+        "--env APP_ENV=production",
+        "--env CUSTOMBUILD_WEB_API_URL=https://api.ci.invalid",
+        "--env CUSTOMBUILD_WEB_DEMO_TOKEN=",
+        "--env CUSTOMBUILD_WEB_OIDC_ISSUER=https://identity.ci.invalid/",
+        "--env CUSTOMBUILD_WEB_OIDC_CLIENT_ID=custombuild-web",
+        "--env CUSTOMBUILD_WEB_OIDC_REDIRECT_URI=https://app.ci.invalid/",
+    ):
+        assert required in positive_smoke
+
+    negative_smoke = workflow[negative:]
+    assert "--env APP_ENV=" in negative_smoke
+    assert ".State.Health.Status" in negative_smoke
+    assert 'if [ "$health" != unhealthy ]' in negative_smoke
+
+
 def test_web_typecheck_regenerates_canonical_next_types() -> None:
     package = Path("apps/web/package.json").read_text(encoding="utf-8")
 

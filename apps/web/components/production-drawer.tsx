@@ -2,6 +2,7 @@
 
 import { AlertTriangle, FileArchive, ShieldCheck, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
+import type { CustombuildApiClient } from "@/lib/api-client";
 import { useDialogFocus } from "@/lib/use-dialog-focus";
 import type { ResolvedDesign, DesignSpec } from "@/lib/design-types";
 import { hasPartCustomization, isReferenceImageDesign, type FurnitureTemplate } from "@/lib/furniture-templates";
@@ -22,6 +23,7 @@ interface ProductionDrawerProps {
   projectId?: string;
   projectName?: string;
   principal?: WorkspaceIdentity;
+  apiClient?: CustombuildApiClient;
 }
 
 function productionStateLabel(summary: ProductionSummary): string {
@@ -59,6 +61,7 @@ export function ProductionDrawer({
   projectId,
   projectName,
   principal,
+  apiClient,
 }: ProductionDrawerProps) {
   const [summary, setSummary] = useState<ProductionSummary>({ status: "unsaved", stale: false });
   const dialogRef = useRef<HTMLElement>(null);
@@ -138,6 +141,7 @@ export function ProductionDrawer({
               projectName={projectName}
               projectId={projectId}
               principal={principal}
+              apiClient={apiClient}
               templateId={template.id}
               onSummaryChange={updateSummary}
               onApplyDesignChange={onApplyDesignChange}

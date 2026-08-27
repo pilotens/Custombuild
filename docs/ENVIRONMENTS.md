@@ -34,3 +34,9 @@ Neither local surface is an Internet production deployment. `prod` here means a
 stable production *candidate*. Internet production still requires the HTTPS,
 OIDC, secret-management, backup, rate-limiting and observability controls in
 `OPERATIONS.md` and `SECURITY.md`.
+
+The web container reads its explicitly public API/OIDC configuration at runtime.
+Environment promotion must reuse the tested image digest and change only validated
+`CUSTOMBUILD_WEB_*` values; build arguments are release identity only. Production
+forbids the public local demo credential and fails closed on HTTP or partial OIDC
+configuration.
