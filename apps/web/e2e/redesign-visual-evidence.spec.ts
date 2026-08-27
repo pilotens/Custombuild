@@ -471,6 +471,60 @@ async function verifyViewerOverlayLayout(page: Page): Promise<void> {
     expect(handleIsExposed).toBe(true);
   }
 
+  const fallback = page.getByTestId("front-projection-fallback");
+  const fallbackStatus = fallback.getByRole("status");
+  if (await fallbackStatus.isVisible()) {
+    const fallbackBox = await fallback.boundingBox();
+    const statusBox = await fallbackStatus.boundingBox();
+    expect(fallbackBox).not.toBeNull();
+    expect(statusBox).not.toBeNull();
+    if (!fallbackBox || !statusBox) throw new Error("The fallback status has no containment box.");
+    expect(statusBox.x).toBeGreaterThanOrEqual(fallbackBox.x);
+    expect(statusBox.x + statusBox.width).toBeLessThanOrEqual(fallbackBox.x + fallbackBox.width);
+    let safeStatusTop = dimensionsBox.y + dimensionsBox.height + 2;
+    const currentDesignLabel = page.getByTestId("current-design-label");
+    if (await currentDesignLabel.isVisible()) {
+      const currentDesignLabelBox = await currentDesignLabel.boundingBox();
+      expect(currentDesignLabelBox).not.toBeNull();
+      if (!currentDesignLabelBox) throw new Error("The current-design label has no collision box.");
+      safeStatusTop = Math.max(
+        safeStatusTop,
+        currentDesignLabelBox.y + currentDesignLabelBox.height + 4,
+      );
+    }
+    expect(statusBox.y).toBeGreaterThanOrEqual(safeStatusTop);
+    expect(statusBox.y + statusBox.height).toBeLessThanOrEqual(fallbackBox.y + fallbackBox.height);
+    const statusIsExposed = await fallbackStatus.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const topmost = document.elementFromPoint(
+        bounds.left + bounds.width / 2,
+        bounds.top + bounds.height / 2,
+      );
+      return topmost !== null && (topmost === element || element.contains(topmost));
+    });
+    expect(statusIsExposed).toBe(true);
+
+    const guideBoxes = await page
+      .getByLabel("Ändra möbelns yttermått direkt i modellen")
+      .locator(".dimension-guide-line, button, output")
+      .evaluateAll((elements) => elements.map((element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          bottom: bounds.bottom,
+          left: bounds.left,
+          right: bounds.right,
+          top: bounds.top,
+        };
+      }));
+    for (const guideBox of guideBoxes) {
+      const overlaps = statusBox.x < guideBox.right
+        && statusBox.x + statusBox.width > guideBox.left
+        && statusBox.y < guideBox.bottom
+        && statusBox.y + statusBox.height > guideBox.top;
+      expect(overlaps).toBe(false);
+    }
+  }
+
   if (viewportWidth > 760) return;
 
   const modelLabel = page.getByTestId("current-design-label");

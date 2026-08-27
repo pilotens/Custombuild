@@ -11851,10 +11851,6 @@ body {
 }
 
 @media (max-width: 820px) {
-  .cb-redesign-shell .workspace-grid.configurator-workspace:has(> .viewer-panel.has-canvas-state-banner) {
-    grid-template-rows: max(684px, calc(66svh + 64px)) auto;
-  }
-
   .cb-redesign-shell .configurator-workspace .viewer-panel.has-canvas-state-banner {
     /* The bounded state row is additional information, not canvas space.
        Reserve its normal 64px footprint so the mobile construction surface
@@ -11870,10 +11866,6 @@ body {
 }
 
 @media (max-width: 760px) {
-  .cb-redesign-shell .workspace-grid.configurator-workspace:has(> .viewer-panel.has-canvas-state-banner) {
-    grid-template-rows: max(604px, calc(72svh + 64px)) auto;
-  }
-
   .cb-redesign-shell .configurator-workspace .viewer-panel.has-canvas-state-banner {
     height: max(604px, calc(72svh + 64px));
   }

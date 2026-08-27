@@ -428,6 +428,16 @@
 
 .dropSurface > :global(.canvas-shell) { width: 100%; height: 100%; }
 
+.dropSurface:has(> :global(.dimension-drag-layer)) :global(.webgl-fallback) p {
+  /* The desktop fallback status otherwise intersects the width/depth guides.
+     Keep it in the clear lane below the canvas dimensions and above the model. */
+  top: 70px;
+  bottom: auto;
+  width: max-content;
+  max-width: calc(100% - 32px);
+  white-space: nowrap;
+}
+
 .dropSurfaceActive::after {
   position: absolute;
   z-index: 4;
@@ -607,5 +617,11 @@
        keyboard focus moves through the mobile component palette. */
     min-height: 0;
     padding: 48px 24px 40px;
+  }
+
+  .dropSurface:has(> :global(.dimension-drag-layer)) :global(.webgl-fallback) p {
+    top: 48px;
+    max-width: calc(100% - 24px);
+    font-size: 10px;
   }
 }
