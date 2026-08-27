@@ -24,20 +24,15 @@ export async function startWithEmptyPlanningStorage(page: Page) {
 export async function openPlanning(page: Page): Promise<Locator> {
   const heading = page.getByRole("heading", { name: "Vad vill du skapa?" });
   const modes = page.getByRole("navigation", { name: "Produktlägen" });
-  const launch = page.getByRole("button", { name: "Utforska design" });
 
-  // Server hydration can resolve to any of these three stable entry surfaces.
-  // Wait for the state that actually materializes instead of committing to a
-  // locator based on an instantaneous visibility check during hydration.
-  const entry = await Promise.race([
-    heading.waitFor({ state: "visible", timeout: 30_000 }).then(() => "explore" as const),
-    modes.waitFor({ state: "visible", timeout: 30_000 }).then(() => "workspace" as const),
-    launch.waitFor({ state: "visible", timeout: 30_000 }).then(() => "landing" as const),
-  ]);
-  if (entry === "workspace") {
+  // Authenticated live callers cross an explicit hydration barrier first.
+  // Offline callers can begin either in Explore or in another real workspace
+  // mode; no separate landing control exists in the product.
+  await expect.poll(async () => (
+    await heading.isVisible() || await modes.isVisible()
+  ), { timeout: 30_000 }).toBe(true);
+  if (!await heading.isVisible()) {
     await modes.getByRole("button", { name: /Utforska/ }).click();
-  } else if (entry === "landing") {
-    await launch.click();
   }
 
   await expect(heading).toBeVisible({ timeout: 30_000 });
