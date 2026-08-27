@@ -207,7 +207,10 @@ def test_images_are_built_once_archived_tested_then_pushed_without_rebuild() -> 
     assert "registry:redis:7.2.15-alpine@sha256:" in source
     assert "resolve_registry_platform()" in source
     assert 'platform.architecture == "amd64"' in source
-    assert 'test "$platform_digest" = "$(scan_value "$component"' in source
+    assert (
+        'require_equal "${component} scanned platform manifest digest" '
+        '"$platform_digest" "$(scan_value "$component"'
+    ) in source
 
     publish_runs = "\n".join(
         str(step.get("run", "")) for step in steps(jobs["publish-images"])
@@ -225,6 +228,25 @@ def test_images_are_built_once_archived_tested_then_pushed_without_rebuild() -> 
     )
     assert resolved < exact < inspected < config_checked
     assert 'imagetools inspect "$tagged_reference" --raw' not in publish_runs
+
+
+def test_registry_scan_evidence_uses_grypes_exact_normalized_input() -> None:
+    source = workflow_source()
+
+    assert "Grype strips the source-selector prefix" in source
+    for component in ("postgres", "redis", "volume-init"):
+        shell_name = component.replace("-", "_")
+        assert (
+            f'require_equal "{component} scan input" "${shell_name}_ref" '
+            f'"$(scan_value {component} \'.source.target.userInput\')"'
+        ) in source
+        assert (
+            f'"$(scan_value {component} \'.source.target.userInput\')" = '
+            f'"registry:${{{shell_name}_ref}}"'
+        ) not in source
+    assert 'require_equal "${component} registry config digest"' in source
+    assert 'require_equal "${component} scanned platform manifest digest"' in source
+    assert "artifacts/release-images/scan-*.json" in source
 
 
 def test_exact_loaded_web_image_proves_fail_closed_production_runtime() -> None:

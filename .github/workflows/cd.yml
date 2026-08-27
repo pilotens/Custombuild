@@ -635,6 +635,15 @@ jobs:
           scan_value() {
             jq --exit-status --raw-output "$2" "artifacts/release-images/scan-$1.json"
           }
+          require_equal() {
+            label="$1"
+            expected="$2"
+            actual="$3"
+            if [ "$expected" != "$actual" ]; then
+              printf '%s mismatch: expected=%s actual=%s\n' "$label" "$expected" "$actual" >&2
+              return 1
+            fi
+          }
           api_ref="custombuild-api:${GITHUB_SHA}"
           worker_ref="custombuild-worker:${GITHUB_SHA}"
           web_ref="custombuild-web:${GITHUB_SHA}"
@@ -689,8 +698,8 @@ jobs:
               cp "$deployment_raw" "$platform_raw"
             fi
             registry_config_digest="$(jq -er '.config.digest | select(test("^sha256:[a-f0-9]{64}$"))' "$platform_raw")"
-            test "$registry_config_digest" = "$expected_config_digest"
-            test "$platform_digest" = "$(scan_value "$component" '.source.target.manifestDigest')"
+            require_equal "${component} registry config digest" "$expected_config_digest" "$registry_config_digest"
+            require_equal "${component} scanned platform manifest digest" "$platform_digest" "$(scan_value "$component" '.source.target.manifestDigest')"
             jq -cn \
               --arg deployment_reference_digest "$deployment_digest" \
               --arg runtime_platform_manifest_digest "$platform_digest" \
@@ -698,9 +707,11 @@ jobs:
               '{deployment_reference_digest:$deployment_reference_digest,runtime_platform_manifest_digest:$runtime_platform_manifest_digest,image_config_digest:$image_config_digest}' \
               > "artifacts/release-images/registry-resolution-${component}.json"
           }
-          test "$(scan_value postgres '.source.target.userInput')" = "registry:${postgres_ref}"
-          test "$(scan_value redis '.source.target.userInput')" = "registry:${redis_ref}"
-          test "$(scan_value volume-init '.source.target.userInput')" = "registry:${volume_init_ref}"
+          # Grype strips the source-selector prefix from source.target.userInput.
+          # The digest-pinned reference itself must remain byte-exact.
+          require_equal "postgres scan input" "$postgres_ref" "$(scan_value postgres '.source.target.userInput')"
+          require_equal "redis scan input" "$redis_ref" "$(scan_value redis '.source.target.userInput')"
+          require_equal "volume-init scan input" "$volume_init_ref" "$(scan_value volume-init '.source.target.userInput')"
           resolve_registry_platform postgres "$postgres_ref" "$postgres_id"
           resolve_registry_platform redis "$redis_ref" "$redis_id"
           resolve_registry_platform volume-init "$volume_init_ref" "$volume_init_id"
@@ -813,6 +824,8 @@ jobs:
           name: release-runtime-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             artifacts/cd-runtime.log
+            artifacts/release-images/scan-*.json
+            artifacts/release-images/registry-*.json
             apps/web/playwright-report
             apps/web/test-results
           if-no-files-found: warn
