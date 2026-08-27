@@ -33,6 +33,7 @@ type BusyAction =
   | "download";
 
 type ActionFeedbackTone = "busy" | "success" | "error";
+type HandoffGuidanceMode = "self_build" | "workshop";
 
 interface ActionFeedback {
   tone: ActionFeedbackTone;
@@ -333,6 +334,158 @@ const EDGE_BAND_READINESS_REQUIREMENT = [
   "EDGE_BAND_SYSTEM",
   "Adhesive-free mechanical edge protection and cut-size compensation",
 ] as const;
+
+type WorkshopRequirementCode =
+  | (typeof WORKSHOP_READINESS_REQUIREMENTS)[number][0]
+  | typeof EDGE_BAND_READINESS_REQUIREMENT[0];
+
+type WorkshopRequirementGroup =
+  | "furniture"
+  | "materials"
+  | "workshop"
+  | "verification";
+
+interface WorkshopRequirementPresentation {
+  title: string;
+  group: WorkshopRequirementGroup;
+  owner: string;
+  nextAction: string;
+}
+
+const WORKSHOP_REQUIREMENT_GROUPS: readonly {
+  id: WorkshopRequirementGroup;
+  title: string;
+  description: string;
+}[] = [
+  {
+    id: "furniture",
+    title: "Möbelbeslut och infästning",
+    description: "Konstruktionens beslag, förankring och ansvarig möbelgranskning.",
+  },
+  {
+    id: "materials",
+    title: "Material och limfria förband",
+    description: "Verkligt material, fiberriktning, toleranser och mekanisk hållning.",
+  },
+  {
+    id: "workshop",
+    title: "Verkstad och maskin",
+    description: "Maskin-, verktygs-, nollpunkts- och körbevis som bara den verkliga verkstaden kan fastställa.",
+  },
+  {
+    id: "verification",
+    title: "Provning och godkännande",
+    description: "Fysiska prov som återstår efter programvarans designgranskning.",
+  },
+] as const;
+
+const WORKSHOP_REQUIREMENT_PRESENTATION: Readonly<Record<
+  WorkshopRequirementCode,
+  WorkshopRequirementPresentation
+>> = Object.freeze({
+  WALL_ANCHOR: {
+    title: "Väggtyp och förankringssystem",
+    group: "furniture",
+    owner: "Du och möbelkonstruktören",
+    nextAction: "Fastställ väggunderlag, exakt infästning, antal och tillverkarens lastdata.",
+  },
+  CABINET_HARDWARE: {
+    title: "Beslag och borrbild för underskåp",
+    group: "furniture",
+    owner: "Möbelkonstruktören",
+    nextAction: "Välj versionslåsta beslag och kontrollera borrbild, öppningsvinkel och frontspel mot uppmätt material.",
+  },
+  MATERIAL_GRAIN: {
+    title: "Fiberriktning i råmaterial",
+    group: "materials",
+    owner: "Materialleverantören och verkstaden",
+    nextAction: "Bind den verkliga råskivans riktning till en strukturerad X- eller Y-axel.",
+  },
+  MATERIAL_BATCH: {
+    title: "Verifierad materialsats",
+    group: "materials",
+    owner: "Materialleverantören och verkstaden",
+    nextAction: "Registrera exakt produkt, batch, verklig tjocklek och versionsbunden materialdata.",
+  },
+  JOINT_COUPONS: {
+    title: "Provbit för förband och tolerans",
+    group: "materials",
+    owner: "Möbelkonstruktören och verkstaden",
+    nextAction: "Tillverka och prova en representativ fog med samma material, verktyg och toleranser som möbeln.",
+  },
+  EDGE_BAND_SYSTEM: {
+    title: "Limfri mekanisk kantskyddslösning",
+    group: "materials",
+    owner: "Möbelkonstruktören och verkstaden",
+    nextAction: "Välj mekaniskt fasthållet kantskydd och bind dess kompensation till delarnas kapmått.",
+  },
+  MACHINE_CALIBRATION: {
+    title: "Kalibrerad fysisk maskin",
+    group: "workshop",
+    owner: "Verkstaden",
+    nextAction: "Dokumentera maskinidentitet, kalibrering och verifierat arbetsområde för den verkliga körningen.",
+  },
+  WCS_CONVENTION: {
+    title: "Nollpunkt och koordinatsystem",
+    group: "workshop",
+    owner: "CNC-operatören",
+    nextAction: "Fastställ och verifiera WCS, origo, uppspänningsriktning och registreringsmetod.",
+  },
+  MEASURED_TOOLING: {
+    title: "Uppmätta verktyg och hållare",
+    group: "workshop",
+    owner: "CNC-operatören",
+    nextAction: "Mät verktygsdiameter, hållare, utstick och kast för den faktiska uppsättningen.",
+  },
+  MATERIAL_REMOVAL_COMPARISON: {
+    title: "Oberoende jämförelse av materialavverkning",
+    group: "workshop",
+    owner: "Verkstaden",
+    nextAction: "Jämför operationerna mot den auktoritativa geometrin innan någon skärande körning.",
+  },
+  SUPERVISED_AIR_CUT: {
+    title: "Övervakad provkörning utan ingrepp",
+    group: "workshop",
+    owner: "CNC-operatören",
+    nextAction: "Kör hela programförloppet utan materialkontakt under operatörens övervakning.",
+  },
+  REFERENCE_PART: {
+    title: "Uppmätt referensdel",
+    group: "verification",
+    owner: "Verkstaden och möbelkonstruktören",
+    nextAction: "Tillverka en representativ del och kontrollmät mått, hål, spår och kanter före serien.",
+  },
+  PROTOTYPE_BUILD: {
+    title: "Komplett fysisk prototyp",
+    group: "verification",
+    owner: "Du och möbelkonstruktören",
+    nextAction: "Bygg hela möbeln och verifiera montering, stabilitet, last, toleranser och förankring.",
+  },
+  CNC_OPERATOR_APPROVAL: {
+    title: "Namngivet godkännande från CNC-operatör",
+    group: "verification",
+    owner: "CNC-operatören",
+    nextAction: "Låt ansvarig operatör granska och godkänna exakt maskinjobb och uppspänning.",
+  },
+  FURNITURE_CONSTRUCTOR_APPROVAL: {
+    title: "Namngivet godkännande från möbelkonstruktör",
+    group: "furniture",
+    owner: "Möbelkonstruktören",
+    nextAction: "Låt ansvarig konstruktör godkänna den exakta revisionen och den fysiskt provade lösningen.",
+  },
+});
+
+export function workshopRequirementPresentation(
+  code: string,
+): WorkshopRequirementPresentation {
+  const presentation = WORKSHOP_REQUIREMENT_PRESENTATION[code as WorkshopRequirementCode];
+  return presentation ?? {
+    title: `Okänt externt krav (${code})`,
+    group: "verification",
+    owner: "Ansvarig granskare",
+    nextAction: "Stoppa fysisk tillverkning och utred det okända kravet innan arbetet fortsätter.",
+  };
+}
 
 const GENERATED_CAM_REVIEW_ARTIFACT_KINDS = [
   "production_bundle",
@@ -679,11 +832,13 @@ export function ProductionWorkflow({
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback>();
   const [jobPollingIssue, setJobPollingIssue] = useState<JobPollingIssue>();
   const [jobPollRetryRequest, setJobPollRetryRequest] = useState(0);
+  const [handoffGuidanceMode, setHandoffGuidanceMode] = useState<HandoffGuidanceMode>("self_build");
   const [loadedStorageKey, setLoadedStorageKey] = useState<string>();
   const [serverSynchronized, setServerSynchronized] = useState(false);
   const [synchronizing, setSynchronizing] = useState(false);
   const saveBlockReasonId = useId();
   const warningAcknowledgementHelpId = useId();
+  const handoffGuidanceName = useId();
   const nextActionHeadingRef = useRef<HTMLHeadingElement>(null);
   const previousActiveStepRef = useRef<number | undefined>(undefined);
   const stepFocusInitializedRef = useRef(false);
@@ -951,6 +1106,17 @@ export function ProductionWorkflow({
   );
   const missingWorkshopRequirements = workshopReadiness?.workshop_evidence
     .filter((item) => item.status !== "VERIFIED") ?? [];
+  const groupedMissingWorkshopRequirements = WORKSHOP_REQUIREMENT_GROUPS
+    .map((group) => ({
+      ...group,
+      requirements: missingWorkshopRequirements
+        .map((requirement) => ({
+          requirement,
+          presentation: workshopRequirementPresentation(requirement.code),
+        }))
+        .filter((item) => item.presentation.group === group.id),
+    }))
+    .filter((group) => group.requirements.length > 0);
   const manifestSha256 = typeof job?.result_json?.manifest_sha256 === "string"
     && /^[a-f0-9]{64}$/.test(job.result_json.manifest_sha256)
     ? job.result_json.manifest_sha256
@@ -1608,6 +1774,70 @@ export function ProductionWorkflow({
                     </>
                   )}
                 </p>
+                <section
+                  className="production-handoff-guide"
+                  aria-label="Vägledning för hur delarna ska tas fram"
+                >
+                  <header>
+                    <h5>Hur ska delarna tas fram?</h5>
+                    <p>Välj bara vilken vägledning du vill läsa. Valet ändrar inte modellen eller granskningspaketet.</p>
+                  </header>
+                  <fieldset>
+                    <legend>Tillverkningssätt för vägledningen</legend>
+                    <div className="production-handoff-options">
+                      <label className={handoffGuidanceMode === "self_build" ? "active" : undefined}>
+                        <input
+                          type="radio"
+                          name={handoffGuidanceName}
+                          value="self_build"
+                          checked={handoffGuidanceMode === "self_build"}
+                          onChange={() => setHandoffGuidanceMode("self_build")}
+                        />
+                        <span>
+                          <strong>Jag kapar och bygger själv</strong>
+                          <small>Handverktyg, bordssåg eller egen verkstad</small>
+                        </span>
+                      </label>
+                      <label className={handoffGuidanceMode === "workshop" ? "active" : undefined}>
+                        <input
+                          type="radio"
+                          name={handoffGuidanceName}
+                          value="workshop"
+                          checked={handoffGuidanceMode === "workshop"}
+                          onChange={() => setHandoffGuidanceMode("workshop")}
+                        />
+                        <span>
+                          <strong>En verkstad kapar eller bearbetar</strong>
+                          <small>Sågservice, snickeri eller CNC-verkstad</small>
+                        </span>
+                      </label>
+                    </div>
+                  </fieldset>
+                  <div className="production-handoff-message" role="status" aria-live="polite">
+                    {handoffGuidanceMode === "self_build" ? (
+                      <>
+                        <strong>Självbygget är inte frisläppt.</strong>
+                        <p>
+                          ZIP-filen innehåller bland annat BOM, kaplista, delritningar och monteringsmanual för designgranskning.
+                          De är inte en verifierad arbetsinstruktion för handverktyg. Kontrollera material, limfria förband,
+                          toleranser, verktyg och en fysisk prototyp innan du kapar.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <strong>Verkstadsöverlämningen är inte körklar.</strong>
+                        <p>
+                          Skicka ZIP-filen som granskningsunderlag, inte som ett färdigt maskinjobb. Verkstaden måste binda
+                          exakt råmaterial, fiberriktning, maskin, verktyg, nollpunkt och fixturering samt godkänna den
+                          slutliga körningen.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                  <small>
+                    Valet ändrar endast vägledningen. Design, filer, blockerare och frisläppningsstatus förblir oförändrade.
+                  </small>
+                </section>
                 <section className="production-package-identity" aria-label="Paketidentitet">
                   <h5>Paketidentitet</h5>
                   <dl>
@@ -1650,15 +1880,35 @@ export function ProductionWorkflow({
                     aria-label="Återstående externa verkstadskrav"
                   >
                     <h5>Återstår före fysisk kapning</h5>
-                    <p>Kraven beslutas och verifieras utanför detta designgranskningsflöde.</p>
-                    <ul>
-                      {missingWorkshopRequirements.map((requirement) => (
-                        <li key={requirement.code}>
-                          <strong>{requirement.title}</strong>
-                          <small>Extern verifiering krävs</small>
-                        </li>
+                    <p>
+                      Följande krav är fortfarande öppna. De grupperas här för planering, men måste verifieras utanför
+                      designgranskningsflödet och kan inte markeras klara i gränssnittet.
+                    </p>
+                    <div className="production-requirement-groups">
+                      {groupedMissingWorkshopRequirements.map((group) => (
+                        <section key={group.id} aria-label={group.title}>
+                          <header>
+                            <span>
+                              <strong>{group.title}</strong>
+                              <small>{group.description}</small>
+                            </span>
+                            <b>{group.requirements.length}</b>
+                          </header>
+                          <ul>
+                            {group.requirements.map(({ requirement, presentation }) => (
+                              <li key={requirement.code}>
+                                <span>
+                                  <strong>{presentation.title}</strong>
+                                  <small>Ansvar: {presentation.owner}</small>
+                                </span>
+                                <p>{presentation.nextAction}</p>
+                                <code>{requirement.code}</code>
+                              </li>
+                            ))}
+                          </ul>
+                        </section>
                       ))}
-                    </ul>
+                    </div>
                   </section>
                 ) : null}
                 <button

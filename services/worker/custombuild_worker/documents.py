@@ -7,7 +7,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from custombuild_manufacturing import canonical_json_bytes
+from custombuild_manufacturing import (
+    canonical_json_bytes,
+    dado_retention_evidence_missing,
+)
 from reportlab.graphics import renderPDF
 from reportlab.graphics.barcode import qr
 from reportlab.graphics.shapes import Drawing
@@ -144,32 +147,38 @@ def bom_pdf(design: Any) -> bytes:
         if joint.hardware_sku
     )
     canvas.setFont("Helvetica-Bold", 9)
-    canvas.drawString(MARGIN, y, "Beslagsidentifierare (ej katalogverifierade)")
+    canvas.drawString(MARGIN, y, "Beslagsidentifierare och retentionskontrakt")
     canvas.setFont("Helvetica", 8)
+    retention = getattr(getattr(design, "spec", None), "joint_retention", None)
+    retention_resolved = retention is not None and not dado_retention_evidence_missing(design)
     for sku, quantity in sorted(hardware.items()):
         y -= 12
-        canvas.drawString(MARGIN, y, f"{sku} – EJ VERIFIERAD")
+        if retention is not None and retention_resolved and sku == retention.hardware_sku:
+            status = (
+                f"{retention.system_id}@{retention.system_version} – STRUKTURELLT BUNDET, "
+                "KÄLLAUTENTICITET EJ FASTSTÄLLD"
+            )
+        else:
+            status = "EJ VERIFIERAD"
+        canvas.drawString(MARGIN, y, f"{sku} – {status}")
         canvas.drawRightString(PAGE_WIDTH - MARGIN, y, str(quantity))
     _footer(canvas, "Genererad deterministiskt från fryst DesignSpec")
     return _finish(buffer, canvas)
 
 
 def hardware_csv(design: Any) -> bytes:
-    """Return unverified identifiers plus unresolved, non-mountable fronts.
-
-    A joint currently carries only a free-form SKU and quantity. Those fields
-    are useful for traceability, but they are not a versioned mechanical
-    catalogue contract and must never be presented as verified hardware.
-    """
+    """Return exact retention provenance or fail-closed hardware identifiers."""
 
     quantities: Counter[str] = Counter()
     joint_ids: dict[str, list[str]] = {}
     affected_part_ids: dict[str, set[str]] = {}
+    joints_by_sku: dict[str, list[Any]] = {}
     for joint in design.joints:
         if not joint.hardware_sku or joint.hardware_count <= 0:
             continue
         quantities[joint.hardware_sku] += joint.hardware_count
         joint_ids.setdefault(joint.hardware_sku, []).append(joint.joint_id)
+        joints_by_sku.setdefault(joint.hardware_sku, []).append(joint)
         affected_part_ids.setdefault(joint.hardware_sku, set()).update(
             member.part_id for member in joint.members
         )
@@ -181,23 +190,93 @@ def hardware_csv(design: Any) -> bytes:
             "quantity",
             "source_joint_ids",
             "affected_part_ids",
+            "catalog_system_id",
+            "catalog_system_version",
+            "catalog_entry_sha256",
+            "catalog_authenticity_status",
+            "evidence_id",
+            "evidence_sha256",
+            "installation_instruction_id",
+            "installation_instruction_version",
+            "installation_instruction_sha256",
+            "applicable_materials",
+            "joint_geometry_sha256",
+            "minimum_applicable_thickness_um",
+            "maximum_applicable_thickness_um",
+            "rated_shear_design_load_n",
+            "verified_shear_capacity_n",
+            "rated_withdrawal_design_load_n",
+            "verified_withdrawal_capacity_n",
+            "safety_factor_permille",
             "selection_status",
             "required_action",
         )
     )
     for sku, quantity in sorted(quantities.items()):
+        joints = joints_by_sku[sku]
+        contracts = tuple(getattr(joint, "retention", None) for joint in joints)
+        contract = (
+            contracts[0]
+            if contracts and all(item == contracts[0] for item in contracts)
+            else None
+        )
+        contract_is_bound = (
+            contract is not None
+            and all(
+                str(getattr(joint.joint_type, "value", joint.joint_type)).casefold()
+                == "dado"
+                for joint in joints
+            )
+            and not dado_retention_evidence_missing(design)
+        )
+        if contract is not None and contract_is_bound:
+            load_cases = {item.mode.value: item for item in contract.load_cases}
+            catalog_fields: tuple[Any, ...] = (
+                contract.system_id,
+                contract.system_version,
+                contract.catalog_entry_sha256,
+                "NOT_ESTABLISHED_BY_CURRENT_MVP",
+                contract.evidence_id,
+                contract.evidence_sha256,
+                contract.installation_instruction_id,
+                contract.installation_instruction_version,
+                contract.installation_instruction_sha256,
+                "|".join(
+                    f"{item.material_id}@{item.material_version}"
+                    for item in contract.applicable_materials
+                ),
+                contract.joint_geometry_sha256,
+                contract.minimum_applicable_thickness_um,
+                contract.maximum_applicable_thickness_um,
+                load_cases["shear"].rated_design_load_n,
+                load_cases["shear"].verified_capacity_n,
+                load_cases["withdrawal"].rated_design_load_n,
+                load_cases["withdrawal"].verified_capacity_n,
+                contract.safety_factor_permille,
+            )
+            selection_status = "STRUCTURALLY_COMPLETE_RETENTION_APPLICATION"
+            required_action = (
+                "The structural application is checksum-bound, but the current MVP has no "
+                "catalogue trust root and does not establish issuer authenticity. This design "
+                "evidence does not authorize physical assembly or cutting."
+            )
+        else:
+            catalog_fields = ("",) * 18
+            selection_status = "UNVERIFIED_IDENTIFIER"
+            required_action = (
+                "Treat this value as an unverified identifier only. Select a versioned "
+                "mechanical catalog item and verify capacity and boring pattern; "
+                "adhesives are prohibited."
+            )
         writer.writerow(
             (
                 sku,
                 quantity,
                 "|".join(sorted(joint_ids[sku])),
                 "|".join(sorted(affected_part_ids[sku])),
-                "UNVERIFIED_IDENTIFIER",
-                (
-                    "Treat this value as an unverified identifier only. Select a versioned "
-                    "mechanical catalog item and verify capacity and boring pattern; "
-                    "adhesives are prohibited."
-                ),
+                *catalog_fields,
+                selection_status,
+                required_action,
             )
         )
     unresolved_front_ids = _unresolved_front_hardware_part_ids(design)
@@ -208,6 +287,7 @@ def hardware_csv(design: Any) -> bytes:
                 "",
                 "",
                 "|".join(unresolved_front_ids),
+                *("",) * 18,
                 "EXTERNAL_SELECTION_REQUIRED",
                 (
                     "Select versioned hinges or other mechanical front hardware and verify "
@@ -219,9 +299,9 @@ def hardware_csv(design: Any) -> bytes:
 
 
 def _unresolved_front_hardware_part_ids(design: Any) -> tuple[str, ...]:
-    # No current Joint field binds hardware type, catalogue version, boring
-    # pattern or mechanical verification. Therefore even a non-empty SKU on a
-    # joint cannot make a cabinet front mountable.
+    # No current cabinet-front contract binds hardware type, catalogue version,
+    # boring pattern or mechanical verification. DADO retention contracts are
+    # deliberately scoped to DADO joints and cannot make a front mountable.
     return tuple(
         sorted(
             part.part_id
@@ -450,10 +530,7 @@ def assembly_readiness_json(design: Any) -> bytes:
         "named_assembly_safety_approver",
         "approved_local_work_preparation",
     ]
-    if any(
-        str(getattr(joint.joint_type, "value", joint.joint_type)).upper() == "DADO"
-        for joint in design.joints
-    ):
+    if dado_retention_evidence_missing(design):
         missing_requirements.append("verified_adhesive_free_joint_retention")
     missing_requirements.extend(
         f"verified_cabinet_front_hardware:{part_id}"
@@ -577,6 +654,29 @@ def _assembly_step_hardware_text(design: Any, step: Any) -> str:
     unresolved_fronts = set(_unresolved_front_hardware_part_ids(design)) & set(step.part_ids)
     if unresolved_fronts:
         return "FRONT EJ MONTERINGSBAR: verifierat mekaniskt beslag och borrbild saknas"
+    selected_joint_ids = set(step.joint_ids)
+    selected_joints = tuple(
+        joint for joint in design.joints if joint.joint_id in selected_joint_ids
+    )
+    retention_contracts = tuple(
+        joint.retention
+        for joint in selected_joints
+        if getattr(joint, "retention", None) is not None
+    )
+    if retention_contracts and not dado_retention_evidence_missing(design):
+        identities = ", ".join(
+            sorted(
+                {
+                    f"{contract.system_id}@{contract.system_version}"
+                    for contract in retention_contracts
+                }
+            )
+        )
+        return (
+            f"VERSIONSBUNDET RETENTIONSSYSTEM: {identities}; följ endast den "
+            "checksum-bundna installationsinstruktionen. Källautenticitet fastställs inte "
+            "av nuvarande MVP och fysisk montering är inte frisläppt av detta designbevis"
+        )
     hardware = _assembly_step_hardware(design, step)
     if hardware:
         identifiers = ", ".join(f"{sku} × {quantity}" for sku, quantity in hardware)

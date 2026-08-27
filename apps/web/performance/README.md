@@ -7,7 +7,7 @@ This baseline is a regression guard for the deterministic local design path and 
 | Path | Fixture | Samples | Gate |
 | --- | --- | ---: | --- |
 | `resolveDesign` | 2,400 × 2,400 × 340 mm, 5 bays × 5 shelf rows, 5 base cabinets | 31 after warmup | median and p95 |
-| `resolveDesign` | Full B1 pure-engine ceiling: 6,000 × 4,000 × 1,200 mm, 16 dividers/17 bays × 40 shelf rows, 17 base cabinets; 752 generated parts | 31 after warmup | median, p95, max/normal p95 ratio, exact part count, and terminal shelf ID |
+| `resolveDesign` | Full B1 pure-engine ceiling: 6,000 × 4,000 × 1,200 mm, 16 dividers/17 bays × 40 shelf rows, 17 base cabinets; 768 generated parts | 31 after warmup | median, p95, max/normal p95 ratio, exact part count, and terminal shelf ID |
 | 5 mm numeric part edit + `resolveDesign` | normal 5 × 5 fixture | 31 after warmup | median and p95 |
 | select a physical part | already-rendered normal fixture in Chromium | 7 after one warmup | p95 |
 | Studio → Kontroll mode switch | already-rendered normal fixture in Chromium | 7 after one warmup | p95 |

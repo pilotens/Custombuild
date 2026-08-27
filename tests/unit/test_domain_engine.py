@@ -41,7 +41,11 @@ def make_spec(design_id: str = "unit-bookcase", **parameter_changes) -> Bookcase
         design_id=design_id,
         parameters=parameters,
         material=screening_birch_plywood_18(),
-        back_material=screening_birch_plywood_6(),
+        back_material=(
+            None
+            if parameters.back_panel == BackPanelType.NONE
+            else screening_birch_plywood_6()
+        ),
     )
 
 
@@ -526,9 +530,7 @@ class BookcaseEngineTests(unittest.TestCase):
         )
 
         directional_design = build_bookcase(make_spec("catalog-directional-grain"))
-        back_parts = tuple(
-            part for part in directional_design.parts if part.role == PartRole.BACK
-        )
+        back_parts = tuple(part for part in directional_design.parts if part.role == PartRole.BACK)
         self.assertTrue(back_parts)
         self.assertEqual(
             {part.grain_direction for part in back_parts},
@@ -656,6 +658,90 @@ class BookcaseEngineTests(unittest.TestCase):
         self.assertEqual(len(row_levels), 3)
         self.assertGreater(row_levels[1] - row_levels[0], mm(400))
 
+    def test_inset_back_is_segmented_per_bay_with_four_sided_capture(self) -> None:
+        result = build_bookcase(
+            make_spec(
+                design_id="segmented-inset-back",
+                width_um=mm(2_400),
+                height_um=mm(2_400),
+                depth_um=mm(340),
+                vertical_divider_count=2,
+                shelf_count=1,
+                bay_width_ratios_ppm=(250_000, 500_000, 250_000),
+            )
+        )
+        by_id = {part.part_id: part for part in result.parts}
+        backs = sorted(
+            (part for part in result.parts if part.role == PartRole.BACK),
+            key=lambda part: part.instance_index,
+        )
+        shelves = sorted(
+            (part for part in result.parts if part.role == PartRole.SHELF),
+            key=lambda part: part.instance_index,
+        )
+        left_side = next(part for part in result.parts if part.role == PartRole.LEFT_SIDE)
+        right_side = next(part for part in result.parts if part.role == PartRole.RIGHT_SIDE)
+        dividers = sorted(
+            (part for part in result.parts if part.role == PartRole.DIVIDER),
+            key=lambda part: part.instance_index,
+        )
+        supports = (left_side, *dividers, right_side)
+        dado_depth_um = mm(6)
+
+        self.assertEqual([part.semantic_key for part in backs], ["back-b0", "back-b1", "back-b2"])
+        self.assertEqual(
+            [part.finished_size.width_um for part in backs],
+            [part.finished_size.width_um for part in shelves],
+        )
+        self.assertLess(
+            max(part.finished_size.width_um for part in backs),
+            result.spec.parameters.width_um - 2 * result.spec.parameters.actual_thickness_um,
+        )
+
+        for bay_index, back in enumerate(backs):
+            back_joints = [
+                joint
+                for joint in result.joints
+                if back.part_id in {member.part_id for member in joint.members}
+            ]
+            connected_ids = {
+                member.part_id
+                for joint in back_joints
+                for member in joint.members
+                if member.part_id != back.part_id
+            }
+            self.assertEqual(len(back_joints), 4)
+            self.assertEqual({joint.joint_type for joint in back_joints}, {JointType.DADO})
+            self.assertEqual(
+                connected_ids,
+                {
+                    supports[bay_index].part_id,
+                    supports[bay_index + 1].part_id,
+                    next(part for part in result.parts if part.role == PartRole.TOP).part_id,
+                    next(part for part in result.parts if part.role == PartRole.BOTTOM).part_id,
+                },
+            )
+            self.assertEqual(
+                back.placement.x_um,
+                supports[bay_index].placement.x_um
+                + supports[bay_index].finished_size.width_um
+                - dado_depth_um,
+            )
+            self.assertEqual(
+                back.placement.x_um + back.finished_size.width_um,
+                supports[bay_index + 1].placement.x_um + dado_depth_um,
+            )
+
+        for divider in dividers:
+            back_faces = {
+                member.mating_face.value
+                for joint in result.joints
+                if any(by_id[item.part_id].role == PartRole.BACK for item in joint.members)
+                for member in joint.members
+                if member.part_id == divider.part_id
+            }
+            self.assertEqual(back_faces, {"a", "b"})
+
     def test_assembly_graph_references_every_part_and_joint_once(self) -> None:
         result = build_bookcase(make_spec(vertical_divider_count=1))
         self.assertEqual(
@@ -708,6 +794,55 @@ class BookcaseEngineTests(unittest.TestCase):
             "-x",
         )
         self.assertEqual(result.assembly_graph.steps[-1].direction.value, "+x")
+
+    def test_each_inset_back_field_slides_down_before_top_and_outer_sides_close(self) -> None:
+        result = build_bookcase(make_spec(vertical_divider_count=2, shelf_count=2))
+        by_id = {part.part_id: part for part in result.parts}
+        step_by_joint_id = {
+            joint_id: step for step in result.assembly_graph.steps for joint_id in step.joint_ids
+        }
+        backs = sorted(
+            (part for part in result.parts if part.role == PartRole.BACK),
+            key=lambda part: part.instance_index,
+        )
+
+        self.assertEqual(len(backs), 3)
+        for back in backs:
+            insertion_step = next(
+                step
+                for step in result.assembly_graph.steps
+                if step.moving_part_ids == (back.part_id,)
+            )
+            insertion_joints = [
+                joint for joint in result.joints if joint.joint_id in insertion_step.joint_ids
+            ]
+            inserted_against = {
+                by_id[member.part_id].role
+                for joint in insertion_joints
+                for member in joint.members
+                if member.part_id != back.part_id
+            }
+            self.assertEqual(insertion_step.direction.value, "-z")
+            self.assertIn(PartRole.BOTTOM, inserted_against)
+            self.assertTrue(inserted_against <= {PartRole.BOTTOM, PartRole.DIVIDER})
+
+            closing_joints = [
+                joint
+                for joint in result.joints
+                if back.part_id in {member.part_id for member in joint.members}
+                and any(
+                    by_id[member.part_id].role
+                    in {PartRole.TOP, PartRole.LEFT_SIDE, PartRole.RIGHT_SIDE}
+                    for member in joint.members
+                )
+            ]
+            self.assertTrue(closing_joints)
+            self.assertTrue(
+                all(
+                    step_by_joint_id[joint.joint_id].step_number > insertion_step.step_number
+                    for joint in closing_joints
+                )
+            )
 
     def test_side_explosion_declares_only_the_incoming_gable(self) -> None:
         result = build_bookcase(make_spec())
@@ -762,13 +897,25 @@ class BookcaseEngineTests(unittest.TestCase):
         self.assertTrue(all("FRONT EJ MONTERINGSBAR" in step.checkpoint for step in front_steps))
 
     def test_surface_back_is_one_incoming_group_after_carcass_closure(self) -> None:
-        result = build_bookcase(make_spec(back_panel=BackPanelType.SURFACE_MOUNTED))
-        back = next(part for part in result.parts if part.role == PartRole.BACK)
+        result = build_bookcase(
+            make_spec(
+                back_panel=BackPanelType.SURFACE_MOUNTED,
+                vertical_divider_count=2,
+            )
+        )
+        backs = tuple(part for part in result.parts if part.role == PartRole.BACK)
+        self.assertEqual(len(backs), 1)
+        back = backs[0]
         back_joint_ids = {
             joint.joint_id
             for joint in result.joints
             if back.part_id in {member.part_id for member in joint.members}
         }
+        self.assertEqual(len(back_joint_ids), 4)
+        self.assertEqual(
+            {joint.joint_type for joint in result.joints if joint.joint_id in back_joint_ids},
+            {JointType.RABBET},
+        )
         step = next(
             item for item in result.assembly_graph.steps if set(item.joint_ids) == back_joint_ids
         )
@@ -946,17 +1093,17 @@ class BookcaseEngineTests(unittest.TestCase):
         plinth = by_key["plinth"]
         self.assertEqual(plinth.finished_size.height_um, mm(86))
 
-    def test_inset_back_keeps_dogbone_clearance_without_moving_fronts_or_joint_depth(self) -> None:
+    def test_inset_back_keeps_dogbone_clearance_with_divider_capture_and_joint_depth(self) -> None:
         result = build_bookcase(make_spec(vertical_divider_count=1, shelf_count=1))
         by_key = {part.semantic_key: part for part in result.parts}
         by_id = {part.part_id: part for part in result.parts}
         shelf = by_key["shelf-r0-b0"]
         divider = by_key["divider-0"]
         left_side = by_key["left-side"]
-        back = by_key["back"]
+        back = by_key["back-b0"]
 
         self.assertEqual(shelf.finished_size.depth_um, mm(298))
-        self.assertEqual(divider.finished_size.depth_um, mm(298))
+        self.assertEqual(divider.finished_size.depth_um, mm(308))
         self.assertEqual((shelf.placement.y_um, divider.placement.y_um), (0, 0))
 
         def groove_for(first_part_id: str, second_part_id: str):

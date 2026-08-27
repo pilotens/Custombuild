@@ -81,10 +81,64 @@ describe("strict server draft hydration", () => {
       divider_count: 2,
       bay_width_ratios: [0.3, 0.4, 0.3],
       material_id: DEFAULT_DESIGN_SPEC.material_id,
+      back_material_id: DEFAULT_DESIGN_SPEC.back_material_id,
       joint_system: "dado",
       bay_sizing_mode: "target_width",
       target_bay_width_mm: 420,
     });
+  });
+
+  it("restores explicit back material, derives legacy absence and rejects conflicts", () => {
+    const explicit = parseServerProjectDraft(serverDraft({
+      ...DEFAULT_DESIGN_SPEC,
+      back_material_id: "mdf-6",
+    }));
+    expect(explicit.kind).toBe("ready");
+    if (explicit.kind === "ready") expect(explicit.spec.back_material_id).toBe("mdf-6");
+
+    const legacyDraft = serverDraft({
+      ...DEFAULT_DESIGN_SPEC,
+      material_id: "mdf",
+      material_name: "MDF",
+      back_material_id: "mdf-6",
+    });
+    const legacySpec = { ...(legacyDraft.specJson as Record<string, unknown>) };
+    delete legacySpec.back_material_id;
+    const legacy = parseServerProjectDraft({ ...legacyDraft, specJson: legacySpec });
+    expect(legacy.kind).toBe("ready");
+    if (legacy.kind === "ready") expect(legacy.spec.back_material_id).toBe("mdf-6");
+
+    expectHydrationCode(() => parseServerProjectDraft({
+      ...legacyDraft,
+      specJson: { ...legacySpec, back_material_id: "oak-6" },
+    }), "INVALID_SERVER_DRAFT");
+    expectHydrationCode(() => parseServerProjectDraft({
+      ...legacyDraft,
+      specJson: { ...legacySpec, back_panel: false, back_material_id: "mdf-6" },
+    }), "INVALID_SERVER_DRAFT");
+  });
+
+  it("preserves exact back mount and migrates a legacy boolean to inset", () => {
+    const surfaceDraft = serverDraft({
+      ...DEFAULT_DESIGN_SPEC,
+      back_panel_type: "surface_mounted",
+    });
+    const surface = parseServerProjectDraft(surfaceDraft);
+    expect(surface.kind).toBe("ready");
+    if (surface.kind === "ready") expect(surface.spec.back_panel_type).toBe("surface_mounted");
+
+    const legacySpec = {
+      ...(surfaceDraft.specJson as Record<string, unknown>),
+      back_panel: true,
+    };
+    const legacy = parseServerProjectDraft({ ...surfaceDraft, specJson: legacySpec });
+    expect(legacy.kind).toBe("ready");
+    if (legacy.kind === "ready") expect(legacy.spec.back_panel_type).toBe("inset_groove");
+
+    expectHydrationCode(() => parseServerProjectDraft({
+      ...surfaceDraft,
+      specJson: { ...legacySpec, back_panel: "unknown_mount" },
+    }), "INVALID_SERVER_DRAFT");
   });
 
   it.each([
@@ -262,7 +316,7 @@ describe("bounded workspace intent", () => {
       part_overrides: {
         "base-side-2": { position_x_mm: 600 },
         "cabinet-front-2": { width_mm: 500 },
-        "back-panel": { width_mm: 1_100 },
+        "back-panel-bay-1": { width_mm: 550 },
         "plinth-front": { width_mm: 1_100 },
       },
       removed_part_ids: ["shelf-1-bay-2"],
@@ -284,6 +338,28 @@ describe("bounded workspace intent", () => {
 });
 
 describe("local legacy parsing and reference provenance", () => {
+  it("migrates missing legacy back material and preserves explicit selection", () => {
+    expect(parseLocalDesignSpec({
+      material_id: "mdf",
+      material_name: "MDF",
+    }).back_material_id).toBe("mdf-6");
+    expect(parseLocalDesignSpec({ back_material_id: "mdf-6" }).back_material_id)
+      .toBe("mdf-6");
+    expectHydrationCode(
+      () => parseLocalDesignSpec({ back_material_id: "oak-6" }),
+      "INVALID_LOCAL_DESIGN",
+    );
+    expect(parseLocalDesignSpec({ back_panel: true }).back_panel_type).toBe("inset_groove");
+    expect(parseLocalDesignSpec({
+      back_panel: true,
+      back_panel_type: "surface_mounted",
+    }).back_panel_type).toBe("surface_mounted");
+    expectHydrationCode(
+      () => parseLocalDesignSpec({ back_panel_type: "unknown_mount" }),
+      "INVALID_LOCAL_DESIGN",
+    );
+  });
+
   it("bounds a partial legacy spec before it can be resolved", () => {
     expect(parseLocalDesignSpec({ width_mm: 1_500 })).toMatchObject({
       width_mm: 1_500,

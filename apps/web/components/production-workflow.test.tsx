@@ -21,6 +21,7 @@ import {
   productionSuggestionPatch,
   reviewPackageArtifactInventoryIsTruthful,
   serverApprovalWarningRuleIds,
+  workshopRequirementPresentation,
   workshopReadinessFromJob,
   type ProductionApi,
 } from "./production-workflow";
@@ -1025,6 +1026,33 @@ describe("workshopReadinessFromJob", () => {
   });
 });
 
+describe("workshopRequirementPresentation", () => {
+  it("gives every accepted external requirement Swedish, actionable guidance", () => {
+    for (const [code, serverTitle] of [
+      ...workshopReadinessIdentities,
+      edgeBandReadinessIdentity,
+    ]) {
+      const presentation = workshopRequirementPresentation(code);
+      expect(presentation.title).not.toBe(serverTitle);
+      expect(presentation.title).not.toMatch(/^Okänt externt krav/);
+      expect(presentation.owner.length).toBeGreaterThan(3);
+      expect(presentation.nextAction.length).toBeGreaterThan(20);
+      expect(["furniture", "materials", "workshop", "verification"]).toContain(
+        presentation.group,
+      );
+    }
+  });
+
+  it("keeps an unexpected requirement visibly blocking instead of treating it as complete", () => {
+    expect(workshopRequirementPresentation("UNEXPECTED_REQUIREMENT")).toEqual({
+      title: "Okänt externt krav (UNEXPECTED_REQUIREMENT)",
+      group: "verification",
+      owner: "Ansvarig granskare",
+      nextAction: "Stoppa fysisk tillverkning och utred det okända kravet innan arbetet fortsätter.",
+    });
+  });
+});
+
 describe("ProductionWorkflow", () => {
   it("shows warnings as information and requires one acknowledgement before creating", async () => {
     const api = apiClient();
@@ -1434,9 +1462,30 @@ describe("ProductionWorkflow", () => {
     const workshopRequirements = screen.getByRole("region", {
       name: "Återstående externa verkstadskrav",
     });
-    expect(within(workshopRequirements).getByText("Wall substrate and anchor system")).toBeVisible();
-    expect(within(workshopRequirements).getByText("Named CNC operator approval")).toBeVisible();
-    expect(within(workshopRequirements).getAllByText("Extern verifiering krävs")).toHaveLength(14);
+    expect(within(workshopRequirements).getByRole("region", { name: "Möbelbeslut och infästning" })).toBeVisible();
+    expect(within(workshopRequirements).getByRole("region", { name: "Material och limfria förband" })).toBeVisible();
+    expect(within(workshopRequirements).getByRole("region", { name: "Verkstad och maskin" })).toBeVisible();
+    expect(within(workshopRequirements).getByRole("region", { name: "Provning och godkännande" })).toBeVisible();
+    expect(within(workshopRequirements).getByText("Väggtyp och förankringssystem")).toBeVisible();
+    expect(within(workshopRequirements).getByText("Namngivet godkännande från CNC-operatör")).toBeVisible();
+    expect(within(workshopRequirements).getAllByText(/^Ansvar:/)).toHaveLength(14);
+    expect(within(workshopRequirements).queryByText("Wall substrate and anchor system")).not.toBeInTheDocument();
+
+    const handoffGuide = screen.getByRole("region", {
+      name: "Vägledning för hur delarna ska tas fram",
+    });
+    const selfBuild = within(handoffGuide).getByRole("radio", { name: /Jag kapar och bygger själv/ });
+    const workshop = within(handoffGuide).getByRole("radio", { name: /En verkstad kapar eller bearbetar/ });
+    expect(selfBuild).toBeChecked();
+    expect(within(handoffGuide).getByRole("status")).toHaveTextContent("Självbygget är inte frisläppt");
+    expect(within(handoffGuide).getByRole("status")).toHaveTextContent(/inte en verifierad arbetsinstruktion för handverktyg/i);
+    fireEvent.click(workshop);
+    expect(workshop).toBeChecked();
+    expect(within(handoffGuide).getByRole("status")).toHaveTextContent("Verkstadsöverlämningen är inte körklar");
+    expect(within(handoffGuide).getByText(/Valet ändrar endast vägledningen/)).toBeVisible();
+    expect(screen.getByRole("status", { name: "Status för fysisk tillverkning" })).toHaveTextContent(
+      "Ej frisläppt för fysisk kapning",
+    );
     expect(screen.queryByText("Underlaget är klart")).not.toBeInTheDocument();
     expect(screen.queryByText(/ritningar och tillverkningsfiler/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/CAM|lås revision|frisläpp revision/i)).not.toBeInTheDocument();

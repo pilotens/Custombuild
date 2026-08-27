@@ -2086,7 +2086,7 @@ export function CustombuildWorkspace() {
               </div>
             </div>
             <div className="viewer-status-strip">
-              <span><span className="engine-dot" /> {referenceImageDesign ? `Bildkoncept · ${spec.reference_image_import?.file_name ?? "referens"}` : partCustomization ? `Delkoncept · ${spec.removed_part_ids.length + Object.keys(spec.part_overrides).length} ändringar` : customInterior ? "Anpassad serverlayout · produktionskontrollerad" : "Dynamisk modell · ändringar visas direkt"}</span>
+              <span><span className="engine-dot" /> {referenceImageDesign ? `Bildkoncept · ${spec.reference_image_import?.file_name ?? "referens"}` : partCustomization ? `Delkoncept · ${spec.removed_part_ids.length + Object.keys(spec.part_overrides).length} ändringar` : customInterior ? "Anpassad serverlayout · konstruktionsscreenad" : "Dynamisk modell · ändringar visas direkt"}</span>
               <span>{workspaceStage === "studio" ? "Dra i måtthandtag, hyllor och avdelare" : "X bredd · Y djup · Z höjd"}</span>
               <span>{spec.divider_count + 1} bärande fack · {spec.shelf_count} hyllrader</span>
             </div>

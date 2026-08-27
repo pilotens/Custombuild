@@ -372,6 +372,10 @@ describe("validationGuidance", () => {
     expect(guidance.solution).toMatch(/självlåsande torrförband|mekanisk säkring/i);
     expect(guidance.solution).toMatch(/lim, fogmassa och epoxy är förbjudna/i);
     expect(guidance.requiredInput).toMatch(/mekanisk hållning mot isärdragning/i);
+    expect(guidance.target).toEqual({
+      kind: "none",
+      control: "Förbandsval saknas i nuvarande produktions-MVP",
+    });
   });
 
   it.each([

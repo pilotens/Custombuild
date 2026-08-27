@@ -4,7 +4,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "24c4e28b0a0a789c002def4eba82819c6cf5690f1ae615cc31a3381fcc8ff251",
+        "design_hash": "cef9641d09b17eb372bda864870d24d5a931f00ea121723691bfe328f6585304",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -23,7 +23,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "9ce6452f6e2dcdcf51fd0ab75253c0cbac2b9bba64d662b33497b6ba3d035ab4",
+        "design_hash": "114ea67db1e772888d6f6b662da9ba028ff235748a46679a963ae9d62e36474b",
         "divider_count": 0,
         "joint_count": 19,
         "outcome": "result",
@@ -44,11 +44,11 @@
         "change_paths": [
           "parameters.vertical_divider_count"
         ],
-        "design_hash": "301a0acbf0dadb8ee1865f97bd8cd763ab9fce08c1e18ca1cea43bef713bf64f",
+        "design_hash": "949ec217cbfda875491b47229563415a1dbba82c896bf9a2c5b9089046d17291",
         "divider_count": 1,
-        "joint_count": 23,
+        "joint_count": 27,
         "outcome": "result",
-        "part_count": 13,
+        "part_count": 14,
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
@@ -63,7 +63,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "330232780d09f9a77f42dfeefaa42008e4cea1e40da0cd26aecfc25df1d93b3b",
+        "design_hash": "5018324fcb51f2d6ff0d309ed5b1461dccfa5a9b8258fe028896ce4cbce533fb",
         "divider_count": 0,
         "joint_count": 9,
         "outcome": "result",
@@ -82,11 +82,11 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "bb885e64abb035f7e0b4eb720d947dcfd449ab0686e43624fbdbabf2ad44da68",
+        "design_hash": "afde7f2a223459b891f0bf7bcd36d1c83d2ab8b63a3c8231466d8bb5d11b6bda",
         "divider_count": 2,
-        "joint_count": 31,
+        "joint_count": 39,
         "outcome": "result",
-        "part_count": 17,
+        "part_count": 19,
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
@@ -101,11 +101,11 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "d185bd34a5181a8fcb7f39ac730ddf188fac30aedee0e9f1df6eb4eb3a03ff9b",
+        "design_hash": "08e3b7ecf39cd5e4c63f255c567371c7c1367afd45e1b240571301cd9445114e",
         "divider_count": 1,
-        "joint_count": 27,
+        "joint_count": 31,
         "outcome": "result",
-        "part_count": 15,
+        "part_count": 16,
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",
@@ -120,7 +120,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "d3ed94ce35885fdc692843a666a50f59c640fc67439fc530a736f8efff5792de",
+        "design_hash": "d0cb6034b331d2aacf36509404934c7f21de500ae6357f175d35caca3afccd31",
         "divider_count": 1,
         "joint_count": 19,
         "outcome": "result",
@@ -139,7 +139,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "8795b26a489164a1d031377186f87bed1624db29db2d0bc1dc84577c35b71f6a",
+        "design_hash": "b621d3896535486692aad1adeb3151a8838aaaf33e203d9773edd006e4df5776",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -158,7 +158,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "968de69b482f10d7de7d272db64db127378d758da3823ce04a99cb81a2699bec",
+        "design_hash": "5c63e12086759d630bdd7ffd706a7b944cde36fb60e01780d89c282990f0cd65",
         "divider_count": 0,
         "joint_count": 17,
         "outcome": "result",
@@ -177,7 +177,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "239b37beb63560fdd55f4bbde7196efcc711805962eeebd29c450011e04ff994",
+        "design_hash": "7a44b299f51d430a28349b417347073250835cb492a6c4c37ff4163f92e58dde",
         "divider_count": 0,
         "joint_count": 17,
         "outcome": "result",
@@ -196,7 +196,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "a4536ee07ee9557f04e836654500e1832e22327faa40ccceee07532e2a20618f",
+        "design_hash": "350d5ab4c0336f91dc32db18049f58b269ce2f3bb0e5db32d7da903c3d8e7893",
         "divider_count": 0,
         "joint_count": 15,
         "outcome": "result",
@@ -216,7 +216,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "d1236165e96ae0d3cf74500556e5e2f4920c4816ed0d74c182553cfb42a7a154",
+        "design_hash": "819d5329b7b3b6dafd36129c7d0807090fd34a61a18f7ea0f9d7f143cae15afb",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -235,7 +235,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "8a003b6b5dd5e7c462bb0823262580dbd28e2bdd838c7b557d99f203738971e3",
+        "design_hash": "1cc895c35a646f26796af473ed92c72293f546ecbd3ce65eb0690ffab5f804f4",
         "divider_count": 0,
         "joint_count": 13,
         "outcome": "result",
@@ -254,7 +254,7 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "497052099a35c19c89c90c930c4b3ba7d75476f688cea1bfcd842b133e2cd35b",
+        "design_hash": "9ac9ac3d51fb12b25148d9ff1116fcd53070de9935e817ea8f240ca4a6923153",
         "divider_count": 0,
         "joint_count": 4,
         "outcome": "result",
@@ -273,11 +273,11 @@
     {
       "expected": {
         "change_paths": [],
-        "design_hash": "e91d28f3ac4adea9eb8d4911b295695dc031581eb04e6a7bb8deba2a89ec9f8c",
+        "design_hash": "c8e6195ac86e771fdfa64ea08ca57490dcfd96a343aa4331e6eb79d624916d11",
         "divider_count": 7,
-        "joint_count": 151,
+        "joint_count": 179,
         "outcome": "result",
-        "part_count": 77,
+        "part_count": 84,
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
           "CB-DEFLECTION-001": "PASS",

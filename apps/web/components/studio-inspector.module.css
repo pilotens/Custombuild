@@ -181,7 +181,8 @@
 .materials strong { font-size: 13px; }
 .materials small { color: #77736c; font-size: 11px; }
 .swatch { width: 34px; height: 42px; background: #c8b18a; border: 1px solid rgba(23, 23, 20, .13); border-radius: 5px; }
-.swatch[data-material="mdf"] { background: #aaa49b; }
+.swatch[data-material="mdf"],
+.swatch[data-material="mdf-6"] { background: #aaa49b; }
 
 .toggles { display: grid; }
 .toggles label { display: flex; min-height: 54px; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid #ebe8e1; cursor: pointer; }
@@ -190,6 +191,51 @@
 .toggles strong { color: #34332f; font-size: 13px; }
 .toggles small { color: #77736c; font-size: 11px; }
 .toggles input { width: 40px; height: 22px; accent-color: #222220; }
+
+.backPanelOptions {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  background: #f8f7f3;
+  border: 1px solid #dedbd3;
+  border-radius: 9px;
+}
+
+.backMaterials {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.backMaterials legend {
+  margin-bottom: 8px;
+  color: #4b4943;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.backMaterials > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.backMaterials button {
+  display: grid;
+  min-width: 0;
+  min-height: 64px;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 9px;
+  padding: 9px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #d9d6ce;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.backMaterials button[aria-pressed="true"] { border-color: #3f3d38; box-shadow: inset 0 0 0 1px #3f3d38; }
+.backMaterials button > span:nth-child(2) { display: grid; gap: 3px; }
+.backMaterials strong { color: #34332f; font-size: 12px; }
+.backMaterials small { color: #77736c; font-size: 10px; }
+.backMaterials button:focus-visible { outline: 2px solid #24231f; outline-offset: 2px; }
+.backPanelNote { margin: 0 !important; color: #66625b !important; font-size: 11px !important; line-height: 1.45 !important; }
 
 .checkAction {
   display: flex;
@@ -218,7 +264,8 @@
 @media (max-width: 430px) {
   .dimensions,
   .baseDimensions,
-  .materials { grid-template-columns: 1fr; }
+  .materials,
+  .backMaterials > div { grid-template-columns: 1fr; }
 
   .ratioGroup > header { align-items: stretch; flex-direction: column; }
   .ratioGroup button { width: 100%; }

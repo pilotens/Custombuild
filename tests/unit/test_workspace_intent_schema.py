@@ -123,6 +123,41 @@ def test_explicit_exact_legacy_workspace_is_migrated_to_v1_only() -> None:
     assert "design_id" not in stored
 
 
+def test_explicit_back_material_is_preserved_but_legacy_workspace_must_match() -> None:
+    parsed = ProjectDraftUpdate.model_validate(
+        draft_payload(
+            workspace_intent(),
+            material_id="birch-plywood",
+            back_material_id="mdf-6",
+        )
+    )
+    assert parsed.spec.material_id == "birch-plywood"
+    assert parsed.spec.back_material_id == "mdf-6"
+
+    with pytest.raises(ValidationError, match="back_panel_type"):
+        ProjectDraftUpdate.model_validate(
+            draft_payload(
+                legacy_workspace(),
+                back_panel="surface_mounted",
+            )
+        )
+
+    with pytest.raises(
+        ValidationError,
+        match="legacy workspace production fields do not match spec: back_material_id",
+    ):
+        ProjectDraftUpdate.model_validate(
+            draft_payload(
+                legacy_workspace(
+                    material_id="birch-plywood",
+                    material_name="Björkplywood",
+                ),
+                material_id="birch-plywood",
+                back_material_id="mdf-6",
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("workspace_override", "expected_error"),
     [

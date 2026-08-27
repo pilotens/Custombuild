@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from custombuild_domain import (
     TEMPLATE_CAPABILITY_REGISTRY_FINGERPRINT,
+    TEMPLATE_CAPABILITY_REGISTRY_VERSION,
     TemplateCapabilityError,
     require_template_for_revision,
     resolve_template_capability,
@@ -12,10 +13,12 @@ from custombuild_domain import (
 
 def test_registry_has_stable_server_owned_fingerprints() -> None:
     payload = template_capability_registry_payload()
+    assert TEMPLATE_CAPABILITY_REGISTRY_VERSION == "custombuild-template-capabilities-1.2.0"
     assert payload["registry_fingerprint"] == TEMPLATE_CAPABILITY_REGISTRY_FINGERPRINT
     assert len(str(payload["registry_fingerprint"])) == 64
     templates = {item["template_id"]: item for item in payload["templates"]}
     assert templates["shelving"]["production_level"] == "screened"
+    assert templates["shelving"]["template_version"] == "2.0.0"
     assert templates["wall-library"]["production_level"] == "concept"
     assert "hinge" in str(templates["wall-library"]["limitation"]).lower()
     assert templates["cupboard"]["production_level"] == "concept"

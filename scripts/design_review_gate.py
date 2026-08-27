@@ -76,9 +76,9 @@ SCREENED_TEMPLATE_IDS = ("shelving",)
 DEFAULT_REPOSITORY = Path(".")
 SCREENED_DEFAULTS_CONTRACT_PATH = Path("packages/contracts/screened-template-defaults.v1.json")
 SCREENED_DEFAULTS_SCHEMA_VERSION = "custombuild.screened-template-defaults.v1"
-SCREENED_DEFAULTS_CONTRACT_VERSION = "1.1.0"
+SCREENED_DEFAULTS_CONTRACT_VERSION = "1.2.0"
 SCREENED_DEFAULTS_CONTRACT_FINGERPRINT = (
-    "88eca4417ba84e500a21658f5d7ce2b2277d5feca0bccd8cb36aae4419a821b0"
+    "b3dcd99962958819964846c5836db418394b8024ce21910677272e2b86071c9a"
 )
 SCREENED_DEFAULTS_CANONICALIZATION = (
     "UTF-8 JSON with recursively sorted object keys, compact separators, "
@@ -94,12 +94,14 @@ EFFECTIVE_DESIGN_SPEC_KEYS = frozenset(
         "depth_mm",
         "material_id",
         "material_name",
+        "back_material_id",
         "nominal_thickness_mm",
         "measured_thickness_mm",
         "shelf_count",
         "fixed_shelves",
         "load_per_shelf_kg",
         "back_panel",
+        "back_panel_type",
         "plinth",
         "divider_count",
         "bay_sizing_mode",
@@ -542,12 +544,13 @@ def _actual_default_preview_payload(
         "height_mm": spec["height_mm"],
         "depth_mm": spec["depth_mm"],
         "material_id": spec["material_id"],
+        "back_material_id": spec["back_material_id"] if spec["back_panel"] else None,
         "nominal_thickness_mm": spec["nominal_thickness_mm"],
         "measured_thickness_mm": spec["measured_thickness_mm"],
         "shelf_count": spec["shelf_count"],
         "shelf_mount": "fixed" if spec["fixed_shelves"] else "adjustable",
         "load_per_shelf_kg": spec["load_per_shelf_kg"],
-        "back_panel": spec["back_panel"],
+        "back_panel": spec["back_panel_type"] if spec["back_panel"] else False,
         "plinth": spec["plinth"],
         "divider_count": spec["divider_count"],
         "bay_width_ratios": spec["bay_width_ratios"],

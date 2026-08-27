@@ -3,6 +3,7 @@ import { getStoredAccessToken } from "./auth-client";
 import { referenceImageVerificationIsCurrent } from "./reference-image";
 import type { components, paths } from "./api-schema";
 import type {
+  BackMaterialId,
   BomLine,
   ChangeDiff,
   DesignSpec,
@@ -116,12 +117,13 @@ export function toPreviewRequest(spec: DesignSpec): PreviewRequestBody {
     height_mm: spec.height_mm,
     depth_mm: spec.depth_mm,
     material_id: spec.material_id === "birch-plywood" ? "birch-plywood" : "mdf",
+    ...(spec.back_panel ? { back_material_id: spec.back_material_id } : {}),
     nominal_thickness_mm: spec.nominal_thickness_mm,
     measured_thickness_mm: spec.measured_thickness_mm,
     shelf_count: spec.shelf_count,
     shelf_mount: spec.fixed_shelves ? "fixed" : "adjustable",
     load_per_shelf_kg: spec.load_per_shelf_kg,
-    back_panel: spec.back_panel,
+    back_panel: spec.back_panel ? spec.back_panel_type : false,
     plinth: spec.plinth,
     divider_count: spec.divider_count,
     bay_width_ratios: spec.bay_width_ratios,
@@ -254,7 +256,9 @@ function normalizeFeatures(value: unknown, partId: string, fallback: Manufacturi
     const rawKind = asString(feature.kind, "outline").toLowerCase();
     const kind: ManufacturingFeature["kind"] = rawKind === "drill" || rawKind === "drill_pattern"
       ? "drill"
-      : rawKind === "groove" || rawKind === "rabbet"
+      : rawKind === "rabbet"
+        ? "rabbet"
+        : rawKind === "groove"
         ? "groove"
         : rawKind === "pocket" || rawKind === "tenon"
           ? "pocket"
@@ -281,6 +285,8 @@ function uiPartId(semanticKey: string, fallback: string): string {
   if (semanticKey === "left-side") return "side-left";
   if (semanticKey === "right-side") return "side-right";
   if (semanticKey === "back") return "back-panel";
+  const backField = /^back-b(\d+)$/.exec(semanticKey);
+  if (backField) return `back-panel-bay-${Number(backField[1]) + 1}`;
   if (semanticKey === "plinth") return "plinth-front";
   const divider = /^divider-(\d+)$/.exec(semanticKey);
   if (divider) return `divider-${Number(divider[1]) + 1}`;
@@ -348,7 +354,10 @@ function normalizeParts(value: unknown, fallback: ResolvedPart[], spec: DesignSp
       },
       orientation,
       color: asString(part.color, fallbackPart.color),
-      material_id: asString(part.material_id, spec.material_id),
+      material_id: asString(
+        part.material_id,
+        fallbackPart.kind === "back" ? spec.back_material_id : spec.material_id,
+      ),
       weight_kg: asNumber(part.weight_kg, fallbackPart.weight_kg),
       features: normalizeFeatures(part.features, asString(part.part_id, fallbackPart.part_id), fallbackPart.features),
     };
@@ -491,11 +500,45 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
   if (shelfMount !== "fixed" && shelfMount !== "adjustable") {
     throw new ApiError(`Servern returnerade det okända hyllmontaget ${shelfMount}.`);
   }
-  const backPanel = parameters.back_panel === undefined
-    ? (boundedRequested.back_panel ? "inset_groove" : "none")
-    : boundedServerString(parameters.back_panel, "spec.parameters.back_panel", 32);
+  if (parameters.back_panel === undefined) {
+    throw new ApiError(
+      "Serverns designspecifikation saknar en exakt bakstyckestyp.",
+    );
+  }
+  const backPanel = boundedServerString(
+    parameters.back_panel,
+    "spec.parameters.back_panel",
+    32,
+  );
   if (backPanel !== "none" && backPanel !== "surface_mounted" && backPanel !== "inset_groove") {
     throw new ApiError(`Servern returnerade den okända bakstyckestypen ${backPanel}.`);
+  }
+  const rawBackMaterial = root.back_material;
+  const backMaterial = rawBackMaterial === undefined || rawBackMaterial === null
+    ? undefined
+    : asRecord(rawBackMaterial);
+  if (rawBackMaterial !== undefined && rawBackMaterial !== null && !backMaterial) {
+    throw new ApiError("Serverns bakstyckesmaterial har ogiltigt format.");
+  }
+  if (backPanel === "none" && backMaterial) {
+    throw new ApiError("Servern returnerade ett bakstyckesmaterial utan ett bakstycke.");
+  }
+  if (backPanel !== "none" && rawBackMaterial === null) {
+    throw new ApiError("Serverns aktiva bakstycke saknar en materialdefinition.");
+  }
+  if (backPanel !== "none" && rawBackMaterial === undefined) {
+    throw new ApiError(
+      "Serverns aktiva bakstycke saknar en exakt materialdefinition.",
+    );
+  }
+  if (backMaterial && backMaterial.material_id === undefined) {
+    throw new ApiError("Serverns bakstyckesmaterial saknar en exakt materialdefinition.");
+  }
+  const backMaterialId = backMaterial
+    ? boundedServerString(backMaterial.material_id, "spec.back_material.material_id", 64)
+    : boundedRequested.back_material_id;
+  if (backMaterialId !== "mdf-6" && backMaterialId !== "birch-plywood-6") {
+    throw new ApiError(`Servern returnerade det okända bakstyckesmaterialet ${backMaterialId}.`);
   }
   const reinforcementMode = parameters.reinforcement_mode === undefined
     ? boundedRequested.reinforcement_mode
@@ -542,6 +585,7 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
     material_name: material?.name === undefined
       ? materialDefinition
       : boundedServerString(material.name, "spec.material.name", 160),
+    back_material_id: backMaterialId as BackMaterialId,
     nominal_thickness_mm: boundedServerNumber(
       parameters.nominal_thickness_um,
       boundedRequested.nominal_thickness_mm * 1_000,
@@ -575,6 +619,7 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
       500 * 9.80665,
     ) / 9.80665,
     back_panel: backPanel !== "none",
+    back_panel_type: backPanel === "surface_mounted" ? "surface_mounted" : "inset_groove",
     plinth: boundedServerNumber(
       parameters.plinth_height_um,
       boundedRequested.plinth ? 80_000 : 0,

@@ -350,8 +350,9 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(downloadButton).toBeVisible({ timeout: 4 * 60_000 });
   const camStatus = productionDialog.getByRole("status", { name: "Status för CAM" });
-  await expect(camStatus).toContainText("En exakt serverbunden lagerprofil saknas");
-  await expect(camStatus).toContainText("Lagerinköp, nesting, operationer");
+  await expect(camStatus).toContainText("strukturerad X/Y-bindning");
+  await expect(camStatus).toContainText("Uppladdade dokument och varningsgodkännanden kan inte");
+  await expect(camStatus).toContainText("Nesting, operationer, setupblad");
 
   const completedJobResponse = await request.get(
     `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}`,
@@ -371,7 +372,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     production_machine_program: false,
     design_review_package_status: {
       cam_status: "BLOCKED",
-      blocker_codes: ["STOCK_PROFILE_MISSING"],
+      blocker_codes: ["DFM-GRAIN-001"],
       physical_cutting_authorized: false,
     },
     workshop_readiness: {
@@ -383,6 +384,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(completedJob.result_json?.nesting_utilization_ppm).toBeNull();
   const readiness = completedJob.result_json?.workshop_readiness as {
     software_evidence?: Array<{ code?: unknown; status?: unknown }>;
+    workshop_evidence?: Array<{ code?: unknown; status?: unknown }>;
   } | undefined;
   const softwareStatus = new Map(
     (readiness?.software_evidence ?? []).map((item) => [item.code, item.status]),
@@ -390,6 +392,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(softwareStatus.get("AUTHORITATIVE_CAD")).toBe("VERIFIED");
   expect(softwareStatus.get("DFM_SCREEN")).toBe("MISSING");
   expect(softwareStatus.get("SEMANTIC_OPERATIONS")).toBe("MISSING");
+  const workshopStatus = new Map(
+    (readiness?.workshop_evidence ?? []).map((item) => [item.code, item.status]),
+  );
+  expect(workshopStatus.get("MATERIAL_GRAIN")).toBe("EXTERNAL_EVIDENCE_REQUIRED");
 
   const artifactsResponse = await request.get(
     `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}/artifacts`,

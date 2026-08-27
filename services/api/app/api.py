@@ -903,7 +903,7 @@ def _design_approval_snapshot(approval: Approval) -> dict[str, Any]:
 
 
 def _frozen_dado_retention_is_unresolved(version: DesignVersion) -> bool | None:
-    """Rebuild the frozen design and fail closed on the current plain-DADO contract."""
+    """Rebuild the frozen design and recheck its exact DADO retention contract."""
 
     if not isinstance(version.spec_json, Mapping):
         return None
@@ -932,8 +932,10 @@ def _require_resolved_dado_retention(version: DesignVersion) -> None:
                     "A plain DADO proves geometry and local bearing, not permanent retention."
                 ),
                 "solution": (
-                    "Bind a versioned, checksum-addressed dry self-locking or mechanical "
-                    "retention system to every DADO joint, then generate a new package."
+                    "The current MVP has no authenticated retention-catalogue resolver, so "
+                    "clients cannot resolve this blocker yet. Keep the job in design review "
+                    "until a server-side trust root can authenticate and bind exact geometry, "
+                    "hardware, applicability and capacity evidence."
                 ),
             },
         )

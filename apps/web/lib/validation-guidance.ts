@@ -184,7 +184,10 @@ function knownGuidance(evaluation: RuleEvaluation): Omit<ValidationGuidance, "pr
         : `Underlag: förbandstyp och version, monteringsriktning, mekanisk hållning mot isärdragning samt lokal kapacitet minst ${evaluation.calculated_value ?? "den beräknade lasten"} ${evaluation.unit ?? ""}.`.trim(),
       target: adjustable
         ? { kind: "step", step: 3, control: "Material och utförande → Fasta hyllor" }
-        : { kind: "step", step: 2, control: "Indelning och konstruktionsstöd" },
+        : {
+            kind: "none",
+            control: "Förbandsval saknas i nuvarande produktions-MVP",
+          },
     };
   }
   if (hasIdentity(evaluation, "str-topo", "sammanhängande bärande geometri")) {

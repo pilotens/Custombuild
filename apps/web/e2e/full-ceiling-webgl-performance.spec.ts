@@ -225,7 +225,7 @@ function parseBudget(value: unknown): FullCeilingBrowserBudget {
     || exactFixture.base_cabinet_count !== 17
     || exactFixture.base_cabinet_height_mm !== 680
     || exactFixture.base_cabinet_depth_mm !== exactFixture.depth_mm
-    || exactFixture.expected_rendered_part_count !== 752
+    || exactFixture.expected_rendered_part_count !== 768
   ) {
     throw new Error("The browser fixture must remain bound to the exact canonical B1 full ceiling.");
   }
@@ -643,7 +643,7 @@ test.skip(
 );
 test.use({ viewport: { width: 1_440, height: 960 }, video: "off" });
 
-test("keeps the canonical 752-part ceiling bounded in the actual WebGL workspace", async ({ page }, testInfo) => {
+test("keeps the canonical 768-part ceiling bounded in the actual WebGL workspace", async ({ page }, testInfo) => {
   // This is evidence-collection headroom, not a product budget. Every measured
   // threshold remains owned by the immutable budget file and is asserted below.
   test.setTimeout(360_000);

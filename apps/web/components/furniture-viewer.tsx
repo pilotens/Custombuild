@@ -218,7 +218,9 @@ const RESIZE_AXIS_CONSTRAINTS = {
 
 const MATERIAL_VISUALS: Readonly<Record<string, ViewerMaterialVisual>> = {
   "birch-plywood": { color: "#c8b18a", roughness: 0.68, metalness: 0.01 },
+  "birch-plywood-6": { color: "#c8b18a", roughness: 0.68, metalness: 0.01 },
   mdf: { color: "#aaa49b", roughness: 0.9, metalness: 0 },
+  "mdf-6": { color: "#aaa49b", roughness: 0.9, metalness: 0 },
 };
 
 const DEFAULT_MATERIAL_VISUAL: ViewerMaterialVisual = {

@@ -166,10 +166,10 @@ class _DesignResult:
         self.joints = joints
 
 
-def test_retention_detection_is_case_insensitive_but_does_not_infer_other_joints() -> None:
+def test_retention_detection_fails_closed_without_canonical_spec_and_topology() -> None:
     assert dado_retention_evidence_missing(_DesignResult((_Joint(_JointType("DaDo")),)))
-    assert not dado_retention_evidence_missing(_DesignResult((_Joint("RABBET"),)))
-    assert not dado_retention_evidence_missing(object())
+    assert dado_retention_evidence_missing(_DesignResult((_Joint("RABBET"),)))
+    assert dado_retention_evidence_missing(object())
 
 
 @pytest.mark.parametrize("value", (None, 0, 1, "false"))

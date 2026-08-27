@@ -111,7 +111,9 @@ from .review_status import (
     blocked_design_review_package_status,
     dado_retention_evidence_missing,
     generated_design_review_package_status,
+    joint_retention_contract_is_structurally_complete,
     normalize_design_review_package_status,
+    validate_design_review_status_retention_binding,
 )
 
 
@@ -199,6 +201,7 @@ __all__ = [
     "expand_part_instances",
     "generate_operations_document",
     "generated_design_review_package_status",
+    "joint_retention_contract_is_structurally_complete",
     "generation_plan_artifact",
     "grain_control_projection",
     "grouped_bom_json",
@@ -223,6 +226,7 @@ __all__ = [
     "validate_stock_profile_missing_issue",
     "validate_design_review_status_inventory_entries",
     "validate_design_review_status_dfm_report",
+    "validate_design_review_status_retention_binding",
     "validate_manifest_artifact_entries",
     "validate_manifest_context_contract",
     "validate_workshop_evidence_binding",

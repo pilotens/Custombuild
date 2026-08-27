@@ -13,7 +13,7 @@ import { referenceVerificationFingerprint } from "./reference-image";
 import { DEFAULT_PLANNING_BRIEF, templateWithPlanningBrief } from "./furniture-planning";
 import { parseLocalDesignSpec } from "./workspace-design-envelope";
 
-const SCREENED_TEMPLATE_DEFAULTS_V1_1_SHA256 = "88eca4417ba84e500a21658f5d7ce2b2277d5feca0bccd8cb36aae4419a821b0";
+const SCREENED_TEMPLATE_DEFAULTS_V1_2_SHA256 = "b3dcd99962958819964846c5836db418394b8024ce21910677272e2b86071c9a";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -83,9 +83,13 @@ function hasVolumetricOverlap(left: ResolvedPart, right: ResolvedPart): boolean 
 
 function isModeledCapture(left: ResolvedPart, right: ResolvedPart): boolean {
   const parts = [left, right];
-  const back = parts.find((part) => part.part_id === "back-panel");
+  const back = parts.find((part) => part.kind === "back");
   const backMate = parts.find((part) => part !== back);
-  if (back && backMate && ["side-left", "side-right", "top"].includes(backMate.part_id)) return true;
+  if (back && backMate && ["side", "divider", "top", "bottom"].includes(backMate.kind)) return true;
+
+  const horizontal = parts.find((part) => ["top", "bottom", "shelf"].includes(part.kind));
+  const vertical = parts.find((part) => ["side", "divider"].includes(part.kind));
+  if (horizontal && vertical) return true;
 
   const baseBottom = parts.find((part) => part.kind === "base_bottom");
   const baseBottomSupport = parts.find((part) => part !== baseBottom);
@@ -103,7 +107,7 @@ function isModeledCapture(left: ResolvedPart, right: ResolvedPart): boolean {
 describe("furniture template visual contracts", () => {
   it("binds current screened UI defaults to the versioned non-release contract", () => {
     expect(screenedTemplateDefaults.schema_version).toBe("custombuild.screened-template-defaults.v1");
-    expect(screenedTemplateDefaults.contract_version).toBe("1.1.0");
+    expect(screenedTemplateDefaults.contract_version).toBe("1.2.0");
     expect(screenedTemplateDefaults.identity_policy).toEqual({
       design_id: "preserve_current_project",
       revision: "preserve_current_project",
@@ -116,9 +120,9 @@ describe("furniture template visual contracts", () => {
     expect(fingerprint).toEqual({
       algorithm: "sha256",
       canonicalization: "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
-      value: SCREENED_TEMPLATE_DEFAULTS_V1_1_SHA256,
+      value: SCREENED_TEMPLATE_DEFAULTS_V1_2_SHA256,
     });
-    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_1_SHA256);
+    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_2_SHA256);
 
     expect(screenedTemplateDefaults.templates.map((entry) => entry.template_id)).toEqual(["shelving"]);
     for (const entry of screenedTemplateDefaults.templates) {

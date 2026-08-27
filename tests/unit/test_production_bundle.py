@@ -10,6 +10,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import custombuild_manufacturing.pipeline as manufacturing_pipeline
+import custombuild_manufacturing.review_status as review_status_contract
 import ezdxf
 import pytest
 from custombuild_cad import CADArtifacts, CadQueryAdapter, FreeCADProjectArtifacts
@@ -58,6 +59,11 @@ def _simulate_versioned_retention_for_legacy_cam_tests(
 
     monkeypatch.setattr(
         manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
+    monkeypatch.setattr(
+        review_status_contract,
         "dado_retention_evidence_missing",
         lambda _design: False,
     )
@@ -223,6 +229,11 @@ def test_plain_dado_yields_review_package_but_never_cam_artifacts(
     design, machine, stock, context = design_and_request()
     monkeypatch.setattr(
         manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        _REAL_DADO_RETENTION_CHECK,
+    )
+    monkeypatch.setattr(
+        review_status_contract,
         "dado_retention_evidence_missing",
         _REAL_DADO_RETENTION_CHECK,
     )

@@ -1,6 +1,6 @@
 {
   "schema_version": "custombuild.screened-template-defaults.v1",
-  "contract_version": "1.1.0",
+  "contract_version": "1.2.0",
   "status": "published",
   "purpose": "Version-bound effective UI defaults for the screened shelving template. Concept templates are deliberately excluded. This contract records design-review inputs and does not authorize manufacturing or physical cutting.",
   "units": {
@@ -50,12 +50,14 @@
         "depth_mm": 340,
         "material_id": "birch-plywood",
         "material_name": "Björkplywood",
+        "back_material_id": "birch-plywood-6",
         "nominal_thickness_mm": 18,
         "measured_thickness_mm": 17.8,
         "shelf_count": 5,
         "fixed_shelves": true,
         "load_per_shelf_kg": 32,
         "back_panel": true,
+        "back_panel_type": "inset_groove",
         "plinth": true,
         "divider_count": 2,
         "bay_sizing_mode": "count",
@@ -85,6 +87,6 @@
   "fingerprint": {
     "algorithm": "sha256",
     "canonicalization": "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
-    "value": "88eca4417ba84e500a21658f5d7ce2b2277d5feca0bccd8cb36aae4419a821b0"
+    "value": "b3dcd99962958819964846c5836db418394b8024ce21910677272e2b86071c9a"
   }
 }

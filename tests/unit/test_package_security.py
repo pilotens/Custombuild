@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import patch
 
 import custombuild_manufacturing.pipeline as manufacturing_pipeline
+import custombuild_manufacturing.review_status as review_status_contract
 import pytest
 from custombuild_cad import CADArtifacts, CADDependencyUnavailable
 from custombuild_domain import (
@@ -63,6 +64,11 @@ def _simulate_versioned_retention_for_legacy_package_security_tests(
 
     monkeypatch.setattr(
         manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
+    monkeypatch.setattr(
+        review_status_contract,
         "dado_retention_evidence_missing",
         lambda _design: False,
     )

@@ -85,6 +85,58 @@ describe("scoped workspace drafts", () => {
     });
   });
 
+  it("persists an explicit back material and migrates a legacy missing value", () => {
+    writeWorkspaceDraft(window.localStorage, userA, "project-back-material", {
+      spec: {
+        ...DEFAULT_DESIGN_SPEC,
+        back_material_id: "mdf-6",
+        back_panel_type: "surface_mounted",
+      },
+      templateId: "shelving",
+      workspaceSelected: true,
+    });
+    const stored = JSON.parse(
+      window.localStorage.getItem(workspaceDraftKey(userA, "project-back-material")) ?? "{}",
+    ) as { spec?: Record<string, unknown> };
+    expect(stored.spec?.back_material_id).toBe("mdf-6");
+    expect(stored.spec?.back_panel_type).toBe("surface_mounted");
+    expect(readWorkspaceDraft(
+      window.localStorage,
+      userA,
+      "project-back-material",
+    )?.spec.back_material_id).toBe("mdf-6");
+    expect(readWorkspaceDraft(
+      window.localStorage,
+      userA,
+      "project-back-material",
+    )?.spec.back_panel_type).toBe("surface_mounted");
+
+    const legacyKey = legacyWorkspaceDraftKey(userA, "legacy-back-material");
+    const legacySpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      material_id: "mdf",
+      material_name: "MDF",
+    } as Record<string, unknown>;
+    delete legacySpec.back_material_id;
+    window.localStorage.setItem(legacyKey, JSON.stringify({
+      version: 2,
+      spec: legacySpec,
+      templateId: "shelving",
+      workspaceSelected: true,
+      updatedAt: "2026-08-12T20:00:00.000Z",
+    }));
+    expect(readWorkspaceDraft(
+      window.localStorage,
+      userA,
+      "legacy-back-material",
+    )?.spec.back_material_id).toBe("mdf-6");
+    expect(readWorkspaceDraft(
+      window.localStorage,
+      userA,
+      "legacy-back-material",
+    )?.spec.back_panel_type).toBe("inset_groove");
+  });
+
   it("persists UI-only context in v3 without merging it into DesignSpec", () => {
     writeWorkspaceDraft(window.localStorage, userA, "project-ui", {
       spec: { ...DEFAULT_DESIGN_SPEC, width_mm: 2_700 },

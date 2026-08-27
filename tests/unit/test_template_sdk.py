@@ -6,7 +6,9 @@ from custombuild_templates import load_bookcase_template
 def test_bookcase_template_is_versioned_and_complete() -> None:
     template = load_bookcase_template()
     assert template.template_id == "bookcase"
-    assert template.template_version == "1.1.0"
+    assert template.template_version == "2.0.0"
+    assert template.assembly_graph_version == "2.0.0"
+    assert template.manufacturing_feature_version == "2.0.0"
     assert template.persisted_unit == "um"
     assert {item.role for item in template.components} >= {
         "left_side",
@@ -32,5 +34,9 @@ def test_bookcase_template_is_versioned_and_complete() -> None:
     }
     assert {item.version for item in template.rules} == {"1.3.0"}
     assert template.joint_systems == ("dado",)
+    back = next(item for item in template.components if item.role == "back")
+    assert back.multiplicity_expression == (
+        "back_panel == 'none' ? 0 : (back_panel == 'inset_groove' ? bay_count : 1)"
+    )
     joint_parameter = next(item for item in template.parameters if item.key == "joint_system")
     assert joint_parameter.enum_values == ("dado",)

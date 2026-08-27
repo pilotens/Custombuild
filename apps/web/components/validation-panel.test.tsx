@@ -335,7 +335,7 @@ describe("ValidationPanel", () => {
     expect(onSelect).toHaveBeenCalledWith("side-right");
   });
 
-  it("navigates a non-automatic block to a real control", () => {
+  it("does not fake a repair route when dry retention has no product control", () => {
     const onNavigate = vi.fn();
     const block: RuleEvaluation = {
       ...evaluation,
@@ -348,12 +348,9 @@ describe("ValidationPanel", () => {
     };
     renderPanel([block], { onNavigate });
 
-    const repair = screen.getByRole("button", {
-      name: /Åtgärda problem för .* i Indelning och konstruktionsstöd/,
-    });
-    expect(repair).toHaveTextContent("Åtgärda problem");
-    fireEvent.click(repair);
-    expect(onNavigate).toHaveBeenCalledWith(2);
+    expect(screen.getByText(/Välj och versionslås ett självlåsande torrförband/i)).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Åtgärda problem/i })).not.toBeInTheDocument();
+    expect(onNavigate).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /ignorera|fortsätt ändå/i })).not.toBeInTheDocument();
   });
 });

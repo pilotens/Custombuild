@@ -98,6 +98,9 @@ class BookcaseEngine:
             if p.back_panel == BackPanelType.INSET_GROOVE
             else case_depth - mm(2)
         )
+        divider_depth = (
+            p.depth_um - mm(12) if p.back_panel == BackPanelType.INSET_GROOVE else shelf_depth
+        )
         parts: list[PartInstance] = []
 
         def add(
@@ -224,7 +227,11 @@ class BookcaseEngine:
                     divider_index,
                     Dimensions3D(
                         width_um=t,
-                        depth_um=shelf_depth,
+                        # Inset backs terminate in opposing divider-face
+                        # grooves. Shelves retain the relief gap in front of
+                        # those grooves, while the divider itself reaches the
+                        # rear datum needed to capture the back fields.
+                        depth_um=divider_depth,
                         height_um=inner_height + 2 * dado_depth,
                     ),
                     Placement(x_um=cursor, z_um=shelf_zone_bottom - dado_depth),
@@ -377,23 +384,30 @@ class BookcaseEngine:
                 visible=(FaceName.BACK,),
             )
         elif p.back_panel == BackPanelType.INSET_GROOVE:
-            add(
-                "back",
-                PartRole.BACK,
-                0,
-                Dimensions3D(
-                    width_um=inner_width + 2 * dado_depth,
-                    depth_um=p.back_thickness_um,
-                    height_um=inner_height + 2 * dado_depth,
-                ),
-                Placement(
-                    x_um=t - dado_depth,
-                    y_um=p.depth_um - mm(12) - p.back_thickness_um,
-                    z_um=shelf_zone_bottom - dado_depth,
-                ),
-                grain=GrainDirection.Z,
-                visible=(FaceName.BACK,),
-            )
+            # One captured back field per bay reduces panel width before the
+            # supplier-backed stock-fit check without inventing a free seam.
+            # Every field enters the side/divider, top and bottom dados; the
+            # untouched core between opposing divider grooves separates fields.
+            for bay_index, (bay_start, bay_width) in enumerate(
+                zip(bay_starts, bay_widths, strict=True)
+            ):
+                add(
+                    "back" if len(bay_widths) == 1 else f"back-b{bay_index}",
+                    PartRole.BACK,
+                    bay_index,
+                    Dimensions3D(
+                        width_um=bay_width + 2 * dado_depth,
+                        depth_um=p.back_thickness_um,
+                        height_um=inner_height + 2 * dado_depth,
+                    ),
+                    Placement(
+                        x_um=bay_start - dado_depth,
+                        y_um=p.depth_um - mm(12) - p.back_thickness_um,
+                        z_um=shelf_zone_bottom - dado_depth,
+                    ),
+                    grain=GrainDirection.Z,
+                    visible=(FaceName.BACK,),
+                )
 
         if p.plinth_height_um:
             add(
@@ -542,6 +556,10 @@ class BookcaseEngine:
             if second_feature is not None:
                 feature_map[second.part_id].append(second_feature)
             hardware_sku, hardware_count = self._hardware(kind)
+            retention = spec.joint_retention if kind == JointType.DADO else None
+            if retention is not None:
+                hardware_sku = retention.hardware_sku
+                hardware_count = retention.hardware_count_per_joint
             joints.append(
                 Joint(
                     joint_id=joint_id,
@@ -563,6 +581,7 @@ class BookcaseEngine:
                     hardware_sku=hardware_sku,
                     hardware_count=hardware_count,
                     tolerance_um=(DADO_FIT_CLEARANCE_UM if kind == JointType.DADO else mm("0.2")),
+                    retention=retention,
                 )
             )
 
@@ -740,70 +759,89 @@ class BookcaseEngine:
                     ),
                 )
 
-        if "back" in by_key:
-            back_kind = (
-                JointType.DADO if p.back_panel == BackPanelType.INSET_GROOVE else JointType.RABBET
+        backs = tuple(
+            sorted(
+                (part for part in parts if part.role == PartRole.BACK),
+                key=lambda item: item.instance_index,
             )
-            back = by_key["back"]
+        )
+        if p.back_panel == BackPanelType.INSET_GROOVE:
+            if len(backs) != len(supports) - 1:
+                raise ValueError("inset back fields must match the carcass bay count")
+            for bay_index, back in enumerate(backs):
+                left_support = supports[bay_index]
+                right_support = supports[bay_index + 1]
+                boundaries = (
+                    (
+                        "left-side",
+                        left_support,
+                        FaceName.B,
+                        FaceName.LEFT,
+                        Point3D(
+                            x_um=(
+                                left_support.placement.x_um + left_support.finished_size.width_um
+                            ),
+                            y_um=back.placement.y_um,
+                            z_um=back.placement.z_um,
+                        ),
+                    ),
+                    (
+                        "right-side",
+                        right_support,
+                        FaceName.A,
+                        FaceName.RIGHT,
+                        Point3D(
+                            x_um=right_support.placement.x_um,
+                            y_um=back.placement.y_um,
+                            z_um=back.placement.z_um,
+                        ),
+                    ),
+                    (
+                        "top",
+                        top,
+                        FaceName.A,
+                        FaceName.TOP,
+                        Point3D(
+                            x_um=max(top.placement.x_um, back.placement.x_um),
+                            y_um=back.placement.y_um,
+                            z_um=top.placement.z_um,
+                        ),
+                    ),
+                    (
+                        "bottom",
+                        bottom,
+                        FaceName.B,
+                        FaceName.BOTTOM,
+                        Point3D(
+                            x_um=max(bottom.placement.x_um, back.placement.x_um),
+                            y_um=back.placement.y_um,
+                            z_um=bottom.placement.z_um + bottom.finished_size.height_um,
+                        ),
+                    ),
+                )
+                for boundary, support, support_face, back_face, origin in boundaries:
+                    join(
+                        f"{back.semantic_key}-{boundary}",
+                        support.semantic_key,
+                        back.semantic_key,
+                        JointType.DADO,
+                        support_face,
+                        back_face,
+                        AssemblyDirection.NEG_Y,
+                        origin,
+                        first_feature_face=support_face,
+                    )
+        elif p.back_panel == BackPanelType.SURFACE_MOUNTED:
+            if len(backs) != 1 or backs[0].semantic_key != "back":
+                raise ValueError("surface-mounted back must remain one canonical panel")
+            back = backs[0]
+            groove_depth = max(mm(1), min(mm(12), p.actual_thickness_um // 3))
             back_feature_faces = {
                 "left-side": FaceName.B,
                 "right-side": FaceName.A,
                 "top": FaceName.A,
                 "bottom": FaceName.B,
             }
-            back_mating_faces = {
-                "left-side": (FaceName.B, FaceName.LEFT),
-                "right-side": (FaceName.A, FaceName.RIGHT),
-                "top": (FaceName.A, FaceName.TOP),
-                "bottom": (FaceName.B, FaceName.BOTTOM),
-            }
-            if back_kind == JointType.DADO:
-                back_origins = {
-                    "left-side": Point3D(
-                        x_um=p.actual_thickness_um,
-                        y_um=back.placement.y_um,
-                        z_um=back.placement.z_um,
-                    ),
-                    "right-side": Point3D(
-                        x_um=p.width_um - p.actual_thickness_um,
-                        y_um=back.placement.y_um,
-                        z_um=back.placement.z_um,
-                    ),
-                    "top": Point3D(
-                        x_um=max(top.placement.x_um, back.placement.x_um),
-                        y_um=back.placement.y_um,
-                        z_um=top.placement.z_um,
-                    ),
-                    "bottom": Point3D(
-                        x_um=max(bottom.placement.x_um, back.placement.x_um),
-                        y_um=back.placement.y_um,
-                        z_um=bottom.placement.z_um + bottom.finished_size.height_um,
-                    ),
-                }
-            else:
-                back_origins = {
-                    "left-side": Point3D(
-                        x_um=p.actual_thickness_um,
-                        y_um=back.placement.y_um,
-                        z_um=bottom.placement.z_um + bottom.finished_size.height_um,
-                    ),
-                    "right-side": Point3D(
-                        x_um=p.width_um - p.actual_thickness_um,
-                        y_um=back.placement.y_um,
-                        z_um=bottom.placement.z_um + bottom.finished_size.height_um,
-                    ),
-                    "top": Point3D(
-                        x_um=p.actual_thickness_um,
-                        y_um=back.placement.y_um,
-                        z_um=top.placement.z_um,
-                    ),
-                    "bottom": Point3D(
-                        x_um=p.actual_thickness_um,
-                        y_um=back.placement.y_um,
-                        z_um=bottom.placement.z_um,
-                    ),
-                }
-            groove_depth = max(mm(1), min(mm(12), p.actual_thickness_um // 3))
             back_feature_dimensions = {
                 "left-side": FeatureDimensions(
                     width_um=p.back_thickness_um,
@@ -826,25 +864,40 @@ class BookcaseEngine:
                     length_um=p.back_thickness_um,
                 ),
             }
+            back_origins = {
+                "left-side": Point3D(
+                    x_um=p.actual_thickness_um,
+                    y_um=back.placement.y_um,
+                    z_um=bottom.placement.z_um + bottom.finished_size.height_um,
+                ),
+                "right-side": Point3D(
+                    x_um=p.width_um - p.actual_thickness_um,
+                    y_um=back.placement.y_um,
+                    z_um=bottom.placement.z_um + bottom.finished_size.height_um,
+                ),
+                "top": Point3D(
+                    x_um=p.actual_thickness_um,
+                    y_um=back.placement.y_um,
+                    z_um=top.placement.z_um,
+                ),
+                "bottom": Point3D(
+                    x_um=p.actual_thickness_um,
+                    y_um=back.placement.y_um,
+                    z_um=bottom.placement.z_um,
+                ),
+            }
             for boundary in ("left-side", "right-side", "top", "bottom"):
-                feature_dimensions = (
-                    None if back_kind == JointType.DADO else back_feature_dimensions[boundary]
-                )
                 join(
                     f"back-{boundary}",
                     boundary,
                     "back",
-                    back_kind,
-                    (
-                        back_mating_faces[boundary][0]
-                        if back_kind == JointType.DADO
-                        else FaceName.BACK
-                    ),
-                    (back_mating_faces[boundary][1] if back_kind == JointType.DADO else FaceName.A),
+                    JointType.RABBET,
+                    FaceName.BACK,
+                    FaceName.A,
                     AssemblyDirection.NEG_Y,
                     back_origins[boundary],
                     first_feature_face=back_feature_faces[boundary],
-                    first_feature_dimensions=feature_dimensions,
+                    first_feature_dimensions=back_feature_dimensions[boundary],
                 )
 
         if "plinth" in by_key and not p.base_cabinet_count:
@@ -1593,11 +1646,17 @@ class BookcaseEngine:
                 moving_parts=tuple(by_id[part_id] for part_id in sorted(divider_module_part_ids)),
             )
 
-        back = by_key.get("back")
+        backs = tuple(
+            sorted(
+                (part for part in parts if part.role == PartRole.BACK),
+                key=lambda item: item.instance_index,
+            )
+        )
+        back_part_ids = {back.part_id for back in backs}
         back_joints = tuple(
             joint
             for joint in joints
-            if back is not None and back.part_id in {member.part_id for member in joint.members}
+            if back_part_ids & {member.part_id for member in joint.members}
         )
         captured_back_joints = tuple(
             joint for joint in back_joints if joint.joint_type == JointType.DADO
@@ -1605,12 +1664,29 @@ class BookcaseEngine:
         surface_back_joints = tuple(
             joint for joint in back_joints if joint.joint_type == JointType.RABBET
         )
-        add_step(
-            tuple(joint for joint in captured_back_joints if names(joint) == {"back", "bottom"}),
-            AssemblyDirection.NEG_Z,
-            "Sänk ryggens nederkant i bottenspåret innan topp eller gavlar monteras.",
-            moving_parts=(back,) if back is not None else (),
-        )
+        for back in backs:
+            insertion_joints = tuple(
+                joint
+                for joint in captured_back_joints
+                if back.part_id in {member.part_id for member in joint.members}
+                and any(
+                    by_id[member.part_id].role in {PartRole.BOTTOM, PartRole.DIVIDER}
+                    for member in joint.members
+                )
+            )
+            add_step(
+                insertion_joints,
+                AssemblyDirection.NEG_Z,
+                (
+                    "Sänk ryggens nederkant i bottenspåret innan topp eller gavlar monteras."
+                    if len(backs) == 1
+                    else (
+                        "Sänk ryggfältets nederkant i bottenspåret och dess sidokant(er) "
+                        "i öppna avdelarspår innan topp eller gavlar monteras."
+                    )
+                ),
+                moving_parts=(back,),
+            )
         add_step(
             tuple(
                 joint
@@ -1665,7 +1741,7 @@ class BookcaseEngine:
                 "För ryggstycket från baksidan mot den slutna stommen och kontrollera "
                 "full anliggning längs samtliga fyra kanter."
             ),
-            moving_parts=(back,) if back is not None else (),
+            moving_parts=backs,
         )
 
         # Adjustable shelves are installed after the carcass has closed.  Both
