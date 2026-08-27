@@ -56,8 +56,9 @@ const FIX_TRIGGER_NAME = "Åtgärda problem för Lodrät lastväg genom undersk�
 const GHOST_PIXEL_TOLERANCE = 24;
 // The bounded in-flow server-state row intentionally shortens the canvas. A
 // fitted wall library therefore occupies about 67.4% of the cropped analysis
-// region, while the independent width, height, luma, dominant-color and ghost
-// checks below still reject a flat or frame-filling false positive.
+// region. The 75% cap preserves at least 25% non-warm analysis pixels, while
+// the extent, luma, dominant-color and ghost checks reject blank, flat, or
+// false-comparison renders.
 const MAX_FITTED_MODEL_PIXEL_RATIO = 0.75;
 
 const sourceSpec = {
