@@ -23,17 +23,26 @@ export async function startWithEmptyPlanningStorage(page: Page) {
 /** Opens the persistent Explore surface. Kept under its former name for shared E2E callers. */
 export async function openPlanning(page: Page): Promise<Locator> {
   const heading = page.getByRole("heading", { name: "Vad vill du skapa?" });
-  if (!await heading.isVisible()) {
-    const modes = page.getByRole("navigation", { name: "Produktlägen" });
-    if (await modes.isVisible()) {
-      await modes.getByRole("button", { name: /Utforska/ }).click();
-    } else {
-      await page.getByRole("button", { name: "Utforska design" }).click();
-    }
+  const modes = page.getByRole("navigation", { name: "Produktlägen" });
+  const launch = page.getByRole("button", { name: "Utforska design" });
+
+  // Server hydration can resolve to any of these three stable entry surfaces.
+  // Wait for the state that actually materializes instead of committing to a
+  // locator based on an instantaneous visibility check during hydration.
+  const entry = await Promise.race([
+    heading.waitFor({ state: "visible", timeout: 30_000 }).then(() => "explore" as const),
+    modes.waitFor({ state: "visible", timeout: 30_000 }).then(() => "workspace" as const),
+    launch.waitFor({ state: "visible", timeout: 30_000 }).then(() => "landing" as const),
+  ]);
+  if (entry === "workspace") {
+    await modes.getByRole("button", { name: /Utforska/ }).click();
+  } else if (entry === "landing") {
+    await launch.click();
   }
-  await expect(heading).toBeVisible();
+
+  await expect(heading).toBeVisible({ timeout: 30_000 });
   const explore = page.locator("section.template-picker[data-presentation='embedded']");
-  await expect(explore).toBeVisible();
+  await expect(explore).toBeVisible({ timeout: 30_000 });
   return explore;
 }
 
@@ -64,12 +73,13 @@ export async function chooseTemplateAndCreate(
 ) {
   const explore = await goToPlanningStart(page, dimensions);
   await explore.getByRole("button", { name: /Välj en design/ }).click();
-  await expect(explore.getByRole("heading", { name: "Välj en startmodell att forma vidare." })).toBeVisible();
+  await expect(explore.getByRole("heading", { name: "Välj en startmodell att forma vidare." }))
+    .toBeVisible({ timeout: 30_000 });
 
   const card = explore.locator("button.template-card", {
     hasText: new RegExp(escapeRegularExpression(templateName)),
   });
-  await expect(card).toHaveCount(1);
+  await expect(card).toHaveCount(1, { timeout: 30_000 });
   await card.click();
   await explore.getByRole("button", {
     name: new RegExp(`Öppna ${escapeRegularExpression(templateName)} i Studio`),
