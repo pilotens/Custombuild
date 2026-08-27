@@ -113,6 +113,7 @@ import {
   previewWorkspaceDesignTransaction,
   type WorkspaceDesignFieldChange,
 } from "@/lib/workspace-design-transaction";
+import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { DEFAULT_WORKSPACE_UI_STATE, type WorkspaceUiState } from "@/lib/workspace-ui-state";
 import {
   parseWorkspaceUrl,
@@ -337,8 +338,28 @@ function ApiIndicator({ state, message }: { state: ApiState; message: string }) 
   );
 }
 
-export function CustombuildWorkspace() {
-  const api = useMemo(() => new CustombuildApiClient(), []);
+interface CustombuildWorkspaceProps {
+  runtimeConfig?: PublicRuntimeConfig;
+}
+
+const UNCONFIGURED_TEST_RUNTIME = Object.freeze({ appEnv: "test" } as const);
+
+function requiredRuntimeConfig(config: PublicRuntimeConfig | undefined): PublicRuntimeConfig {
+  if (config) return config;
+  // Component tests intentionally render the client boundary directly. The
+  // real application page always supplies the server-validated runtime prop;
+  // a missing prop in any non-test runtime is a startup/configuration failure.
+  if (process.env.NODE_ENV === "test") return UNCONFIGURED_TEST_RUNTIME;
+  throw new Error("Webbens validerade runtime-konfiguration saknas.");
+}
+
+export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: CustombuildWorkspaceProps) {
+  const runtimeConfig = requiredRuntimeConfig(suppliedConfig);
+  const api = useMemo(() => new CustombuildApiClient(
+    runtimeConfig.apiUrl,
+    undefined,
+    runtimeConfig.developmentToken,
+  ), [runtimeConfig.apiUrl, runtimeConfig.developmentToken]);
   const [spec, setSpec] = useState<DesignSpec>(normalizedDefaultSpec);
   const [past, setPast] = useState<DesignSpec[]>([]);
   const [future, setFuture] = useState<DesignSpec[]>([]);
@@ -357,7 +378,7 @@ export function CustombuildWorkspace() {
   const [apiMessage, setApiMessage] = useState(
     api.configured
       ? "Synkroniserar mot serverns auktoritativa modell."
-      : "NEXT_PUBLIC_API_URL saknas. Lokal deterministisk förhandsvisning används.",
+      : "Webb-API-adress saknas. Lokal deterministisk förhandsvisning används.",
   );
   const [saveState, setSaveState] = useState<SaveState>("saved");
   const [serverPreview, setServerPreview] = useState<ServerPreviewState>();
@@ -484,7 +505,7 @@ export function CustombuildWorkspace() {
     let cancelled = false;
     void (async () => {
       try {
-        await completeOidcCallback();
+        await completeOidcCallback(runtimeConfig);
         if (api.authenticated) {
           const current = await api.getCurrentPrincipal();
           if (!cancelled) {
@@ -500,7 +521,7 @@ export function CustombuildWorkspace() {
       }
     })();
     return () => { cancelled = true; };
-  }, [api]);
+  }, [api, runtimeConfig]);
 
   useEffect(() => {
     workspaceStageRef.current = workspaceStage;
@@ -1473,10 +1494,10 @@ export function CustombuildWorkspace() {
 
   const startLogin = useCallback(() => {
     setAuthError(undefined);
-    void beginOidcLogin().catch((error: unknown) => {
+    void beginOidcLogin(runtimeConfig).catch((error: unknown) => {
       setAuthError(error instanceof Error ? error.message : "Inloggningen kunde inte startas.");
     });
-  }, []);
+  }, [runtimeConfig]);
 
   const copyConflictedDraft = useCallback(() => {
     if (!draftConflict) return;
@@ -1850,7 +1871,7 @@ export function CustombuildWorkspace() {
               <Save aria-hidden="true" size={15} /> Spara utkast
             </button>
             <ApiIndicator state={displayedApiState} message={displayedApiMessage} />
-            {oidcConfigured() ? (
+            {oidcConfigured(runtimeConfig) ? (
               principal ? (
                 <button type="button" className="auth-session-button" onClick={logout}><LogOut aria-hidden="true" size={15} /> Logga ut</button>
               ) : (
@@ -2201,6 +2222,7 @@ export function CustombuildWorkspace() {
                   projectName={activeProject?.name ?? DEFAULT_PROJECT_NAME}
                   projectId={projectId}
                   principal={principal}
+                  apiClient={api}
                 />
               </div>
             ) : null}

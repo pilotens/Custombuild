@@ -17,7 +17,10 @@
   sessions are introduced later, synchronizer-token CSRF protection is required.
 - The production browser uses OIDC Authorization Code + PKCE as a public client.
   Its access token is retained only for the browser tab in `sessionStorage` and
-  is removed on expiry or logout. No client secret is embedded in the web build.
+  is removed on expiry or logout. No client secret is embedded in the web build
+  or accepted by its public runtime-config allow-list. API/OIDC destinations are
+  server-read when the container handles a request, so production configuration
+  does not create a different image digest.
 - Each document response gets a cryptographically random CSP nonce in the Next.js
   request proxy. Production permits inline framework scripts and style elements only
   through that nonce. Script attributes remain forbidden; style attributes are
@@ -41,6 +44,10 @@
   `compose.external-production.yml`, then run
   `python scripts/check_external_production.py --repo .`; a non-zero result is a
   deployment blocker and includes the missing operator action without echoing secrets.
+  The web runtime additionally requires `APP_ENV=production`, an exact HTTPS API
+  origin, a complete HTTPS OIDC issuer/client-id/root-callback tuple and an empty
+  `CUSTOMBUILD_WEB_DEMO_TOKEN`. Partial or malformed configuration blocks the
+  document before either CSP or client configuration is served.
   The preflight recomputes the canonical build/control source manifest
   (Docker-visible application inputs plus the release-control workflows),
   verifies its SHA-256 across every application image, and keeps that identity separate from the
@@ -50,6 +57,28 @@
   when its exact CVE/package/version/type tuple has a current ledger entry with severity,
   owner, rationale, mitigation, HTTPS source and review deadline; mismatch or expiry
   blocks release readiness.
+- Promotion input is canonical, digest-only descriptor v2 JSON. It binds the final
+  release-evidence hash, Git/source-manifest identity, workflow run and attempt, four
+  application registry manifests, component publication-evidence hashes, three
+  reviewed runtime deployment digests, exact Compose service roles and an exact
+  GitHub OIDC signer/attestation policy. Archive SHA-256, image config digest and
+  registry manifest digest remain separate identity domains: archive bytes are
+  checked across artifact transfer, config digest links load/runtime/scan to the raw
+  GHCR manifest, and the registry manifest is signed and attested as the sole
+  immutable subject eligible for a later external deployment. A local
+  daemon scan manifest is never equated with a registry manifest. OCI index-pinned
+  runtimes additionally prove the selected `linux/amd64` child manifest and config.
+  Verification rejects tags, duplicate keys, non-canonical encodings, unknown fields,
+  digest reuse between components and evidence from another source or run. Only a
+  successfully verified descriptor may produce the non-secret image environment
+  consumed by `compose.registry.yml`, and the runtime command must use `--no-build`.
+  The release workflow runs its unprivileged build/test path on pull requests but
+  keeps GHCR publication and descriptor generation main-push-only, reloads the same
+  archived image object instead of rebuilding it, and
+  applies exact-identity Cosign and GitHub artifact attestations. It emits promotion
+  input but never deploys. Branch protection,
+  protected environments, hosting and secrets remain external controls, and no
+  workflow result grants commercial or physical-machine authority.
 - A `design_review` lock proves only that the recorded software checks and named
   human review steps were completed. It is not a physical machine authorization;
   workshop evidence and external operator authority remain out of band.

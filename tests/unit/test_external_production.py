@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from scripts.check_external_production import external_production_issues
 
 
@@ -99,12 +101,15 @@ def valid_config() -> dict:
                             if key != "DEPENDENCY_LOCK_SHA256"
                         },
                         "FRONTEND_LOCK_SHA256": "d" * 64,
-                        "NEXT_PUBLIC_API_URL": "https://api.example.test",
-                        "NEXT_PUBLIC_DEMO_TOKEN": "",
-                        "NEXT_PUBLIC_OIDC_ISSUER": "https://identity.example.test/",
-                        "NEXT_PUBLIC_OIDC_CLIENT_ID": "custombuild-web",
-                        "NEXT_PUBLIC_OIDC_REDIRECT_URI": "https://app.example.test/",
                     }
+                },
+                "environment": {
+                    "APP_ENV": "production",
+                    "CUSTOMBUILD_WEB_API_URL": "https://api.example.test",
+                    "CUSTOMBUILD_WEB_DEMO_TOKEN": "",
+                    "CUSTOMBUILD_WEB_OIDC_ISSUER": "https://identity.example.test/",
+                    "CUSTOMBUILD_WEB_OIDC_CLIENT_ID": "custombuild-web",
+                    "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI": "https://app.example.test/",
                 },
                 "ports": [{"host_ip": "127.0.0.1", "published": "3000", "target": 3000}],
             },
@@ -135,7 +140,7 @@ def test_rejects_demo_auth_insecure_origins_and_public_datastores() -> None:
             "ARTIFACT_SIGNING_SECRET": "change-me-signing",
         }
     )
-    config["services"]["web"]["build"]["args"]["NEXT_PUBLIC_DEMO_TOKEN"] = (
+    config["services"]["web"]["environment"]["CUSTOMBUILD_WEB_DEMO_TOKEN"] = (
         "demo-owner"  # noqa: S105 - intentionally insecure negative fixture.
     )
     config["services"]["api"]["build"]["args"].update(
@@ -154,7 +159,7 @@ def test_rejects_demo_auth_insecure_origins_and_public_datastores() -> None:
         "api.ARTIFACT_SIGNING_SECRET is missing, too short, or uses an insecure default"
         in issues
     )
-    assert "web embeds a development demo token" in issues
+    assert "web exposes a development demo token in production" in issues
     assert "api has no exact source revision" in issues
     assert "api has no timezone-aware build timestamp" in issues
     assert "api has no HTTPS canonical source URL" in issues
@@ -163,9 +168,9 @@ def test_rejects_demo_auth_insecure_origins_and_public_datastores() -> None:
 
 def test_rejects_oidc_issuer_drift_and_an_unimplemented_callback_route() -> None:
     config = deepcopy(valid_config())
-    web_args = config["services"]["web"]["build"]["args"]
-    web_args["NEXT_PUBLIC_OIDC_ISSUER"] = "https://other-identity.example.test/"
-    web_args["NEXT_PUBLIC_OIDC_REDIRECT_URI"] = "https://app.example.test/callback"
+    web_env = config["services"]["web"]["environment"]
+    web_env["CUSTOMBUILD_WEB_OIDC_ISSUER"] = "https://other-identity.example.test/"
+    web_env["CUSTOMBUILD_WEB_OIDC_REDIRECT_URI"] = "https://app.example.test/callback"
 
     issues = external_production_issues(config)
 
@@ -189,9 +194,9 @@ def test_rejects_missing_or_invalid_trusted_proxy_networks() -> None:
 
 def test_rejects_callback_on_an_unapproved_origin_and_accepts_issuer_slash_drift() -> None:
     config = deepcopy(valid_config())
-    web_args = config["services"]["web"]["build"]["args"]
-    web_args["NEXT_PUBLIC_OIDC_ISSUER"] = "https://identity.example.test"
-    web_args["NEXT_PUBLIC_OIDC_REDIRECT_URI"] = "https://other-app.example.test/"
+    web_env = config["services"]["web"]["environment"]
+    web_env["CUSTOMBUILD_WEB_OIDC_ISSUER"] = "https://identity.example.test"
+    web_env["CUSTOMBUILD_WEB_OIDC_REDIRECT_URI"] = "https://other-app.example.test/"
 
     issues = external_production_issues(config)
 
@@ -278,3 +283,137 @@ def test_rejects_disabled_or_missing_four_eyes_production_approval() -> None:
 
     assert "api does not require four-eyes production approval" in issues
     assert "worker does not require four-eyes production approval" in issues
+
+
+def test_rejects_public_web_configuration_baked_into_the_image() -> None:
+    config = deepcopy(valid_config())
+    config["services"]["web"]["build"]["args"]["CUSTOMBUILD_WEB_API_URL"] = (
+        "https://api.other-environment.test"
+    )
+
+    issues = external_production_issues(config)
+
+    assert "web public runtime configuration is baked into image build arguments" in issues
+
+
+def test_rejects_legacy_variables_and_a_non_origin_runtime_api() -> None:
+    config = deepcopy(valid_config())
+    web_env = config["services"]["web"]["environment"]
+    web_env["NEXT_PUBLIC_API_URL"] = "https://api.example.test"
+    web_env["CUSTOMBUILD_WEB_API_URL"] = "https://api.example.test/v1"
+
+    issues = external_production_issues(config)
+
+    assert "web uses legacy NEXT_PUBLIC runtime variables" in issues
+    assert "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin" in issues
+
+
+def test_rejects_web_without_explicit_production_runtime_mode() -> None:
+    config = deepcopy(valid_config())
+    config["services"]["web"]["environment"]["APP_ENV"] = "development"
+
+    assert "web does not run with APP_ENV=production" in external_production_issues(config)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "expected_issue"),
+    (
+        (
+            "CUSTOMBUILD_WEB_API_URL",
+            "https://user:password@api.example.test",
+            "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin",
+        ),
+        (
+            "CUSTOMBUILD_WEB_API_URL",
+            "https://api.example.test?tenant=other",
+            "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin",
+        ),
+        (
+            "CUSTOMBUILD_WEB_API_URL",
+            "https://api.example.test#other",
+            "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin",
+        ),
+        (
+            "CUSTOMBUILD_WEB_API_URL",
+            "https://api.example.test\n.evil.test",
+            "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin",
+        ),
+        (
+            "CUSTOMBUILD_WEB_API_URL",
+            "\x00https://api.example.test",
+            "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin",
+        ),
+        (
+            "CUSTOMBUILD_WEB_API_URL",
+            " https://api.example.test",
+            "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin",
+        ),
+        (
+            "CUSTOMBUILD_WEB_API_URL",
+            "https://api.example.test\\evil.test",
+            "web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_ISSUER",
+            "https://user:password@identity.example.test/",
+            "web CUSTOMBUILD_WEB_OIDC_ISSUER must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_ISSUER",
+            "https://identity.example.test/?tenant=other",
+            "web CUSTOMBUILD_WEB_OIDC_ISSUER must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_ISSUER",
+            "https://identity.example.test/#other",
+            "web CUSTOMBUILD_WEB_OIDC_ISSUER must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_ISSUER",
+            "https://identity.example.test\t.evil.test",
+            "web CUSTOMBUILD_WEB_OIDC_ISSUER must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_ISSUER",
+            "https://identity.example.test\\evil.test",
+            "web CUSTOMBUILD_WEB_OIDC_ISSUER must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
+            "https://user:password@app.example.test/",
+            "web CUSTOMBUILD_WEB_OIDC_REDIRECT_URI must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
+            "https://app.example.test/?code=other",
+            "web CUSTOMBUILD_WEB_OIDC_REDIRECT_URI must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
+            "https://app.example.test/#callback",
+            "web CUSTOMBUILD_WEB_OIDC_REDIRECT_URI must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
+            "https://app.example.test/\r.evil.test",
+            "web CUSTOMBUILD_WEB_OIDC_REDIRECT_URI must be an HTTPS URL",
+        ),
+        (
+            "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
+            "https://app.example.test\\evil.test",
+            "web CUSTOMBUILD_WEB_OIDC_REDIRECT_URI must be an HTTPS URL",
+        ),
+    ),
+)
+def test_rejects_credentials_queries_and_fragments_in_public_web_urls(
+    key: str,
+    value: str,
+    expected_issue: str,
+) -> None:
+    config = deepcopy(valid_config())
+    web_env = config["services"]["web"]["environment"]
+    web_env[key] = value
+
+    issues = external_production_issues(config)
+
+    assert expected_issue in issues

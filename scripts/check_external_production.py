@@ -45,6 +45,8 @@ def _environment(service: dict[str, Any]) -> dict[str, str]:
 
 
 def _https(value: str) -> bool:
+    if value != value.strip() or re.search(r"[\x00-\x1f\x7f]", value) or "\\" in value:
+        return False
     try:
         parsed = urlsplit(value)
         _ = parsed.port
@@ -53,6 +55,9 @@ def _https(value: str) -> bool:
             and bool(parsed.hostname)
             and parsed.username is None
             and parsed.password is None
+            and "@" not in parsed.netloc
+            and "?" not in value
+            and "#" not in value
             and not parsed.query
             and not parsed.fragment
         )
@@ -125,7 +130,7 @@ def external_production_issues(
         issues.append(f"required services are missing: {', '.join(missing)}")
         return issues
 
-    for name in ("postgres", "migrate", "api", "worker", "scheduler"):
+    for name in ("postgres", "migrate", "api", "worker", "scheduler", "web"):
         if _environment(_mapping(services[name])).get("APP_ENV") != "production":
             issues.append(f"{name} does not run with APP_ENV=production")
 
@@ -233,22 +238,51 @@ def external_production_issues(
             elif _insecure_secret(environment_value):
                 issues.append(f"{name}.{key} is missing, too short, or insecure")
 
-    web_build = _mapping(_mapping(services["web"]).get("build"))
+    web_service = _mapping(services["web"])
+    web_build = _mapping(web_service.get("build"))
     web_args = _mapping(web_build.get("args"))
-    if web_args.get("NEXT_PUBLIC_DEMO_TOKEN") not in ("", None):
-        issues.append("web embeds a development demo token")
-    for key in ("NEXT_PUBLIC_API_URL", "NEXT_PUBLIC_OIDC_ISSUER", "NEXT_PUBLIC_OIDC_REDIRECT_URI"):
-        if not _https(str(web_args.get(key, ""))):
+    web_env = _environment(web_service)
+    runtime_keys = {
+        "CUSTOMBUILD_WEB_API_URL",
+        "CUSTOMBUILD_WEB_DEMO_TOKEN",
+        "CUSTOMBUILD_WEB_OIDC_ISSUER",
+        "CUSTOMBUILD_WEB_OIDC_CLIENT_ID",
+        "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
+    }
+    legacy_build_keys = {
+        "NEXT_PUBLIC_API_URL",
+        "NEXT_PUBLIC_DEMO_TOKEN",
+        "NEXT_PUBLIC_OIDC_ISSUER",
+        "NEXT_PUBLIC_OIDC_CLIENT_ID",
+        "NEXT_PUBLIC_OIDC_REDIRECT_URI",
+    }
+    if runtime_keys.intersection(web_args) or legacy_build_keys.intersection(web_args):
+        issues.append("web public runtime configuration is baked into image build arguments")
+    if legacy_build_keys.intersection(web_env):
+        issues.append("web uses legacy NEXT_PUBLIC runtime variables")
+    if web_env.get("CUSTOMBUILD_WEB_DEMO_TOKEN") not in ("", None):
+        issues.append("web exposes a development demo token in production")
+
+    web_api_url = web_env.get("CUSTOMBUILD_WEB_API_URL", "")
+    try:
+        web_api_path = urlsplit(web_api_url).path
+    except ValueError:
+        web_api_path = "invalid"
+    if not _https(web_api_url) or web_api_path not in {"", "/"}:
+        issues.append("web CUSTOMBUILD_WEB_API_URL must be an exact HTTPS origin")
+    for key in ("CUSTOMBUILD_WEB_OIDC_ISSUER", "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI"):
+        if not _https(web_env.get(key, "")):
             issues.append(f"web {key} must be an HTTPS URL")
-    if not str(web_args.get("NEXT_PUBLIC_OIDC_CLIENT_ID", "")):
+    web_client_id = web_env.get("CUSTOMBUILD_WEB_OIDC_CLIENT_ID", "")
+    if not web_client_id or web_client_id != web_client_id.strip():
         issues.append("web has no OIDC client id")
 
     api_issuer = _normalized_https_url(api_env.get("OIDC_ISSUER", ""))
-    web_issuer = _normalized_https_url(str(web_args.get("NEXT_PUBLIC_OIDC_ISSUER", "")))
+    web_issuer = _normalized_https_url(web_env.get("CUSTOMBUILD_WEB_OIDC_ISSUER", ""))
     if api_issuer is not None and web_issuer is not None and api_issuer != web_issuer:
         issues.append("API and web OIDC issuers do not match")
 
-    redirect_value = str(web_args.get("NEXT_PUBLIC_OIDC_REDIRECT_URI", ""))
+    redirect_value = web_env.get("CUSTOMBUILD_WEB_OIDC_REDIRECT_URI", "")
     redirect_origin = _https_origin(redirect_value)
     try:
         redirect_path = urlsplit(redirect_value).path

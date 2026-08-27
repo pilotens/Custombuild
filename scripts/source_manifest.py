@@ -32,6 +32,7 @@ APPLICATION_BUILD_INPUTS = (
     "cad",
     "cam",
     "compose.external-production.yml",
+    "compose.registry.yml",
     "compose.yml",
     "infra",
     "package.json",

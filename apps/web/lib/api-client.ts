@@ -1021,8 +1021,9 @@ export class CustombuildApiClient {
   readonly baseUrl: string | undefined;
 
   constructor(
-    baseUrl = process.env.NEXT_PUBLIC_API_URL,
+    baseUrl?: string,
     private readonly explicitToken?: string,
+    private readonly developmentToken?: string,
   ) {
     this.baseUrl = baseUrl?.replace(/\/$/, "") || undefined;
   }
@@ -1038,7 +1039,7 @@ export class CustombuildApiClient {
   private accessToken(): string | undefined {
     return this.explicitToken
       ?? getStoredAccessToken()
-      ?? process.env.NEXT_PUBLIC_DEMO_TOKEN;
+      ?? this.developmentToken;
   }
 
   private async request<ResponseBody>(path: string, options: RequestInit): Promise<ResponseBody> {

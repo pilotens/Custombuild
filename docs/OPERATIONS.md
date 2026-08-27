@@ -122,6 +122,19 @@ used by that reviewed proxy. The proxy must replace `X-Forwarded-For` with one
 canonical client IP; untrusted peers and ambiguous forwarding chains deliberately
 fall back to the socket peer's shared rate-limit bucket.
 
+The web image contains no deployment-specific API, demo-token or OIDC build
+arguments. At request time the Next server reads only the explicitly public
+`CUSTOMBUILD_WEB_API_URL`, `CUSTOMBUILD_WEB_DEMO_TOKEN`,
+`CUSTOMBUILD_WEB_OIDC_ISSUER`, `CUSTOMBUILD_WEB_OIDC_CLIENT_ID` and
+`CUSTOMBUILD_WEB_OIDC_REDIRECT_URI` values, validates them and passes that exact
+allow-list to the browser. `APP_ENV=production` requires an HTTPS API origin, a
+complete HTTPS OIDC public-client tuple and an empty demo token. Invalid runtime
+configuration fails the document request and container healthcheck; it never
+falls back to local authentication. Do not place a client secret, database URL,
+object-store credential or other private value in any `CUSTOMBUILD_WEB_*` value.
+Changing these environment values must not rebuild the image, which allows the
+same tested web digest to be promoted between environments.
+
 Inject database, OIDC and object-store secrets through the deployment secret
 manager; never commit `.env`. Export structured logs and OpenTelemetry at the
 platform layer. Alert on repeated job failures, RLS violations, artifact hash
@@ -162,11 +175,12 @@ it must not be replaced by an ad hoc working-tree hash. `SOURCE_MANIFEST_SHA256`
 separately identifies the exact shared application sources consumed by the three
 Dockerfiles: root dependency manifests plus `apps/web`, `packages`, `cad`, `cam`,
 `postprocessors`, `services`, and `scripts`. It includes uncommitted files and applies
-`.dockerignore` (notably excluding the live `apps/web/e2e` harness), while intentionally
-excluding deployment-only Compose/environment files so one tested image can be promoted
-between isolated environments. The canonical manifest contains sorted paths, file
-types, normalized portable permission modes, sizes and content hashes, with no host,
-clock or filesystem timestamp metadata.
+`.dockerignore` (notably excluding the live `apps/web/e2e` harness). Reviewed Compose
+and workflow controls are included, while deployment environment values are not; the
+same tested image can therefore be promoted between isolated environments without
+rebuilding. The canonical manifest contains sorted paths, file types, normalized
+portable permission modes, sizes and content hashes, with no host, clock or filesystem
+timestamp metadata.
 
 Freeze a local candidate only after all source edits are complete. On PowerShell:
 
@@ -206,13 +220,103 @@ Before promotion, require a clean reviewed commit and the final readiness report
 that binds static controls, Compose design-review acceptance, the exact running
 image IDs and their scans, coordinated backup v4 and restore evidence v3 to the
 same Git/source-manifest identity. Also retain SBOMs and environment-specific
-configuration approval. Signature and platform provenance remain
-deployment-platform responsibilities until a registry and trust root have been selected.
+configuration approval.
+
+### Digest-only deployment descriptor
+
+`scripts/deploy_descriptor.py` is the repository-owned boundary between completed
+release evidence and `.github/workflows/cd.yml`. It renders canonical
+JSON for exactly four application images (`api`, `worker`, `web`, `seaweedfs`) plus
+the reviewed PostgreSQL, Redis and volume-initializer digests. The descriptor also
+binds the full source commit, source-manifest digest, final release-evidence digest,
+workflow run/attempt, exact Compose service-to-image roles and the expected GitHub
+OIDC/Cosign and artifact-attestation identities. Tags, additional fields, duplicate
+JSON keys, non-canonical bytes, substituted component digests and evidence from a
+different run are rejected.
+
+Rendering and verification require the same trusted values. The release workflow
+supplies them directly from GitHub and the completed release evidence. Its read-only
+quality, build and exact-image acceptance jobs run for pull requests targeting
+`main`, so the full candidate path is proven before merge. Only a direct push to
+`main` in this repository can enter GHCR publication or descriptor generation;
+`workflow_run`, fork credentials and PR write authority are absent. Four unprivileged
+matrix jobs build the application images once, scan them and
+archive those exact Docker objects. A separate unprivileged job loads the archives,
+starts Compose with `--no-build`, and captures same-commit browser, WCAG, live
+design-review/CAM blocking, backup, restore, SBOM and vulnerability evidence. Only
+after that gate passes may the four least-privilege publication jobs load the same
+archives and push them to GHCR. The archive SHA-256 proves the bytes transferred
+between jobs; the image config digest links archive load, running containers, scans
+and the raw GHCR manifest; the registry manifest digest is the independent immutable
+subject used by signatures, attestations, the descriptor and deployment. These three
+identities are never compared as though they were interchangeable. In particular,
+the daemon-local scan manifest digest is not a GHCR manifest digest. For pinned
+multi-platform runtimes the evidence separately binds the deployment index digest to
+its unique `linux/amd64` child manifest and that child's config digest. The workflow
+then creates both a keyless Cosign signature and a GitHub artifact attestation with
+the exact workflow identity, and hashes each canonical component publication record
+into descriptor v2.
+
+The final read-only job renders and verifies `verified-promotion-input-<sha>-<run>-<attempt>`.
+That artifact contains the canonical descriptor, checksum, final software release
+evidence and non-secret digest-only Compose environment. The following commands show
+the same verifier boundary for an operator audit:
+
+```bash
+python3 scripts/deploy_descriptor.py render \
+  --repository pilotens/Custombuild \
+  --git-revision "$VCS_REF" \
+  --source-manifest-sha256 "$SOURCE_MANIFEST_SHA256" \
+  --workflow-run-id "$GITHUB_RUN_ID" \
+  --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+  --release-evidence artifacts/release-evidence/release-readiness.json \
+  --publication-directory artifacts/published \
+  --api-image "ghcr.io/pilotens/custombuild-api@sha256:<digest>" \
+  --worker-image "ghcr.io/pilotens/custombuild-worker@sha256:<digest>" \
+  --web-image "ghcr.io/pilotens/custombuild-web@sha256:<digest>" \
+  --seaweedfs-image "ghcr.io/pilotens/custombuild-seaweedfs@sha256:<digest>" \
+  --output artifacts/deploy-descriptor.json \
+  --sha256-output artifacts/deploy-descriptor.sha256
+
+python3 scripts/deploy_descriptor.py verify \
+  --repository pilotens/Custombuild \
+  --git-revision "$VCS_REF" \
+  --source-manifest-sha256 "$SOURCE_MANIFEST_SHA256" \
+  --workflow-run-id "$GITHUB_RUN_ID" \
+  --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+  --release-evidence artifacts/release-evidence/release-readiness.json \
+  --publication-directory artifacts/published \
+  --compose-env-output artifacts/deploy-images.env \
+  artifacts/deploy-descriptor.json
+```
+
+Only the verified command may emit `deploy-images.env`. Use it with the registry
+overlay and the external-production controls, and keep `--no-build` on the actual
+`up` invocation:
+
+```bash
+docker compose --env-file artifacts/deploy-images.env \
+  -f compose.yml -f compose.external-production.yml -f compose.registry.yml \
+  config --quiet
+docker compose --env-file artifacts/deploy-images.env \
+  -f compose.yml -f compose.external-production.yml -f compose.registry.yml \
+  up --no-build --detach --wait
+```
+
+The overlay deliberately contains no registry credentials or deployment secrets.
+The workflow publishes, signs and attests images, but deliberately performs no
+deployment. Repository branch protection, a protected production environment,
+hosting, secrets, ingress and rollback ownership must be configured and reviewed in
+GitHub and on the target platform before an operator may use the artifact. If GHCR
+package creation or `GITHUB_TOKEN` package permission is disabled, publication fails
+closed and that repository-administration blocker must be resolved externally.
+Neither a successful software release nor its descriptor grants commercial release
+authority or physical-machine authorization; both remain explicitly `false`.
 
 Register the web application as an OIDC public client with Authorization Code and
 PKCE (`S256`). The callback URI must be the public web origin's exact root (for
 example `https://app.example.com/`); no separate `/callback` route is implemented.
-Configure the same issuer in the API and web build. Discovery authorization and
+Configure the same issuer in the API and web runtime. Discovery authorization and
 token endpoints must stay on that issuer's HTTPS origin, and no browser client
 secret may be provided. Before allowing a CAM reviewer to
 lock a revision, confirm that the job exposes `operations`,

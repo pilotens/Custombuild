@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { clearOidcSession, getStoredAccessToken, validateOidcDiscovery } from "./auth-client";
+import {
+  clearOidcSession,
+  getStoredAccessToken,
+  oidcConfigured,
+  oidcRedirectUri,
+  validateOidcDiscovery,
+} from "./auth-client";
 
 const TOKEN_KEY = "custombuild:oidc:access-token";
 
@@ -75,5 +81,35 @@ describe("OIDC browser session", () => {
       { ...valid, issuer: "https://other.example.test" },
       "https://identity.example.test",
     )).toThrow("issuer matchar inte");
+  });
+
+  it("uses only a complete runtime OIDC tuple", () => {
+    const config = {
+      appEnv: "production" as const,
+      oidcIssuer: "https://identity.example.test",
+      oidcClientId: "custombuild-web",
+      oidcRedirectUri: "https://app.example.test/",
+    };
+    expect(oidcConfigured(config)).toBe(true);
+    expect(oidcConfigured({ ...config, oidcClientId: undefined })).toBe(false);
+  });
+
+  it("binds the configured callback to the current browser HTTPS root", () => {
+    const config = {
+      appEnv: "production" as const,
+      oidcIssuer: "https://identity.example.test",
+      oidcClientId: "custombuild-web",
+      oidcRedirectUri: "https://app.example.test/",
+    };
+    expect(oidcRedirectUri(config, "https://app.example.test")).toBe(
+      "https://app.example.test/",
+    );
+    expect(() => oidcRedirectUri(config, "https://other.example.test")).toThrow(
+      "exakta HTTPS-rot",
+    );
+    expect(() => oidcRedirectUri(
+      { ...config, oidcRedirectUri: "https://app.example.test/callback" },
+      "https://app.example.test",
+    )).toThrow("exakta HTTPS-rot");
   });
 });

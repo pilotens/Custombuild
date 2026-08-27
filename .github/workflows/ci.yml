@@ -134,7 +134,7 @@ jobs:
       - run: pnpm --dir apps/web build
       - name: Install Playwright browser matrix
         run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
-      - name: Cross-browser production workspace smoke
+      - name: Cross-browser production-build offline workspace smoke
         run: pnpm --dir apps/web test:e2e
       - name: Upload Playwright diagnostics
         if: always()
@@ -163,7 +163,15 @@ jobs:
             .
       - name: Smoke production web image
         run: |
-          container_id=$(docker run --rm --detach --publish 127.0.0.1:3102:3000 custombuild-web:ci)
+          container_id=$(docker run --rm --detach \
+            --publish 127.0.0.1:3102:3000 \
+            --env APP_ENV=production \
+            --env CUSTOMBUILD_WEB_API_URL=https://api.ci.invalid \
+            --env CUSTOMBUILD_WEB_DEMO_TOKEN= \
+            --env CUSTOMBUILD_WEB_OIDC_ISSUER=https://identity.ci.invalid/ \
+            --env CUSTOMBUILD_WEB_OIDC_CLIENT_ID=custombuild-web \
+            --env CUSTOMBUILD_WEB_OIDC_REDIRECT_URI=https://app.ci.invalid/ \
+            custombuild-web:ci)
           trap 'docker stop "$container_id" >/dev/null 2>&1 || true' EXIT
 
           ready=false
@@ -182,6 +190,53 @@ jobs:
 
           page=$(curl --fail --silent http://127.0.0.1:3102/)
           grep --quiet --fixed-strings '<html lang="sv"' <<< "$page"
+      - name: Reject blank production web runtime
+        run: |
+          container_id=$(docker run --rm --detach \
+            --publish 127.0.0.1:3103:3000 \
+            --env APP_ENV= \
+            --health-start-period=1s \
+            --health-interval=1s \
+            --health-timeout=3s \
+            --health-retries=2 \
+            custombuild-web:ci)
+          trap 'docker stop "$container_id" >/dev/null 2>&1 || true' EXIT
+
+          status=000
+          for attempt in {1..30}; do
+            status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+              http://127.0.0.1:3103/ || true)
+            if [ "$status" != 000 ]; then
+              break
+            fi
+            sleep 1
+          done
+          case "$status" in
+            2*|3*)
+              echo "Blank production runtime unexpectedly served HTTP $status"
+              docker logs "$container_id"
+              exit 1
+              ;;
+            000)
+              echo "Blank production runtime never accepted a connection"
+              docker logs "$container_id"
+              exit 1
+              ;;
+          esac
+
+          health=starting
+          for attempt in {1..30}; do
+            health=$(docker inspect --format '{{.State.Health.Status}}' "$container_id")
+            if [ "$health" = unhealthy ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$health" != unhealthy ]; then
+            echo "Blank production runtime did not become unhealthy: $health"
+            docker logs "$container_id"
+            exit 1
+          fi
 
   compose-acceptance:
     runs-on: ubuntu-24.04
@@ -235,9 +290,9 @@ jobs:
           CORS_ORIGINS: https://app.ci.invalid
           ARTIFACT_SIGNING_SECRET: strong-signing-ci-secret-at-least-32-bytes # gitleaks:allow -- fixed CI-only test value
           S3_PUBLIC_ENDPOINT: https://files.ci.invalid
-          NEXT_PUBLIC_API_URL: https://api.ci.invalid
-          NEXT_PUBLIC_OIDC_CLIENT_ID: custombuild-web
-          NEXT_PUBLIC_OIDC_REDIRECT_URI: https://app.ci.invalid/
+          CUSTOMBUILD_WEB_API_URL: https://api.ci.invalid
+          CUSTOMBUILD_WEB_OIDC_CLIENT_ID: custombuild-web
+          CUSTOMBUILD_WEB_OIDC_REDIRECT_URI: https://app.ci.invalid/
         run: |
           python3 scripts/check_external_production.py --repo .
       - name: Verify source freeze before Compose build

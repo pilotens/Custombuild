@@ -34,3 +34,22 @@ Neither local surface is an Internet production deployment. `prod` here means a
 stable production *candidate*. Internet production still requires the HTTPS,
 OIDC, secret-management, backup, rate-limiting and observability controls in
 `OPERATIONS.md` and `SECURITY.md`.
+
+The web container reads its explicitly public API/OIDC configuration at runtime.
+Environment promotion must reuse the tested image digest and change only validated
+`CUSTOMBUILD_WEB_*` values; build arguments are release identity only. Production
+forbids the public local demo credential and fails closed on HTTP or partial OIDC
+configuration.
+
+The checked-in `compose.registry.yml` is the digest-only image-role overlay consumed
+by the verified artifact from the main-push-only publication stage. Its four
+application references may come only from `scripts/deploy_descriptor.py verify`;
+PostgreSQL, Redis and volume-init remain fixed to the reviewed digests. Combine it
+with the base and external-production files and run `up --no-build` so environment
+promotion cannot rebuild source or resolve a tag. The workflow publishes, signs and
+attests the accepted GHCR manifests, but does not deploy them. A protected production
+environment, hosting and its operational evidence remain external prerequisites.
+Descriptor v2 keeps the archived object checksum, the accepted image config digest
+and the published registry manifest digest as distinct identities. For a pinned OCI
+index it also records the resolved `linux/amd64` child manifest; operators must not
+substitute that child digest for the reviewed deployment index digest.
