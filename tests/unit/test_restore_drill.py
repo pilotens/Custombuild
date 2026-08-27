@@ -77,6 +77,12 @@ def test_restore_worker_probe_uses_only_a_worker_allowlisted_table() -> None:
     assert "FROM pg_auth_members" in source
 
 
+def test_restore_evidence_requires_acceptance_before_traffic() -> None:
+    source = Path("scripts/restore_drill.py").read_text(encoding="utf-8")
+
+    assert '"tenant_acceptance_required_before_traffic": True' in source
+
+
 def test_postgres_wait_ignores_temporary_initialization_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

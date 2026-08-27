@@ -731,7 +731,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             "object_store_hashes_verified": True,
             "object_store_metadata_verified": True,
             "tenant_rls_verified": True,
-            "tenant_acceptance_required_before_traffic": False,
+            "tenant_acceptance_required_before_traffic": True,
             "status": "PASS",
         }
     except BaseException as exc:
