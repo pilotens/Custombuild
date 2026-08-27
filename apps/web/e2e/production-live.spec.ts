@@ -2,6 +2,7 @@ import { expect, test, type Request } from "@playwright/test";
 import {
   provisionLiveProject,
   selectProjectBeforeNavigation,
+  waitForLiveWorkspaceReady,
   waitForSuccessfulProjectDraftSave,
 } from "./live-helpers";
 import { chooseTemplateAndCreate } from "./planning-helpers";
@@ -124,6 +125,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
 
   const response = await page.goto("/", { waitUntil: "domcontentloaded" });
   expect(response?.status()).toBe(200);
+  await waitForLiveWorkspaceReady(page, project.project.id);
   await expect(page.getByText("Sparad på servern", { exact: true })).toBeVisible({ timeout: 30_000 });
   const initialPreview = page.waitForResponse((candidate) => {
     if (
