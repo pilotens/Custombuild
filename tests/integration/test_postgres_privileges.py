@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import os
 import uuid
 from collections.abc import Mapping
@@ -8,6 +7,11 @@ from collections.abc import Mapping
 import pytest
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
+
+from scripts.postgres_runtime_privileges import (
+    API_TABLE_PRIVILEGES,
+    WORKER_TABLE_PRIVILEGES,
+)
 
 
 def _urls() -> tuple[str, str, str, str]:
@@ -36,6 +40,75 @@ def _direct_table_privileges(engine: Engine) -> dict[str, frozenset[str]]:
     return {table: frozenset(values) for table, values in privileges.items()}
 
 
+def _effective_table_privileges(engine: Engine) -> dict[str, frozenset[str]]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT object.relname, candidate.name "
+                "FROM pg_class object "
+                "JOIN pg_namespace namespace ON namespace.oid = object.relnamespace "
+                "CROSS JOIN (VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), "
+                "('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) AS candidate(name) "
+                "WHERE namespace.nspname = 'public' "
+                "AND object.relkind IN ('r', 'p', 'v', 'm', 'f') "
+                "AND has_table_privilege(current_user, object.oid, candidate.name) "
+                "ORDER BY object.relname, candidate.name"
+            )
+        )
+        privileges: dict[str, set[str]] = {}
+        for table_name, privilege in rows:
+            privileges.setdefault(str(table_name), set()).add(str(privilege))
+    return {table: frozenset(values) for table, values in privileges.items()}
+
+
+def _effective_sequence_privileges(engine: Engine) -> list[tuple[str, str]]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT object.relname, candidate.name "
+                "FROM pg_class object "
+                "JOIN pg_namespace namespace ON namespace.oid = object.relnamespace "
+                "CROSS JOIN (VALUES ('USAGE'), ('SELECT'), ('UPDATE')) AS candidate(name) "
+                "WHERE namespace.nspname = 'public' AND object.relkind = 'S' "
+                "AND has_sequence_privilege(current_user, object.oid, candidate.name) "
+                "ORDER BY object.relname, candidate.name"
+            )
+        )
+        return [(str(sequence), str(privilege)) for sequence, privilege in rows]
+
+
+def _runtime_memberships(engine: Engine) -> list[tuple[str, str]]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT member_role.rolname, granted_role.rolname "
+                "FROM pg_auth_members membership "
+                "JOIN pg_roles member_role ON member_role.oid = membership.member "
+                "JOIN pg_roles granted_role ON granted_role.oid = membership.roleid "
+                "WHERE member_role.rolname IN ('custombuild_api', 'custombuild_worker') "
+                "ORDER BY member_role.rolname, granted_role.rolname"
+            )
+        )
+        return [(str(member), str(granted)) for member, granted in rows]
+
+
+def _public_object_privileges(engine: Engine) -> list[tuple[str, str]]:
+    with engine.connect() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT object.relname, privilege.privilege_type "
+                "FROM pg_class object "
+                "JOIN pg_namespace namespace ON namespace.oid = object.relnamespace "
+                "CROSS JOIN LATERAL aclexplode(object.relacl) privilege "
+                "WHERE namespace.nspname = 'public' "
+                "AND object.relkind IN ('r', 'p', 'S', 'v', 'm', 'f') "
+                "AND privilege.grantee = 0 "
+                "ORDER BY object.relname, privilege.privilege_type"
+            )
+        )
+        return [(str(object_name), str(privilege)) for object_name, privilege in rows]
+
+
 def _expected(mapping: Mapping[str, tuple[str, ...]]) -> dict[str, frozenset[str]]:
     return {table: frozenset(privileges) for table, privileges in mapping.items()}
 
@@ -61,20 +134,31 @@ def _assert_statement_denied(
 
 @pytest.mark.postgres
 def test_runtime_roles_have_only_the_declared_table_privileges() -> None:
-    _, _, api_url, worker_url = _urls()
-    migration = importlib.import_module(
-        "services.api.alembic.versions.0011_runtime_role_privileges"
-    )
+    bootstrap_url, _, api_url, worker_url = _urls()
+    bootstrap_engine = create_engine(bootstrap_url)
     api_engine = create_engine(api_url)
     worker_engine = create_engine(worker_url)
     try:
-        assert _direct_table_privileges(api_engine) == _expected(
-            migration.API_TABLE_PRIVILEGES
+        assert _direct_table_privileges(api_engine) == _expected(API_TABLE_PRIVILEGES)
+        assert _effective_table_privileges(api_engine) == _expected(API_TABLE_PRIVILEGES)
+        assert _direct_table_privileges(worker_engine) == _expected(WORKER_TABLE_PRIVILEGES)
+        assert _effective_table_privileges(worker_engine) == _expected(
+            WORKER_TABLE_PRIVILEGES
         )
-        assert _direct_table_privileges(worker_engine) == _expected(
-            migration.WORKER_TABLE_PRIVILEGES
-        )
+        assert _effective_sequence_privileges(api_engine) == []
+        assert _effective_sequence_privileges(worker_engine) == []
+        for engine in (api_engine, worker_engine):
+            with engine.connect() as connection:
+                assert connection.execute(
+                    text(
+                        "SELECT has_schema_privilege(current_user, 'public', 'USAGE'), "
+                        "has_schema_privilege(current_user, 'public', 'CREATE')"
+                    )
+                ).one() == (True, False)
+        assert _runtime_memberships(bootstrap_engine) == []
+        assert _public_object_privileges(bootstrap_engine) == []
     finally:
+        bootstrap_engine.dispose()
         api_engine.dispose()
         worker_engine.dispose()
 

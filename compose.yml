@@ -117,6 +117,7 @@ services:
     command: ["python", "-m", "scripts.run_migrations"]
     environment:
       APP_ENV: ${APP_ENV:-development}
+      SEED_DEVELOPMENT_DATA: "true"
       PRODUCTION_FOUR_EYES_REQUIRED: ${PRODUCTION_FOUR_EYES_REQUIRED:-false}
       DATABASE_URL: ${MIGRATION_DATABASE_URL:-postgresql+psycopg://custombuild_migrator:change-me-migrator@postgres:5432/custombuild}
     depends_on:

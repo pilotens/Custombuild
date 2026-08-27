@@ -8,6 +8,8 @@ from app.config_guards import validate_production_database_url
 from app.db import session_scope
 from app.seed import seed_development
 
+DEVELOPMENT_SEED_FLAG = "SEED_DEVELOPMENT_DATA"
+
 
 def validate_migration_environment(environment: Mapping[str, str]) -> None:
     if environment.get("APP_ENV", "development") != "production":
@@ -20,14 +22,23 @@ def validate_migration_environment(environment: Mapping[str, str]) -> None:
     )
 
 
+def development_seed_requested(environment: Mapping[str, str]) -> bool:
+    """Allow demo-data writes only through an explicit non-production opt-in."""
+
+    return (
+        environment.get("APP_ENV", "development") in {"development", "test"}
+        and environment.get(DEVELOPMENT_SEED_FLAG) == "true"
+    )
+
+
 def main() -> None:
     validate_migration_environment(os.environ)
     alembic_main(argv=["-c", "services/api/alembic.ini", "upgrade", "head"])
     # PostgreSQL runtime roles are deliberately unable to bootstrap global
-    # organizations, users or memberships. Seed local Compose only through the
-    # migrator after the least-privilege migration has completed. SQLite keeps
-    # its in-process seed in the API lifespan because it has no database roles.
-    if os.environ.get("APP_ENV", "development") != "production":
+    # organizations, users or memberships. Only local Compose explicitly opts
+    # into seeding through the migrator after least-privilege migration. SQLite
+    # keeps its in-process seed in the API lifespan because it has no DB roles.
+    if development_seed_requested(os.environ):
         for session in session_scope():
             seed_development(session)
 

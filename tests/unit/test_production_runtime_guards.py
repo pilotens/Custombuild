@@ -187,6 +187,7 @@ def test_migrator_upgrades_before_seeding_nonproduction_database(
         calls.append(("seed", received_session))
 
     monkeypatch.setenv("APP_ENV", app_env)
+    monkeypatch.setenv("SEED_DEVELOPMENT_DATA", "true")
     monkeypatch.setattr(migration_runner, "alembic_main", fake_alembic_main)
     monkeypatch.setattr(migration_runner, "session_scope", fake_session_scope)
     monkeypatch.setattr(migration_runner, "seed_development", fake_seed)
@@ -207,11 +208,68 @@ def test_migrator_never_seeds_production_database(monkeypatch: pytest.MonkeyPatc
         raise AssertionError("production migrations must not seed development data")
 
     monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SEED_DEVELOPMENT_DATA", "true")
     monkeypatch.setenv(
         "DATABASE_URL",
         "postgresql+psycopg://custombuild_migrator:strong-migrator-db-password"
         "@postgres/custombuild",
     )
+    monkeypatch.setattr(
+        migration_runner,
+        "alembic_main",
+        lambda *, argv: calls.append("migration"),
+    )
+    monkeypatch.setattr(migration_runner, "session_scope", fail_if_called)
+    monkeypatch.setattr(migration_runner, "seed_development", fail_if_called)
+
+    migration_runner.main()
+
+    assert calls == ["migration"]
+
+
+@pytest.mark.parametrize(
+    "seed_flag",
+    (None, "", "false", "1", "TRUE", " true"),
+)
+def test_migrator_requires_explicit_seed_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+    seed_flag: str | None,
+) -> None:
+    calls: list[str] = []
+
+    def fail_if_called() -> object:
+        raise AssertionError("development seed requires an exact explicit opt-in")
+
+    monkeypatch.setenv("APP_ENV", "development")
+    if seed_flag is None:
+        monkeypatch.delenv("SEED_DEVELOPMENT_DATA", raising=False)
+    else:
+        monkeypatch.setenv("SEED_DEVELOPMENT_DATA", seed_flag)
+    monkeypatch.setattr(
+        migration_runner,
+        "alembic_main",
+        lambda *, argv: calls.append("migration"),
+    )
+    monkeypatch.setattr(migration_runner, "session_scope", fail_if_called)
+    monkeypatch.setattr(migration_runner, "seed_development", fail_if_called)
+
+    migration_runner.main()
+
+    assert calls == ["migration"]
+
+
+@pytest.mark.parametrize("app_env", ("staging", "prod", "", "DEVELOPMENT"))
+def test_migrator_does_not_seed_unknown_environments(
+    monkeypatch: pytest.MonkeyPatch,
+    app_env: str,
+) -> None:
+    calls: list[str] = []
+
+    def fail_if_called() -> object:
+        raise AssertionError("development seed is restricted to known local environments")
+
+    monkeypatch.setenv("APP_ENV", app_env)
+    monkeypatch.setenv("SEED_DEVELOPMENT_DATA", "true")
     monkeypatch.setattr(
         migration_runner,
         "alembic_main",
@@ -335,4 +393,5 @@ def test_compose_routes_production_mode_through_every_startup_guard() -> None:
     compose = Path("compose.yml").read_text(encoding="utf-8")
 
     assert compose.count("APP_ENV: ${APP_ENV:-development}") == 5
+    assert compose.count('SEED_DEVELOPMENT_DATA: "true"') == 1
     assert 'command: ["python", "-m", "scripts.run_migrations"]' in compose
