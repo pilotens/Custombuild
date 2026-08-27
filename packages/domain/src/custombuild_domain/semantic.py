@@ -14,10 +14,17 @@ from typing import Annotated
 from pydantic import Field, ValidationError, model_validator
 
 from .enums import BackPanelType, ReinforcementMode
-from .models import BookcaseDesignSpec, BookcaseParameters, FrozenModel, StableKey
+from .materials import screening_birch_plywood_6, screening_mdf_6
+from .models import (
+    BookcaseDesignSpec,
+    BookcaseParameters,
+    FrozenModel,
+    MaterialVersion,
+    StableKey,
+)
 from .units import mm
 
-SEMANTIC_DESIGN_VERSION = "semantic-design-1.1.0"
+SEMANTIC_DESIGN_VERSION = "semantic-design-1.2.0"
 DEFAULT_PLINTH_HEIGHT_UM = mm(80)
 
 Permille = Annotated[int, Field(strict=True, ge=0, le=1_000)]
@@ -71,6 +78,18 @@ class SemanticIntentApprovalRequired(SemanticCompilationError):
 
 class UnsupportedSemanticOperation(SemanticCompilationError):
     """Raised when the current template cannot represent the requested operation."""
+
+
+def _screened_back_material_for(spec: BookcaseDesignSpec) -> MaterialVersion:
+    """Choose only the bounded back-material pair supported by the current MVP."""
+
+    if spec.material.material_id == "birch-plywood":
+        return screening_birch_plywood_6()
+    if spec.material.material_id == "mdf":
+        return screening_mdf_6()
+    raise SemanticCompilationError(
+        "adding a back panel requires an explicit supported back material"
+    )
 
 
 class SemanticBounds(FrozenModel):
@@ -555,6 +574,21 @@ def compile_semantic_intent(
         updated_parameters = BookcaseParameters.model_validate(parameter_payload)
         spec_payload = spec.model_dump(mode="python")
         spec_payload["parameters"] = updated_parameters
+        if intent.component_kind == SemanticComponentKind.BACK_PANEL:
+            if adding:
+                spec_payload["back_material"] = _screened_back_material_for(spec)
+                warnings.append(
+                    "A versioned 6 mm screening back material was selected deterministically; "
+                    "supplier batch evidence remains required before physical production."
+                )
+            else:
+                spec_payload["back_material"] = None
+        if spec.joint_retention is not None:
+            spec_payload["joint_retention"] = None
+            warnings.append(
+                "The geometry change invalidated the previous joint-retention binding; "
+                "a new exact contract is required before CAM can be released."
+            )
         updated_spec = BookcaseDesignSpec.model_validate(spec_payload)
     except ValidationError as exc:
         raise SemanticCompilationError(

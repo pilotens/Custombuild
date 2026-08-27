@@ -904,11 +904,12 @@ def test_dado_dimensions_propagate_to_bom_cam_and_assembly(
     expected_panel_dimensions = {
         "bottom": ("876", "320"),
         "top": ("876", "320"),
-        "divider-0": ("298", "1896"),
+        "divider-0": ("308", "1896"),
         "shelf-r0-b0": ("435", "298"),
         "shelf-r0-b1": ("435", "298"),
         "plinth": ("864", "86"),
-        "back": ("876", "1896"),
+        "back-b0": ("435", "1896"),
+        "back-b1": ("435", "1896"),
     }
     for key, (width_mm, height_mm) in expected_panel_dimensions.items():
         row = bom_rows[by_key[key].part_id]

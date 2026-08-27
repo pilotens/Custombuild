@@ -6,11 +6,16 @@ from pydantic import ValidationError
 
 
 def _spec(parameters: domain.BookcaseParameters | None = None) -> domain.BookcaseDesignSpec:
+    effective_parameters = parameters or domain.BookcaseParameters()
     return domain.BookcaseDesignSpec(
         design_id="semantic-test",
-        parameters=parameters or domain.BookcaseParameters(),
+        parameters=effective_parameters,
         material=domain.screening_birch_plywood_18(),
-        back_material=domain.screening_birch_plywood_6(),
+        back_material=(
+            None
+            if effective_parameters.back_panel == domain.BackPanelType.NONE
+            else domain.screening_birch_plywood_6()
+        ),
     )
 
 
@@ -39,6 +44,7 @@ def _intent(
 def test_semantic_document_exposes_furniture_aware_snap_targets() -> None:
     document = domain.semantic_document_from_bookcase(_spec())
 
+    assert document.schema_version == "semantic-design-1.2.0"
     shelf_targets = [
         target
         for target in document.snap_targets
@@ -158,6 +164,8 @@ def test_back_and_plinth_compile_to_versioned_parameters() -> None:
         _intent(domain.SemanticComponentKind.BACK_PANEL, "bookcase:back:rear"),
     )
     assert back.spec.parameters.back_panel == domain.BackPanelType.INSET_GROOVE
+    assert back.spec.back_material == domain.screening_birch_plywood_6()
+    assert any("supplier batch evidence remains required" in warning for warning in back.warnings)
 
     removed_back = domain.compile_semantic_intent(
         back.spec,
@@ -168,6 +176,7 @@ def test_back_and_plinth_compile_to_versioned_parameters() -> None:
         ),
     )
     assert removed_back.spec.parameters.back_panel == domain.BackPanelType.NONE
+    assert removed_back.spec.back_material is None
 
     without_plinth = _spec(domain.BookcaseParameters(plinth_height_um=0))
     plinth = domain.compile_semantic_intent(
