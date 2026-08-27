@@ -112,15 +112,12 @@ EXTERNAL_IMAGE_REFERENCES = {
         "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
     ),
 }
-EXTERNAL_SCAN_INPUTS = {
-    "postgres": "cgr.dev/chainguard/postgres:latest",
-    "redis": "redis:7.2.15-alpine",
-    "volume-init": "cgr.dev/chainguard/busybox:latest",
-}
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
 IMAGE_ID = re.compile(r"^sha256:[a-f0-9]{64}$")
 REVISION = re.compile(r"^[a-f0-9]{40}$")
 SYFT_CREATOR = re.compile(r"^Tool: syft-[^\s]+$")
+SYFT_PACKAGE_ID = re.compile(r"^[a-f0-9]{16}$")
+GRYPE_TO_SPDX_PACKAGE_TYPES = {"UnknownPackage": "binary"}
 GRYPE_VERSION = "0.110.0"
 
 
@@ -181,14 +178,28 @@ def _expected_image_reference(component: str, revision: str) -> str:
 
 
 def _expected_scan_input(component: str, revision: str) -> str:
-    if component in BUILT_IMAGE_NAMES:
-        return f"{BUILT_IMAGE_NAMES[component]}:{revision}"
-    return EXTERNAL_SCAN_INPUTS[component]
+    return _expected_image_reference(component, revision)
+
+
+def _expected_sbom_root_identity(component: str, revision: str) -> tuple[str, str, str]:
+    reference = _expected_image_reference(component, revision)
+    tagged_reference, digest_separator, digest = reference.partition("@")
+    repository, separator, tag = tagged_reference.rpartition(":")
+    if (
+        not separator
+        or not repository
+        or not tag
+        or (digest_separator and not IMAGE_ID.fullmatch(digest))
+    ):
+        raise EvidenceError(f"runtime image {component} has an invalid expected reference")
+    version = digest if digest_separator and tag == "latest" else tag
+    return repository, version, tag
 
 
 def _verify_sboms(
     directory: Path,
     images: list[dict[str, Any]],
+    revision: str,
 ) -> tuple[dict[str, str], dict[str, dict[str, Any]]]:
     expected_names = {f"sbom-{component}.spdx.json" for component in REQUIRED_IMAGES}
     try:
@@ -231,6 +242,7 @@ def _verify_sboms(
             raise EvidenceError(f"runtime SBOM {component} has no packages")
         package_versions: set[tuple[str, str]] = set()
         package_identities: dict[str, tuple[str, str]] = {}
+        packages_by_syft_id: dict[str, tuple[str, str, str, str]] = {}
         for package in packages:
             if not isinstance(package, dict):
                 raise EvidenceError(f"runtime SBOM {component} has an invalid package")
@@ -244,6 +256,31 @@ def _verify_sboms(
             if spdx_id in package_identities:
                 raise EvidenceError(f"runtime SBOM {component} has a duplicate package SPDX ID")
             package_identities[spdx_id] = (name, version if isinstance(version, str) else "")
+            syft_package_id = spdx_id.rpartition("-")[2]
+            if SYFT_PACKAGE_ID.fullmatch(syft_package_id):
+                external_refs = package.get("externalRefs")
+                package_purls = (
+                    [
+                        reference.get("referenceLocator")
+                        for reference in external_refs
+                        if isinstance(reference, dict)
+                        and reference.get("referenceCategory") == "PACKAGE-MANAGER"
+                        and reference.get("referenceType") == "purl"
+                        and isinstance(reference.get("referenceLocator"), str)
+                    ]
+                    if isinstance(external_refs, list)
+                    else []
+                )
+                if len(package_purls) != 1 or syft_package_id in packages_by_syft_id:
+                    raise EvidenceError(
+                        f"runtime SBOM {component} has an ambiguous Syft package identity"
+                    )
+                packages_by_syft_id[syft_package_id] = (
+                    name,
+                    version if isinstance(version, str) else "",
+                    str(package_purls[0]),
+                    spdx_id,
+                )
             if isinstance(version, str) and version:
                 package_versions.add((name, version))
         required_packages = REQUIRED_NATIVE_PACKAGES.get(component, frozenset())
@@ -282,10 +319,11 @@ def _verify_sboms(
         root = next(package for package in packages if package.get("SPDXID") == root_spdx_id)
         if root.get("primaryPackagePurpose") != "CONTAINER":
             raise EvidenceError(f"runtime SBOM {component} root is not a container")
-        expected_input = str(runtime_by_component[component]["scan_input"])
-        expected_name, expected_tag = expected_input.rsplit(":", 1)
-        expected_name = expected_name.rsplit("/", 1)[-1]
-        if root.get("name") != expected_name or root.get("versionInfo") != expected_tag:
+        expected_input = _expected_scan_input(component, revision)
+        expected_name, expected_version, expected_tag = _expected_sbom_root_identity(
+            component, revision
+        )
+        if root.get("name") != expected_name or root.get("versionInfo") != expected_version:
             raise EvidenceError(f"runtime SBOM {component} has another image root identity")
         checksums = root.get("checksums")
         sha256_checksums = (
@@ -322,11 +360,13 @@ def _verify_sboms(
             raise EvidenceError(f"runtime SBOM {component} has no exact OCI identity")
         decoded_purl = unquote(str(oci_purls[0]))
         parsed_purl = urlsplit(decoded_purl)
-        purl_tags = parse_qs(parsed_purl.query, strict_parsing=False).get("tag")
+        purl_query = parse_qs(parsed_purl.query, strict_parsing=False)
         if (
             parsed_purl.scheme != "pkg"
             or parsed_purl.path != f"oci/{expected_name}@{manifest_digest}"
-            or purl_tags != [expected_tag]
+            or parsed_purl.netloc
+            or parsed_purl.fragment
+            or purl_query != {"arch": ["amd64"], "tag": [expected_tag]}
         ):
             raise EvidenceError(f"runtime SBOM {component} OCI identity differs from its root")
         if runtime_by_component[component].get("manifest_digest") != manifest_digest:
@@ -336,10 +376,9 @@ def _verify_sboms(
             raise EvidenceError(f"runtime SBOM {component} differs from runtime evidence")
         digests[component] = digest
         identities[component] = {
-            "scan_image_id": root_spdx_id.removeprefix("SPDXRef-"),
             "manifest_digest": manifest_digest,
             "scan_input": expected_input,
-            "packages": package_identities,
+            "packages_by_syft_id": packages_by_syft_id,
         }
     return digests, identities
 
@@ -394,7 +433,7 @@ def _verify_scans(
             or source.get("type") != "image"
             or not isinstance(target, dict)
             or target.get("userInput") != sbom_identity["scan_input"]
-            or target.get("imageID") != sbom_identity["scan_image_id"]
+            or target.get("imageID") != runtime_by_component[component].get("image_id")
             or target.get("manifestDigest") != sbom_identity["manifest_digest"]
         ):
             raise EvidenceError(f"runtime scan {component} is not bound to its exact SBOM target")
@@ -413,13 +452,24 @@ def _verify_scans(
             artifact = match.get("artifact") if isinstance(match, dict) else None
             artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
             sbom_package = (
-                sbom_identity["packages"].get(f"SPDXRef-{artifact_id}")
-                if isinstance(artifact_id, str)
+                sbom_identity["packages_by_syft_id"].get(artifact_id)
+                if isinstance(artifact_id, str) and SYFT_PACKAGE_ID.fullmatch(artifact_id)
                 else None
             )
-            if not isinstance(artifact, dict) or sbom_package != (
-                artifact.get("name"),
-                artifact.get("version"),
+            artifact_type = artifact.get("type") if isinstance(artifact, dict) else None
+            spdx_package_type = (
+                GRYPE_TO_SPDX_PACKAGE_TYPES.get(artifact_type, artifact_type)
+                if isinstance(artifact_type, str)
+                else None
+            )
+            if (
+                not isinstance(sbom_package, tuple)
+                or len(sbom_package) != 4
+                or sbom_package[:3]
+                != (artifact.get("name"), artifact.get("version"), artifact.get("purl"))
+                or not isinstance(artifact_type, str)
+                or not artifact_type
+                or not sbom_package[3].startswith(f"SPDXRef-Package-{spdx_package_type}-")
             ):
                 raise EvidenceError(f"runtime scan {component} contains a match from another SBOM")
         ignored_matches = document.get("ignoredMatches")
@@ -575,7 +625,7 @@ def build_final_report(
         components.add(component)
     if components != REQUIRED_IMAGES:
         raise EvidenceError("runtime evidence does not cover the exact required image set")
-    sbom_sha256, sbom_identities = _verify_sboms(sbom_directory, images)
+    sbom_sha256, sbom_identities = _verify_sboms(sbom_directory, images, revision)
     scan_sha256 = _verify_scans(sbom_directory, images, sbom_identities)
     seaweed = next(item for item in images if item.get("component") == "seaweedfs")
     if seaweed.get("image_id") != object_store.get("image_id"):

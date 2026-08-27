@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -15,6 +16,33 @@ from scripts.release_evidence_gate import EvidenceError, build_final_report
 REVISION = "1" * 40
 SOURCE = "2" * 64
 SEAWEED_ID = "sha256:" + "3" * 64
+EXTERNAL_SBOM_IDENTITIES = {
+    "postgres": (
+        "cgr.dev/chainguard/postgres",
+        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060",
+        "latest",
+    ),
+    "redis": ("redis", "7.2.15-alpine", "7.2.15-alpine"),
+    "volume-init": (
+        "cgr.dev/chainguard/busybox",
+        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6",
+        "latest",
+    ),
+}
+EXTERNAL_RUNTIME_IDENTITIES = {
+    "postgres": (
+        "sha256:090173413bfc70ef815772bbaaafcc5dd14b24fa51a96d50e9de8199cc512786",
+        "sha256:4c182473bc16ff3c0d11b6c7cec116889c65f93162540f72a90ad0b1b957fba9",
+    ),
+    "redis": (
+        "sha256:305eb88302bd3271bb2cb79f16c334da746511fb308bf5cdc36bced178d215d8",
+        "sha256:86a6ce875fe0a233e015f09c2b6dacd9e30e6074499e9ee715f2dafeb902e872",
+    ),
+    "volume-init": (
+        "sha256:93007eb2eb686f408f418ce3a2aa44a638392fd1e2b65a73082c6a81608f4e31",
+        "sha256:1be7e1b6cadc639cd9652438beec21db56a402a2244f6fd1262f980530f54fb8",
+    ),
+}
 
 
 def _write(path: Path, value: object) -> None:
@@ -104,13 +132,27 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
     for index, component in enumerate(sorted(release_evidence_gate.REQUIRED_IMAGES)):
         digest_character = "456789a"[index]
         manifest_character = "bcdef01"[index]
-        image_id = SEAWEED_ID if component == "seaweedfs" else "sha256:" + digest_character * 64
+        image_id = (
+            EXTERNAL_RUNTIME_IDENTITIES[component][0]
+            if component in EXTERNAL_RUNTIME_IDENTITIES
+            else SEAWEED_ID
+            if component == "seaweedfs"
+            else "sha256:" + digest_character * 64
+        )
         image_reference = release_evidence_gate._expected_image_reference(component, REVISION)
         scan_input = release_evidence_gate._expected_scan_input(component, REVISION)
-        root_name, root_version = scan_input.rsplit(":", 1)
-        root_name = root_name.rsplit("/", 1)[-1]
-        root_id = f"SPDXRef-DocumentRoot-Image-{root_name}"
-        manifest_digest = "sha256:" + manifest_character * 64
+        if component in EXTERNAL_SBOM_IDENTITIES:
+            root_name, root_version, purl_tag = EXTERNAL_SBOM_IDENTITIES[component]
+        else:
+            root_name = release_evidence_gate.BUILT_IMAGE_NAMES[component]
+            root_version = REVISION
+            purl_tag = REVISION
+        root_id = f"SPDXRef-DocumentRoot-Image-{root_name.replace('/', '-')}"
+        manifest_digest = (
+            EXTERNAL_RUNTIME_IDENTITIES[component][1]
+            if component in EXTERNAL_RUNTIME_IDENTITIES
+            else "sha256:" + manifest_character * 64
+        )
         sbom = sboms / f"sbom-{component}.spdx.json"
         packages = [
             {
@@ -128,8 +170,8 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
                         "referenceCategory": "PACKAGE-MANAGER",
                         "referenceType": "purl",
                         "referenceLocator": (
-                            f"pkg:oci/{root_name}@sha256%3A"
-                            f"{manifest_digest.removeprefix('sha256:')}?arch=amd64&tag={root_version}"
+                            f"pkg:oci/{quote(root_name, safe='')}@sha256%3A"
+                            f"{manifest_digest.removeprefix('sha256:')}?arch=amd64&tag={purl_tag}"
                         ),
                     }
                 ],
@@ -137,8 +179,29 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
             },
             {
                 "name": "wolfi-baselayout",
-                "SPDXID": "SPDXRef-Package-wolfi-baselayout",
+                "SPDXID": "SPDXRef-Package-apk-wolfi-baselayout-0123456789abcdef",
                 "versionInfo": "20230201-r29",
+                "externalRefs": [
+                    {
+                        "referenceCategory": "PACKAGE-MANAGER",
+                        "referenceType": "purl",
+                        "referenceLocator": (
+                            "pkg:apk/wolfi/wolfi-baselayout@20230201-r29?arch=x86_64"
+                        ),
+                    }
+                ],
+            },
+            {
+                "name": "python",
+                "SPDXID": "SPDXRef-Package-binary-python-1111222233334444",
+                "versionInfo": "3.13.15",
+                "externalRefs": [
+                    {
+                        "referenceCategory": "PACKAGE-MANAGER",
+                        "referenceType": "purl",
+                        "referenceLocator": "pkg:generic/python@3.13.15",
+                    }
+                ],
             },
         ]
         packages.extend(
@@ -182,7 +245,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
                     "type": "image",
                     "target": {
                         "userInput": scan_input,
-                        "imageID": root_id.removeprefix("SPDXRef-"),
+                        "imageID": image_id,
                         "manifestDigest": manifest_digest,
                     },
                 },
@@ -190,11 +253,23 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
                     {
                         "vulnerability": {"id": "CVE-EXAMPLE", "severity": "Medium"},
                         "artifact": {
-                            "id": "Package-wolfi-baselayout",
+                            "id": "0123456789abcdef",
                             "name": "wolfi-baselayout",
                             "version": "20230201-r29",
+                            "type": "apk",
+                            "purl": "pkg:apk/wolfi/wolfi-baselayout@20230201-r29?arch=x86_64",
                         },
-                    }
+                    },
+                    {
+                        "vulnerability": {"id": "CVE-BINARY-EXAMPLE", "severity": "Low"},
+                        "artifact": {
+                            "id": "1111222233334444",
+                            "name": "python",
+                            "version": "3.13.15",
+                            "type": "UnknownPackage",
+                            "purl": "pkg:generic/python@3.13.15",
+                        },
+                    },
                 ],
                 "ignoredMatches": None,
             },
@@ -263,7 +338,10 @@ def test_final_gate_binds_all_release_evidence(
     assert report["backup_manifest_schema"] == MANIFEST_SCHEMA
     assert report["runtime_image_ids"]["seaweedfs"] == SEAWEED_ID
     assert report["runtime_image_references"]["api"] == f"custombuild-api:{REVISION}"
-    assert report["runtime_scan_inputs"]["postgres"] == "cgr.dev/chainguard/postgres:latest"
+    assert report["runtime_scan_inputs"]["postgres"] == (
+        "cgr.dev/chainguard/postgres:latest@"
+        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+    )
     assert set(report["runtime_sbom_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_scan_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_manifest_digests"]) == release_evidence_gate.REQUIRED_IMAGES
@@ -278,13 +356,68 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
     assert release_evidence_gate._expected_image_reference("postgres", REVISION).endswith(
         "@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
     )
-    assert (
-        release_evidence_gate._expected_scan_input("postgres", REVISION)
-        == "cgr.dev/chainguard/postgres:latest"
-    )
+    assert release_evidence_gate._expected_scan_input(
+        "postgres", REVISION
+    ) == release_evidence_gate._expected_image_reference("postgres", REVISION)
+    for component in ("postgres", "redis", "volume-init"):
+        assert "@sha256:" in release_evidence_gate._expected_scan_input(component, REVISION)
     assert len(release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]) == 49
     assert ("mesa-gl", "26.2.1-r0") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
     assert ("libxcb", "1.17.0-r15") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
+
+
+@pytest.mark.parametrize("component", ("postgres", "redis", "volume-init"))
+def test_final_gate_rejects_tag_only_external_scan_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    component: str,
+) -> None:
+    static, backup, restore, runtime, sboms = _evidence(tmp_path)
+    payload = json.loads(runtime.read_text(encoding="utf-8"))
+    image = next(item for item in payload["images"] if item["component"] == component)
+    image["scan_input"] = str(image["scan_input"]).partition("@")[0]
+    _write(runtime, payload)
+    _stub_source_identity(monkeypatch)
+
+    with pytest.raises(
+        EvidenceError,
+        match=rf"runtime image {component} has another scan input",
+    ):
+        build_final_report(
+            tmp_path,
+            static_report_path=static,
+            backup_directory=backup,
+            restore_evidence_path=restore,
+            runtime_evidence_path=runtime,
+            sbom_directory=sboms,
+        )
+
+
+@pytest.mark.parametrize("component", ("postgres", "redis", "volume-init"))
+def test_final_gate_rejects_tag_only_external_image_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    component: str,
+) -> None:
+    static, backup, restore, runtime, sboms = _evidence(tmp_path)
+    payload = json.loads(runtime.read_text(encoding="utf-8"))
+    image = next(item for item in payload["images"] if item["component"] == component)
+    image["image_reference"] = str(image["image_reference"]).partition("@")[0]
+    _write(runtime, payload)
+    _stub_source_identity(monkeypatch)
+
+    with pytest.raises(
+        EvidenceError,
+        match=rf"runtime image {component} has another image reference",
+    ):
+        build_final_report(
+            tmp_path,
+            static_report_path=static,
+            backup_directory=backup,
+            restore_evidence_path=restore,
+            runtime_evidence_path=runtime,
+            sbom_directory=sboms,
+        )
 
 
 def test_final_gate_rejects_a_scan_from_another_image(
@@ -320,6 +453,99 @@ def test_final_gate_rejects_a_scan_from_another_image(
 @pytest.mark.parametrize(
     "case",
     (
+        "coordinated_unpinned_input",
+        "scan_unpinned_input",
+        "coordinated_wrong_input_digest",
+        "root_basename",
+        "root_version",
+        "purl_repository",
+        "purl_manifest",
+        "purl_tag",
+        "purl_arch",
+        "scan_image_id",
+        "scan_manifest",
+    ),
+)
+def test_final_gate_rejects_mutated_external_image_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    static, backup, restore, runtime, sboms = _evidence(tmp_path)
+    runtime_payload = json.loads(runtime.read_text(encoding="utf-8"))
+    postgres = next(item for item in runtime_payload["images"] if item["component"] == "postgres")
+    scan_path = sboms / "scan-postgres.json"
+    scan_payload = json.loads(scan_path.read_text(encoding="utf-8"))
+    sbom_path = sboms / "sbom-postgres.spdx.json"
+    sbom_payload = json.loads(sbom_path.read_text(encoding="utf-8"))
+    root_id = sbom_payload["relationships"][0]["relatedSpdxElement"]
+    root = next(item for item in sbom_payload["packages"] if item["SPDXID"] == root_id)
+    expected_input = release_evidence_gate.EXTERNAL_IMAGE_REFERENCES["postgres"]
+    tag_only_input = expected_input.partition("@")[0]
+    wrong_digest_input = tag_only_input + "@sha256:" + "f" * 64
+
+    if case == "coordinated_unpinned_input":
+        postgres["scan_input"] = tag_only_input
+        scan_payload["source"]["target"]["userInput"] = tag_only_input
+    elif case == "scan_unpinned_input":
+        scan_payload["source"]["target"]["userInput"] = tag_only_input
+    elif case == "coordinated_wrong_input_digest":
+        postgres["scan_input"] = wrong_digest_input
+        scan_payload["source"]["target"]["userInput"] = wrong_digest_input
+    elif case == "root_basename":
+        root["name"] = "postgres"
+    elif case == "root_version":
+        root["versionInfo"] = "latest"
+    elif case == "purl_repository":
+        root["externalRefs"][0]["referenceLocator"] = (
+            "pkg:oci/postgres@sha256%3A"
+            + root["checksums"][0]["checksumValue"]
+            + "?arch=amd64&tag=latest"
+        )
+    elif case == "purl_manifest":
+        root["externalRefs"][0]["referenceLocator"] = (
+            "pkg:oci/cgr.dev%2Fchainguard%2Fpostgres@sha256%3A"
+            + "f" * 64
+            + "?arch=amd64&tag=latest"
+        )
+    elif case == "purl_tag":
+        root["externalRefs"][0]["referenceLocator"] = root["externalRefs"][0][
+            "referenceLocator"
+        ].replace("tag=latest", "tag=stable")
+    elif case == "purl_arch":
+        root["externalRefs"][0]["referenceLocator"] = root["externalRefs"][0][
+            "referenceLocator"
+        ].replace("arch=amd64", "arch=arm64")
+    elif case == "scan_image_id":
+        scan_payload["source"]["target"]["imageID"] = "sha256:" + "f" * 64
+    elif case == "scan_manifest":
+        scan_payload["source"]["target"]["manifestDigest"] = "sha256:" + "f" * 64
+    else:  # pragma: no cover - parameter list is exhaustive.
+        raise AssertionError(case)
+
+    if scan_payload != json.loads(scan_path.read_text(encoding="utf-8")):
+        _write(scan_path, scan_payload)
+        postgres["scan_sha256"] = hashlib.sha256(scan_path.read_bytes()).hexdigest()
+    if sbom_payload != json.loads(sbom_path.read_text(encoding="utf-8")):
+        _write(sbom_path, sbom_payload)
+        postgres["sbom_sha256"] = hashlib.sha256(sbom_path.read_bytes()).hexdigest()
+    _write(runtime, runtime_payload)
+    _stub_source_identity(monkeypatch)
+
+    with pytest.raises(EvidenceError):
+        build_final_report(
+            tmp_path,
+            static_report_path=static,
+            backup_directory=backup,
+            restore_evidence_path=restore,
+            runtime_evidence_path=runtime,
+            sbom_directory=sboms,
+        )
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
         "missing",
         "extra",
         "tampered",
@@ -335,6 +561,9 @@ def test_final_gate_rejects_a_scan_from_another_image(
         "wrong_manifest",
         "wrong_input",
         "foreign_match",
+        "wrong_package_id",
+        "wrong_package_purl",
+        "wrong_package_type",
     ),
 )
 def test_final_gate_parses_and_rejects_invalid_runtime_scans(
@@ -375,10 +604,18 @@ def test_final_gate_parses_and_rejects_invalid_runtime_scans(
             payload["source"]["target"]["userInput"] = "custombuild-api:another-revision"
         elif case == "foreign_match":
             payload["matches"][0]["artifact"] = {
-                "id": "Package-foreign",
+                "id": "fedcba9876543210",
                 "name": "foreign",
                 "version": "1.0",
+                "type": "apk",
+                "purl": "pkg:apk/wolfi/foreign@1.0?arch=x86_64",
             }
+        elif case == "wrong_package_id":
+            payload["matches"][0]["artifact"]["id"] = "fedcba9876543210"
+        elif case == "wrong_package_purl":
+            payload["matches"][0]["artifact"]["purl"] = "pkg:apk/wolfi/foreign@1.0"
+        elif case == "wrong_package_type":
+            payload["matches"][0]["artifact"]["type"] = "deb"
         else:  # pragma: no cover - parameter list is exhaustive.
             raise AssertionError(case)
         _write(scan, payload)
@@ -540,6 +777,7 @@ def test_final_gate_rejects_late_tracked_or_untracked_source_mutation(
         "wrong_root_identity",
         "wrong_manifest_checksum",
         "wrong_oci_purl",
+        "ambiguous_syft_id",
     ),
 )
 def test_final_gate_rejects_incomplete_or_tampered_sbom_set(
@@ -575,6 +813,7 @@ def test_final_gate_rejects_incomplete_or_tampered_sbom_set(
         "wrong_root_identity",
         "wrong_manifest_checksum",
         "wrong_oci_purl",
+        "ambiguous_syft_id",
     }:
         payload = json.loads(api_sbom.read_text(encoding="utf-8"))
         root_id = payload["relationships"][0]["relatedSpdxElement"]
@@ -593,6 +832,21 @@ def test_final_gate_rejects_incomplete_or_tampered_sbom_set(
             root["name"] = "another-image"
         elif case == "wrong_manifest_checksum":
             root["checksums"][0]["checksumValue"] = "f" * 64
+        elif case == "ambiguous_syft_id":
+            payload["packages"].append(
+                {
+                    "name": "another-package",
+                    "SPDXID": "SPDXRef-Package-apk-another-package-0123456789abcdef",
+                    "versionInfo": "1.0-r0",
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": "pkg:apk/wolfi/another-package@1.0-r0",
+                        }
+                    ],
+                }
+            )
         else:
             root["externalRefs"][0]["referenceLocator"] = (
                 "pkg:oci/another-image@sha256%3A"
@@ -765,9 +1019,10 @@ def test_workflow_keeps_generated_evidence_outside_the_clean_source_tree() -> No
     assert workflow.count("image_reference:$") == len(release_evidence_gate.REQUIRED_IMAGES)
     assert workflow.count("scan_input:$") == len(release_evidence_gate.REQUIRED_IMAGES)
     assert workflow.count("manifest_digest:$") == len(release_evidence_gate.REQUIRED_IMAGES)
-    for image_reference in release_evidence_gate.EXTERNAL_IMAGE_REFERENCES.values():
+    assert workflow.count("$(scan_image_id ") == len(release_evidence_gate.REQUIRED_IMAGES)
+    for component, image_reference in release_evidence_gate.EXTERNAL_IMAGE_REFERENCES.items():
         assert image_reference in compose
-        assert image_reference in workflow
+        assert workflow.count(f"image: {image_reference}") == (3 if component == "postgres" else 2)
     assert '--static-report "$RELEASE_EVIDENCE_DIR/static-release-readiness.json"' in workflow
     assert '--runtime-evidence "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"' in workflow
     assert '--sbom-directory "$RELEASE_EVIDENCE_DIR"' in workflow

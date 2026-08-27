@@ -443,6 +443,11 @@ jobs:
               '.source.target.manifestDigest | strings | select(test("^sha256:[a-f0-9]{64}$"))' \
               "$RELEASE_EVIDENCE_DIR/scan-$1.json"
           }
+          scan_image_id() {
+            jq --exit-status --raw-output \
+              '.source.target.imageID | strings | select(test("^sha256:[a-f0-9]{64}$"))' \
+              "$RELEASE_EVIDENCE_DIR/scan-$1.json"
+          }
           api_ref="custombuild-api:${GITHUB_SHA}"
           worker_ref="custombuild-worker:${GITHUB_SHA}"
           web_ref="custombuild-web:${GITHUB_SHA}"
@@ -466,6 +471,13 @@ jobs:
           test "$postgres_id" = "$(runtime_id postgres)"
           test "$redis_id" = "$(runtime_id redis)"
           test "$volume_init_id" = "$(runtime_id object-storage-init)"
+          test "$api_id" = "$(scan_image_id api)"
+          test "$worker_id" = "$(scan_image_id worker)"
+          test "$web_id" = "$(scan_image_id web)"
+          test "$seaweedfs_id" = "$(scan_image_id seaweedfs)"
+          test "$postgres_id" = "$(scan_image_id postgres)"
+          test "$redis_id" = "$(scan_image_id redis)"
+          test "$volume_init_id" = "$(scan_image_id volume-init)"
           for component in api worker web seaweedfs postgres redis volume-init; do
             test -s "$RELEASE_EVIDENCE_DIR/scan-${component}.json"
             test -s "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json"
