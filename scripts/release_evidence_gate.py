@@ -450,13 +450,15 @@ def _verify_scans(
                     f"runtime scan {component} contains a High or Critical vulnerability"
                 )
             artifact = match.get("artifact") if isinstance(match, dict) else None
-            artifact_id = artifact.get("id") if isinstance(artifact, dict) else None
+            if not isinstance(artifact, dict):
+                raise EvidenceError(f"runtime scan {component} contains a match from another SBOM")
+            artifact_id = artifact.get("id")
             sbom_package = (
                 sbom_identity["packages_by_syft_id"].get(artifact_id)
                 if isinstance(artifact_id, str) and SYFT_PACKAGE_ID.fullmatch(artifact_id)
                 else None
             )
-            artifact_type = artifact.get("type") if isinstance(artifact, dict) else None
+            artifact_type = artifact.get("type")
             spdx_package_type = (
                 GRYPE_TO_SPDX_PACKAGE_TYPES.get(artifact_type, artifact_type)
                 if isinstance(artifact_type, str)
