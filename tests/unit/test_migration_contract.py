@@ -16,6 +16,7 @@ GENERATION_LEASE_HEARTBEAT_MIGRATION = (
     MIGRATIONS / "0009_generation_lease_heartbeat.py"
 )
 TENANT_GRAPH_MIGRATION = MIGRATIONS / "0010_tenant_graph_foreign_keys.py"
+RUNTIME_ROLE_PRIVILEGES_MIGRATION = MIGRATIONS / "0011_runtime_role_privileges.py"
 TEMPLATE_CAPABILITY_MIGRATION = MIGRATIONS / "0005_template_capability_identity.py"
 
 
@@ -74,6 +75,12 @@ class _FakeTenantPreflightBind:
 def _tenant_graph_module() -> Any:
     return importlib.import_module(
         "services.api.alembic.versions.0010_tenant_graph_foreign_keys"
+    )
+
+
+def _runtime_role_privileges_module() -> Any:
+    return importlib.import_module(
+        "services.api.alembic.versions.0011_runtime_role_privileges"
     )
 
 
@@ -165,6 +172,45 @@ def test_tenant_graph_migration_preflights_and_replaces_every_parent_edge() -> N
     assert "PRODUCTION_TABLES" in source
     assert '"fk_approvals_org_generation_job"' in source
     assert "_restore_single_column_foreign_key" in source
+
+
+def test_runtime_role_migration_revokes_blanket_defaults_before_explicit_grants() -> None:
+    migration = _runtime_role_privileges_module()
+    source = RUNTIME_ROLE_PRIVILEGES_MIGRATION.read_text(encoding="utf-8")
+
+    assert migration.down_revision == "0010_tenant_graph_foreign_keys"
+    assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public" in source
+    assert "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public" in source
+    assert "REVOKE ALL PRIVILEGES ON TABLES" in source
+    assert "REVOKE ALL PRIVILEGES ON SEQUENCES" in source
+    assert "organizations" not in migration.API_TABLE_PRIVILEGES
+    assert migration.API_TABLE_PRIVILEGES["users"] == ("SELECT",)
+    assert migration.API_TABLE_PRIVILEGES["outbox_events"] == ("INSERT",)
+    assert migration.API_TABLE_PRIVILEGES["audit_events"] == ("INSERT",)
+    assert migration.WORKER_TABLE_PRIVILEGES["generation_jobs"] == (
+        "SELECT",
+        "UPDATE",
+    )
+    assert migration.WORKER_TABLE_PRIVILEGES["approvals"] == ("SELECT",)
+    assert migration.WORKER_TABLE_PRIVILEGES["audit_events"] == ("INSERT",)
+    assert "users" not in migration.WORKER_TABLE_PRIVILEGES
+    assert "memberships" not in migration.WORKER_TABLE_PRIVILEGES
+    assert "releases" not in migration.WORKER_TABLE_PRIVILEGES
+
+
+def test_postgres_bootstrap_never_auto_grants_future_runtime_tables() -> None:
+    source = Path("infra/postgres/init-roles.sh").read_text(encoding="utf-8")
+
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES" not in source
+    assert "GRANT USAGE, SELECT ON SEQUENCES" not in source
+    assert (
+        "REVOKE ALL PRIVILEGES ON TABLES FROM custombuild_api, custombuild_worker"
+        in source
+    )
+    assert (
+        "REVOKE ALL PRIVILEGES ON SEQUENCES FROM custombuild_api, custombuild_worker"
+        in source
+    )
 
 
 def test_tenant_graph_preflight_checks_every_edge_per_tenant_and_resets_rls(

@@ -107,7 +107,7 @@ GRANT CREATE ON DATABASE :"database_name" TO custombuild_migrator;
 GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
 GRANT USAGE ON SCHEMA public TO custombuild_api, custombuild_worker;
 ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO custombuild_api, custombuild_worker;
+  REVOKE ALL PRIVILEGES ON TABLES FROM custombuild_api, custombuild_worker;
 ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO custombuild_api, custombuild_worker;
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM custombuild_api, custombuild_worker;
 SQL

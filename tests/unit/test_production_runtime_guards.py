@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess  # noqa: S404
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from app.config_guards import (
 from custombuild_worker.config import DEPENDENCY_LOCK_PATH, WorkerSettings
 from pydantic import ValidationError
 
+import scripts.run_migrations as migration_runner
 from scripts.run_migrations import validate_migration_environment
 
 
@@ -164,6 +166,63 @@ def test_migrator_accepts_secure_production_and_development_fallback() -> None:
         }
     )
     validate_migration_environment({"APP_ENV": "development"})
+
+
+@pytest.mark.parametrize("app_env", ("development", "test"))
+def test_migrator_upgrades_before_seeding_nonproduction_database(
+    monkeypatch: pytest.MonkeyPatch,
+    app_env: str,
+) -> None:
+    session = object()
+    calls: list[tuple[str, object]] = []
+
+    def fake_alembic_main(*, argv: list[str]) -> None:
+        calls.append(("migration", argv))
+
+    def fake_session_scope() -> Iterator[object]:
+        calls.append(("session", session))
+        yield session
+
+    def fake_seed(received_session: object) -> None:
+        calls.append(("seed", received_session))
+
+    monkeypatch.setenv("APP_ENV", app_env)
+    monkeypatch.setattr(migration_runner, "alembic_main", fake_alembic_main)
+    monkeypatch.setattr(migration_runner, "session_scope", fake_session_scope)
+    monkeypatch.setattr(migration_runner, "seed_development", fake_seed)
+
+    migration_runner.main()
+
+    assert calls == [
+        ("migration", ["-c", "services/api/alembic.ini", "upgrade", "head"]),
+        ("session", session),
+        ("seed", session),
+    ]
+
+
+def test_migrator_never_seeds_production_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fail_if_called() -> object:
+        raise AssertionError("production migrations must not seed development data")
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://custombuild_migrator:strong-migrator-db-password"
+        "@postgres/custombuild",
+    )
+    monkeypatch.setattr(
+        migration_runner,
+        "alembic_main",
+        lambda *, argv: calls.append("migration"),
+    )
+    monkeypatch.setattr(migration_runner, "session_scope", fail_if_called)
+    monkeypatch.setattr(migration_runner, "seed_development", fail_if_called)
+
+    migration_runner.main()
+
+    assert calls == ["migration"]
 
 
 def _run_postgres_init(
