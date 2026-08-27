@@ -34,10 +34,10 @@ const SCREENED_STOCK_PASS_PATHS = [
   { ruleId: "DFM-STOCK-001", ruleVersion: "1.0.0", title: "Delar ryms i råmaterial" },
 ] as const;
 
-const STOCKLESS_FORBIDDEN_ARTIFACT_KIND = /(?:stock|nest|placement|label_index|measurement_plan|operation|tool|setup|backplot|machine|ngc)/i;
+const CAM_BLOCKED_FORBIDDEN_ARTIFACT_KIND = /(?:stock|nest|placement|label_index|measurement_plan|operation|tool|setup|backplot|machine|ngc)/i;
 
-function stocklessArtifactKindIsForbidden(kind: string): boolean {
-  return kind !== "stock_selection" && STOCKLESS_FORBIDDEN_ARTIFACT_KIND.test(kind);
+function camBlockedArtifactKindIsForbidden(kind: string): boolean {
+  return kind !== "stock_selection" && CAM_BLOCKED_FORBIDDEN_ARTIFACT_KIND.test(kind);
 }
 
 function requestPath(request: Request): string {
@@ -238,7 +238,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   console.log("production-live: manufacturing review visible");
 
   const save = page.getByRole("button", {
-    name: "Spara för lagerobunden granskning",
+    name: "Spara och kontrollera",
     exact: true,
   });
   await expect(save).toBeVisible({ timeout: 30_000 });
@@ -282,7 +282,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(productionDialog.locator("#production-next-action-heading")).toHaveText("Skapa underlag", { timeout: 30_000 });
   await expect(productionDialog.getByRole("region", { name: "Status för verifieringen" }))
-    .toContainText("Lagerprofil saknas · CAM blockeras");
+    .toContainText("Behöver beslut");
 
   const versionHistory = productionDialog.getByRole("list", { name: "Serverrevisioner" });
   await expect(versionHistory).toBeVisible({ timeout: 30_000 });
@@ -408,7 +408,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     "generation_plan",
     "workshop_readiness",
   ]));
-  expect(artifactKinds.filter(stocklessArtifactKindIsForbidden)).toEqual([]);
+  expect(artifactKinds.filter(camBlockedArtifactKindIsForbidden)).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("02-underlag-ready.png"), fullPage: true });
 
   const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
