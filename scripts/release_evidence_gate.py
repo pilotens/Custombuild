@@ -117,7 +117,6 @@ IMAGE_ID = re.compile(r"^sha256:[a-f0-9]{64}$")
 REVISION = re.compile(r"^[a-f0-9]{40}$")
 SYFT_CREATOR = re.compile(r"^Tool: syft-[^\s]+$")
 SYFT_PACKAGE_ID = re.compile(r"^[a-f0-9]{16}$")
-GRYPE_TO_SPDX_PACKAGE_TYPES = {"UnknownPackage": "binary"}
 GRYPE_VERSION = "0.110.0"
 
 
@@ -459,11 +458,6 @@ def _verify_scans(
                 else None
             )
             artifact_type = artifact.get("type")
-            spdx_package_type = (
-                GRYPE_TO_SPDX_PACKAGE_TYPES.get(artifact_type, artifact_type)
-                if isinstance(artifact_type, str)
-                else None
-            )
             if (
                 not isinstance(sbom_package, tuple)
                 or len(sbom_package) != 4
@@ -471,7 +465,7 @@ def _verify_scans(
                 != (artifact.get("name"), artifact.get("version"), artifact.get("purl"))
                 or not isinstance(artifact_type, str)
                 or not artifact_type
-                or not sbom_package[3].startswith(f"SPDXRef-Package-{spdx_package_type}-")
+                or not sbom_package[3].startswith(f"SPDXRef-Package-{artifact_type}-")
             ):
                 raise EvidenceError(f"runtime scan {component} contains a match from another SBOM")
         ignored_matches = document.get("ignoredMatches")

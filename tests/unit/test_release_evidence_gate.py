@@ -266,7 +266,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
                             "id": "1111222233334444",
                             "name": "python",
                             "version": "3.13.15",
-                            "type": "UnknownPackage",
+                            "type": "binary",
                             "purl": "pkg:generic/python@3.13.15",
                         },
                     },
