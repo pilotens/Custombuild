@@ -99,15 +99,21 @@ SELECT format(
 \gexec
 
 REVOKE custombuild_api, custombuild_worker FROM custombuild_migrator;
-REVOKE custombuild_worker FROM custombuild_api;
+REVOKE custombuild_migrator, custombuild_worker FROM custombuild_api;
+REVOKE custombuild_migrator, custombuild_api FROM custombuild_worker;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT CONNECT ON DATABASE :"database_name"
   TO custombuild_migrator, custombuild_api, custombuild_worker;
 GRANT CREATE ON DATABASE :"database_name" TO custombuild_migrator;
 GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
+REVOKE ALL PRIVILEGES ON SCHEMA public FROM custombuild_api, custombuild_worker;
 GRANT USAGE ON SCHEMA public TO custombuild_api, custombuild_worker;
 ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO custombuild_api, custombuild_worker;
+  REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC;
 ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO custombuild_api, custombuild_worker;
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
+  REVOKE ALL PRIVILEGES ON TABLES FROM custombuild_api, custombuild_worker;
+ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
+  REVOKE ALL PRIVILEGES ON SEQUENCES FROM custombuild_api, custombuild_worker;
 SQL

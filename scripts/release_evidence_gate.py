@@ -134,6 +134,21 @@ def _load(path: Path, label: str) -> dict[str, Any]:
     return {str(key): item for key, item in value.items()}
 
 
+def _runtime_rls_probe_is_safe(value: Any) -> bool:
+    if not isinstance(value, dict) or set(value) != {"visible", "foreign"}:
+        return False
+    visible = value.get("visible")
+    foreign = value.get("foreign")
+    return (
+        isinstance(visible, int)
+        and not isinstance(visible, bool)
+        and visible >= 1
+        and isinstance(foreign, int)
+        and not isinstance(foreign, bool)
+        and foreign == 0
+    )
+
+
 def _git_revision(repo: Path) -> str:
     git = shutil.which("git")
     if git is None:
@@ -554,9 +569,12 @@ def build_final_report(
     if (
         restore.get("database_alembic_heads") != database_snapshot.get("alembic_heads")
         or restore.get("database_project_rows") != row_counts.get("projects")
-        or restore.get("tenant_acceptance_required_before_traffic") is not False
     ):
         raise EvidenceError("restore evidence did not reproduce the database recovery point")
+    if restore.get("tenant_acceptance_required_before_traffic") is not True:
+        raise EvidenceError(
+            "restore evidence did not require tenant and HTTP acceptance before traffic"
+        )
     runtime_roles = restore.get("database_runtime_roles")
     if not isinstance(runtime_roles, dict):
         raise EvidenceError("restore evidence has no runtime-role proof")
@@ -565,6 +583,7 @@ def build_final_report(
         "api_safe": True,
         "worker_safe": True,
         "memberships_absent": True,
+        "public_object_grants_absent": True,
         "all_public_objects_owned_by_migrator": True,
     }
     if runtime_roles.get("roles") != expected_role_flags:
@@ -572,12 +591,8 @@ def build_final_report(
     api_rls = runtime_roles.get("api_rls")
     worker_rls = runtime_roles.get("worker_rls")
     if (
-        not isinstance(api_rls, dict)
-        or api_rls.get("foreign") != 0
-        or not isinstance(api_rls.get("visible"), int)
-        or isinstance(api_rls.get("visible"), bool)
-        or api_rls["visible"] < 1
-        or worker_rls != api_rls
+        not _runtime_rls_probe_is_safe(api_rls)
+        or not _runtime_rls_probe_is_safe(worker_rls)
         or runtime_roles.get("migrator_schema_mutation_verified") is not True
     ):
         raise EvidenceError("restore evidence did not prove runtime RLS and migrator ownership")

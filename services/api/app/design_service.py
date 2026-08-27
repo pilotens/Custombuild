@@ -145,6 +145,11 @@ def normalize_preview(
         raise ValueError("MVP material catalogue currently supports nominal 18 mm sheet material")
 
     back_panel = _back_panel(payload.get("back_panel", True))
+    requested_back_material = payload.get("back_material_id")
+    if requested_back_material not in {None, "mdf-6", "birch-plywood-6"}:
+        raise ValueError("unknown back_material_id")
+    if back_panel == BackPanelType.NONE and requested_back_material is not None:
+        raise ValueError("back_material_id requires an enabled back panel")
     parameters = BookcaseParameters(
         width_um=_millimetres(payload.get("width_mm", 900)),
         height_um=_millimetres(payload.get("height_mm", 2000)),
@@ -184,7 +189,11 @@ def normalize_preview(
             if back_panel == BackPanelType.NONE
             else (
                 screening_birch_plywood_6()
-                if material.material_id == "birch-plywood"
+                if requested_back_material == "birch-plywood-6"
+                or (
+                    requested_back_material is None
+                    and material.material_id == "birch-plywood"
+                )
                 else screening_mdf_6()
             )
         ),

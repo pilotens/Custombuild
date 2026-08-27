@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import custombuild_manufacturing.pipeline as manufacturing_pipeline
+import custombuild_manufacturing.review_status as review_status_contract
 import custombuild_worker.tasks as worker_tasks
 import pytest
 from app.models import DesignStatus, DesignVersion, GenerationJob, JobStatus
@@ -163,6 +164,11 @@ def test_worker_returns_review_package_when_two_sided_cam_registration_is_missin
     # own fail-closed regression coverage and must otherwise win first.
     monkeypatch.setattr(
         manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
+    monkeypatch.setattr(
+        review_status_contract,
         "dado_retention_evidence_missing",
         lambda _design: False,
     )

@@ -48,9 +48,9 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     assert_rule_engine_available()
     if settings.database_url.startswith("sqlite"):
         Base.metadata.create_all(get_engine())
-    if settings.auth_mode == "development":
-        for session in session_scope():
-            seed_development(session)
+        if settings.auth_mode == "development":
+            for session in session_scope():
+                seed_development(session)
     logger.info("api_started env=%s auth_mode=%s", settings.app_env, settings.auth_mode)
     yield
 

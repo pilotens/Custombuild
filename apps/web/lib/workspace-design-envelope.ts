@@ -3,6 +3,8 @@ import {
   MACHINES,
   MATERIALS,
   type BaySizingMode,
+  type BackMaterialId,
+  type BackPanelType,
   type DesignSpec,
   type PartOverride,
   type ReferenceImageConfirmedInputs,
@@ -170,12 +172,14 @@ const LOCAL_DESIGN_SPEC_KEYS = [
   "depth_mm",
   "material_id",
   "material_name",
+  "back_material_id",
   "nominal_thickness_mm",
   "measured_thickness_mm",
   "shelf_count",
   "fixed_shelves",
   "load_per_shelf_kg",
   "back_panel",
+  "back_panel_type",
   "plinth",
   "divider_count",
   "bay_sizing_mode",
@@ -530,7 +534,7 @@ function parsePartCustomizations(
 
 function generatedPartIds(spec: Pick<
   DesignSpec,
-  "divider_count" | "shelf_count" | "base_cabinet_count" | "furniture_type" | "back_panel" | "plinth"
+  "divider_count" | "shelf_count" | "base_cabinet_count" | "furniture_type" | "back_panel" | "back_panel_type" | "plinth"
 >): Set<string> {
   const ids = new Set(["side-left", "side-right", "bottom", "top"]);
   for (let divider = 1; divider <= spec.divider_count; divider += 1) ids.add(`divider-${divider}`);
@@ -544,7 +548,15 @@ function generatedPartIds(spec: Pick<
       ids.add(`cabinet-front-${cabinet}`);
     }
   }
-  if (spec.back_panel) ids.add("back-panel");
+  if (spec.back_panel) {
+    if (spec.back_panel_type === "inset_groove" && spec.divider_count > 0) {
+      for (let bay = 1; bay <= spec.divider_count + 1; bay += 1) {
+        ids.add(`back-panel-bay-${bay}`);
+      }
+    } else {
+      ids.add("back-panel");
+    }
+  }
   if (spec.plinth) ids.add("plinth-front");
   return ids;
 }
@@ -552,7 +564,7 @@ function generatedPartIds(spec: Pick<
 function assertCustomizationIds(
   spec: Pick<
     DesignSpec,
-    "divider_count" | "shelf_count" | "base_cabinet_count" | "furniture_type" | "back_panel" | "plinth"
+    "divider_count" | "shelf_count" | "base_cabinet_count" | "furniture_type" | "back_panel" | "back_panel_type" | "plinth"
   >,
   customizations: Pick<WorkspaceIntentEnvelopeV1, "part_overrides" | "removed_part_ids">,
   code: DesignHydrationErrorCode,
@@ -701,7 +713,13 @@ function parseCanonicalServerSpec(
 ): DesignSpec {
   const code = "INVALID_SERVER_DRAFT" as const;
   const root = record(value, "spec_json", code);
-  exactKeys(root, CANONICAL_SERVER_KEYS, ["plinth_height_mm"], "spec_json", code);
+  exactKeys(
+    root,
+    CANONICAL_SERVER_KEYS,
+    ["plinth_height_mm", "back_material_id"],
+    "spec_json",
+    code,
+  );
   const furnitureType = oneOf(root.furniture_type, ["bookcase", "wall_library"] as const, "spec_json.furniture_type", code);
   const materialId = oneOf(root.material_id, ["mdf", "birch-plywood"] as const, "spec_json.material_id", code);
   const material = MATERIALS.find((candidate) => candidate.id === materialId);
@@ -725,14 +743,32 @@ function parseCanonicalServerSpec(
     18,
     code,
   );
-  const backPanel = typeof root.back_panel === "boolean"
-    ? root.back_panel
+  const canonicalBackPanel = typeof root.back_panel === "boolean"
+    ? root.back_panel ? "inset_groove" : "none"
     : oneOf(
         root.back_panel,
         ["none", "surface_mounted", "inset_groove"] as const,
         "spec_json.back_panel",
         code,
-      ) !== "none";
+      );
+  const backPanel = canonicalBackPanel !== "none";
+  const backPanelType: BackPanelType = canonicalBackPanel === "surface_mounted"
+    ? "surface_mounted"
+    : "inset_groove";
+  const legacyBackMaterialId: BackMaterialId = materialId === "birch-plywood"
+    ? "birch-plywood-6"
+    : "mdf-6";
+  const backMaterialId = root.back_material_id === undefined
+    ? legacyBackMaterialId
+    : oneOf(
+        root.back_material_id,
+        ["mdf-6", "birch-plywood-6"] as const,
+        "spec_json.back_material_id",
+        code,
+      );
+  if (!backPanel && root.back_material_id !== undefined) {
+    fail(code, "spec_json.back_material_id kräver ett aktivt bakstycke.");
+  }
   const baseCabinetHeight = finiteNumber(
     root.base_cabinet_height_mm,
     "spec_json.base_cabinet_height_mm",
@@ -771,12 +807,14 @@ function parseCanonicalServerSpec(
     depth_mm: depth,
     material_id: materialId,
     material_name: material.name,
+    back_material_id: backMaterialId,
     nominal_thickness_mm: nominalThickness,
     measured_thickness_mm: measuredThickness,
     shelf_count: shelfCount,
     fixed_shelves: oneOf(root.shelf_mount, ["fixed", "adjustable"] as const, "spec_json.shelf_mount", code) === "fixed",
     load_per_shelf_kg: finiteNumber(root.load_per_shelf_kg, "spec_json.load_per_shelf_kg", 0, 500, code),
     back_panel: backPanel,
+    back_panel_type: backPanelType,
     plinth: boolean(root.plinth, "spec_json.plinth", code),
     divider_count: dividerCount,
     bay_sizing_mode: intent.bay_sizing_mode,
@@ -864,6 +902,23 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
   const materialId = oneOf(merged.material_id, ["mdf", "birch-plywood"] as const, "material_id", code);
   const material = MATERIALS.find((candidate) => candidate.id === materialId);
   if (!material) fail(code, "material_id saknar en känd katalogpost.");
+  const backMaterialId: BackMaterialId = root.back_material_id === undefined
+    ? materialId === "birch-plywood" ? "birch-plywood-6" : "mdf-6"
+    : oneOf(
+        merged.back_material_id,
+        ["mdf-6", "birch-plywood-6"] as const,
+        "back_material_id",
+        code,
+      );
+  const backPanel = boolean(merged.back_panel, "back_panel", code);
+  const backPanelType: BackPanelType = root.back_panel_type === undefined
+    ? "inset_groove"
+    : oneOf(
+        merged.back_panel_type,
+        ["inset_groove", "surface_mounted"] as const,
+        "back_panel_type",
+        code,
+      );
   const dividerCount = integer(merged.divider_count, "divider_count", 0, 16, code);
   const shelfCount = integer(merged.shelf_count, "shelf_count", 0, 40, code);
   const customizations = parsePartCustomizations(merged.part_overrides, merged.removed_part_ids, code);
@@ -885,12 +940,14 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
     depth_mm: finiteNumber(merged.depth_mm, "depth_mm", 100, 1_200, code),
     material_id: materialId,
     material_name: material.name,
+    back_material_id: backMaterialId,
     nominal_thickness_mm: finiteNumber(merged.nominal_thickness_mm, "nominal_thickness_mm", 18, 18, code),
     measured_thickness_mm: finiteNumber(merged.measured_thickness_mm, "measured_thickness_mm", 17, 19, code),
     shelf_count: shelfCount,
     fixed_shelves: boolean(merged.fixed_shelves, "fixed_shelves", code),
     load_per_shelf_kg: finiteNumber(merged.load_per_shelf_kg, "load_per_shelf_kg", 0, 500, code),
-    back_panel: boolean(merged.back_panel, "back_panel", code),
+    back_panel: backPanel,
+    back_panel_type: backPanelType,
     plinth: boolean(merged.plinth, "plinth", code),
     divider_count: dividerCount,
     bay_sizing_mode: oneOf(merged.bay_sizing_mode, ["count", "target_width"] as const, "bay_sizing_mode", code),

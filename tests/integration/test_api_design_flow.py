@@ -1028,6 +1028,129 @@ def test_project_workspace_draft_is_server_authoritative_and_restorable() -> Non
         assert restored.json()["workspace_spec_json"] == payload["workspace_spec_json"]
 
 
+def test_explicit_back_material_roundtrips_preview_draft_and_frozen_revision() -> None:
+    requested = valid_spec() | {
+        "material_id": "birch-plywood",
+        "back_material_id": "mdf-6",
+    }
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": "Explicit back material fixture"},
+        ).json()
+        preview_response = client.post(
+            f"/v1/designs/preview?project_id={project['id']}",
+            headers=HEADERS,
+            json=requested,
+        )
+        assert preview_response.status_code == 200
+        preview_payload = preview_response.json()
+        assert preview_payload["spec"]["material"]["material_id"] == "birch-plywood"
+        assert preview_payload["spec"]["back_material"]["material_id"] == "mdf-6"
+        assert next(
+            part for part in preview_payload["parts"] if part["kind"] == "back"
+        )["material_id"] == "mdf-6"
+
+        saved = client.put(
+            f"/v1/projects/{project['id']}/draft",
+            headers=HEADERS,
+            json={
+                "expected_draft_revision": 0,
+                "template_id": "shelving",
+                "spec": requested,
+                "workspace_spec": valid_workspace_intent(),
+            },
+        )
+        assert saved.status_code == 200
+        saved_payload = saved.json()
+        assert saved_payload["spec_json"]["back_material_id"] == "mdf-6"
+        assert saved_payload["result_json"]["spec"]["back_material"]["material_id"] == (
+            "mdf-6"
+        )
+        assert saved_payload["design_hash"] == preview_payload["design_hash"]
+        restored_draft = client.get(
+            f"/v1/projects/{project['id']}/draft",
+            headers=HEADERS,
+        )
+        assert restored_draft.status_code == 200
+        assert restored_draft.json()["spec_json"] == saved_payload["spec_json"]
+        assert restored_draft.json()["design_hash"] == preview_payload["design_hash"]
+
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"], spec=requested),
+        )
+        assert version.status_code == 201
+        version_payload_json = version.json()
+        assert version_payload_json["design_hash"] == preview_payload["design_hash"]
+        assert version_payload_json["spec_json"]["back_material"]["material_id"] == (
+            "mdf-6"
+        )
+        assert version_payload_json["spec_json"]["back_material"]["version"] == (
+            "screening-2026.1"
+        )
+        assert version_payload_json["result_json"]["spec"]["back_material"][
+            "material_id"
+        ] == "mdf-6"
+        restored_version = client.get(
+            f"/v1/projects/{project['id']}/versions/{version_payload_json['revision']}",
+            headers=HEADERS,
+        )
+        assert restored_version.status_code == 200
+        assert restored_version.json()["design_hash"] == version_payload_json["design_hash"]
+        assert restored_version.json()["spec_json"] == version_payload_json["spec_json"]
+        assert restored_version.json()["result_json"] == version_payload_json["result_json"]
+
+
+@pytest.mark.parametrize(
+    "invalid_back_fields",
+    (
+        {"back_material_id": "oak-6"},
+        {"back_panel": False, "back_material_id": "mdf-6"},
+        {"back_panel": "none", "back_material_id": "birch-plywood-6"},
+    ),
+)
+def test_invalid_back_material_never_mutates_a_project_draft(
+    invalid_back_fields: dict[str, object],
+) -> None:
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": f"Rejected back material fixture {uuid4()}"},
+        ).json()
+        invalid_spec = valid_spec() | invalid_back_fields
+
+        preview_response = client.post(
+            f"/v1/designs/preview?project_id={project['id']}",
+            headers=HEADERS,
+            json=invalid_spec,
+        )
+        draft_response = client.put(
+            f"/v1/projects/{project['id']}/draft",
+            headers=HEADERS,
+            json={
+                "expected_draft_revision": 0,
+                "template_id": "shelving",
+                "spec": invalid_spec,
+                "workspace_spec": valid_workspace_intent(),
+            },
+        )
+        unchanged = client.get(
+            f"/v1/projects/{project['id']}/draft",
+            headers=HEADERS,
+        )
+
+    assert preview_response.status_code == 422
+    assert draft_response.status_code == 422
+    assert unchanged.status_code == 200
+    assert unchanged.json()["draft_revision"] == 0
+    assert unchanged.json()["spec_json"] is None
+
+
 def test_existing_legacy_workspace_row_remains_directly_readable() -> None:
     legacy_workspace = valid_legacy_workspace_spec()
 

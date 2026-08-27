@@ -26,7 +26,13 @@ import {
   DESIGN_CONSTRAINTS,
   maximumBaseCabinetHeightMm,
 } from "@/lib/design-constraints";
-import { MATERIALS, type DesignSpec, type ValidationStatus } from "@/lib/design-types";
+import {
+  BACK_MATERIALS,
+  MATERIALS,
+  type BackMaterialId,
+  type DesignSpec,
+  type ValidationStatus,
+} from "@/lib/design-types";
 import { ContextPanel, DimensionInput, SegmentedControl } from "./design-system";
 import styles from "./studio-inspector.module.css";
 
@@ -438,7 +444,7 @@ export function StudioInspector({
         <div className={styles.toggles}>
           {([
             ["symmetry_locked", "Symmetrisk indelning", "Speglar ändringar runt mitten"],
-            ["back_panel", "Bakstycke", "Stabiliserar stommen"],
+            ["back_panel", "Bakstycke", "Aktiverar ett specificerat 6 mm bakstycke"],
             ["plinth", "Sockel", "Indragen bas under möbeln"],
             ["fixed_shelves", "Fasta hyllor", "Frästa bärande spår"],
           ] as const).map(([field, label, hint]) => (
@@ -448,6 +454,59 @@ export function StudioInspector({
             </label>
           ))}
         </div>
+        {spec.back_panel ? (
+          <div className={styles.backPanelOptions} aria-label="Val för bakstycke">
+            <SegmentedControl
+              label="Utförande för bakstycke"
+              value={spec.back_panel_type}
+              options={[
+                {
+                  id: "inset_groove",
+                  label: "Infällt i not",
+                  description: "6 mm segment per fack i frästa noter.",
+                },
+                {
+                  id: "surface_mounted",
+                  label: "Utanpåliggande",
+                  description: "Ett 6 mm stycke bakom stommen i kantfals.",
+                },
+              ]}
+              onChange={(back_panel_type) => onChange(
+                { back_panel_type },
+                back_panel_type === "inset_groove"
+                  ? "Infällt bakstycke valdes"
+                  : "Utanpåliggande bakstycke valdes",
+              )}
+            />
+            <fieldset className={styles.backMaterials}>
+              <legend>Bakstyckets material</legend>
+              <div>
+                {BACK_MATERIALS.map((material) => {
+                  const label = material.name.replace(", bakstycke", "");
+                  return (
+                    <button
+                      key={material.id}
+                      type="button"
+                      aria-label={`Välj ${label} 6 mm för bakstycket`}
+                      aria-pressed={spec.back_material_id === material.id}
+                      onClick={() => onChange(
+                        { back_material_id: material.id as BackMaterialId },
+                        `Bakstyckets material ändrades till ${label} 6 mm`,
+                      )}
+                    >
+                      <span className={styles.swatch} data-material={material.id} />
+                      <span><strong>{label}</strong><small>6 mm · bakstycke</small></span>
+                      {spec.back_material_id === material.id ? <Check aria-hidden="true" size={15} /> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </fieldset>
+            <p className={styles.backPanelNote}>
+              Valet påverkar modell, stycklista och konstruktionskontroll. Verkstadsunderlaget förblir spärrat tills externa material- och infästningsbevis är godkända.
+            </p>
+          </div>
+        ) : null}
       </section>
     </ContextPanel>
   );

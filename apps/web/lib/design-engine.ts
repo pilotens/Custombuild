@@ -1,4 +1,5 @@
 import {
+  BACK_MATERIALS,
   MACHINES,
   MATERIALS,
   type BomLine,
@@ -40,10 +41,16 @@ function customShelfRatiosAreFeasible(count: number): boolean {
   return 0.05 + (count - 1) * 0.05 <= 0.95 + RATIO_COMPARISON_TOLERANCE;
 }
 
-function interiorPanelDepth(depthMm: number, hasBackPanel: boolean): number {
-  const clearance = hasBackPanel
-    ? BACK_INSET_MM + BACK_THICKNESS_MM + DOGBONE_BACK_CLEARANCE_MM
-    : OPEN_BACK_EDGE_CLEARANCE_MM;
+function interiorPanelDepth(
+  depthMm: number,
+  hasBackPanel: boolean,
+  backPanelType: DesignSpec["back_panel_type"] = "inset_groove",
+): number {
+  const clearance = !hasBackPanel
+    ? OPEN_BACK_EDGE_CLEARANCE_MM
+    : backPanelType === "surface_mounted"
+      ? BACK_THICKNESS_MM + OPEN_BACK_EDGE_CLEARANCE_MM
+      : BACK_INSET_MM + BACK_THICKNESS_MM + DOGBONE_BACK_CLEARANCE_MM;
   return Math.max(depthMm - clearance, 1);
 }
 
@@ -504,20 +511,45 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
   const shelfZoneBottom = hasBaseCabinets
     ? plinthHeight + spec.base_cabinet_height_mm
     : plinthHeight + thickness;
-  const material = MATERIALS.find((candidate) => candidate.id === spec.material_id) ?? MATERIALS[0]!;
-  const density = material.densityKgM3;
+  const materialCatalog = [...MATERIALS, ...BACK_MATERIALS];
+  const materialForId = (materialId: string) => {
+    const match = materialCatalog.find((candidate) => candidate.id === materialId);
+    if (!match) throw new Error(`Unknown material identity: ${materialId}`);
+    return match;
+  };
+  materialForId(spec.material_id);
   const innerWidth = Math.max(width - 2 * thickness - dividerCount * thickness, 1);
   const bayCount = dividerCount + 1;
   const resolvedBayWidths = bayWidths(spec, innerWidth);
+  const resolvedBayStarts = resolvedBayWidths.map((_, bayIndex) => (
+    thickness
+    + resolvedBayWidths.slice(0, bayIndex).reduce((sum, value) => sum + value, 0)
+    + bayIndex * thickness
+  ));
   const innerHeight = Math.max(height - shelfZoneBottom - thickness, 1);
-  const shelfDepth = interiorPanelDepth(depth, spec.back_panel);
+  const shelfDepth = interiorPanelDepth(depth, spec.back_panel, spec.back_panel_type);
+  const dividerDepth = spec.back_panel && spec.back_panel_type === "inset_groove"
+    ? Math.max(depth - BACK_INSET_MM, 1)
+    : shelfDepth;
+  const caseDepth = spec.back_panel && spec.back_panel_type === "surface_mounted"
+    ? Math.max(depth - BACK_THICKNESS_MM, 1)
+    : depth;
   const parts: ResolvedPart[] = [];
 
-  const addPart = (part: Omit<ResolvedPart, "material_id" | "weight_kg">) => {
+  const addPart = (
+    part: Omit<ResolvedPart, "material_id" | "weight_kg">,
+    materialId = spec.material_id,
+  ) => {
+    const partMaterial = materialForId(materialId);
     parts.push({
       ...part,
-      material_id: spec.material_id,
-      weight_kg: partWeightKg(part.width_mm, part.depth_mm, part.thickness_mm, density),
+      material_id: partMaterial.id,
+      weight_kg: partWeightKg(
+        part.width_mm,
+        part.depth_mm,
+        part.thickness_mm,
+        partMaterial.densityKgM3,
+      ),
     });
   };
 
@@ -525,8 +557,17 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
     const partId = `side-${side}`;
     const features = commonFeatures(partId, thickness);
     if (spec.back_panel) {
+      const surfaceMounted = spec.back_panel_type === "surface_mounted";
       features.push(
-        makeFeature(partId, "back-groove", "groove", "A", 4, "Not för bakstycke", 6),
+        makeFeature(
+          partId,
+          surfaceMounted ? "back-rabbet" : "back-groove",
+          surfaceMounted ? "rabbet" : "groove",
+          side === "left" ? "B" : "A",
+          dadoDepth,
+          surfaceMounted ? "Fals för utanpåliggande bakstycke" : "Not för bakstycke",
+          6,
+        ),
       );
     }
     if (hasBaseCabinets) {
@@ -562,11 +603,11 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
       name: side === "left" ? "Vänster gavel" : "Höger gavel",
       kind: "side",
       width_mm: height,
-      depth_mm: depth,
+      depth_mm: caseDepth,
       thickness_mm: thickness,
       position_mm: {
         x: side === "left" ? thickness / 2 : width - thickness / 2,
-        y: depth / 2,
+        y: caseDepth / 2,
         z: height / 2,
       },
       orientation: "YZ",
@@ -579,8 +620,17 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
     const partId = horizontal;
     const features = commonFeatures(partId, thickness);
     if (spec.back_panel) {
+      const surfaceMounted = spec.back_panel_type === "surface_mounted";
       features.push(
-        makeFeature(partId, "back-groove", "groove", "A", 4, "Not för bakstycke", 6),
+        makeFeature(
+          partId,
+          surfaceMounted ? "back-rabbet" : "back-groove",
+          surfaceMounted ? "rabbet" : "groove",
+          horizontal === "top" ? "A" : "B",
+          dadoDepth,
+          surfaceMounted ? "Fals för utanpåliggande bakstycke" : "Not för bakstycke",
+          6,
+        ),
       );
     }
     if (horizontal === "bottom" && hasBaseCabinets) {
@@ -602,12 +652,12 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
       part_id: partId,
       name: horizontal === "bottom" ? "Botten" : "Topp",
       kind: horizontal,
-      width_mm: Math.max(width - 2 * thickness, 1),
-      depth_mm: depth,
+      width_mm: Math.max(width - 2 * thickness + 2 * dadoDepth, 1),
+      depth_mm: caseDepth,
       thickness_mm: thickness,
       position_mm: {
         x: width / 2,
-        y: depth / 2,
+        y: caseDepth / 2,
         z: horizontal === "bottom" ? shelfZoneBottom - thickness / 2 : height - thickness / 2,
       },
       orientation: "XY",
@@ -624,10 +674,10 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
       part_id: partId,
       name: `Vertikal avdelare ${dividerIndex + 1}`,
       kind: "divider",
-      width_mm: innerHeight,
-      depth_mm: shelfDepth,
+      width_mm: innerHeight + 2 * dadoDepth,
+      depth_mm: dividerDepth,
       thickness_mm: thickness,
-      position_mm: { x, y: shelfDepth / 2, z: shelfZoneBottom + innerHeight / 2 },
+      position_mm: { x, y: dividerDepth / 2, z: shelfZoneBottom + innerHeight / 2 },
       orientation: "YZ",
       color: "#b8925d",
       features: [
@@ -647,11 +697,14 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
       const currentBayWidth = resolvedBayWidths[bayIndex]!;
       const x = thickness + precedingWidth + bayIndex * thickness + currentBayWidth / 2;
       const features = commonFeatures(partId, thickness);
+      const shelfWidth = spec.fixed_shelves
+        ? currentBayWidth + 2 * dadoDepth
+        : Math.max(currentBayWidth - 2 * SHELF_SIDE_CLEARANCE_MM, 1);
       addPart({
         part_id: partId,
         name: bayCount === 1 ? `Hylla ${shelfIndex + 1}` : `Hylla ${shelfIndex + 1}.${bayIndex + 1}`,
         kind: "shelf",
-        width_mm: currentBayWidth,
+        width_mm: shelfWidth,
         depth_mm: shelfDepth,
         thickness_mm: thickness,
         position_mm: { x, y: shelfDepth / 2, z },
@@ -771,23 +824,48 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
   }
 
   if (spec.back_panel) {
-    const partId = "back-panel";
-    addPart({
-      part_id: partId,
-      name: "Bakstycke",
-      kind: "back",
-      width_mm: Math.max(width - 8, 1),
-      depth_mm: Math.max(height - shelfZoneBottom - 4, 1),
-      thickness_mm: BACK_THICKNESS_MM,
-      position_mm: {
-        x: width / 2,
-        y: depth - 12 - BACK_THICKNESS_MM / 2,
-        z: shelfZoneBottom + (height - shelfZoneBottom) / 2,
-      },
-      orientation: "XZ",
-      color: "#b99869",
-      features: commonFeatures(partId, BACK_THICKNESS_MM),
-    });
+    if (spec.back_panel_type === "surface_mounted") {
+      const partId = "back-panel";
+      addPart({
+        part_id: partId,
+        name: "Bakstycke",
+        kind: "back",
+        width_mm: width,
+        depth_mm: height,
+        thickness_mm: BACK_THICKNESS_MM,
+        position_mm: {
+          x: width / 2,
+          y: depth - BACK_THICKNESS_MM / 2,
+          z: height / 2,
+        },
+        orientation: "XZ",
+        color: "#b99869",
+        features: commonFeatures(partId, BACK_THICKNESS_MM),
+      }, spec.back_material_id);
+    } else {
+      for (let bayIndex = 0; bayIndex < bayCount; bayIndex += 1) {
+        const partId = bayCount === 1
+          ? "back-panel"
+          : `back-panel-bay-${bayIndex + 1}`;
+        const bayWidth = resolvedBayWidths[bayIndex]!;
+        addPart({
+          part_id: partId,
+          name: bayCount === 1 ? "Bakstycke" : `Bakstycke fack ${bayIndex + 1}`,
+          kind: "back",
+          width_mm: bayWidth + 2 * dadoDepth,
+          depth_mm: innerHeight + 2 * dadoDepth,
+          thickness_mm: BACK_THICKNESS_MM,
+          position_mm: {
+            x: resolvedBayStarts[bayIndex]! + bayWidth / 2,
+            y: depth - BACK_INSET_MM - BACK_THICKNESS_MM / 2,
+            z: shelfZoneBottom + innerHeight / 2,
+          },
+          orientation: "XZ",
+          color: "#b99869",
+          features: commonFeatures(partId, BACK_THICKNESS_MM),
+        }, spec.back_material_id);
+      }
+    }
   }
 
   if (spec.plinth) {
@@ -827,7 +905,12 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
         depth_mm: depthMm,
         thickness_mm: thicknessMm,
         position_mm: position,
-        weight_kg: partWeightKg(widthMm, depthMm, thicknessMm, density),
+        weight_kg: partWeightKg(
+          widthMm,
+          depthMm,
+          thicknessMm,
+          materialForId(part.material_id).densityKgM3,
+        ),
         features: part.features.map((feature) => feature.kind === "outline" ? { ...feature, depth_mm: thicknessMm } : feature),
       };
     });
@@ -950,7 +1033,7 @@ export function removePartFromDesign(spec: DesignSpec, partId: string): PartRemo
     const bayWidthRatios = newDividerCount === 0
       ? []
       : mergedBayWidths.map((width) => round(width / newInnerWidth, 6));
-    const cleaned = withoutPartFamilies(spec, ["divider-", "shelf-"]);
+    const cleaned = withoutPartFamilies(spec, ["divider-", "shelf-", "back-panel"]);
     return {
       spec: balanceDesignSymmetry({
         ...spec,
@@ -1215,7 +1298,7 @@ export function editPartParametrically(
     );
   }
 
-  if (Number.isFinite(patch.thickness_mm) && partId !== "back-panel") {
+  if (Number.isFinite(patch.thickness_mm) && !partId.startsWith("back-panel")) {
     const measured = Math.min(19, Math.max(17, round(patch.thickness_mm!, 1)));
     return editResult(
       { ...spec, measured_thickness_mm: measured },
@@ -1317,7 +1400,7 @@ function calculateShelfDeflection(spec: DesignSpec): {
   const thickness = Math.max(spec.measured_thickness_mm, 0.1);
   const innerWidth = Math.max(spec.width_mm - 2 * thickness - Math.max(0, spec.divider_count) * thickness, 1);
   const span = Math.max(...bayWidths(spec, innerWidth), 1);
-  const depth = interiorPanelDepth(spec.depth_mm, spec.back_panel);
+  const depth = interiorPanelDepth(spec.depth_mm, spec.back_panel, spec.back_panel_type);
   const loadN = Math.max(spec.load_per_shelf_kg, 0) * GRAVITY;
   const lineLoad = loadN / span;
   const inertia = (depth * thickness ** 3) / 12;
@@ -1394,6 +1477,9 @@ export function adaptStructuralSupports(spec: DesignSpec): { spec: DesignSpec; d
   return {
     spec: {
       ...spec,
+      ...(dividerChanged
+        ? withoutPartFamilies(spec, ["divider-", "shelf-", "back-panel"])
+        : {}),
       divider_count: requiredCount,
       base_cabinet_count: targetBaseCabinetCount,
       reinforcement_mode: spec.reinforcement_mode,
@@ -1712,7 +1798,8 @@ function stabilityRule(spec: DesignSpec): RuleEvaluation {
 }
 
 function backRule(spec: DesignSpec, parts: ResolvedPart[]): RuleEvaluation {
-  const hasBack = spec.back_panel && parts.some((part) => part.part_id === "back-panel");
+  const backPartIds = parts.filter((part) => part.kind === "back").map((part) => part.part_id);
+  const hasBack = spec.back_panel && backPartIds.length > 0;
   return {
     rule_id: "STAB-RACK-001",
     rule_version: "1.0.0",
@@ -1723,7 +1810,7 @@ function backRule(spec: DesignSpec, parts: ResolvedPart[]): RuleEvaluation {
       : "Bakstycke saknas. En separat, verifierad stagning behöver dimensioneras.",
     calculation: hasBack ? "Bakstycke: aktivt" : "Bakstycke: saknas",
     assumptions: ["Bakstyckets infästning behöver verifieras fysiskt"],
-    affected_part_ids: hasBack ? ["back-panel"] : ["side-left", "side-right"],
+    affected_part_ids: hasBack ? backPartIds : ["side-left", "side-right"],
     ...(hasBack
       ? {}
       : {
@@ -1784,9 +1871,22 @@ function machineRule(spec: DesignSpec, parts: ResolvedPart[]): RuleEvaluation {
   };
 }
 
-function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
-  const sheetWidth = Math.max(spec.stock_width_mm, 1);
-  const sheetHeight = Math.max(spec.stock_height_mm, 1);
+interface NestedPartGroup {
+  placements: NestingPlacement[];
+  overflow_part_ids: string[];
+  used_sheet_count: number;
+  used_area_mm2: number;
+  available_area_mm2: number;
+}
+
+function nestPartGroup(
+  parts: ResolvedPart[],
+  sheetWidth: number,
+  sheetHeight: number,
+  stockCount: number,
+  sheetOffset: number,
+  stockRole: NestingPlacement["stock_role"],
+): NestedPartGroup {
   const ordered = [...parts].sort((left, right) => {
     const areaDifference = right.width_mm * right.depth_mm - left.width_mm * left.depth_mm;
     return areaDifference === 0 ? left.part_id.localeCompare(right.part_id) : areaDifference;
@@ -1808,9 +1908,9 @@ function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
       continue;
     }
 
-    let rotated = false;
-    let placementWidth = rawWidth;
-    let placementHeight = rawHeight;
+    let rotated = !normalFitsSheet && rotatedFitsSheet;
+    let placementWidth = rotated ? rawHeight : rawWidth;
+    let placementHeight = rotated ? rawWidth : rawHeight;
     if (cursorX + placementWidth + NESTING_GAP_MM > sheetWidth && rotatedFitsSheet && cursorX + rawHeight + NESTING_GAP_MM <= sheetWidth) {
       rotated = true;
       placementWidth = rawHeight;
@@ -1820,9 +1920,9 @@ function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
       cursorX = NESTING_GAP_MM;
       cursorY += rowHeight + NESTING_GAP_MM;
       rowHeight = 0;
-      rotated = false;
-      placementWidth = rawWidth;
-      placementHeight = rawHeight;
+      rotated = !normalFitsSheet && rotatedFitsSheet;
+      placementWidth = rotated ? rawHeight : rawWidth;
+      placementHeight = rotated ? rawWidth : rawHeight;
       if (cursorX + placementWidth + NESTING_GAP_MM > sheetWidth && rotatedFitsSheet) {
         rotated = true;
         placementWidth = rawHeight;
@@ -1831,16 +1931,16 @@ function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
     }
     if (cursorY + placementHeight + NESTING_GAP_MM > sheetHeight) {
       sheet += 1;
-      if (sheet > spec.stock_count) {
+      if (sheet > stockCount) {
         overflow.push(part.part_id);
         continue;
       }
       cursorX = NESTING_GAP_MM;
       cursorY = NESTING_GAP_MM;
       rowHeight = 0;
-      rotated = false;
-      placementWidth = rawWidth;
-      placementHeight = rawHeight;
+      rotated = !normalFitsSheet && rotatedFitsSheet;
+      placementWidth = rotated ? rawHeight : rawWidth;
+      placementHeight = rotated ? rawWidth : rawHeight;
       if (cursorX + placementWidth + NESTING_GAP_MM > sheetWidth && rotatedFitsSheet) {
         rotated = true;
         placementWidth = rawHeight;
@@ -1849,7 +1949,9 @@ function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
     }
     placements.push({
       part_id: part.part_id,
-      sheet,
+      material_id: part.material_id,
+      stock_role: stockRole,
+      sheet: sheetOffset + sheet,
       x_mm: round(cursorX),
       y_mm: round(cursorY),
       width_mm: round(placementWidth),
@@ -1859,14 +1961,46 @@ function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
     cursorX += placementWidth + NESTING_GAP_MM;
     rowHeight = Math.max(rowHeight, placementHeight);
   }
-  const sheetCount = placements.length === 0 ? 0 : Math.max(...placements.map((placement) => placement.sheet));
+  const sheetCount = placements.length === 0
+    ? 0
+    : Math.max(...placements.map((placement) => placement.sheet)) - sheetOffset;
   const usedArea = placements.reduce((sum, placement) => sum + placement.width_mm * placement.height_mm, 0);
-  const totalArea = Math.max(sheetCount * sheetWidth * sheetHeight, 1);
   return {
     placements,
-    sheet_count: sheetCount,
-    utilization_percent: round((usedArea / totalArea) * 100, 1),
     overflow_part_ids: overflow,
+    used_sheet_count: sheetCount,
+    used_area_mm2: usedArea,
+    available_area_mm2: sheetCount * sheetWidth * sheetHeight,
+  };
+}
+
+function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
+  const carcass = nestPartGroup(
+    parts.filter((part) => part.kind !== "back"),
+    Math.max(spec.stock_width_mm, 1),
+    Math.max(spec.stock_height_mm, 1),
+    spec.stock_count,
+    0,
+    "carcass",
+  );
+  const back = nestPartGroup(
+    parts.filter((part) => part.kind === "back"),
+    Math.max(spec.back_stock_width_mm, 1),
+    Math.max(spec.back_stock_height_mm, 1),
+    spec.back_stock_count,
+    carcass.used_sheet_count,
+    "back",
+  );
+  const usedArea = carcass.used_area_mm2 + back.used_area_mm2;
+  const availableArea = Math.max(
+    carcass.available_area_mm2 + back.available_area_mm2,
+    1,
+  );
+  return {
+    placements: [...carcass.placements, ...back.placements],
+    sheet_count: carcass.used_sheet_count + back.used_sheet_count,
+    utilization_percent: round((usedArea / availableArea) * 100, 1),
+    overflow_part_ids: [...carcass.overflow_part_ids, ...back.overflow_part_ids],
   };
 }
 
@@ -1879,13 +2013,15 @@ function nestingRule(
   const oversizedOverflowPartIds = nesting.overflow_part_ids.filter((partId) => {
     const part = partsById.get(partId);
     if (!part) return false;
-    const normalFits = part.width_mm + 2 * NESTING_GAP_MM <= spec.stock_width_mm
-      && part.depth_mm + 2 * NESTING_GAP_MM <= spec.stock_height_mm;
-    const rotatedFits = part.depth_mm + 2 * NESTING_GAP_MM <= spec.stock_width_mm
-      && part.width_mm + 2 * NESTING_GAP_MM <= spec.stock_height_mm;
+    const stockWidth = part.kind === "back" ? spec.back_stock_width_mm : spec.stock_width_mm;
+    const stockHeight = part.kind === "back" ? spec.back_stock_height_mm : spec.stock_height_mm;
+    const normalFits = part.width_mm + 2 * NESTING_GAP_MM <= stockWidth
+      && part.depth_mm + 2 * NESTING_GAP_MM <= stockHeight;
+    const rotatedFits = part.depth_mm + 2 * NESTING_GAP_MM <= stockWidth
+      && part.width_mm + 2 * NESTING_GAP_MM <= stockHeight;
     return !normalFits && !rotatedFits;
   });
-  const stockCapacity = spec.stock_count === 1 ? "vald skiva" : `valda ${spec.stock_count} skivor`;
+  const stockCapacity = "valda materialseparerade skivor";
   return {
     rule_id: "DFM-STOCK-001",
     rule_version: "1.0.0",
@@ -1897,10 +2033,13 @@ function nestingRule(
           ? `${nesting.overflow_part_ids.length} delar ryms inte i valt skivformat.`
           : `${nesting.overflow_part_ids.length} delar kan inte placeras inom ${stockCapacity}.`
         : `${nesting.sheet_count} skivor används med ${nesting.utilization_percent} % materialutnyttjande.`,
-    calculation: "Deterministisk radplacering med 8 mm bearbetningsmellanrum",
+    calculation: "Materialseparerad deterministisk radplacering med 8 mm bearbetningsmellanrum",
     calculated_value: nesting.utilization_percent,
     unit: "%",
-    assumptions: ["Fiberriktning och visuell fanérmatchning behöver slutkontrolleras"],
+    assumptions: [
+      "18 mm stomdelar och 6 mm ryggfält placeras aldrig på samma råskiva.",
+      "Fiberriktning och visuell fanérmatchning behöver slutkontrolleras",
+    ],
     affected_part_ids: nesting.overflow_part_ids,
     ...(oversizedOverflowPartIds.length > 0
       ? {
@@ -1916,10 +2055,10 @@ function nestingRule(
   };
 }
 
-function generateBom(spec: DesignSpec, parts: ResolvedPart[]): BomLine[] {
+function generateBom(parts: ResolvedPart[]): BomLine[] {
   const grouped = new Map<string, ResolvedPart[]>();
   for (const part of parts) {
-    const key = `${part.kind}:${round(part.width_mm, 1)}:${round(part.depth_mm, 1)}:${round(part.thickness_mm, 1)}`;
+    const key = `${part.kind}:${part.material_id}:${round(part.width_mm, 1)}:${round(part.depth_mm, 1)}:${round(part.thickness_mm, 1)}`;
     grouped.set(key, [...(grouped.get(key) ?? []), part]);
   }
   const lines: BomLine[] = [...grouped.values()].map((group, index) => {
@@ -1933,7 +2072,9 @@ function generateBom(spec: DesignSpec, parts: ResolvedPart[]): BomLine[] {
       unit: "st",
       part_ids: group.map((part) => part.part_id),
       dimensions: `${round(representative.width_mm, 1)} × ${round(representative.depth_mm, 1)} × ${round(representative.thickness_mm, 1)} mm`,
-      material: spec.material_name,
+      material: [...MATERIALS, ...BACK_MATERIALS].find(
+        (material) => material.id === representative.material_id,
+      )?.name ?? representative.material_id,
     };
   });
   return lines;
@@ -1953,9 +2094,11 @@ function generateOperations(parts: ResolvedPart[]): CamOperation[] {
             ? "Borrning"
             : feature.kind === "groove"
               ? "Spårfräsning"
-              : feature.kind === "pocket"
-                ? "Fickfräsning"
-                : "Märkning",
+              : feature.kind === "rabbet"
+                ? "Falsfräsning"
+                : feature.kind === "pocket"
+                  ? "Fickfräsning"
+                  : "Märkning",
       side: feature.face,
       tool: feature.tool_diameter_mm ? `Ø${feature.tool_diameter_mm} mm` : "T1",
       depth_mm: feature.depth_mm,
@@ -2011,7 +2154,7 @@ export function resolveDesign(spec: DesignSpec, changeDiff: ChangeDiff[] = []): 
     design_hash: localDesignHash(resolvedSpec),
     spec: resolvedSpec,
     parts,
-    bom: generateBom(resolvedSpec, parts),
+    bom: generateBom(parts),
     operations: generateOperations(parts),
     nesting,
     rule_evaluations: rules,
@@ -2025,8 +2168,15 @@ export function applySuggestion(spec: DesignSpec, evaluation: RuleEvaluation): {
   const suggestion = evaluation.suggestion;
   if (!suggestion) return { spec, diff: [] };
   if (suggestion.action === "set_divider_count" && typeof suggestion.value === "number") {
+    const cleaned = withoutPartFamilies(spec, ["divider-", "shelf-", "back-panel"]);
     return {
-      spec: { ...spec, divider_count: suggestion.value, bay_width_ratios: [], reinforcement_mode: "auto" },
+      spec: {
+        ...spec,
+        ...cleaned,
+        divider_count: suggestion.value,
+        bay_width_ratios: [],
+        reinforcement_mode: "auto",
+      },
       diff: [
         {
           field: "divider_count",

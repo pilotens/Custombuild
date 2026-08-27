@@ -5,6 +5,7 @@ import pytest
 
 from scripts import restore_drill
 from scripts.compose_backup import BackupError
+from scripts.postgres_runtime_privileges import runtime_privileges_sql
 from scripts.restore_drill import current_alembic_heads, validate_temporary_name
 
 
@@ -31,7 +32,7 @@ def test_broad_or_unsafe_restore_names_are_rejected(name: str) -> None:
 
 
 def test_restore_drill_resolves_current_repository_alembic_head() -> None:
-    assert current_alembic_heads(Path.cwd()) == ["0010_tenant_graph_foreign_keys"]
+    assert current_alembic_heads(Path.cwd()) == ["0011_runtime_role_privileges"]
 
 
 def test_restore_prepares_schema_ownership_and_restores_as_migrator() -> None:
@@ -40,6 +41,46 @@ def test_restore_prepares_schema_ownership_and_restores_as_migrator() -> None:
     assert "ALTER SCHEMA public OWNER TO custombuild_migrator" in source
     assert '"--username",\n            "custombuild_migrator"' in source
     assert '"PGPASSWORD={RESTORE_MIGRATOR_PASSWORD}"' in source
+
+
+def test_restore_rebuilds_the_canonical_runtime_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_docker(*arguments: str, **_kwargs: object) -> str:
+        calls.append(arguments)
+        return ""
+
+    monkeypatch.setattr(restore_drill, "docker", fake_docker)
+
+    restore_drill._restore_runtime_privileges("custombuild-restore-deadbeef-postgres")
+
+    assert len(calls) == 1
+    sql = calls[0][-1]
+    assert sql.endswith(runtime_privileges_sql())
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES" not in sql
+    assert "GRANT USAGE, SELECT ON ALL SEQUENCES" not in sql
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES" not in sql
+    assert "GRANT USAGE, SELECT ON SEQUENCES" not in sql
+
+
+def test_restore_worker_probe_uses_only_a_worker_allowlisted_table() -> None:
+    source = Path("scripts/restore_drill.py").read_text(encoding="utf-8")
+    worker_probe = source.split("worker_query =", maxsplit=1)[1].split(
+        "worker_raw =", maxsplit=1
+    )[0]
+
+    assert "FROM outbox_events" in worker_probe
+    assert "FROM projects" not in worker_probe
+    assert "public_object_grants_absent" in source
+    assert "FROM pg_auth_members" in source
+
+
+def test_restore_evidence_requires_acceptance_before_traffic() -> None:
+    source = Path("scripts/restore_drill.py").read_text(encoding="utf-8")
+
+    assert '"tenant_acceptance_required_before_traffic": True' in source
 
 
 def test_postgres_wait_ignores_temporary_initialization_server(

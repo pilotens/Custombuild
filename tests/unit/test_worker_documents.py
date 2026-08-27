@@ -116,6 +116,15 @@ def test_hardware_list_is_derived_from_joint_graph() -> None:
     assert first == second
     assert first.startswith(
         b"hardware_sku,quantity,source_joint_ids,affected_part_ids,"
+        b"catalog_system_id,catalog_system_version,catalog_entry_sha256,"
+        b"catalog_authenticity_status,evidence_id,evidence_sha256,"
+        b"installation_instruction_id,"
+        b"installation_instruction_version,installation_instruction_sha256,"
+        b"applicable_materials,joint_geometry_sha256,"
+        b"minimum_applicable_thickness_um,maximum_applicable_thickness_um,"
+        b"rated_shear_design_load_n,verified_shear_capacity_n,"
+        b"rated_withdrawal_design_load_n,verified_withdrawal_capacity_n,"
+        b"safety_factor_permille,"
         b"selection_status,required_action\n"
     )
     for joint in design.joints:

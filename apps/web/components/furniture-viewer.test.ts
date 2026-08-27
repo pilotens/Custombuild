@@ -185,24 +185,24 @@ describe("large-scene rendering contract", () => {
     expect(shouldUseInstancedPartRendering(199)).toBe(false);
     expect(shouldUseInstancedPartRendering(200)).toBe(false);
     expect(shouldUseInstancedPartRendering(201)).toBe(true);
-    expect(shouldUseInstancedPartRendering(752)).toBe(true);
+    expect(shouldUseInstancedPartRendering(768)).toBe(true);
     expect(viewerPartRenderMode(200, false)).toBe("standard");
     expect(viewerPartRenderMode(200, true)).toBe("standard");
     expect(viewerPartRenderMode(201, false)).toBe("instanced");
     expect(viewerPartRenderMode(201, true)).toBe("sortable-transparent");
-    expect(viewerPartRenderMode(752, false)).toBe("instanced");
-    expect(viewerPartRenderMode(752, true)).toBe("sortable-transparent");
+    expect(viewerPartRenderMode(768, false)).toBe("instanced");
+    expect(viewerPartRenderMode(768, true)).toBe("sortable-transparent");
   });
 
   it("keeps Drei damping for normal scenes and disables its frame cascade only above 200 parts", () => {
     expect(viewerOrbitControlsPerformanceProps(199)).toEqual({ enableDamping: true });
     expect(viewerOrbitControlsPerformanceProps(200)).toEqual({ enableDamping: true });
     expect(viewerOrbitControlsPerformanceProps(201)).toEqual({ enableDamping: false });
-    expect(viewerOrbitControlsPerformanceProps(752)).toEqual({ enableDamping: false });
+    expect(viewerOrbitControlsPerformanceProps(768)).toEqual({ enableDamping: false });
   });
 
-  it("covers all 752 real parts exactly once with stable instanceId mappings and real material groups", () => {
-    expect(parts).toHaveLength(752);
+  it("covers all 768 real parts exactly once with stable instanceId mappings and real material groups", () => {
+    expect(parts).toHaveLength(768);
     const renderData = buildInstancedPartRenderData({
       parts,
       designSize,
@@ -214,11 +214,11 @@ describe("large-scene rendering contract", () => {
     const sourceIds = parts.map((part) => part.part_id).sort();
     const instanceIds = instances.map((instance) => instance.partId).sort();
 
-    expect(renderData.partCount).toBe(752);
-    expect(instances).toHaveLength(752);
-    expect(renderData.batches.length).toBeLessThan(752);
+    expect(renderData.partCount).toBe(768);
+    expect(instances).toHaveLength(768);
+    expect(renderData.batches.length).toBeLessThan(768);
     expect(renderData.batches.every((batch) => !batch.transparent && batch.opacity === 1)).toBe(true);
-    expect(new Set(instanceIds).size).toBe(752);
+    expect(new Set(instanceIds).size).toBe(768);
     expect(instanceIds).toEqual(sourceIds);
     expect(new Set(renderData.batches.map((batch) => batch.key)).size).toBe(renderData.batches.length);
 
@@ -249,9 +249,9 @@ describe("large-scene rendering contract", () => {
     const materialKeys = new Set(renderData.materialBuckets.map((bucket) => bucket.key));
     const floatsPerPart = BOX_EDGE_SEGMENTS_PER_PART * 2 * 3;
 
-    expect(renderData.partCount).toBe(752);
-    expect(renderData.objects).toHaveLength(752);
-    expect(new Set(objectIds).size).toBe(752);
+    expect(renderData.partCount).toBe(768);
+    expect(renderData.objects).toHaveLength(768);
+    expect(new Set(objectIds).size).toBe(768);
     expect(objectIds).toEqual(sourceIds);
     expect(renderData.objects.every((object, index) => (
       object.part === parts[index]
@@ -261,8 +261,8 @@ describe("large-scene rendering contract", () => {
       && materialKeys.has(object.materialKey)
       && JSON.stringify(object.transform) === JSON.stringify(viewerPartTransform(parts[index]!, designSize, true))
     ))).toBe(true);
-    expect(renderData.edgeSegmentCount).toBe(752 * BOX_EDGE_SEGMENTS_PER_PART);
-    expect(renderData.edgePositions).toHaveLength(752 * floatsPerPart);
+    expect(renderData.edgeSegmentCount).toBe(768 * BOX_EDGE_SEGMENTS_PER_PART);
+    expect(renderData.edgePositions).toHaveLength(768 * floatsPerPart);
     expect(renderData.edgeColors).toHaveLength(renderData.edgePositions.length);
   });
 
@@ -284,10 +284,10 @@ describe("large-scene rendering contract", () => {
 
     expect(catalog).toEqual(reorderedCatalog);
     expect(catalog.length).toBeLessThanOrEqual(uniqueMaterialCount * 5);
-    expect(catalog.length).toBeLessThan(752);
+    expect(catalog.length).toBeLessThan(768);
     expect(new Set(catalog.map((bucket) => bucket.key)).size).toBe(catalog.length);
     expect(transformedRenderData.materialBuckets).toEqual(catalog);
-    expect(transformedRenderData.objects).toHaveLength(752);
+    expect(transformedRenderData.objects).toHaveLength(768);
   });
 
   it("preserves every box transform and emits exactly twelve merged edge segments per part", () => {
@@ -318,8 +318,8 @@ describe("large-scene rendering contract", () => {
     });
 
     expect(allTransformsMatch).toBe(true);
-    expect(renderData.edgeSegmentCount).toBe(752 * BOX_EDGE_SEGMENTS_PER_PART);
-    expect(renderData.edgePositions).toHaveLength(752 * floatsPerPart);
+    expect(renderData.edgeSegmentCount).toBe(768 * BOX_EDGE_SEGMENTS_PER_PART);
+    expect(renderData.edgePositions).toHaveLength(768 * floatsPerPart);
     expect(renderData.edgeColors).toHaveLength(renderData.edgePositions.length);
     expect(renderData.edgePositions.every(Number.isFinite)).toBe(true);
     expect(renderData.edgeColors.every(Number.isFinite)).toBe(true);
@@ -656,7 +656,7 @@ describe("validation comparison ghost", () => {
     expect(classification.unchanged).toHaveLength(0);
   });
 
-  it("keeps a 752-part comparison linear and bounded to two merged draw buffers", () => {
+  it("keeps a 768-part comparison linear and bounded to two merged draw buffers", () => {
     const fullCeilingParts = resolveDesign({
       ...DEFAULT_DESIGN_SPEC,
       furniture_type: "wall_library",
@@ -689,13 +689,13 @@ describe("validation comparison ghost", () => {
     });
     const floatsPerPart = BOX_EDGE_SEGMENTS_PER_PART * 2 * 3;
 
-    expect(fullCeilingParts).toHaveLength(752);
-    expect(renderData.classification.changed).toHaveLength(752);
+    expect(fullCeilingParts).toHaveLength(768);
+    expect(renderData.classification.changed).toHaveLength(768);
     expect(renderData.drawBufferCount).toBe(2);
-    expect(renderData.sourcePartCount).toBe(752);
-    expect(renderData.proposedPartCount).toBe(752);
-    expect(renderData.sourceEdgePositions).toHaveLength(752 * floatsPerPart);
-    expect(renderData.proposedEdgePositions).toHaveLength(752 * floatsPerPart);
+    expect(renderData.sourcePartCount).toBe(768);
+    expect(renderData.proposedPartCount).toBe(768);
+    expect(renderData.sourceEdgePositions).toHaveLength(768 * floatsPerPart);
+    expect(renderData.proposedEdgePositions).toHaveLength(768 * floatsPerPart);
     expect(renderData.sourceEdgePositions.every(Number.isFinite)).toBe(true);
     expect(renderData.proposedEdgePositions.every(Number.isFinite)).toBe(true);
   });

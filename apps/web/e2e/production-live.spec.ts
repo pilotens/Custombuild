@@ -29,15 +29,15 @@ const SERVER_WARNING_PATHS = [
 
 const REVIEW_WARNING_PATHS = SERVER_WARNING_PATHS;
 
-const STOCKLESS_BLOCK_PATHS = [
+const SCREENED_STOCK_PASS_PATHS = [
   { ruleId: "DFM-MACHINE-001", ruleVersion: "1.0.0", title: "Maskinens arbetsområde" },
   { ruleId: "DFM-STOCK-001", ruleVersion: "1.0.0", title: "Delar ryms i råmaterial" },
 ] as const;
 
-const STOCKLESS_FORBIDDEN_ARTIFACT_KIND = /(?:stock|nest|placement|label_index|measurement_plan|operation|tool|setup|backplot|machine|ngc)/i;
+const CAM_BLOCKED_FORBIDDEN_ARTIFACT_KIND = /(?:stock|nest|placement|label_index|measurement_plan|operation|tool|setup|backplot|machine|ngc)/i;
 
-function stocklessArtifactKindIsForbidden(kind: string): boolean {
-  return kind !== "stock_selection" && STOCKLESS_FORBIDDEN_ARTIFACT_KIND.test(kind);
+function camBlockedArtifactKindIsForbidden(kind: string): boolean {
+  return kind !== "stock_selection" && CAM_BLOCKED_FORBIDDEN_ARTIFACT_KIND.test(kind);
 }
 
 function requestPath(request: Request): string {
@@ -200,18 +200,14 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   await expect(validationPanel).toBeVisible({
     timeout: 30_000,
   });
-  const stocklessBlocks = validationPanel.locator(".validation-card.validation-block");
-  await expect(stocklessBlocks).toHaveCount(STOCKLESS_BLOCK_PATHS.length);
-  for (const blocker of STOCKLESS_BLOCK_PATHS) {
-    const card = stocklessBlocks.filter({
-      hasText: `Regel ${blocker.ruleId} · version ${blocker.ruleVersion}`,
+  await expect(validationPanel.locator(".validation-card.validation-block")).toHaveCount(0);
+  const screenedStockPasses = validationPanel.locator(".validation-card.validation-pass");
+  for (const screenedPath of SCREENED_STOCK_PASS_PATHS) {
+    const card = screenedStockPasses.filter({
+      hasText: `Regel ${screenedPath.ruleId} · version ${screenedPath.ruleVersion}`,
     });
     await expect(card).toHaveCount(1);
-    await expect(card.getByText(blocker.title, { exact: true })).toBeVisible();
-    await expect(card.getByRole("button", {
-      name: `Åtgärda problem för ${blocker.title}: öppna Lagerobundet granskningspaket`,
-      exact: true,
-    })).toBeVisible();
+    await expect(card.getByText(screenedPath.title, { exact: true })).toBeVisible();
   }
   const reviewWarnings = validationPanel.locator(".validation-card.validation-warning");
   await expect(reviewWarnings).toHaveCount(REVIEW_WARNING_PATHS.length);
@@ -225,24 +221,24 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
       await expect(warning.locator(".validation-actions").getByRole("button")).toHaveCount(0);
     }
   }
-  await stocklessBlocks
-    .filter({ hasText: "Regel DFM-STOCK-001 · version 1.0.0" })
-    .getByRole("button", { name: /Åtgärda problem/ })
-    .click();
+  await modes.getByRole("button", { name: /Underlag/ }).click();
   const productionDialog = page.locator("section.production-drawer-embedded");
   await expect(productionDialog).toBeVisible();
   await expect(productionDialog.locator("#production-next-action-heading"))
     .not.toHaveText("Hämtar projektet", { timeout: 30_000 });
-  await expect(productionDialog.getByText("Blockerar CAM · 2 krav")).toBeVisible();
+  // The screened stock and machine checks passed above, so Underlag must not
+  // reintroduce the former stockless-review blocker summary.
+  await expect(productionDialog.locator(".production-blocking-rules")).toHaveCount(0);
+  await expect(productionDialog).not.toContainText("Blockerar CAM");
   await expect(productionDialog).not.toContainText("5 000 × 2 500");
   // Underlag intentionally replaces the editable Studio inspector. Verify the
   // construction summary that remains visible across the mode transition.
   await expect(page.getByTestId("current-design-label").getByText("1800 × 2100 × 320 mm", { exact: true }))
     .toBeVisible();
-  console.log("production-live: stockless manufacturing review visible");
+  console.log("production-live: manufacturing review visible");
 
   const save = page.getByRole("button", {
-    name: "Spara för lagerobunden granskning",
+    name: "Spara och kontrollera",
     exact: true,
   });
   await expect(save).toBeVisible({ timeout: 30_000 });
@@ -286,7 +282,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(productionDialog.locator("#production-next-action-heading")).toHaveText("Skapa underlag", { timeout: 30_000 });
   await expect(productionDialog.getByRole("region", { name: "Status för verifieringen" }))
-    .toContainText("Lagerprofil saknas · CAM blockeras");
+    .toContainText("Behöver beslut");
 
   const versionHistory = productionDialog.getByRole("list", { name: "Serverrevisioner" });
   await expect(versionHistory).toBeVisible({ timeout: 30_000 });
@@ -350,8 +346,9 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(downloadButton).toBeVisible({ timeout: 4 * 60_000 });
   const camStatus = productionDialog.getByRole("status", { name: "Status för CAM" });
-  await expect(camStatus).toContainText("En exakt serverbunden lagerprofil saknas");
-  await expect(camStatus).toContainText("Lagerinköp, nesting, operationer");
+  await expect(camStatus).toContainText("strukturerad X/Y-bindning");
+  await expect(camStatus).toContainText("Uppladdade dokument och varningsgodkännanden kan inte");
+  await expect(camStatus).toContainText("Nesting, operationer, setupblad");
 
   const completedJobResponse = await request.get(
     `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}`,
@@ -371,7 +368,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     production_machine_program: false,
     design_review_package_status: {
       cam_status: "BLOCKED",
-      blocker_codes: ["STOCK_PROFILE_MISSING"],
+      blocker_codes: ["DFM-GRAIN-001"],
       physical_cutting_authorized: false,
     },
     workshop_readiness: {
@@ -383,6 +380,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(completedJob.result_json?.nesting_utilization_ppm).toBeNull();
   const readiness = completedJob.result_json?.workshop_readiness as {
     software_evidence?: Array<{ code?: unknown; status?: unknown }>;
+    workshop_evidence?: Array<{ code?: unknown; status?: unknown }>;
   } | undefined;
   const softwareStatus = new Map(
     (readiness?.software_evidence ?? []).map((item) => [item.code, item.status]),
@@ -390,6 +388,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(softwareStatus.get("AUTHORITATIVE_CAD")).toBe("VERIFIED");
   expect(softwareStatus.get("DFM_SCREEN")).toBe("MISSING");
   expect(softwareStatus.get("SEMANTIC_OPERATIONS")).toBe("MISSING");
+  const workshopStatus = new Map(
+    (readiness?.workshop_evidence ?? []).map((item) => [item.code, item.status]),
+  );
+  expect(workshopStatus.get("MATERIAL_GRAIN")).toBe("EXTERNAL_EVIDENCE_REQUIRED");
 
   const artifactsResponse = await request.get(
     `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}/artifacts`,
@@ -406,7 +408,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     "generation_plan",
     "workshop_readiness",
   ]));
-  expect(artifactKinds.filter(stocklessArtifactKindIsForbidden)).toEqual([]);
+  expect(artifactKinds.filter(camBlockedArtifactKindIsForbidden)).toEqual([]);
   await page.screenshot({ path: testInfo.outputPath("02-underlag-ready.png"), fullPage: true });
 
   const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });

@@ -50,6 +50,31 @@ class JointType(StrEnum):
     TENON = "tenon"
 
 
+class JointRetentionMethod(StrEnum):
+    """Adhesive-free ways a joint may be retained after mating.
+
+    This is an identity carried by a versioned external catalogue contract. It
+    is not, by itself, a strength or workshop-approval claim.
+    """
+
+    DRY_SELF_LOCKING = "dry_self_locking"
+    MECHANICAL = "mechanical"
+
+
+class JointRetentionMachiningScope(StrEnum):
+    """Whether the selected retention system needs additional CNC geometry."""
+
+    NO_ADDITIONAL_CNC = "no_additional_cnc"
+    FEATURES_BOUND_TO_JOINT = "features_bound_to_joint"
+
+
+class JointRetentionLoadMode(StrEnum):
+    """Independent load modes covered by one retention application."""
+
+    SHEAR = "shear"
+    WITHDRAWAL = "withdrawal"
+
+
 class FaceName(StrEnum):
     A = "a"
     B = "b"

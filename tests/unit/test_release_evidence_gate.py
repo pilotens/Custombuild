@@ -111,10 +111,11 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
                     "api_safe": True,
                     "worker_safe": True,
                     "memberships_absent": True,
+                    "public_object_grants_absent": True,
                     "all_public_objects_owned_by_migrator": True,
                 },
                 "api_rls": {"visible": 2, "foreign": 0},
-                "worker_rls": {"visible": 2, "foreign": 0},
+                "worker_rls": {"visible": 1, "foreign": 0},
                 "migrator_schema_mutation_verified": True,
             },
             "tenant_rls_verified": True,
@@ -125,7 +126,7 @@ def _evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Path]:
             "object_store_total_size_bytes": 0,
             "object_store_hashes_verified": True,
             "object_store_metadata_verified": True,
-            "tenant_acceptance_required_before_traffic": False,
+            "tenant_acceptance_required_before_traffic": True,
         },
     )
     images = []
@@ -655,9 +656,14 @@ def test_final_gate_parses_and_rejects_invalid_runtime_scans(
         "wrong_scan_input",
         "wrong_manifest_digest",
         "restore_flag",
+        "pretraffic_acceptance_not_required",
         "unsafe_runtime_role",
+        "missing_public_grant_proof",
         "missing_migrator_mutation",
-        "worker_rls_mismatch",
+        "api_rls_bool_visible",
+        "worker_rls_foreign",
+        "worker_rls_zero_visible",
+        "worker_rls_extra_field",
         "snapshot_mismatch",
         "created_at_mismatch",
     ),
@@ -706,12 +712,24 @@ def test_final_gate_rejects_cross_source_or_incomplete_evidence(
         payloads["runtime"]["images"][0]["manifest_digest"] = "sha256:" + "f" * 64
     elif case == "restore_flag":
         payloads["restore"]["tenant_rls_verified"] = False
+    elif case == "pretraffic_acceptance_not_required":
+        payloads["restore"]["tenant_acceptance_required_before_traffic"] = False
     elif case == "unsafe_runtime_role":
         payloads["restore"]["database_runtime_roles"]["roles"]["worker_safe"] = False
+    elif case == "missing_public_grant_proof":
+        del payloads["restore"]["database_runtime_roles"]["roles"][
+            "public_object_grants_absent"
+        ]
     elif case == "missing_migrator_mutation":
         payloads["restore"]["database_runtime_roles"]["migrator_schema_mutation_verified"] = False
-    elif case == "worker_rls_mismatch":
+    elif case == "api_rls_bool_visible":
+        payloads["restore"]["database_runtime_roles"]["api_rls"]["visible"] = True
+    elif case == "worker_rls_foreign":
         payloads["restore"]["database_runtime_roles"]["worker_rls"]["foreign"] = 1
+    elif case == "worker_rls_zero_visible":
+        payloads["restore"]["database_runtime_roles"]["worker_rls"]["visible"] = 0
+    elif case == "worker_rls_extra_field":
+        payloads["restore"]["database_runtime_roles"]["worker_rls"]["unexpected"] = True
     elif case == "snapshot_mismatch":
         payloads["restore"]["database_snapshot"]["row_counts"]["projects"] = 99
     elif case == "created_at_mismatch":

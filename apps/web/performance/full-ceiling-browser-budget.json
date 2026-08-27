@@ -11,7 +11,7 @@
     "base_cabinet_count": 17,
     "base_cabinet_height_mm": 680,
     "base_cabinet_depth_mm": 1200,
-    "expected_rendered_part_count": 752
+    "expected_rendered_part_count": 768
   },
   "sampling": {
     "warm_frame_count": 120,

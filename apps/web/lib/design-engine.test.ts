@@ -253,6 +253,97 @@ describe("deterministic bookcase preview", () => {
     expect(partsDoNotOverlap(first.nesting)).toBe(true);
   });
 
+  it("binds the selected back material to parts, weight, BOM and design identity", () => {
+    const birch = resolveDesign({
+      ...DEFAULT_DESIGN_SPEC,
+      back_material_id: "birch-plywood-6",
+    });
+    const mdf = resolveDesign({
+      ...DEFAULT_DESIGN_SPEC,
+      back_material_id: "mdf-6",
+    });
+    const birchBack = birch.parts.find((part) => part.kind === "back");
+    const mdfBack = mdf.parts.find((part) => part.kind === "back");
+
+    expect(birchBack?.material_id).toBe("birch-plywood-6");
+    expect(mdfBack?.material_id).toBe("mdf-6");
+    expect(mdfBack?.weight_kg).toBeGreaterThan(birchBack?.weight_kg ?? 0);
+    expect(mdf.bom.find((line) => line.part_ids.includes("back-panel"))?.material)
+      .toBe("MDF, bakstycke");
+    expect(mdf.parts.find((part) => part.kind === "side")?.material_id)
+      .toBe(DEFAULT_DESIGN_SPEC.material_id);
+    expect(mdf.design_hash).not.toBe(birch.design_hash);
+  });
+
+  it("segments an inset back by bay with the authoritative captured geometry", () => {
+    const result = resolveDesign({
+      ...DEFAULT_DESIGN_SPEC,
+      divider_count: 2,
+      reinforcement_mode: "manual",
+      back_panel: true,
+      back_panel_type: "inset_groove",
+    });
+    const backs = result.parts.filter((part) => part.kind === "back");
+    const firstRowShelves = result.parts.filter(
+      (part) => part.kind === "shelf" && part.part_id.startsWith("shelf-1-"),
+    );
+
+    expect(backs.map((part) => part.part_id)).toEqual([
+      "back-panel-bay-1",
+      "back-panel-bay-2",
+      "back-panel-bay-3",
+    ]);
+    expect(backs.map((part) => part.width_mm)).toEqual(
+      firstRowShelves.map((part) => part.width_mm),
+    );
+    expect(backs.map((part) => part.position_mm.x)).toEqual([
+      expect.closeTo(205.933, 3),
+      expect.closeTo(600, 3),
+      expect.closeTo(994.067, 3),
+    ]);
+    expect(backs.every((part) => part.depth_mm === 1_996.266)).toBe(true);
+    expect(backs.every((part) => part.position_mm.y === 305)).toBe(true);
+    expect(backs.every((part) => part.position_mm.z === 1_090)).toBe(true);
+    expect(result.parts.filter((part) => part.kind === "divider"))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ depth_mm: 308, width_mm: 1_996.266 }),
+      ]));
+  });
+
+  it("keeps a surface-mounted back as one canonical full panel", () => {
+    const result = resolveDesign({
+      ...DEFAULT_DESIGN_SPEC,
+      divider_count: 2,
+      reinforcement_mode: "manual",
+      back_panel: true,
+      back_panel_type: "surface_mounted",
+    });
+    const backs = result.parts.filter((part) => part.kind === "back");
+
+    expect(backs).toEqual([
+      expect.objectContaining({
+        part_id: "back-panel",
+        width_mm: 1_200,
+        depth_mm: 2_100,
+        thickness_mm: 6,
+        position_mm: { x: 600, y: 317, z: 1_050 },
+      }),
+    ]);
+    expect(result.parts.filter((part) => part.kind === "side").every(
+      (part) => part.depth_mm === 314,
+    )).toBe(true);
+    expect(result.parts.filter((part) => part.kind === "divider").every(
+      (part) => part.depth_mm === 312,
+    )).toBe(true);
+    const rabbets = result.parts.flatMap((part) => part.features).filter(
+      (feature) => feature.kind === "rabbet",
+    );
+    expect(rabbets).toHaveLength(4);
+    expect(rabbets.every((feature) => feature.depth_mm === 5.933)).toBe(true);
+    expect(result.operations.filter((operation) => operation.operation === "Falsfräsning"))
+      .toHaveLength(4);
+  });
+
   it("matches the authoritative inset-back cutter clearance in local geometry", () => {
     const withBack = resolveDesign({
       ...DEFAULT_DESIGN_SPEC,
@@ -261,14 +352,17 @@ describe("deterministic bookcase preview", () => {
       divider_count: 1,
       reinforcement_mode: "manual",
     });
-    const interiorParts = withBack.parts.filter(
-      (part) => part.kind === "shelf" || part.kind === "divider",
-    );
+    const shelves = withBack.parts.filter((part) => part.kind === "shelf");
+    const dividers = withBack.parts.filter((part) => part.kind === "divider");
 
-    expect(interiorParts.length).toBeGreaterThan(0);
-    expect(interiorParts.every((part) => part.depth_mm === 298)).toBe(true);
-    expect(interiorParts.every((part) => part.position_mm.y === 149)).toBe(true);
-    expect(interiorParts.every((part) => part.position_mm.y - part.depth_mm / 2 === 0)).toBe(true);
+    expect(shelves.length).toBeGreaterThan(0);
+    expect(shelves.every((part) => part.depth_mm === 298)).toBe(true);
+    expect(shelves.every((part) => part.position_mm.y === 149)).toBe(true);
+    expect(dividers.every((part) => part.depth_mm === 308)).toBe(true);
+    expect(dividers.every((part) => part.position_mm.y === 154)).toBe(true);
+    expect([...shelves, ...dividers].every(
+      (part) => part.position_mm.y - part.depth_mm / 2 === 0,
+    )).toBe(true);
 
     const withoutBack = resolveDesign({
       ...DEFAULT_DESIGN_SPEC,
@@ -302,6 +396,43 @@ describe("deterministic bookcase preview", () => {
     expect(reinforced.nesting.placements.some((placement) => placement.part_id.startsWith("divider-"))).toBe(true);
     expect(reinforced.operations.some((operation) => operation.part_id.startsWith("divider-"))).toBe(true);
     expect(reinforced.rule_evaluations.find((rule) => rule.rule_id === "STR-DEF-001")?.status).toBe("PASS");
+  });
+
+  it("clears stale segmented-back customizations when divider topology changes", () => {
+    const spec: DesignSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      divider_count: 2,
+      part_overrides: {
+        "back-panel-bay-3": { width_mm: 500 },
+        "side-left": { depth_mm: 300 },
+      },
+      removed_part_ids: ["back-panel-bay-2"],
+    };
+    const changed = applySuggestion(spec, {
+      rule_id: "TEST-TOPOLOGY",
+      rule_version: "1.0.0",
+      status: "WARNING",
+      title: "Test",
+      summary: "Ändra facktopologi",
+      calculation: "test",
+      assumptions: [],
+      affected_part_ids: [],
+      suggestion: {
+        action: "set_divider_count",
+        label: "Ändra",
+        value: 1,
+        explanation: "Test",
+      },
+    });
+
+    expect(changed.spec.divider_count).toBe(1);
+    expect(changed.spec.part_overrides).toEqual({
+      "side-left": { depth_mm: 300 },
+    });
+    expect(changed.spec.removed_part_ids).toEqual([]);
+    expect(resolveDesign(changed.spec).parts.filter((part) => part.kind === "back").map(
+      (part) => part.part_id,
+    )).toEqual(["back-panel-bay-1", "back-panel-bay-2"]);
   });
 
   it("automatically supports a 4200 mm loaded shelf row", () => {
@@ -499,7 +630,47 @@ describe("deterministic bookcase preview", () => {
     expect(stockRule?.status).toBe("BLOCK");
     expect(stockRule?.affected_part_ids.length).toBeGreaterThan(0);
     expect(stockRule?.suggestion).toBeUndefined();
-    expect(stockRule?.summary).toContain("kan inte placeras inom vald skiva");
+    expect(stockRule?.summary).toContain("kan inte placeras inom");
+  });
+
+  it("nests 6 mm backs only on the selected back stock profile", () => {
+    const blocked = resolveDesign({
+      ...DEFAULT_DESIGN_SPEC,
+      divider_count: 2,
+      reinforcement_mode: "manual",
+      stock_count: 24,
+      back_stock_width_mm: 100,
+      back_stock_height_mm: 100,
+      back_stock_count: 3,
+    });
+    expect(blocked.nesting.overflow_part_ids).toEqual([
+      "back-panel-bay-1",
+      "back-panel-bay-2",
+      "back-panel-bay-3",
+    ]);
+    expect(blocked.nesting.placements.every(
+      (placement) => placement.stock_role === "carcass",
+    )).toBe(true);
+
+    const nested = resolveDesign({
+      ...blocked.spec,
+      back_stock_width_mm: 2_440,
+      back_stock_height_mm: 1_220,
+    });
+    const carcassSheets = nested.nesting.placements
+      .filter((placement) => placement.stock_role === "carcass")
+      .map((placement) => placement.sheet);
+    const backPlacements = nested.nesting.placements.filter(
+      (placement) => placement.stock_role === "back",
+    );
+    expect(backPlacements).toHaveLength(3);
+    expect(backPlacements.every(
+      (placement) => placement.material_id === nested.spec.back_material_id,
+    )).toBe(true);
+    expect(backPlacements.every(
+      (placement) => placement.sheet > Math.max(...carcassSheets),
+    )).toBe(true);
+    expect(nested.nesting.overflow_part_ids).toEqual([]);
   });
 
   it("keeps local manufacturing blockers in an authoritative server preview", () => {
@@ -645,8 +816,8 @@ describe("deterministic bookcase preview", () => {
     const widths = [...new Set(shelves.map((part) => part.width_mm))].sort((left, right) => left - right);
     const levels = [...new Set(shelves.map((part) => part.position_mm.z))].sort((left, right) => left - right);
 
-    expect(widths[0]).toBeCloseTo(286.65);
-    expect(widths[1]).toBeCloseTo(859.95);
+    expect(widths[0]).toBeCloseTo(298.516);
+    expect(widths[1]).toBeCloseTo(871.816);
     expect(levels[1]! - levels[0]!).toBeGreaterThan(900);
     expect(result.parts.find((part) => part.kind === "divider")?.position_mm.x).toBeCloseTo(313.35);
   });
@@ -690,7 +861,8 @@ describe("deterministic bookcase preview", () => {
       reinforcement_mode: "manual",
     });
 
-    expect(result.parts.find((part) => part.part_id === "shelf-1-bay-1")?.width_mm).toBe(42);
+    expect(result.parts.find((part) => part.part_id === "shelf-1-bay-1")?.width_mm)
+      .toBeCloseTo(42 + 2 * (Math.floor(DEFAULT_DESIGN_SPEC.measured_thickness_mm * 1_000 / 3) / 1_000));
     expect(result.rule_evaluations.find((rule) => rule.rule_id === "GEO-001")?.status).toBe("PASS");
   });
 
@@ -818,7 +990,9 @@ describe("deterministic bookcase preview", () => {
     expect(rebuiltRow[0]?.width_mm).toBeCloseTo(rebuiltRow[3]!.width_mm, 3);
     expect(rebuiltRow[1]?.width_mm).toBeCloseTo(rebuiltRow[2]!.width_mm, 3);
     expect(rebuiltRow.reduce((sum, part) => sum + part.width_mm, 0)).toBeCloseTo(
-      oldRow.reduce((sum, part) => sum + part.width_mm, 0) + DEFAULT_DESIGN_SPEC.measured_thickness_mm,
+      oldRow.reduce((sum, part) => sum + part.width_mm, 0)
+        + DEFAULT_DESIGN_SPEC.measured_thickness_mm
+        - 2 * (Math.floor(DEFAULT_DESIGN_SPEC.measured_thickness_mm * 1_000 / 3) / 1_000),
       3,
     );
     expect(result.rule_evaluations.find((rule) => rule.rule_id === "STR-DEF-001")?.status).toBe("BLOCK");

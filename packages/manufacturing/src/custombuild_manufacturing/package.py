@@ -89,6 +89,7 @@ from .review_status import (
     CAMStageStatus,
     DesignReviewPackageStatus,
     normalize_design_review_package_status,
+    validate_design_review_status_retention_binding,
 )
 
 MAX_PACKAGE_FILES = 10_000
@@ -919,6 +920,7 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
             stock_selection_truth=stock_selection_truth,
             generation_plan_truth=generation_plan_truth,
             canonical_parts=review_core_truth.parts,
+            canonical_design=review_core_truth.design,
             manifest=manifest,
         )
         try:
@@ -1715,6 +1717,7 @@ def _validate_design_review_status_inventory(
     stock_selection_truth: _StockSelectionTruth,
     generation_plan_truth: _GenerationPlanTruth,
     canonical_parts: tuple[PartSpec, ...],
+    canonical_design: Any,
     manifest: Mapping[str, Any],
 ) -> None:
     """Bind an optional versioned review-status document to the ZIP inventory."""
@@ -1747,8 +1750,11 @@ def _validate_design_review_status_inventory(
     )
     try:
         status = normalize_design_review_package_status(status_value)
+        validate_design_review_status_retention_binding(status, canonical_design)
     except ValueError as exc:
-        raise ArtifactError("design-review package status is invalid") from exc
+        raise ArtifactError(
+            "design-review package status is invalid or contradicts frozen retention"
+        ) from exc
 
     validate_design_review_status_inventory_entries(status, entries)
     dfm_report = _validate_dfm_report_artifact(archive, entries)

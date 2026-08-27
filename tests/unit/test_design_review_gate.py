@@ -82,7 +82,7 @@ def test_screened_defaults_contract_is_pinned_and_rejects_tampering(
 ) -> None:
     contract = load_screened_defaults_contract(CONTRACT)
 
-    assert contract.contract_version == "1.1.0"
+    assert contract.contract_version == "1.2.0"
     assert contract.fingerprint == SCREENED_DEFAULTS_CONTRACT_FINGERPRINT
     assert [item.template_id for item in contract.templates] == ["shelving"]
     assert all(
@@ -191,7 +191,7 @@ def test_engine_smoke_stock_fingerprint_uses_canonical_grain_axis() -> None:
 
 
 @pytest.mark.cad
-def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() -> None:
+def test_full_gate_separates_mdf_smoke_from_grain_blocked_actual_birch_defaults() -> None:
     if not CadQueryAdapter.available():
         pytest.skip("CadQuery/OpenCascade is not installed")
 
@@ -212,7 +212,7 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
     assert report["physical_cutting_authorized"] is False
     assert report["screened_template_defaults_contract"] == {
         "schema_version": "custombuild.screened-template-defaults.v1",
-        "contract_version": "1.1.0",
+        "contract_version": "1.2.0",
         "fingerprint": SCREENED_DEFAULTS_CONTRACT_FINGERPRINT,
         "physical_cutting_authorized": False,
     }
@@ -251,8 +251,7 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
     }
     assert report["actual_default_readiness"]["status"] == GateStatus.EXTERNAL_EVIDENCE_REQUIRED
     assert set(actual_by_id) == {"shelving"}
-    expected_back_blanks = {"shelving": [2_376_266, 2_296_266]}
-    for template_id, expected_blank in expected_back_blanks.items():
+    for template_id in ("shelving",):
         item = actual_by_id[template_id]
         assert item["input_kind"] == "ACTUAL_EFFECTIVE_UI_DEFAULT"
         assert item["status"] == GateStatus.EXTERNAL_EVIDENCE_REQUIRED
@@ -267,7 +266,7 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
         assert len(item["cad"]["glb"]["sha256"]) == 64
         assert item["server_canonical"]["physical_cutting_authorized"] is False
         assert item["dfm_status"] == "BLOCK"
-        assert item["design_review_package_status"]["blocker_codes"] == ["STOCK_PROFILE_MISSING"]
+        assert item["design_review_package_status"]["blocker_codes"] == ["DFM-GRAIN-001"]
         assert item["design_review_package_status"]["cam_status"] == "BLOCKED"
         assert item["workshop_readiness"]["design_review_ready"] is False
         paths = {entry["path"] for entry in item["package"]["artifact_inventory"]}
@@ -285,24 +284,48 @@ def test_full_gate_separates_mdf_smoke_from_stockless_actual_birch_defaults() ->
             path.startswith(("cam/", "nesting/", "machine-validation/")) or path.endswith(".ngc")
             for path in paths
         )
-        assert item["blocking_issue_codes"] == ["STOCK_PROFILE_MISSING"]
-        assert len(item["blocking_issues"]) == 1
-        blocker = item["blocking_issues"][0]
-        assert blocker["code"] == "STOCK_PROFILE_MISSING"
-        assert blocker["part_name"] == "back"
-        assert blocker["inputs"]["material_id"] == "birch-plywood-6"
-        assert blocker["inputs"]["blank_um"] == expected_blank
+        assert item["blocking_issue_codes"] == ["DFM-GRAIN-001"]
+        assert len(item["blocking_issues"]) == 2
+        blockers_by_material = {
+            blocker["inputs"]["material_id"]: blocker
+            for blocker in item["blocking_issues"]
+        }
+        assert set(blockers_by_material) == {"birch-plywood", "birch-plywood-6"}
+        expected_grain_groups = {
+            "birch-plywood": {
+                "stock_id": "stock-birch-plywood-2440x1220",
+                "required_axes": ["X", "Y"],
+                "affected_part_count": 22,
+            },
+            "birch-plywood-6": {
+                "stock_id": "stock-birch-plywood-6-2440x1220",
+                "required_axes": ["Y"],
+                "affected_part_count": 3,
+            },
+        }
+        for material_id, expected in expected_grain_groups.items():
+            blocker = blockers_by_material[material_id]
+            assert blocker["code"] == "DFM-GRAIN-001"
+            assert blocker["severity"] == "BLOCK"
+            assert blocker["part_id"] is None
+            assert blocker["inputs"]["assessment_phase"] == "STOCK_MATCHED"
+            assert blocker["inputs"]["binding_status"] == "MISSING_INFORMATION"
+            assert blocker["inputs"]["stock_id"] == expected["stock_id"]
+            assert blocker["inputs"]["stock_grain_direction"] == "UNBOUND"
+            assert blocker["inputs"]["required_part_grain_directions"] == expected[
+                "required_axes"
+            ]
+            assert len(blocker["inputs"]["affected_part_ids"]) == expected[
+                "affected_part_count"
+            ]
+            assert "opaque evidence or acknowledgement cannot resolve" in blocker[
+                "suggestion"
+            ]
         stock_ids = {stock["stock_id"] for stock in item["stock_profiles"]}
         assert stock_ids == {
             "stock-birch-plywood-2440x1220",
             "stock-birch-plywood-6-2440x1220",
         }
-        back_stock = next(
-            stock
-            for stock in item["stock_profiles"]
-            if stock["material_id"] == blocker["inputs"]["material_id"]
-        )
-        assert back_stock["grain_direction"] == "UNBOUND"
         assert {stock["grain_direction"] for stock in item["stock_profiles"]} == {"UNBOUND"}
         assert {stock["width_um"] for stock in item["stock_profiles"]} == {2_440_000}
         assert {stock["height_um"] for stock in item["stock_profiles"]} == {1_220_000}

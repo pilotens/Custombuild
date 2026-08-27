@@ -233,6 +233,13 @@ class BookcasePreviewInput(BaseModel):
     depth_mm: float = Field(default=320, ge=100, le=1200)
     furniture_type: Literal["bookcase", "wall_library"] = "bookcase"
     material_id: Literal["mdf", "birch-plywood"] = "mdf"
+    back_material_id: Literal["mdf-6", "birch-plywood-6"] | None = Field(
+        default=None,
+        description=(
+            "Optional exact 6 mm back-panel material. When omitted, legacy clients "
+            "retain the matching MDF/birch-plywood derivation from material_id."
+        ),
+    )
     nominal_thickness_mm: float = Field(
         default=18,
         ge=18,
@@ -261,8 +268,9 @@ class BookcasePreviewInput(BaseModel):
     joint_system: Literal["dado"] = Field(
         default="dado",
         description=(
-            "Only DADO has a verified domain-to-CAM-to-assembly path in the production MVP. "
-            "Other catalogue joint types are explicitly capability-blocked."
+            "Only DADO has an implemented deterministic design-review path in the MVP. "
+            "CAM remains conditional on authenticated retention evidence and all other "
+            "manufacturing gates; other joint types are capability-blocked."
         ),
     )
     reinforcement_mode: Literal["manual", "auto"] = "manual"
@@ -271,6 +279,8 @@ class BookcasePreviewInput(BaseModel):
 
     @model_validator(mode="after")
     def validate_custom_layout(self) -> BookcasePreviewInput:
+        if not _legacy_back_panel_enabled(self.back_panel) and self.back_material_id is not None:
+            raise ValueError("back_material_id requires an enabled back panel")
         if self.bay_width_ratios:
             if len(self.bay_width_ratios) != self.divider_count + 1:
                 raise ValueError("bay_width_ratios must match divider_count + 1")
@@ -385,6 +395,16 @@ def _legacy_back_panel_enabled(
     return value is True or value in {"surface_mounted", "inset_groove"}
 
 
+def _canonical_back_panel_type(
+    value: bool | Literal["none", "surface_mounted", "inset_groove"],
+) -> Literal["none", "surface_mounted", "inset_groove"]:
+    if value is True:
+        return "inset_groove"
+    if value is False:
+        return "none"
+    return value
+
+
 def _legacy_production_mismatches(
     legacy: _LegacyWorkspaceSpec,
     spec: BookcasePreviewInput,
@@ -395,6 +415,26 @@ def _legacy_production_mismatches(
         "height_mm": (legacy.height_mm, spec.height_mm),
         "depth_mm": (legacy.depth_mm, spec.depth_mm),
         "material_id": (legacy.material_id, spec.material_id),
+        "back_material_id": (
+            (
+                "birch-plywood-6"
+                if legacy.back_panel and legacy.material_id == "birch-plywood"
+                else "mdf-6"
+                if legacy.back_panel
+                else None
+            ),
+            (
+                spec.back_material_id
+                or (
+                    "birch-plywood-6"
+                    if _legacy_back_panel_enabled(spec.back_panel)
+                    and spec.material_id == "birch-plywood"
+                    else "mdf-6"
+                    if _legacy_back_panel_enabled(spec.back_panel)
+                    else None
+                )
+            ),
+        ),
         "nominal_thickness_mm": (legacy.nominal_thickness_mm, spec.nominal_thickness_mm),
         "measured_thickness_mm": (legacy.measured_thickness_mm, spec.measured_thickness_mm),
         "shelf_count": (legacy.shelf_count, spec.shelf_count),
@@ -404,6 +444,10 @@ def _legacy_production_mismatches(
         ),
         "load_per_shelf_kg": (legacy.load_per_shelf_kg, spec.load_per_shelf_kg),
         "back_panel": (legacy.back_panel, _legacy_back_panel_enabled(spec.back_panel)),
+        "back_panel_type": (
+            "inset_groove" if legacy.back_panel else "none",
+            _canonical_back_panel_type(spec.back_panel),
+        ),
         "plinth": (legacy.plinth, spec.plinth),
         "divider_count": (legacy.divider_count, spec.divider_count),
         "bay_width_ratios": (legacy.bay_width_ratios, spec.bay_width_ratios),
@@ -474,7 +518,12 @@ def _generated_workspace_part_ids(spec: BookcasePreviewInput) -> set[str]:
             part_ids.add(f"base-bottom-{cabinet}")
             part_ids.add(f"cabinet-front-{cabinet}")
     if _legacy_back_panel_enabled(spec.back_panel):
-        part_ids.add("back-panel")
+        if spec.back_panel != "surface_mounted" and spec.divider_count > 0:
+            part_ids.update(
+                f"back-panel-bay-{bay}" for bay in range(1, spec.divider_count + 2)
+            )
+        else:
+            part_ids.add("back-panel")
     if spec.plinth:
         part_ids.add("plinth-front")
     return part_ids

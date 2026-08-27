@@ -497,6 +497,11 @@ export interface components {
         /** BookcasePreviewInput */
         BookcasePreviewInput: {
             /**
+             * Back Material Id
+             * @description Optional exact 6 mm back-panel material. When omitted, legacy clients retain the matching MDF/birch-plywood derivation from material_id.
+             */
+            back_material_id?: ("mdf-6" | "birch-plywood-6") | null;
+            /**
              * Back Panel
              * @default true
              */
@@ -546,7 +551,7 @@ export interface components {
             height_mm: number;
             /**
              * Joint System
-             * @description Only DADO has a verified domain-to-CAM-to-assembly path in the production MVP. Other catalogue joint types are explicitly capability-blocked.
+             * @description Only DADO has an implemented deterministic design-review path in the MVP. CAM remains conditional on authenticated retention evidence and all other manufacturing gates; other joint types are capability-blocked.
              * @default dado
              * @constant
              */

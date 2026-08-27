@@ -1177,9 +1177,12 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         else None
     )
     if retention_action != (
-        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
-        "retention system for every DADO joint; a review acknowledgement, adhesive or "
-        "geometric bearing check is not retention evidence."
+        "The current MVP cannot resolve this blocker because it has no authenticated "
+        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
+        "checksum-addressed mechanical retention contract to every DADO joint, including "
+        "exact geometry, hardware quantity, material/thickness applicability and separate "
+        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
+        "bearing check is not retention evidence."
     ):
         issues.append(
             f"{relative} does not bind the DADO retention blocker to its canonical action"

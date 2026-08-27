@@ -16,7 +16,7 @@ from pydantic import Field
 from .identity import content_hash
 from .models import BOOKCASE_TEMPLATE_VERSION, FrozenModel, StableKey
 
-TEMPLATE_CAPABILITY_REGISTRY_VERSION = "custombuild-template-capabilities-1.1.0"
+TEMPLATE_CAPABILITY_REGISTRY_VERSION = "custombuild-template-capabilities-1.2.0"
 
 
 class TemplateProductionLevel(StrEnum):
@@ -45,7 +45,7 @@ class TemplateCapability(FrozenModel):
 _CAPABILITIES = (
     TemplateCapability(
         template_id="shelving",
-        template_version="1.0.0",
+        template_version=BOOKCASE_TEMPLATE_VERSION,
         production_level=TemplateProductionLevel.SCREENED,
         archetype="bookcase",
         allowed_furniture_types=("bookcase",),

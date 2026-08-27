@@ -11,6 +11,8 @@ export type JointSystem = "dado";
 export type ReinforcementMode = "manual" | "auto";
 export type FurnitureType = "bookcase" | "wall_library";
 export type BaySizingMode = "count" | "target_width";
+export type BackMaterialId = "mdf-6" | "birch-plywood-6";
+export type BackPanelType = "inset_groove" | "surface_mounted";
 
 export interface ReferenceImageConfirmedInputs {
   dimensions_measured: boolean;
@@ -73,12 +75,14 @@ export interface DesignSpec {
   depth_mm: number;
   material_id: string;
   material_name: string;
+  back_material_id: BackMaterialId;
   nominal_thickness_mm: number;
   measured_thickness_mm: number;
   shelf_count: number;
   fixed_shelves: boolean;
   load_per_shelf_kg: number;
   back_panel: boolean;
+  back_panel_type: BackPanelType;
   plinth: boolean;
   divider_count: number;
   /** Workspace intent. Production APIs receive only the deterministically resolved divider count. */
@@ -134,7 +138,7 @@ export interface MachineDefinition {
 
 export interface ManufacturingFeature {
   id: string;
-  kind: "outline" | "drill" | "groove" | "pocket" | "label";
+  kind: "outline" | "drill" | "groove" | "rabbet" | "pocket" | "label";
   face: "A" | "B" | "EDGE";
   depth_mm: number;
   tool_diameter_mm?: number;
@@ -191,6 +195,8 @@ export interface CamOperation {
 
 export interface NestingPlacement {
   part_id: string;
+  material_id: string;
+  stock_role: "carcass" | "back";
   sheet: number;
   x_mm: number;
   y_mm: number;
@@ -281,18 +287,43 @@ export const MATERIALS: readonly MaterialDefinition[] = [
   },
 ] as const;
 
+export const BACK_MATERIALS: readonly MaterialDefinition[] = [
+  {
+    id: "birch-plywood-6",
+    name: "Björkplywood, bakstycke",
+    nominalThicknessMm: 6,
+    measuredThicknessMm: 6,
+    densityKgM3: 680,
+    elasticModulusMpa: 5_000,
+    allowableBendingStressMpa: 24,
+    source: "Screeningvärde – verifiera leverantörens batchdata",
+    version: "screening-2026.1",
+  },
+  {
+    id: "mdf-6",
+    name: "MDF, bakstycke",
+    nominalThicknessMm: 6,
+    measuredThicknessMm: 6,
+    densityKgM3: 780,
+    elasticModulusMpa: 2_500,
+    allowableBendingStressMpa: 15,
+    source: "Screeningvärde – verifiera leverantörens batchdata",
+    version: "screening-2026.1",
+  },
+] as const;
+
 export const MACHINES: readonly MachineDefinition[] = [
   {
     id: "custombuild-router-1325-linuxcnc",
     name: "Custombuild Router 1325 / LinuxCNC (valideringsprofil)",
     workAreaMm: { x: 2_500, y: 1_300, z: 150 },
-    supportedFeatures: ["outline", "drill", "groove", "pocket", "label"],
+    supportedFeatures: ["outline", "drill", "groove", "rabbet", "pocket", "label"],
   },
   {
     id: "custombuild-router-5125-linuxcnc",
     name: "Custombuild Router 5125 / LinuxCNC (storformatsvalidering)",
     workAreaMm: { x: 5_100, y: 2_600, z: 150 },
-    supportedFeatures: ["outline", "drill", "groove", "pocket", "label"],
+    supportedFeatures: ["outline", "drill", "groove", "rabbet", "pocket", "label"],
   },
 ] as const;
 
@@ -306,12 +337,14 @@ export const DEFAULT_DESIGN_SPEC: DesignSpec = {
   depth_mm: 320,
   material_id: MATERIALS[0]!.id,
   material_name: MATERIALS[0]!.name,
+  back_material_id: BACK_MATERIALS[0]!.id as BackMaterialId,
   nominal_thickness_mm: MATERIALS[0]!.nominalThicknessMm,
   measured_thickness_mm: MATERIALS[0]!.measuredThicknessMm,
   shelf_count: 5,
   fixed_shelves: true,
   load_per_shelf_kg: 32,
   back_panel: true,
+  back_panel_type: "inset_groove",
   plinth: true,
   divider_count: 0,
   bay_sizing_mode: "count",

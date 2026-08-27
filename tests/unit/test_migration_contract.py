@@ -7,6 +7,12 @@ from typing import Any
 
 import pytest
 
+from scripts.postgres_runtime_privileges import (
+    API_TABLE_PRIVILEGES,
+    WORKER_TABLE_PRIVILEGES,
+    runtime_privilege_statements,
+)
+
 MIGRATIONS = Path("services/api/alembic/versions")
 INITIAL_MIGRATION = MIGRATIONS / "0001_initial.py"
 ENGINE_CONTEXT_MIGRATION = MIGRATIONS / "0002_generation_engine_context.py"
@@ -16,6 +22,7 @@ GENERATION_LEASE_HEARTBEAT_MIGRATION = (
     MIGRATIONS / "0009_generation_lease_heartbeat.py"
 )
 TENANT_GRAPH_MIGRATION = MIGRATIONS / "0010_tenant_graph_foreign_keys.py"
+RUNTIME_ROLE_PRIVILEGES_MIGRATION = MIGRATIONS / "0011_runtime_role_privileges.py"
 TEMPLATE_CAPABILITY_MIGRATION = MIGRATIONS / "0005_template_capability_identity.py"
 
 
@@ -165,6 +172,52 @@ def test_tenant_graph_migration_preflights_and_replaces_every_parent_edge() -> N
     assert "PRODUCTION_TABLES" in source
     assert '"fk_approvals_org_generation_job"' in source
     assert "_restore_single_column_foreign_key" in source
+
+
+def test_runtime_role_migration_revokes_blanket_defaults_before_explicit_grants() -> None:
+    source = RUNTIME_ROLE_PRIVILEGES_MIGRATION.read_text(encoding="utf-8")
+    statements = runtime_privilege_statements()
+    privilege_sql = ";\n".join(statements)
+
+    assert 'down_revision = "0010_tenant_graph_foreign_keys"' in source
+    assert "runtime_privilege_statements" in source
+    assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public" in privilege_sql
+    assert "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public" in privilege_sql
+    assert "REVOKE ALL PRIVILEGES ON TABLES" in privilege_sql
+    assert "REVOKE ALL PRIVILEGES ON SEQUENCES" in privilege_sql
+    assert "FROM PUBLIC" in privilege_sql
+    assert "organizations" not in API_TABLE_PRIVILEGES
+    assert API_TABLE_PRIVILEGES["users"] == ("SELECT",)
+    assert API_TABLE_PRIVILEGES["outbox_events"] == ("INSERT",)
+    assert API_TABLE_PRIVILEGES["audit_events"] == ("INSERT",)
+    assert WORKER_TABLE_PRIVILEGES["generation_jobs"] == (
+        "SELECT",
+        "UPDATE",
+    )
+    assert WORKER_TABLE_PRIVILEGES["approvals"] == ("SELECT",)
+    assert WORKER_TABLE_PRIVILEGES["audit_events"] == ("INSERT",)
+    assert "users" not in WORKER_TABLE_PRIVILEGES
+    assert "memberships" not in WORKER_TABLE_PRIVILEGES
+    assert "projects" not in WORKER_TABLE_PRIVILEGES
+    assert "releases" not in WORKER_TABLE_PRIVILEGES
+
+
+def test_postgres_bootstrap_never_auto_grants_future_runtime_tables() -> None:
+    source = Path("infra/postgres/init-roles.sh").read_text(encoding="utf-8")
+
+    assert "GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES" not in source
+    assert "GRANT USAGE, SELECT ON SEQUENCES" not in source
+    assert "REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC" in source
+    assert "REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC" in source
+    assert "REVOKE ALL PRIVILEGES ON SCHEMA public" in source
+    assert (
+        "REVOKE ALL PRIVILEGES ON TABLES FROM custombuild_api, custombuild_worker"
+        in source
+    )
+    assert (
+        "REVOKE ALL PRIVILEGES ON SEQUENCES FROM custombuild_api, custombuild_worker"
+        in source
+    )
 
 
 def test_tenant_graph_preflight_checks_every_edge_per_tenant_and_resets_rls(

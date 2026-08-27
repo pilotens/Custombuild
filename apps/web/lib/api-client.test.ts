@@ -18,6 +18,8 @@ function serverSemanticName(partId: string): string {
   if (partId === "side-left") return "left-side";
   if (partId === "side-right") return "right-side";
   if (partId === "back-panel") return "back";
+  const backField = /^back-panel-bay-(\d+)$/.exec(partId);
+  if (backField) return `back-b${Number(backField[1]) - 1}`;
   if (partId === "plinth-front") return "plinth";
   const divider = /^divider-(\d+)$/.exec(partId);
   if (divider) return `divider-${Number(divider[1]) - 1}`;
@@ -153,7 +155,10 @@ describe("API preview normalization", () => {
   ])("rejects unsafe server spec %s before any design composition", (field, value) => {
     const resolveSpy = vi.spyOn(designEngine, "resolveDesign");
     expect(() => normalizePreviewResponse({
-      spec: { parameters: { [field]: value } },
+      spec: {
+        parameters: { [field]: value, back_panel: DEFAULT_DESIGN_SPEC.back_panel_type },
+        back_material: { material_id: DEFAULT_DESIGN_SPEC.back_material_id },
+      },
     }, DEFAULT_DESIGN_SPEC)).toThrow(/ogiltigt värde|utanför/i);
     expect(resolveSpy).not.toHaveBeenCalled();
   });
@@ -253,6 +258,8 @@ describe("API preview normalization", () => {
 
     expect(request.shelf_mount).toBe("adjustable");
     expect(request.joint_system).toBe("dado");
+    expect(request.back_material_id).toBe(DEFAULT_DESIGN_SPEC.back_material_id);
+    expect(request.back_panel).toBe("inset_groove");
     expect(request.wall_anchor_verified).toBe(false);
     expect(request.divider_count).toBe(2);
     expect(request).not.toHaveProperty("schema_version");
@@ -266,6 +273,22 @@ describe("API preview normalization", () => {
     expect(request).not.toHaveProperty("symmetry_locked");
     expect(request).not.toHaveProperty("bay_sizing_mode");
     expect(request).not.toHaveProperty("target_bay_width_mm");
+  });
+
+  it("omits a dormant back-material choice when the design has no back panel", () => {
+    expect(toPreviewRequest({
+      ...DEFAULT_DESIGN_SPEC,
+      back_panel: false,
+      back_material_id: "mdf-6",
+    })).not.toHaveProperty("back_material_id");
+  });
+
+  it("sends an exact surface mount instead of collapsing it to a boolean", () => {
+    expect(toPreviewRequest({
+      ...DEFAULT_DESIGN_SPEC,
+      back_panel: true,
+      back_panel_type: "surface_mounted",
+    }).back_panel).toBe("surface_mounted");
   });
 
   it("rejects an unsupported joint instead of silently normalizing it to DADO", () => {
@@ -399,6 +422,7 @@ describe("API preview normalization", () => {
         status: "PASS",
         spec: {
           material: { material_id: "birch-plywood", name: "Björkplywood 18 mm" },
+          back_material: { material_id: "mdf-6", name: "MDF 6 mm" },
           parameters: {
             width_um: 1_200_000,
             height_um: 2_100_000,
@@ -454,6 +478,7 @@ describe("API preview normalization", () => {
 
     expect(result.spec.divider_count).toBe(1);
     expect(result.spec.reinforcement_mode).toBe("auto");
+    expect(result.spec.back_material_id).toBe("mdf-6");
     expect(result.rule_evaluations).toHaveLength(1);
     expect(result.rule_evaluations[0]?.calculation).toContain("5wL^4");
     expect(result.rule_evaluations[0]?.affected_part_ids).toEqual(["server-shelf-id"]);
@@ -477,6 +502,56 @@ describe("API preview normalization", () => {
       },
       DEFAULT_DESIGN_SPEC,
     )).toThrow(/förbandssystemet dowel.*inte stöds/i);
+  });
+
+  it("rejects unknown, incomplete and backless server back-material identities", () => {
+    const parameters = { back_panel: "inset_groove" };
+    expect(() => normalizePreviewResponse({
+      spec: { parameters: {}, back_material: { material_id: "mdf-6" } },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/saknar en exakt bakstyckestyp/i);
+    expect(() => normalizePreviewResponse({
+      spec: { parameters, back_material: { material_id: "oak-6" } },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/okända bakstyckesmaterialet oak-6/i);
+    expect(() => normalizePreviewResponse({
+      spec: { parameters, back_material: {} },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/materialdefinition/i);
+    expect(() => normalizePreviewResponse({
+      spec: { parameters },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/saknar en exakt materialdefinition/i);
+    expect(() => normalizePreviewResponse({
+      spec: {
+        parameters: { back_panel: "none" },
+        back_material: { material_id: "mdf-6" },
+      },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/utan ett bakstycke/i);
+  });
+
+  it.each([
+    ["inset_groove", ["back-panel-bay-1", "back-panel-bay-2", "back-panel-bay-3"]],
+    ["surface_mounted", ["back-panel"]],
+  ] as const)("requires exact local/server back topology for %s", (backPanelType, expectedIds) => {
+    const requested: DesignSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      divider_count: 2,
+      reinforcement_mode: "manual",
+      back_panel: true,
+      back_panel_type: backPanelType,
+    };
+    const parts = exactServerParts(requested);
+    const payload = {
+      spec: {
+        back_material: { material_id: requested.back_material_id },
+        parameters: { back_panel: backPanelType },
+      },
+      parts,
+    };
+    const normalized = normalizePreviewResponse(payload, requested);
+
+    expect(normalized.parts.filter((part) => part.kind === "back").map((part) => part.part_id))
+      .toEqual(expectedIds);
+    expect(normalized.spec.back_panel_type).toBe(backPanelType);
+    expect(() => normalizePreviewResponse({ ...payload, parts: parts.slice(0, -1) }, requested))
+      .toThrow(/exakt den verifierade lokala topologin/i);
   });
 });
 
@@ -580,6 +655,9 @@ describe("production API contract", () => {
       template_id: "wall-library",
       production_context: productionContextFromSpec(spec),
     }));
+    expect((body.spec as Record<string, unknown>).back_material_id).toBe(
+      spec.back_material_id,
+    );
   });
 
   it("treats legacy, extra-key and wrong-type production snapshots as stale", () => {
@@ -644,6 +722,7 @@ describe("production API contract", () => {
     expect(body.spec).not.toHaveProperty("bay_sizing_mode");
     expect(body.spec).not.toHaveProperty("target_bay_width_mm");
     expect(body.spec.divider_count).toBe(2);
+    expect(body.spec.back_material_id).toBe(workspaceSpec.back_material_id);
     expect(body.workspace_spec).toEqual(expect.objectContaining({
       schema_version: "custombuild.workspace-intent.v1",
       bay_sizing_mode: "target_width",

@@ -23,6 +23,7 @@ try:
         inventory_s3,
         verify_manifest,
     )
+    from scripts.postgres_runtime_privileges import runtime_privileges_sql
 except ModuleNotFoundError:
     from compose_backup import (  # type: ignore[import-not-found,no-redef]  # noqa: I001
         POSTGRES_IMAGE,
@@ -31,6 +32,7 @@ except ModuleNotFoundError:
         inventory_s3,
         verify_manifest,
     )
+    from postgres_runtime_privileges import runtime_privileges_sql  # type: ignore[import-not-found,no-redef]
 
 
 SAFE_NAME = re.compile(r"^custombuild-restore-[a-f0-9]{8}(?:-(?:postgres|seaweed|extract))?$")
@@ -267,7 +269,7 @@ def _restored_database_probe(container: str) -> dict[str, Any]:
 
 
 def _restore_runtime_privileges(container: str) -> None:
-    sql = """
+    role_hardening_sql = """
 ALTER ROLE custombuild_migrator WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOINHERIT NOREPLICATION NOBYPASSRLS;
 ALTER ROLE custombuild_api WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
@@ -275,22 +277,14 @@ ALTER ROLE custombuild_api WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
 ALTER ROLE custombuild_worker WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOINHERIT NOREPLICATION NOBYPASSRLS;
 REVOKE custombuild_api, custombuild_worker FROM custombuild_migrator;
-REVOKE custombuild_worker FROM custombuild_api;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE custombuild_migrator, custombuild_worker FROM custombuild_api;
+REVOKE custombuild_migrator, custombuild_api FROM custombuild_worker;
 GRANT CONNECT ON DATABASE custombuild
   TO custombuild_migrator, custombuild_api, custombuild_worker;
 GRANT CREATE ON DATABASE custombuild TO custombuild_migrator;
 GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
-GRANT USAGE ON SCHEMA public TO custombuild_api, custombuild_worker;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public
-  TO custombuild_api, custombuild_worker;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public
-  TO custombuild_api, custombuild_worker;
-ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO custombuild_api, custombuild_worker;
-ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public
-  GRANT USAGE, SELECT ON SEQUENCES TO custombuild_api, custombuild_worker;
 """
+    sql = role_hardening_sql + runtime_privileges_sql()
     docker(
         "exec",
         container,
@@ -318,9 +312,17 @@ SELECT json_build_object(
   'worker_safe', (SELECT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
     AND NOT rolcreaterole AND NOT rolinherit AND NOT rolreplication AND NOT rolbypassrls
     FROM pg_roles WHERE rolname = 'custombuild_worker'),
-  'memberships_absent', NOT pg_has_role('custombuild_migrator', 'custombuild_api', 'MEMBER')
-    AND NOT pg_has_role('custombuild_migrator', 'custombuild_worker', 'MEMBER')
-    AND NOT pg_has_role('custombuild_api', 'custombuild_worker', 'MEMBER'),
+  'memberships_absent', NOT EXISTS (
+    SELECT 1 FROM pg_auth_members membership
+    JOIN pg_roles member_role ON member_role.oid = membership.member
+    WHERE member_role.rolname IN ('custombuild_api', 'custombuild_worker')),
+  'public_object_grants_absent', NOT EXISTS (
+    SELECT 1 FROM pg_class object
+    JOIN pg_namespace namespace ON namespace.oid = object.relnamespace
+    CROSS JOIN LATERAL aclexplode(object.relacl) privilege
+    WHERE namespace.nspname = 'public'
+      AND object.relkind IN ('r', 'p', 'S', 'v', 'm', 'f')
+      AND privilege.grantee = 0),
   'all_public_objects_owned_by_migrator', NOT EXISTS (
     SELECT 1 FROM pg_class object
     JOIN pg_namespace namespace ON namespace.oid = object.relnamespace
@@ -353,6 +355,7 @@ SELECT json_build_object(
         "api_safe": True,
         "worker_safe": True,
         "memberships_absent": True,
+        "public_object_grants_absent": True,
         "all_public_objects_owned_by_migrator": True,
     }:
         raise BackupError("Restored database runtime-role attributes are unsafe")
@@ -373,6 +376,16 @@ BEGIN
   VALUES ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', 'Restore isolation probe', '',
           'shelving', 0, false, now(), now(),
           'ffffffff-ffff-ffff-ffff-ffffffffffff');
+  INSERT INTO outbox_events
+    (id, event_key, topic, payload_json, dispatched_at, attempts, created_at,
+     updated_at, organization_id, dead_lettered_at, last_error)
+  VALUES
+    ('dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+     'restore-worker-original-tenant', 'restore.probe', '{}'::json, NULL, 0,
+     now(), now(), source_organization, NULL, NULL),
+    ('cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+     'restore-worker-foreign-tenant', 'restore.probe', '{}'::json, NULL, 0,
+     now(), now(), 'ffffffff-ffff-ffff-ffff-ffffffffffff', NULL, NULL);
 END $$;
 SELECT organization_id FROM projects
 WHERE organization_id <> 'ffffffff-ffff-ffff-ffff-ffffffffffff'
@@ -440,7 +453,9 @@ ORDER BY id LIMIT 1;
         + "', false); "
         "SELECT json_build_object('visible', count(*), 'foreign', count(*) FILTER "
         "(WHERE organization_id = 'ffffffff-ffff-ffff-ffff-ffffffffffff'))::text "
-        "FROM projects;"
+        "FROM outbox_events WHERE id IN "
+        "('dddddddd-dddd-4ddd-8ddd-dddddddddddd', "
+        "'cccccccc-cccc-4ccc-8ccc-cccccccccccc');"
     )
     worker_raw = docker(
         "exec",
@@ -464,8 +479,8 @@ ORDER BY id LIMIT 1;
         worker_result = json.loads(worker_raw)
     except json.JSONDecodeError as exc:
         raise BackupError("Restored worker-role RLS probe returned invalid JSON") from exc
-    if worker_result != api_result:
-        raise BackupError("Restored worker role did not enforce the same tenant RLS boundary")
+    if worker_result != {"visible": 1, "foreign": 0}:
+        raise BackupError("Restored worker role did not enforce its outbox tenant boundary")
     docker(
         "exec",
         "--env",
@@ -716,7 +731,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             "object_store_hashes_verified": True,
             "object_store_metadata_verified": True,
             "tenant_rls_verified": True,
-            "tenant_acceptance_required_before_traffic": False,
+            "tenant_acceptance_required_before_traffic": True,
             "status": "PASS",
         }
     except BaseException as exc:

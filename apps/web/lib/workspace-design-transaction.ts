@@ -16,12 +16,14 @@ const DESIGN_SPEC_FIELD_ORDER = [
   "depth_mm",
   "material_id",
   "material_name",
+  "back_material_id",
   "nominal_thickness_mm",
   "measured_thickness_mm",
   "shelf_count",
   "fixed_shelves",
   "load_per_shelf_kg",
   "back_panel",
+  "back_panel_type",
   "plinth",
   "divider_count",
   "bay_sizing_mode",
@@ -99,6 +101,55 @@ function cloneDiff(diff: readonly ChangeDiff[]): ChangeDiff[] {
   return diff.map((entry) => ({ ...entry }));
 }
 
+const DIVIDER_TOPOLOGY_PART_PREFIXES = ["divider-", "shelf-", "back-panel"] as const;
+const SHELF_TOPOLOGY_PART_PREFIXES = ["shelf-"] as const;
+const BACK_TOPOLOGY_PART_PREFIXES = ["back-panel"] as const;
+const BASE_TOPOLOGY_PART_PREFIXES = [
+  "base-side-",
+  "base-bottom-",
+  "base-top-",
+  "cabinet-front-",
+] as const;
+
+function cleanupChangedTopologyCustomizations(
+  source: DesignSpec,
+  candidate: DesignSpec,
+): DesignSpec {
+  const prefixes = new Set<string>();
+  if (source.divider_count !== candidate.divider_count) {
+    DIVIDER_TOPOLOGY_PART_PREFIXES.forEach((prefix) => prefixes.add(prefix));
+  }
+  if (source.shelf_count !== candidate.shelf_count) {
+    SHELF_TOPOLOGY_PART_PREFIXES.forEach((prefix) => prefixes.add(prefix));
+  }
+  if (
+    source.back_panel !== candidate.back_panel
+    || source.back_panel_type !== candidate.back_panel_type
+  ) {
+    BACK_TOPOLOGY_PART_PREFIXES.forEach((prefix) => prefixes.add(prefix));
+  }
+  if (
+    source.base_cabinet_count !== candidate.base_cabinet_count
+    || source.furniture_type !== candidate.furniture_type
+  ) {
+    BASE_TOPOLOGY_PART_PREFIXES.forEach((prefix) => prefixes.add(prefix));
+  }
+  if (prefixes.size === 0) return candidate;
+
+  const matchesChangedFamily = (partId: string) => (
+    [...prefixes].some((prefix) => partId.startsWith(prefix))
+  );
+  return {
+    ...candidate,
+    part_overrides: Object.fromEntries(
+      Object.entries(candidate.part_overrides)
+        .filter(([partId]) => !matchesChangedFamily(partId)),
+    ),
+    removed_part_ids: candidate.removed_part_ids
+      .filter((partId) => !matchesChangedFamily(partId)),
+  };
+}
+
 function changedDesignFields(
   source: DesignSpec,
   normalizedSpec: DesignSpec,
@@ -125,7 +176,8 @@ export function normalizeWorkspaceDesignTransaction(
   candidate: DesignSpec,
   requestedDiff: readonly ChangeDiff[] = [],
 ): NormalizedWorkspaceDesignTransaction {
-  const boundedCandidate = parseLocalDesignSpec(candidate);
+  const topologySafeCandidate = cleanupChangedTopologyCustomizations(source, candidate);
+  const boundedCandidate = parseLocalDesignSpec(topologySafeCandidate);
   const balancedCandidate = balanceDesignSymmetry(boundedCandidate);
   const adapted = adaptStructuralSupports(balancedCandidate);
   const normalizedSpec = parseLocalDesignSpec(balanceDesignSymmetry(adapted.spec));

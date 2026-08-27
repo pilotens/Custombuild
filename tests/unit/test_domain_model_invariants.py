@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from custombuild_domain import (
     AssemblyGraph,
+    BackPanelType,
     BookcaseDesignSpec,
     BookcaseParameters,
     DesignResult,
@@ -53,6 +54,33 @@ def assembly_graph_payload() -> dict[str, object]:
         )
     )
     return design.assembly_graph.model_dump(mode="python")
+
+
+def test_design_without_back_panel_rejects_a_back_material() -> None:
+    with pytest.raises(ValidationError, match="back material is forbidden"):
+        BookcaseDesignSpec(
+            design_id="no-back-material-invariant",
+            parameters=BookcaseParameters(back_panel=BackPanelType.NONE),
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("engine_version", "0.6.0"), ("template_version", "1.1.0")),
+)
+def test_design_spec_rejects_retired_compiler_versions(field: str, value: str) -> None:
+    payload = {
+        "design_id": "retired-compiler-invariant",
+        "parameters": BookcaseParameters(),
+        "material": screening_mdf_18(),
+        "back_material": screening_mdf_6(),
+        field: value,
+    }
+
+    with pytest.raises(ValidationError, match="retired; create new revision"):
+        BookcaseDesignSpec.model_validate(payload)
 
 
 def design_result_payload() -> dict[str, object]:

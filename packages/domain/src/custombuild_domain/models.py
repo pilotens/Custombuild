@@ -11,6 +11,9 @@ from .enums import (
     FaceName,
     FeatureKind,
     GrainDirection,
+    JointRetentionLoadMode,
+    JointRetentionMachiningScope,
+    JointRetentionMethod,
     JointType,
     MaterialType,
     OpenEndRelief,
@@ -18,6 +21,7 @@ from .enums import (
     ReinforcementMode,
     ShelfMount,
 )
+from .identity import content_hash
 from .units import mm
 
 PositiveUm = Annotated[int, Field(strict=True, gt=0)]
@@ -26,6 +30,11 @@ PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 RatioPpm = Annotated[int, Field(strict=True, gt=0, le=1_000_000)]
 StableKey = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$")]
+Sha256Hex = Annotated[str, StringConstraints(pattern=r"^[a-f0-9]{64}$")]
+RetentionSafetyFactorPermille = Annotated[
+    int,
+    Field(strict=True, ge=1_000, le=100_000),
+]
 BookcaseWidthUm = Annotated[int, Field(strict=True, ge=mm(250), le=mm(6_000))]
 BookcaseHeightUm = Annotated[int, Field(strict=True, ge=mm(300), le=mm(4_000))]
 BookcaseDepthUm = Annotated[int, Field(strict=True, ge=mm(100), le=mm(1_200))]
@@ -36,8 +45,8 @@ BaseCabinetHeightUm = Annotated[int, Field(strict=True, ge=0, le=mm(2_000))]
 BaseCabinetDepthUm = Annotated[int, Field(strict=True, ge=0, le=mm(1_200))]
 BaseCabinetCount = Annotated[int, Field(strict=True, ge=0, le=17)]
 
-BOOKCASE_ENGINE_VERSION = "0.6.0"
-BOOKCASE_TEMPLATE_VERSION = "1.1.0"
+BOOKCASE_ENGINE_VERSION = "0.7.0"
+BOOKCASE_TEMPLATE_VERSION = "2.0.0"
 
 
 class FrozenModel(BaseModel):
@@ -100,6 +109,102 @@ class WallAnchorSpec(FrozenModel):
         ):
             raise ValueError(
                 "a verified wall anchor requires substrate, approved system and evidence ID"
+            )
+        return self
+
+
+class JointRetentionMaterialIdentity(FrozenModel):
+    """Exact material/version pair covered by retention evidence."""
+
+    material_id: StableKey
+    material_version: StableKey
+
+
+class JointRetentionLoadCase(FrozenModel):
+    """One evidence-backed retention capacity for an explicit load mode."""
+
+    mode: JointRetentionLoadMode
+    rated_design_load_n: PositiveInt
+    verified_capacity_n: PositiveInt
+
+
+class JointRetentionContract(FrozenModel):
+    """Foundation for a future authenticated joint-retention selection.
+
+    Validation proves structural completeness, exact application geometry and
+    conservative capacity arithmetic. It does *not* authenticate the source of
+    the catalogue/evidence bytes. The public preview API intentionally exposes
+    no field for this model; a future server-side trust root must verify those
+    bytes before freezing this payload. It never authorizes physical work.
+    """
+
+    system_id: StableKey
+    system_version: StableKey
+    joint_type: JointType = JointType.DADO
+    method: JointRetentionMethod
+    catalog_entry_sha256: Sha256Hex
+    evidence_id: StableKey
+    evidence_sha256: Sha256Hex
+    installation_instruction_id: StableKey
+    installation_instruction_version: StableKey
+    installation_instruction_sha256: Sha256Hex
+    machining_scope: JointRetentionMachiningScope
+    hardware_sku: StableKey
+    hardware_count_per_joint: PositiveInt
+    applicable_materials: tuple[JointRetentionMaterialIdentity, ...] = Field(min_length=1)
+    joint_geometry_sha256: Sha256Hex
+    minimum_applicable_thickness_um: PositiveUm
+    maximum_applicable_thickness_um: PositiveUm
+    load_cases: tuple[JointRetentionLoadCase, ...] = Field(min_length=2, max_length=2)
+    safety_factor_permille: RetentionSafetyFactorPermille
+    bound_feature_ids: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_machining_scope(self) -> JointRetentionContract:
+        material_keys = tuple(
+            (item.material_id, item.material_version) for item in self.applicable_materials
+        )
+        if material_keys != tuple(sorted(set(material_keys))):
+            raise ValueError(
+                "joint-retention applicable materials must be sorted and unique"
+            )
+        if self.minimum_applicable_thickness_um > self.maximum_applicable_thickness_um:
+            raise ValueError("joint-retention thickness range is inverted")
+        load_modes = tuple(item.mode for item in self.load_cases)
+        if load_modes != (
+            JointRetentionLoadMode.SHEAR,
+            JointRetentionLoadMode.WITHDRAWAL,
+        ):
+            raise ValueError(
+                "joint-retention load cases must contain canonical shear and withdrawal modes"
+            )
+        for load_case in self.load_cases:
+            if (
+                load_case.verified_capacity_n * 1_000
+                < load_case.rated_design_load_n * self.safety_factor_permille
+            ):
+                raise ValueError(
+                    "verified joint-retention capacity does not meet the declared design "
+                    "load and safety factor"
+                )
+        feature_ids = self.bound_feature_ids
+        if len(feature_ids) != len(set(feature_ids)) or any(not item for item in feature_ids):
+            raise ValueError("joint-retention feature IDs must be unique and non-blank")
+        if self.machining_scope == JointRetentionMachiningScope.FEATURES_BOUND_TO_JOINT:
+            if not feature_ids:
+                raise ValueError(
+                    "feature-bound joint retention requires at least one manufacturing feature ID"
+                )
+        elif feature_ids:
+            raise ValueError(
+                "joint-retention feature IDs require the features-bound machining scope"
+            )
+        if (
+            self.method == JointRetentionMethod.DRY_SELF_LOCKING
+            and self.machining_scope != JointRetentionMachiningScope.FEATURES_BOUND_TO_JOINT
+        ):
+            raise ValueError(
+                "dry self-locking retention requires explicit joint-bound manufacturing features"
             )
         return self
 
@@ -247,6 +352,21 @@ class BookcaseDesignSpec(FrozenModel):
     parameters: BookcaseParameters
     material: MaterialVersion
     back_material: MaterialVersion | None = None
+    joint_retention: JointRetentionContract | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def reject_retired_compiler_versions(self) -> BookcaseDesignSpec:
+        if (
+            self.engine_version != BOOKCASE_ENGINE_VERSION
+            or self.template_version != BOOKCASE_TEMPLATE_VERSION
+        ):
+            raise ValueError(
+                "the requested engine/template version is retired; create new revision"
+            )
+        return self
 
     @model_validator(mode="after")
     def validate_material(self) -> BookcaseDesignSpec:
@@ -273,6 +393,74 @@ class BookcaseDesignSpec(FrozenModel):
                 raise ValueError(
                     "measured back thickness is outside the back material version's supported range"
                 )
+        elif self.back_material is not None:
+            raise ValueError("back material is forbidden when the design has no back panel")
+        return self
+
+    @model_validator(mode="after")
+    def validate_joint_retention(self) -> BookcaseDesignSpec:
+        retention = self.joint_retention
+        if retention is None:
+            return self
+        parameters = self.parameters
+        if retention.joint_type != JointType.DADO:
+            raise ValueError(
+                "the current bookcase retention contract applies only to DADO joints"
+            )
+        if (
+            parameters.joint_system != JointType.DADO
+            and parameters.back_panel != BackPanelType.INSET_GROOVE
+        ):
+            raise ValueError("the design contains no DADO joint requiring retention")
+        if (
+            retention.method != JointRetentionMethod.MECHANICAL
+            or retention.machining_scope
+            != JointRetentionMachiningScope.NO_ADDITIONAL_CNC
+        ):
+            raise ValueError(
+                "the current bookcase template accepts only mechanical joint retention "
+                "that requires no additional CNC features"
+            )
+        applicable_thicknesses = [parameters.actual_thickness_um]
+        required_materials = {(self.material.material_id, self.material.version)}
+        if parameters.back_panel == BackPanelType.INSET_GROOVE:
+            applicable_thicknesses.append(parameters.back_thickness_um)
+            if self.back_material is None:  # guarded by validate_material; keep fail-closed
+                raise ValueError("inset back retention requires a versioned back material")
+            required_materials.add(
+                (self.back_material.material_id, self.back_material.version)
+            )
+        covered_materials = {
+            (item.material_id, item.material_version)
+            for item in retention.applicable_materials
+        }
+        if not required_materials <= covered_materials:
+            raise ValueError(
+                "joint-retention contract does not cover every DADO member material version"
+            )
+        if any(
+            not retention.minimum_applicable_thickness_um
+            <= thickness_um
+            <= retention.maximum_applicable_thickness_um
+            for thickness_um in applicable_thicknesses
+        ):
+            raise ValueError(
+                "joint-retention contract does not cover every retained member thickness"
+            )
+        load_cases = {item.mode: item for item in retention.load_cases}
+        required_loads = {
+            JointRetentionLoadMode.SHEAR: max(parameters.shelf_load_n, 1),
+            JointRetentionLoadMode.WITHDRAWAL: parameters.assumed_horizontal_force_n,
+        }
+        if any(
+            load_cases[mode].rated_design_load_n < required_load_n
+            for mode, required_load_n in required_loads.items()
+        ):
+            raise ValueError("joint-retention load case is below the bookcase design load")
+        if retention.safety_factor_permille < parameters.structural_safety_factor_permille:
+            raise ValueError(
+                "joint-retention safety factor is below the bookcase design requirement"
+            )
         return self
 
 
@@ -410,11 +598,29 @@ class Joint(FrozenModel):
     hardware_sku: StableKey | None = None
     hardware_count: NonNegativeInt = 0
     tolerance_um: NonNegativeUm = mm("0.2")
+    retention: JointRetentionContract | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def distinct_members(self) -> Joint:
         if self.members[0].part_id == self.members[1].part_id:
             raise ValueError("a joint must connect two distinct part instances")
+        if self.retention is not None:
+            if self.retention.joint_type != self.joint_type:
+                raise ValueError("joint retention must match its joint type")
+            if self.hardware_sku != self.retention.hardware_sku:
+                raise ValueError("joint hardware SKU must match its retention contract")
+            if self.hardware_count != self.retention.hardware_count_per_joint:
+                raise ValueError("joint hardware count must match its retention contract")
+            referenced_features = {
+                feature_id for member in self.members for feature_id in member.feature_ids
+            }
+            if not set(self.retention.bound_feature_ids) <= referenced_features:
+                raise ValueError(
+                    "joint retention references manufacturing features outside the joint"
+                )
         return self
 
 
@@ -487,6 +693,51 @@ class AssemblyGraph(FrozenModel):
         return self
 
 
+def dado_joint_geometry_fingerprint(
+    parts: tuple[PartInstance, ...],
+    joints: tuple[Joint, ...],
+) -> str:
+    """Hash exact DADO application geometry without retention or hardware fields."""
+
+    part_by_id = {part.part_id: part for part in parts}
+    feature_by_id = {
+        feature.feature_id: feature for part in parts for feature in part.features
+    }
+    payload: list[dict[str, object]] = []
+    for joint in sorted(
+        (item for item in joints if item.joint_type == JointType.DADO),
+        key=lambda item: item.joint_id,
+    ):
+        members: list[dict[str, object]] = []
+        for member in joint.members:
+            part = part_by_id[member.part_id]
+            members.append(
+                {
+                    "part_id": member.part_id,
+                    "material_id": part.material_id,
+                    "material_version": part.material_version,
+                    "actual_thickness_um": part.actual_thickness_um,
+                    "mating_face": member.mating_face,
+                    "feature_ids": member.feature_ids,
+                    "features": tuple(
+                        feature_by_id[feature_id].model_dump(mode="python")
+                        for feature_id in member.feature_ids
+                    ),
+                }
+            )
+        payload.append(
+            {
+                "joint_id": joint.joint_id,
+                "joint_type": joint.joint_type,
+                "members": tuple(members),
+                "mating_origin": joint.mating_origin,
+                "assembly_direction": joint.assembly_direction,
+                "tolerance_um": joint.tolerance_um,
+            }
+        )
+    return content_hash(tuple(payload))
+
+
 class DesignResult(FrozenModel):
     design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     engine_version: StableKey
@@ -499,7 +750,8 @@ class DesignResult(FrozenModel):
 
     @model_validator(mode="after")
     def validate_result_integrity(self) -> DesignResult:
-        part_ids = {part.part_id for part in self.parts}
+        part_by_id = {part.part_id: part for part in self.parts}
+        part_ids = set(part_by_id)
         if len(part_ids) != len(self.parts):
             raise ValueError("design result has duplicate part IDs")
         joint_ids = {joint.joint_id for joint in self.joints}
@@ -516,6 +768,38 @@ class DesignResult(FrozenModel):
         feature_by_id = {feature.feature_id: feature for feature in features}
         referenced_features: dict[str, str] = {}
         for joint in self.joints:
+            if joint.joint_type == JointType.DADO:
+                if joint.retention != self.spec.joint_retention:
+                    raise ValueError(
+                        "every DADO joint must carry the frozen design retention contract"
+                    )
+            elif joint.retention is not None:
+                raise ValueError("joint retention is bound to a non-DADO joint")
+            if joint.retention is not None:
+                applicable_materials = {
+                    (item.material_id, item.material_version)
+                    for item in joint.retention.applicable_materials
+                }
+                for member in joint.members:
+                    member_part = part_by_id.get(member.part_id)
+                    if member_part is None:
+                        raise ValueError("joint references a missing part")
+                    member_thickness_um = member_part.actual_thickness_um
+                    if not (
+                        joint.retention.minimum_applicable_thickness_um
+                        <= member_thickness_um
+                        <= joint.retention.maximum_applicable_thickness_um
+                    ):
+                        raise ValueError(
+                            "joint retention does not cover a joint member's actual thickness"
+                        )
+                    if (
+                        member_part.material_id,
+                        member_part.material_version,
+                    ) not in applicable_materials:
+                        raise ValueError(
+                            "joint retention does not cover a joint member's material version"
+                        )
             for member in joint.members:
                 if member.part_id not in part_ids:
                     raise ValueError("joint references a missing part")
@@ -537,6 +821,13 @@ class DesignResult(FrozenModel):
                 raise ValueError("manufacturing feature references a missing joint")
             if referenced_features.get(feature.feature_id) != feature.joint_id:
                 raise ValueError("joint-owned manufacturing feature is absent from its joint")
+        retention = self.spec.joint_retention
+        if retention is not None and retention.joint_geometry_sha256 != (
+            dado_joint_geometry_fingerprint(self.parts, self.joints)
+        ):
+            raise ValueError(
+                "joint-retention contract does not match the exact DADO geometry fingerprint"
+            )
         if sum(part.weight_g for part in self.parts) != self.total_weight_g:
             raise ValueError("total design weight does not equal the part weights")
         return self

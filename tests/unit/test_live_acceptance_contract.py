@@ -6,8 +6,12 @@ from collections.abc import Callable
 import pytest
 from custombuild_manufacturing import MANIFEST_CONTEXT_HASH_FIELDS
 from custombuild_manufacturing.readiness import build_workshop_readiness_report
+from custombuild_manufacturing.review_status import (
+    BLOCKED_CAM_REQUIRED_ACTIONS as MANUFACTURING_BLOCKED_CAM_REQUIRED_ACTIONS,
+)
 
 from scripts.live_acceptance import (
+    BLOCKED_CAM_REQUIRED_ACTIONS,
     CONTEXT_HASH_FIELDS,
     DADO_RETENTION_EVIDENCE_MISSING,
     DESIGN_REVIEW_PACKAGE_STATUS_PATH,
@@ -39,6 +43,10 @@ from scripts.live_acceptance import (
 def test_live_acceptance_hashes_the_exact_manifest_context_contract() -> None:
     assert CONTEXT_HASH_FIELDS == MANIFEST_CONTEXT_HASH_FIELDS
     assert PRODUCTION_MANIFEST_SCHEMA_VERSION == "custombuild.production-manifest.v4"
+
+
+def test_live_acceptance_uses_the_manufacturing_blocker_actions() -> None:
+    assert BLOCKED_CAM_REQUIRED_ACTIONS == MANUFACTURING_BLOCKED_CAM_REQUIRED_ACTIONS
 
 
 @pytest.mark.parametrize(
@@ -308,11 +316,9 @@ def _grain_package_status() -> dict[str, object]:
 def _retention_package_status() -> dict[str, object]:
     payload = _package_status(blocked=True)
     payload["blocker_codes"] = [DADO_RETENTION_EVIDENCE_MISSING]
-    payload["required_action"] = (
-        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
-        "retention system for every DADO joint; a review acknowledgement, adhesive or "
-        "geometric bearing check is not retention evidence."
-    )
+    payload["required_action"] = BLOCKED_CAM_REQUIRED_ACTIONS[
+        DADO_RETENTION_EVIDENCE_MISSING
+    ]
     return payload
 
 

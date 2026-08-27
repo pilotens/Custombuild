@@ -36,11 +36,16 @@ def verified_anchor() -> WallAnchorSpec:
 def make_spec(design_id: str = "rules-bookcase", **parameter_changes) -> BookcaseDesignSpec:
     payload = BookcaseParameters().model_dump(mode="python")
     payload.update(parameter_changes)
+    parameters = BookcaseParameters.model_validate(payload)
     return BookcaseDesignSpec(
         design_id=design_id,
-        parameters=BookcaseParameters.model_validate(payload),
+        parameters=parameters,
         material=screening_birch_plywood_18(),
-        back_material=screening_birch_plywood_6(),
+        back_material=(
+            None
+            if parameters.back_panel == BackPanelType.NONE
+            else screening_birch_plywood_6()
+        ),
     )
 
 
@@ -585,7 +590,7 @@ class AutoCorrectionTests(unittest.TestCase):
         )
         self.assertEqual(joint.status, RuleStatus.BLOCK)
 
-    def test_auto_mode_adds_back_panel_for_stability(self) -> None:
+    def test_auto_mode_exposes_back_panel_action_but_requires_material_selection(self) -> None:
         spec = make_spec(
             width_um=mm(650),
             height_um=mm(1_500),
@@ -595,9 +600,21 @@ class AutoCorrectionTests(unittest.TestCase):
             back_panel=BackPanelType.NONE,
             reinforcement_mode=ReinforcementMode.AUTO,
         )
+        report = evaluate_design(build_bookcase(spec))
+        back_actions = tuple(
+            action
+            for evaluation_item in report.evaluations
+            for action in evaluation_item.suggested_actions
+            if action.action_type == ActionType.ADD_BACK_PANEL
+        )
+        self.assertTrue(back_actions)
+        self.assertTrue(all(action.requires_user_evidence for action in back_actions))
+
         result = auto_correct_design(spec)
-        self.assertTrue(any(diff.action_type == ActionType.ADD_BACK_PANEL for diff in result.diffs))
-        self.assertEqual(result.corrected_spec.parameters.back_panel, BackPanelType.INSET_GROOVE)
+        self.assertFalse(
+            any(diff.action_type == ActionType.ADD_BACK_PANEL for diff in result.diffs)
+        )
+        self.assertEqual(result.corrected_spec.parameters.back_panel, BackPanelType.NONE)
 
     def test_auto_mode_does_not_invent_missing_back_material(self) -> None:
         parameters = BookcaseParameters(

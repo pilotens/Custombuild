@@ -162,8 +162,8 @@ class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
         String(36), nullable=True, index=True
     )
     result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
-    engine_version: Mapped[str] = mapped_column(String(40), default="0.1.0")
-    template_version: Mapped[str] = mapped_column(String(40), default="bookcase@1.0.0")
+    engine_version: Mapped[str] = mapped_column(String(40))
+    template_version: Mapped[str] = mapped_column(String(40))
     template_id: Mapped[str] = mapped_column(String(80), default="shelving")
     template_capability_fingerprint: Mapped[str] = mapped_column(
         String(64), default="0" * 64

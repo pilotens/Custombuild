@@ -183,6 +183,56 @@ describe("fail-closed project hydration", () => {
     resolveSpy.mockRestore();
   });
 
+  it("hydrates and autosaves the exact back mounting and material choices from Studio", async () => {
+    const explicitBackSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      design_id: "project-good",
+      revision: 1,
+      back_panel: true,
+      back_panel_type: "surface_mounted" as const,
+      back_material_id: "mdf-6" as const,
+    };
+    apiMock.drafts.set("project-good", {
+      project_id: "project-good",
+      draft_revision: 1,
+      template_id: "shelving",
+      design_hash: "c".repeat(64),
+      spec_json: toPreviewRequest(explicitBackSpec),
+      workspace_spec_json: workspaceIntentEnvelopeFromSpec(explicitBackSpec),
+      result_json: {},
+      updated_at: "2026-08-15T00:00:00Z",
+    });
+    writeWorkspaceDraft(window.localStorage, principal, "project-good", {
+      spec: explicitBackSpec,
+      templateId: "shelving",
+      workspaceSelected: true,
+    });
+
+    render(<CustombuildWorkspace />);
+    expect(await screen.findByTestId("furniture-viewer")).toBeInTheDocument();
+    expect(await screen.findByRole("radio", { name: /Utanpåliggande/ })).toBeChecked();
+    expect(screen.getByLabelText("Välj MDF 6 mm för bakstycket")).toHaveAttribute("aria-pressed", "true");
+
+    apiMock.updates.mockClear();
+    fireEvent.click(screen.getByRole("radio", { name: /Infällt i not/ }));
+    fireEvent.click(screen.getByLabelText("Välj Björkplywood 6 mm för bakstycket"));
+
+    expect(screen.getByRole("radio", { name: /Infällt i not/ })).toBeChecked();
+    expect(screen.getByLabelText("Välj Björkplywood 6 mm för bakstycket")).toHaveAttribute("aria-pressed", "true");
+    await waitFor(() => {
+      expect(apiMock.updates).toHaveBeenCalledWith(
+        "project-good",
+        "shelving",
+        expect.objectContaining({
+          back_panel: true,
+          back_panel_type: "inset_groove",
+          back_material_id: "birch-plywood-6",
+        }),
+        expect.any(Number),
+      );
+    }, { timeout: 2_500 });
+  });
+
   it("never falls back to a local model for HTTP, null or wrong-project responses", async () => {
     for (const project of [
       { id: "project-http", name: "HTTP-fel", archived: false },

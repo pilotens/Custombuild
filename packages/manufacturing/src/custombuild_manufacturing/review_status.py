@@ -7,6 +7,7 @@ the API nor the UI has to infer machine readiness from the presence of a ZIP.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -21,6 +22,8 @@ DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE = "DESIGN_REVIEW_PACKAGE_STATUS"
 STOCK_PROFILE_MISSING_BLOCKER_CODE = STOCK_PROFILE_MISSING_CODE
 TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE = "TWO_SIDED_REGISTRATION_MISSING"
 DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE = "DADO_RETENTION_EVIDENCE_MISSING"
+_CATALOG_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_SHA256_PATTERN = re.compile(r"[a-f0-9]{64}")
 BLOCKED_CAM_SUPPORTED_BLOCKER_CODES = (
     STOCK_PROFILE_MISSING_BLOCKER_CODE,
     DFM_GRAIN_BLOCKER_CODE,
@@ -42,29 +45,270 @@ BLOCKED_CAM_REQUIRED_ACTIONS = {
         "do not infer WCS, pins, fixtures or registration coordinates."
     ),
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE: (
-        "Bind a versioned, checksum-addressed dry self-locking joint or mechanical "
-        "retention system for every DADO joint; a review acknowledgement, adhesive or "
-        "geometric bearing check is not retention evidence."
+        "The current MVP cannot resolve this blocker because it has no authenticated "
+        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
+        "checksum-addressed mechanical retention contract to every DADO joint, including "
+        "exact geometry, hardware quantity, material/thickness applicability and separate "
+        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
+        "bearing check is not retention evidence."
     ),
 }
 
 
-def dado_retention_evidence_missing(design_result: Any) -> bool:
-    """Return true while any plain DADO lacks a structured retention contract.
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
 
-    The current domain joint schema proves the groove geometry and local bearing
-    path, but it deliberately has no field that can identify a versioned dry or
-    mechanical retention system.  Treat every DADO as unresolved until that
-    domain contract exists; caller-supplied review text must never substitute for
-    a product-modelled retention declaration.
+
+def _canonical_identity(value: Any) -> bool:
+    return isinstance(value, str) and _CATALOG_IDENTITY_PATTERN.fullmatch(value) is not None
+
+
+def _sha256(value: Any) -> bool:
+    return isinstance(value, str) and _SHA256_PATTERN.fullmatch(value) is not None
+
+
+def _positive_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def joint_retention_contract_is_structurally_complete(
+    joint: Any,
+    *,
+    parts: Sequence[Any] = (),
+    expected_contract: Any = None,
+    required_design_load_n: Mapping[str, int] | None = None,
+    required_safety_factor_permille: int | None = None,
+) -> bool:
+    """Check structural completeness after, but not replace, source authentication.
+
+    The current public API has no ingestion path for this object, so production
+    designs remain blocked. This checker makes the future internal path testable;
+    it does not establish that a catalogue or evidence issuer is trustworthy.
+    Physical cutting remains a separate, permanently false claim.
     """
 
-    for joint in getattr(design_result, "joints", ()):
-        joint_type = getattr(joint, "joint_type", None)
-        value = getattr(joint_type, "value", joint_type)
-        if isinstance(value, str) and value.casefold() == "dado":
-            return True
-    return False
+    joint_type = _enum_value(getattr(joint, "joint_type", None))
+    if not isinstance(joint_type, str) or joint_type.casefold() != "dado":
+        return False
+    retention = getattr(joint, "retention", None)
+    if retention is None or expected_contract is None or retention != expected_contract:
+        return False
+    retention_joint_type = _enum_value(getattr(retention, "joint_type", None))
+    if (
+        not isinstance(retention_joint_type, str)
+        or retention_joint_type.casefold() != joint_type.casefold()
+    ):
+        return False
+    if any(
+        not _canonical_identity(getattr(retention, field, None))
+        for field in (
+            "system_id",
+            "system_version",
+            "evidence_id",
+            "installation_instruction_id",
+            "installation_instruction_version",
+            "hardware_sku",
+        )
+    ):
+        return False
+    if any(
+        not _sha256(getattr(retention, field, None))
+        for field in (
+            "catalog_entry_sha256",
+            "evidence_sha256",
+            "installation_instruction_sha256",
+            "joint_geometry_sha256",
+        )
+    ):
+        return False
+
+    # This first foundation slice models only a mechanical catalogue system
+    # whose installation needs no additional CNC geometry. Feature-bound and
+    # dry/self-locking systems remain fail-closed until the template can bind
+    # their per-joint manufacturing features.
+    if _enum_value(getattr(retention, "method", None)) != "mechanical":
+        return False
+    if _enum_value(getattr(retention, "machining_scope", None)) != "no_additional_cnc":
+        return False
+    raw_feature_ids = getattr(retention, "bound_feature_ids", None)
+    if not isinstance(raw_feature_ids, tuple | list):
+        return False
+    feature_ids = tuple(raw_feature_ids)
+    if len(feature_ids) != len(set(feature_ids)) or any(
+        not isinstance(item, str) or not item for item in feature_ids
+    ):
+        return False
+    if feature_ids:
+        return False
+
+    raw_materials = getattr(retention, "applicable_materials", None)
+    if not isinstance(raw_materials, tuple | list) or not raw_materials:
+        return False
+    material_keys = tuple(
+        (
+            getattr(material, "material_id", None),
+            getattr(material, "material_version", None),
+        )
+        for material in raw_materials
+    )
+    if any(
+        not _canonical_identity(material_id) or not _canonical_identity(material_version)
+        for material_id, material_version in material_keys
+    ):
+        return False
+    if material_keys != tuple(sorted(set(material_keys))):
+        return False
+
+    numeric_fields = (
+        "hardware_count_per_joint",
+        "minimum_applicable_thickness_um",
+        "maximum_applicable_thickness_um",
+        "safety_factor_permille",
+    )
+    if any(
+        not _positive_integer(getattr(retention, field, None)) for field in numeric_fields
+    ):
+        return False
+    minimum_thickness_um = retention.minimum_applicable_thickness_um
+    maximum_thickness_um = retention.maximum_applicable_thickness_um
+    if minimum_thickness_um > maximum_thickness_um:
+        return False
+    if retention.safety_factor_permille < 1_000:
+        return False
+    raw_load_cases = getattr(retention, "load_cases", None)
+    if not isinstance(raw_load_cases, tuple | list) or len(raw_load_cases) != 2:
+        return False
+    load_modes = tuple(_enum_value(getattr(item, "mode", None)) for item in raw_load_cases)
+    if load_modes != ("shear", "withdrawal"):
+        return False
+    for load_case in raw_load_cases:
+        rated_load_n = getattr(load_case, "rated_design_load_n", None)
+        capacity_n = getattr(load_case, "verified_capacity_n", None)
+        if (
+            not isinstance(rated_load_n, int)
+            or isinstance(rated_load_n, bool)
+            or rated_load_n <= 0
+            or not isinstance(capacity_n, int)
+            or isinstance(capacity_n, bool)
+            or capacity_n <= 0
+        ):
+            return False
+        if capacity_n * 1_000 < rated_load_n * retention.safety_factor_permille:
+            return False
+    if (
+        not isinstance(required_design_load_n, Mapping)
+        or frozenset(required_design_load_n) != {"shear", "withdrawal"}
+        or any(not _positive_integer(item) for item in required_design_load_n.values())
+        or not _positive_integer(required_safety_factor_permille)
+    ):
+        return False
+    for load_case in raw_load_cases:
+        mode = _enum_value(load_case.mode)
+        if load_case.rated_design_load_n < required_design_load_n[mode]:
+            return False
+    if retention.safety_factor_permille < required_safety_factor_permille:
+        return False
+
+    if getattr(joint, "hardware_sku", None) != retention.hardware_sku:
+        return False
+    if getattr(joint, "hardware_count", None) != retention.hardware_count_per_joint:
+        return False
+    part_by_id = {
+        getattr(part, "part_id", None): part
+        for part in parts
+        if isinstance(getattr(part, "part_id", None), str)
+    }
+    members = getattr(joint, "members", ())
+    if not isinstance(members, tuple | list) or len(members) != 2:
+        return False
+    for member in members:
+        member_part = part_by_id.get(getattr(member, "part_id", None))
+        thickness_um = getattr(member_part, "actual_thickness_um", None)
+        if not _positive_integer(thickness_um):
+            return False
+        if not minimum_thickness_um <= thickness_um <= maximum_thickness_um:
+            return False
+        if (
+            getattr(member_part, "material_id", None),
+            getattr(member_part, "material_version", None),
+        ) not in set(material_keys):
+            return False
+    return True
+
+
+def _canonical_design_for_retention_check(design_result: Any) -> Any | None:
+    """Rebuild and compare exact topology so removed joints fail closed."""
+
+    try:
+        from custombuild_domain import BookcaseDesignSpec, build_bookcase
+
+        spec = BookcaseDesignSpec.model_validate(getattr(design_result, "spec", None))
+        canonical = build_bookcase(spec)
+    except (TypeError, ValueError):
+        return None
+    if any(
+        getattr(design_result, field, None) != getattr(canonical, field)
+        for field in (
+            "design_hash",
+            "engine_version",
+            "template_version",
+            "spec",
+            "parts",
+            "joints",
+            "assembly_graph",
+            "total_weight_g",
+        )
+    ):
+        return None
+    return canonical
+
+
+def dado_retention_evidence_missing(design_result: Any) -> bool:
+    """Return true unless canonical DADO topology has a complete contract application."""
+
+    canonical = _canonical_design_for_retention_check(design_result)
+    if canonical is None:
+        return True
+    dado_joints = tuple(
+        joint
+        for joint in canonical.joints
+        if isinstance(value := _enum_value(getattr(joint, "joint_type", None)), str)
+        and value.casefold() == "dado"
+    )
+    if not dado_joints:
+        return False
+    spec = canonical.spec
+    parameters = getattr(spec, "parameters", None)
+    expected_contract = getattr(spec, "joint_retention", None)
+    shelf_load_n = getattr(parameters, "shelf_load_n", None)
+    horizontal_force_n = getattr(parameters, "assumed_horizontal_force_n", None)
+    safety_factor_permille = getattr(parameters, "structural_safety_factor_permille", None)
+    if (
+        not isinstance(shelf_load_n, int)
+        or isinstance(shelf_load_n, bool)
+        or shelf_load_n < 0
+        or not isinstance(horizontal_force_n, int)
+        or isinstance(horizontal_force_n, bool)
+        or horizontal_force_n <= 0
+        or not isinstance(safety_factor_permille, int)
+        or isinstance(safety_factor_permille, bool)
+        or safety_factor_permille <= 0
+    ):
+        return True
+    required_design_load_n = {
+        "shear": max(shelf_load_n, 1),
+        "withdrawal": horizontal_force_n,
+    }
+    return any(
+        not joint_retention_contract_is_structurally_complete(
+            joint,
+            parts=canonical.parts,
+            expected_contract=expected_contract,
+            required_design_load_n=required_design_load_n,
+            required_safety_factor_permille=safety_factor_permille,
+        )
+        for joint in dado_joints
+    )
 
 
 class CAMStageStatus(StrEnum):
@@ -149,6 +393,26 @@ def blocked_design_review_package_status(
         physical_cutting_authorized=False,
         required_action=BLOCKED_CAM_REQUIRED_ACTIONS[codes[0]],
     )
+
+
+def validate_design_review_status_retention_binding(
+    status: DesignReviewPackageStatus,
+    frozen_design: Any,
+) -> None:
+    """Bind generated/retention-blocked status to canonical frozen topology both ways."""
+
+    retention_missing = dado_retention_evidence_missing(frozen_design)
+    if status.cam_status is CAMStageStatus.VALIDATION_GENERATED and retention_missing:
+        raise ValueError(
+            "generated CAM status contradicts unresolved frozen DADO retention"
+        )
+    if (
+        status.blocker_codes == (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+        and not retention_missing
+    ):
+        raise ValueError(
+            "DADO retention blocker contradicts the canonical frozen design"
+        )
 
 
 def normalize_design_review_package_status(

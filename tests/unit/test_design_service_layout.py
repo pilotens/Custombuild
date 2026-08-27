@@ -108,3 +108,68 @@ def test_max_public_load_keeps_the_existing_kg_to_newton_conversion() -> None:
     spec = normalize_preview(payload.model_dump(exclude_none=True))
 
     assert spec.parameters.shelf_load_n == 4_903
+
+
+@pytest.mark.parametrize(
+    ("material_id", "back_material_id"),
+    (("birch-plywood", "mdf-6"), ("mdf", "birch-plywood-6")),
+)
+def test_explicit_back_material_crosses_api_boundary_into_exact_back_parts(
+    material_id: str,
+    back_material_id: str,
+) -> None:
+    payload = BookcasePreviewInput(
+        material_id=material_id,
+        back_material_id=back_material_id,
+    )
+
+    spec, result, presented = preview(payload.model_dump(exclude_none=True))
+    back = next(part for part in result.parts if part.role == PartRole.BACK)
+
+    assert spec.material.material_id == material_id
+    assert spec.back_material is not None
+    assert spec.back_material.material_id == back_material_id
+    assert back.material_id == back_material_id
+    assert next(part for part in presented["parts"] if part["kind"] == "back")[
+        "material_id"
+    ] == back_material_id
+
+
+@pytest.mark.parametrize(
+    ("material_id", "expected_back_material_id"),
+    (("mdf", "mdf-6"), ("birch-plywood", "birch-plywood-6")),
+)
+def test_legacy_preview_without_back_material_keeps_matching_derivation(
+    material_id: str,
+    expected_back_material_id: str,
+) -> None:
+    request = BookcasePreviewInput(material_id=material_id, back_panel=True).model_dump(
+        exclude_none=True
+    )
+    assert "back_material_id" not in request
+
+    spec = normalize_preview(request)
+
+    assert spec.back_material is not None
+    assert spec.back_material.material_id == expected_back_material_id
+
+
+@pytest.mark.parametrize("disabled_back", (False, "none"))
+def test_back_material_rejects_unknown_and_backless_conflicts(
+    disabled_back: bool | str,
+) -> None:
+    with pytest.raises(ValidationError, match="back_material_id"):
+        BookcasePreviewInput.model_validate({"back_material_id": "oak-6"})
+
+    with pytest.raises(ValidationError, match="requires an enabled back panel"):
+        BookcasePreviewInput.model_validate(
+            {"back_panel": disabled_back, "back_material_id": "mdf-6"}
+        )
+
+    with pytest.raises(ValueError, match="unknown back_material_id"):
+        normalize_preview({"back_material_id": "oak-6"})
+
+    with pytest.raises(ValueError, match="requires an enabled back panel"):
+        normalize_preview(
+            {"back_panel": disabled_back, "back_material_id": "mdf-6"}
+        )

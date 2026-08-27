@@ -139,6 +139,100 @@ describe("workspace design transaction", () => {
     }]);
   });
 
+  it("cleans only customization families invalidated by a manual topology change", () => {
+    const source = manualSpec({
+      furniture_type: "wall_library",
+      divider_count: 2,
+      shelf_count: 2,
+      base_cabinet_count: 2,
+      base_cabinet_height_mm: 720,
+      base_cabinet_depth_mm: 320,
+      part_overrides: {
+        "divider-2": { position_x_mm: 810 },
+        "shelf-2-bay-3": { depth_mm: 260 },
+        "back-panel-bay-3": { width_mm: 390 },
+        "base-side-2": { position_x_mm: 610 },
+        "side-left": { depth_mm: 300 },
+      },
+      removed_part_ids: [
+        "divider-1",
+        "shelf-1-bay-3",
+        "back-panel-bay-2",
+        "base-bottom-2",
+        "side-right",
+      ],
+    });
+
+    const transaction = normalizeWorkspaceDesignTransaction(source, {
+      ...source,
+      divider_count: 1,
+    });
+
+    expect(transaction.normalizedSpec.part_overrides).toEqual({
+      "base-side-2": { position_x_mm: 610 },
+      "side-left": { depth_mm: 300 },
+    });
+    expect(transaction.normalizedSpec.removed_part_ids).toEqual([
+      "base-bottom-2",
+      "side-right",
+    ]);
+    expect(transaction.changedFields).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "divider_count", before: 2, after: 1 }),
+      expect.objectContaining({ field: "part_overrides" }),
+      expect.objectContaining({ field: "removed_part_ids" }),
+    ]));
+  });
+
+  it.each([
+    {
+      name: "shelf count",
+      patch: { shelf_count: 1 },
+      removedOverride: "shelf-2-bay-1",
+      preservedOverride: "back-panel",
+    },
+    {
+      name: "back mounting type",
+      patch: { back_panel_type: "surface_mounted" as const },
+      removedOverride: "back-panel",
+      preservedOverride: "shelf-2-bay-1",
+    },
+    {
+      name: "back presence",
+      patch: { back_panel: false },
+      removedOverride: "back-panel",
+      preservedOverride: "shelf-2-bay-1",
+    },
+    {
+      name: "base count",
+      patch: { base_cabinet_count: 1 },
+      removedOverride: "base-side-2",
+      preservedOverride: "shelf-2-bay-1",
+    },
+  ])("cleans the $name family before local parsing", ({ patch, removedOverride, preservedOverride }) => {
+    const source = manualSpec({
+      furniture_type: "wall_library",
+      base_cabinet_count: 2,
+      base_cabinet_height_mm: 720,
+      base_cabinet_depth_mm: 320,
+      part_overrides: {
+        "shelf-2-bay-1": { depth_mm: 260 },
+        "back-panel": { width_mm: 1_150 },
+        "base-side-2": { position_x_mm: 610 },
+        "side-left": { depth_mm: 300 },
+      },
+      removed_part_ids: [],
+    });
+
+    const transaction = normalizeWorkspaceDesignTransaction(source, {
+      ...source,
+      ...patch,
+    });
+
+    expect(transaction.normalizedSpec.part_overrides).not.toHaveProperty(removedOverride);
+    expect(transaction.normalizedSpec.part_overrides).toHaveProperty(preservedOverride);
+    expect(transaction.normalizedSpec.part_overrides).toHaveProperty("side-left");
+  });
+
   it("does not mutate or expose mutable aliases to its inputs", () => {
     const source = manualSpec({
       shelf_height_ratios: [0.15, 0.35, 0.5, 0.7, 0.85],

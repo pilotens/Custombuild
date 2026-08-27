@@ -1,7 +1,7 @@
 {
   "schema_version": "custombuild.template.v1",
   "template_id": "bookcase",
-  "template_version": "1.1.0",
+  "template_version": "2.0.0",
   "furniture_type": "bookcase",
   "coordinate_system": "RH_X_WIDTH_Y_DEPTH_Z_HEIGHT",
   "persisted_unit": "um",
@@ -37,7 +37,7 @@
     "height_um > plinth_height_um + 2 * actual_thickness_um",
     "each opening height >= 40000 um",
     "each shelf width >= 40000 um plus side clearance",
-    "inset back groove remains inside side/top/bottom solids"
+    "inset back groove remains inside side/top/bottom solids and opposing divider grooves retain a solid core"
   ],
   "components": [
     {"role":"left_side","multiplicity_expression":"1","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour","groove","drill"]},
@@ -49,7 +49,7 @@
     {"role":"base_side","multiplicity_expression":"base_cabinet_count == 0 ? 0 : base_cabinet_count - 1","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour","groove"]},
     {"role":"base_bottom","multiplicity_expression":"base_cabinet_count","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","left","right"],"machine_operations":["contour"]},
     {"role":"cabinet_front","multiplicity_expression":"base_cabinet_count","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour"]},
-    {"role":"back","multiplicity_expression":"back_panel == 'none' ? 0 : 1","material_compatibility":["sheet_good"],"named_edges":["top","bottom","left","right"],"machine_operations":["contour"]},
+    {"role":"back","multiplicity_expression":"back_panel == 'none' ? 0 : (back_panel == 'inset_groove' ? bay_count : 1)","material_compatibility":["sheet_good"],"named_edges":["top","bottom","left","right"],"machine_operations":["contour"]},
     {"role":"plinth","multiplicity_expression":"plinth_height_um == 0 ? 0 : 1","material_compatibility":["sheet_good","solid_wood"],"named_edges":["front","back","top","bottom"],"machine_operations":["contour"]}
   ],
   "compatible_material_types": ["sheet_good", "solid_wood"],
@@ -63,6 +63,6 @@
     {"rule_id":"CB-SUPPORT-001","version":"1.3.0","severity_can_block":true},
     {"rule_id":"CB-HARDWARE-001","version":"1.3.0","severity_can_block":true}
   ],
-  "assembly_graph_version": "1.1.0",
-  "manufacturing_feature_version": "1.1.0"
+  "assembly_graph_version": "2.0.0",
+  "manufacturing_feature_version": "2.0.0"
 }

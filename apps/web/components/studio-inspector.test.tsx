@@ -49,6 +49,45 @@ describe("StudioInspector", () => {
     expect(onChange).toHaveBeenCalledWith({ reinforcement_mode: "manual" }, expect.stringContaining("Manuella"));
   });
 
+  it("edits the explicit back-panel mounting and 6 mm material contract", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    expect(screen.getByRole("radio", { name: /Infällt i not/ })).toBeChecked();
+    expect(screen.getByLabelText("Välj Björkplywood 6 mm för bakstycket")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/verkstadsunderlaget förblir spärrat/i)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("radio", { name: /Utanpåliggande/ }));
+    expect(onChange).toHaveBeenCalledWith(
+      { back_panel_type: "surface_mounted" },
+      expect.stringContaining("Utanpåliggande"),
+    );
+
+    fireEvent.click(screen.getByLabelText("Välj MDF 6 mm för bakstycket"));
+    expect(onChange).toHaveBeenCalledWith(
+      { back_material_id: "mdf-6" },
+      expect.stringContaining("MDF 6 mm"),
+    );
+  });
+
+  it("keeps dormant back choices hidden and preserves them when the back is re-enabled", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={{
+      ...DEFAULT_DESIGN_SPEC,
+      back_panel: false,
+      back_panel_type: "surface_mounted",
+      back_material_id: "mdf-6",
+    }} status="PASS" partCount={17} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    expect(screen.queryByRole("radio", { name: /Utanpåliggande/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Välj MDF 6 mm för bakstycket")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: /Bakstycke/ }));
+    expect(onChange).toHaveBeenCalledWith(
+      { back_panel: true },
+      expect.stringContaining("Bakstycke"),
+    );
+  });
+
   it("shows real wall-library base dimensions and only edits module count in manual mode", () => {
     const onChange = vi.fn();
     const spec = {
