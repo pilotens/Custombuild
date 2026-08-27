@@ -226,7 +226,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   await expect(productionDialog).toBeVisible();
   await expect(productionDialog.locator("#production-next-action-heading"))
     .not.toHaveText("Hämtar projektet", { timeout: 30_000 });
-  await expect(productionDialog.getByText("Blockerar CAM · 2 krav")).toBeVisible();
+  // The screened stock and machine checks passed above, so Underlag must not
+  // reintroduce the former stockless-review blocker summary.
+  await expect(productionDialog.locator(".production-blocking-rules")).toHaveCount(0);
+  await expect(productionDialog).not.toContainText("Blockerar CAM");
   await expect(productionDialog).not.toContainText("5 000 × 2 500");
   // Underlag intentionally replaces the editable Studio inspector. Verify the
   // construction summary that remains visible across the mode transition.
