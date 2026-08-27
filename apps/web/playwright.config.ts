@@ -13,6 +13,7 @@ export default defineConfig({
   // turn a functional assertion into a host-load timing test.
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
+  failOnFlakyTests: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   workers: 1,
   reporter: process.env.CI
