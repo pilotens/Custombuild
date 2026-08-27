@@ -32,6 +32,11 @@ except ModuleNotFoundError:  # Direct `python scripts/release_readiness.py` exec
         build_source_manifest,
     )
 
+try:
+    from scripts.deploy_descriptor import registry_overlay_issues
+except ModuleNotFoundError:  # Direct `python scripts/release_readiness.py` execution.
+    from deploy_descriptor import registry_overlay_issues  # type: ignore[import-not-found,no-redef]
+
 
 class CheckStatus(str, Enum):
     PASS = "PASS"  # noqa: S105 - status label, not a credential.
@@ -1648,6 +1653,16 @@ def supply_chain_issues(repo: Path) -> list[str]:
     return issues
 
 
+def promotion_contract_issues(repo: Path) -> list[str]:
+    """Verify the repository-owned, non-privileged promotion boundary."""
+
+    issues = registry_overlay_issues(repo / "compose.registry.yml")
+    descriptor = repo / "scripts/deploy_descriptor.py"
+    if not descriptor.is_file():
+        issues.append("scripts/deploy_descriptor.py is missing")
+    return issues
+
+
 def _policy_value(raw: str) -> str:
     value = raw.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
@@ -1814,6 +1829,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
     required_files = (
         "compose.yml",
         "compose.external-production.yml",
+        "compose.registry.yml",
         "README.md",
         "docs/ENVIRONMENTS.md",
         "docs/OPERATIONS.md",
@@ -1823,6 +1839,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "scripts/compose_backup.py",
         "scripts/backup_freshness.py",
         "scripts/check_external_production.py",
+        "scripts/deploy_descriptor.py",
         *PRODUCTION_SEMANTIC_SOURCE_PATHS,
         "scripts/source_manifest.py",
         "scripts/restore_drill.py",
@@ -1975,6 +1992,21 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
                 if chain_issues
                 else "All workflow actions are immutable; image SBOM and fixed high/critical "
                 "vulnerability gates are configured."
+            ),
+        )
+    )
+
+    promotion_issues = promotion_contract_issues(repo)
+    checks.append(
+        ReleaseCheck(
+            "DIGEST_PROMOTION_CONTRACT",
+            "Digest-only promotion input and Compose role mapping",
+            CheckStatus.BLOCK if promotion_issues else CheckStatus.PASS,
+            (
+                "; ".join(promotion_issues)
+                if promotion_issues
+                else "The canonical descriptor and registry overlay bind every service role "
+                "to an exact image digest and require --no-build."
             ),
         )
     )

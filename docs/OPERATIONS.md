@@ -220,8 +220,68 @@ Before promotion, require a clean reviewed commit and the final readiness report
 that binds static controls, Compose design-review acceptance, the exact running
 image IDs and their scans, coordinated backup v4 and restore evidence v3 to the
 same Git/source-manifest identity. Also retain SBOMs and environment-specific
-configuration approval. Signature and platform provenance remain
-deployment-platform responsibilities until a registry and trust root have been selected.
+configuration approval.
+
+### Digest-only deployment descriptor
+
+`scripts/deploy_descriptor.py` is the repository-owned boundary between completed
+release evidence and a future privileged promotion workflow. It renders canonical
+JSON for exactly four application images (`api`, `worker`, `web`, `seaweedfs`) plus
+the reviewed PostgreSQL, Redis and volume-initializer digests. The descriptor also
+binds the full source commit, source-manifest digest, final release-evidence digest,
+workflow run/attempt, exact Compose service-to-image roles and the expected GitHub
+OIDC/Cosign and artifact-attestation identities. Tags, additional fields, duplicate
+JSON keys, non-canonical bytes, substituted component digests and evidence from a
+different run are rejected.
+
+Rendering and verification require the same trusted values. A future main-only
+workflow will supply them directly from GitHub and the completed release evidence;
+the following shape is shown for operator review, not as proof that registry
+publication or deployment automation already exists:
+
+```bash
+python3 scripts/deploy_descriptor.py render \
+  --repository pilotens/Custombuild \
+  --git-revision "$VCS_REF" \
+  --source-manifest-sha256 "$SOURCE_MANIFEST_SHA256" \
+  --workflow-run-id "$GITHUB_RUN_ID" \
+  --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+  --release-evidence artifacts/release-readiness-evidence.json \
+  --api-image "ghcr.io/pilotens/custombuild-api@sha256:<digest>" \
+  --worker-image "ghcr.io/pilotens/custombuild-worker@sha256:<digest>" \
+  --web-image "ghcr.io/pilotens/custombuild-web@sha256:<digest>" \
+  --seaweedfs-image "ghcr.io/pilotens/custombuild-seaweedfs@sha256:<digest>" \
+  --output artifacts/deploy-descriptor.json \
+  --sha256-output artifacts/deploy-descriptor.sha256
+
+python3 scripts/deploy_descriptor.py verify \
+  --repository pilotens/Custombuild \
+  --git-revision "$VCS_REF" \
+  --source-manifest-sha256 "$SOURCE_MANIFEST_SHA256" \
+  --workflow-run-id "$GITHUB_RUN_ID" \
+  --workflow-run-attempt "$GITHUB_RUN_ATTEMPT" \
+  --release-evidence artifacts/release-readiness-evidence.json \
+  --compose-env-output artifacts/deploy-images.env \
+  artifacts/deploy-descriptor.json
+```
+
+Only the verified command may emit `deploy-images.env`. Use it with the registry
+overlay and the external-production controls, and keep `--no-build` on the actual
+`up` invocation:
+
+```bash
+docker compose --env-file artifacts/deploy-images.env \
+  -f compose.yml -f compose.external-production.yml -f compose.registry.yml \
+  config --quiet
+docker compose --env-file artifacts/deploy-images.env \
+  -f compose.yml -f compose.external-production.yml -f compose.registry.yml \
+  up --no-build --detach --wait
+```
+
+The overlay deliberately contains no registry credentials or deployment secrets.
+It does not sign, publish, promote or authorize a physical machine. Those privileged
+steps remain absent until the separately reviewed main-only workflow and protected
+deployment environment are implemented.
 
 Register the web application as an OIDC public client with Authorization Code and
 PKCE (`S256`). The callback URI must be the public web origin's exact root (for

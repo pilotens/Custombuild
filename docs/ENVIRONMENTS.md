@@ -40,3 +40,11 @@ Environment promotion must reuse the tested image digest and change only validat
 `CUSTOMBUILD_WEB_*` values; build arguments are release identity only. Production
 forbids the public local demo credential and fails closed on HTTP or partial OIDC
 configuration.
+
+The checked-in `compose.registry.yml` is the digest-only image-role overlay for a
+future protected promotion workflow. Its four application references may come only
+from `scripts/deploy_descriptor.py verify`; PostgreSQL, Redis and volume-init remain
+fixed to the reviewed digests. Combine it with the base and external-production files
+and run `up --no-build` so environment promotion cannot rebuild source or resolve a
+tag. The overlay is a static contract, not evidence that a registry, environment or
+deployment has already been provisioned.

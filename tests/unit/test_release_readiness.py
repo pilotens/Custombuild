@@ -6,11 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 import scripts.release_readiness as release_readiness
+from scripts.deploy_descriptor import EXPECTED_REGISTRY_OVERLAY
 from scripts.release_readiness import (
     PRODUCTION_SEMANTIC_SOURCE_PATHS,
     build_report,
     compose_hardening_issues,
     production_semantic_contract_issues,
+    promotion_contract_issues,
     supply_chain_issues,
     vulnerability_exception_issues,
 )
@@ -29,6 +31,36 @@ def test_report_cli_creates_the_output_parent(
     )
     assert release_readiness.main() == 0
     assert json.loads(output.read_text(encoding="utf-8")) == expected
+
+
+def test_checked_in_digest_promotion_contract_is_current() -> None:
+    assert promotion_contract_issues(Path.cwd()) == []
+
+
+def test_digest_promotion_contract_requires_descriptor_and_exact_overlay(
+    tmp_path: Path,
+) -> None:
+    assert set(promotion_contract_issues(tmp_path)) == {
+        "compose.registry.yml is missing or unreadable",
+        "scripts/deploy_descriptor.py is missing",
+    }
+
+    descriptor = tmp_path / "scripts/deploy_descriptor.py"
+    descriptor.parent.mkdir(parents=True)
+    descriptor.write_text("# verifier\n", encoding="utf-8")
+    overlay = tmp_path / "compose.registry.yml"
+    overlay.write_text(EXPECTED_REGISTRY_OVERLAY, encoding="utf-8")
+
+    assert promotion_contract_issues(tmp_path) == []
+
+    overlay.write_text(
+        EXPECTED_REGISTRY_OVERLAY.replace("--no-build", "--build", 1),
+        encoding="utf-8",
+    )
+
+    assert promotion_contract_issues(tmp_path) == [
+        "compose.registry.yml does not exactly bind descriptor images and --no-build"
+    ]
 
 
 SEMANTIC_FIXTURE_SOURCES = {

@@ -57,6 +57,15 @@
   when its exact CVE/package/version/type tuple has a current ledger entry with severity,
   owner, rationale, mitigation, HTTPS source and review deadline; mismatch or expiry
   blocks release readiness.
+- Promotion input is canonical, digest-only JSON. It binds the final release-evidence
+  hash, Git/source-manifest identity, workflow run and attempt, four application image
+  manifests, three reviewed runtime manifests, exact Compose service roles and an
+  exact GitHub OIDC signer/attestation policy. Verification rejects tags, duplicate
+  keys, non-canonical encodings, unknown fields, digest reuse between components and
+  evidence from another source or run. Only a successfully verified descriptor may
+  produce the non-secret image environment consumed by `compose.registry.yml`, and
+  the runtime command must use `--no-build`. This repository contract does not itself
+  publish, sign, deploy or grant commercial or physical-machine authority.
 - A `design_review` lock proves only that the recorded software checks and named
   human review steps were completed. It is not a physical machine authorization;
   workshop evidence and external operator authority remain out of band.

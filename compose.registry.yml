@@ -1,0 +1,26 @@
+# Generated image references must come from a verified deploy descriptor.
+# Always invoke this overlay with `docker compose ... up --no-build`.
+x-custombuild-registry-contract:
+  schema-version: custombuild.compose-registry.v1
+  descriptor-schema-version: custombuild.deploy-descriptor.v1
+  required-up-flag: --no-build
+
+services:
+  postgres:
+    image: cgr.dev/chainguard/postgres@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+  redis:
+    image: docker.io/library/redis@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+  object-storage-init:
+    image: cgr.dev/chainguard/busybox@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+  object-storage:
+    image: ${CUSTOMBUILD_DEPLOY_SEAWEEDFS_IMAGE:?Set from a verified deploy descriptor}
+  migrate:
+    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}
+  api:
+    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}
+  worker:
+    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}
+  scheduler:
+    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}
+  web:
+    image: ${CUSTOMBUILD_DEPLOY_WEB_IMAGE:?Set from a verified deploy descriptor}
