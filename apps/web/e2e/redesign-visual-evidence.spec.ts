@@ -647,6 +647,29 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
     element.scrollLeft = 0;
   });
   await expect.poll(() => row.evaluate((element) => element.scrollLeft)).toBe(0);
+
+  const viewerPanel = page.getByRole("region", { name: "Konstruktionsvy" });
+  const toolbar = page.getByRole("toolbar", { name: "Visningsverktyg" });
+  expect(await viewerPanel.evaluate((element) => element.scrollTop)).toBe(0);
+  const viewerPanelBox = await viewerPanel.boundingBox();
+  const toolbarBox = await toolbar.boundingBox();
+  expect(viewerPanelBox).not.toBeNull();
+  expect(toolbarBox).not.toBeNull();
+  if (!viewerPanelBox || !toolbarBox) throw new Error("The mobile viewer or toolbar lost its layout box after keyboard focus.");
+  expect(toolbarBox.y).toBeGreaterThanOrEqual(viewerPanelBox.y);
+  expect(toolbarBox.y + toolbarBox.height).toBeLessThanOrEqual(viewerPanelBox.y + viewerPanelBox.height);
+
+  const viewer = page.getByTestId("furniture-viewer");
+  const fallback = page.getByTestId("front-projection-fallback");
+  if (await fallback.isVisible()) {
+    const viewerBox = await viewer.boundingBox();
+    const fallbackBox = await fallback.boundingBox();
+    expect(viewerBox).not.toBeNull();
+    expect(fallbackBox).not.toBeNull();
+    if (!viewerBox || !fallbackBox) throw new Error("The mobile fallback lost its viewer containment box.");
+    expect(fallbackBox.y).toBeGreaterThanOrEqual(viewerBox.y);
+    expect(fallbackBox.y + fallbackBox.height).toBeLessThanOrEqual(viewerBox.y + viewerBox.height);
+  }
 }
 
 test("renderer settling requires a new commit on the same canvas", async ({ page }) => {

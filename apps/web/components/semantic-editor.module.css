@@ -602,6 +602,10 @@
   .inspectorActions { grid-template-columns: 1fr; }
 
   .dropSurface :global(.webgl-fallback) {
+    /* The fallback must obey the same shrinking grid row as WebGL. Its
+       desktop minimum otherwise makes Firefox scroll the clipped viewer when
+       keyboard focus moves through the mobile component palette. */
+    min-height: 0;
     padding: 48px 24px 40px;
   }
 }
