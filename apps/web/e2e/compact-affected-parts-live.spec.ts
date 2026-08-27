@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
   provisionLiveProject,
   selectProjectBeforeNavigation,
+  waitForLiveWorkspaceReady,
   waitForSuccessfulProjectDraftSave,
 } from "./live-helpers";
 import { chooseTemplateAndCreate } from "./planning-helpers";
@@ -44,6 +45,7 @@ test("kontrollregler är kompakta, begripliga och fokuserar modellen", async ({
 
   const response = await page.goto("/", { waitUntil: "domcontentloaded" });
   expect(response?.status()).toBe(200);
+  await waitForLiveWorkspaceReady(page, project.project.id);
   await expect(page.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible({ timeout: 30_000 });
 
   const initialDraft = waitForSuccessfulProjectDraftSave(page, project.project.id, {
