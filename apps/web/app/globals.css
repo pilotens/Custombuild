@@ -11814,6 +11814,60 @@ body {
   }
 }
 
+/* Server state is an in-flow row, not a canvas overlay. Independent auth,
+   project and API messages remain readable without covering palette controls,
+   dimension handles, or the model. Exceptionally long messages scroll inside
+   a bounded row so the construction surface cannot collapse completely. */
+.cb-redesign-shell .configurator-workspace .viewer-panel.has-canvas-state-banner {
+  grid-template-rows: 50px auto minmax(0, 1fr) 34px;
+}
+
+.cb-redesign-shell .viewer-panel > .canvas-state-banners {
+  z-index: 3;
+  display: grid;
+  min-width: 0;
+  max-block-size: min(18rem, 40svh);
+  gap: 6px;
+  margin: 8px 12px 4px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.cb-redesign-shell .canvas-state-banners > .offline-banner.canvas-state-banner {
+  position: static;
+  inset: auto;
+  display: grid;
+  width: 100%;
+  max-width: none;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  box-sizing: border-box;
+  margin: 0;
+  transform: none;
+}
+
+.cb-redesign-shell .canvas-state-banners > .offline-banner.canvas-state-banner > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 820px) {
+  .cb-redesign-shell .configurator-workspace .viewer-panel.has-canvas-state-banner {
+    grid-template-rows: 106px auto minmax(0, 1fr) 34px;
+  }
+
+  .cb-redesign-shell .viewer-panel > .canvas-state-banners {
+    max-block-size: min(12rem, 30svh);
+    margin: 8px 10px 4px;
+  }
+}
+
+@media (max-width: 520px) {
+  .cb-redesign-shell .canvas-state-banners > .offline-banner.canvas-state-banner > button {
+    grid-column: 2 / -1;
+    justify-self: start;
+  }
+}
+
 .cb-configurator .symmetry-lock-card > p,
 .cb-configurator .symmetry-lock-card.active > p {
   color: var(--cb-status-fg);

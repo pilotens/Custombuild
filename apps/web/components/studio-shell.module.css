@@ -27,17 +27,6 @@
   background: #ded8cf;
 }
 
-/* Server state belongs to the canvas rather than the surrounding panel. This
-   keeps the banner out of the component palette's stacking context and gives
-   the X/Y/Z metadata its own overlay row at every viewport size. */
-.modelStage .canvas > :global(.offline-banner) {
-  top: 12px;
-}
-
-.modelStage .canvas:has(> :global(.offline-banner)) :global(.canvas-dimensions) {
-  top: 80px;
-}
-
 .builder {
   min-height: 0;
   grid-template-columns: var(--studio-rail) minmax(0, 1fr);

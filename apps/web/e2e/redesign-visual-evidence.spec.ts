@@ -420,14 +420,47 @@ async function verifyViewerOverlayLayout(page: Page): Promise<void> {
   expect(dimensionsBox).not.toBeNull();
   if (!dimensionsBox) throw new Error("The model dimensions have no visible layout box.");
 
-  const serverBanner = page.locator(".offline-banner:visible");
-  if (await serverBanner.count()) {
-    const firstServerBanner = serverBanner.first();
-    const serverBannerBox = await firstServerBanner.boundingBox();
-    expect(serverBannerBox).not.toBeNull();
-    if (!serverBannerBox) throw new Error("The server banner has no visible layout box.");
-    expect(dimensionsBox.y).toBeGreaterThanOrEqual(serverBannerBox.y + serverBannerBox.height + 4);
-    const bannerIsExposed = await firstServerBanner.evaluate((element) => {
+  const stateStack = page.getByTestId("canvas-state-banners");
+  if (await stateStack.count()) {
+    const stackBox = await stateStack.boundingBox();
+    expect(stackBox).not.toBeNull();
+    if (!stackBox) throw new Error("The canvas state stack has no visible layout box.");
+    expect(dimensionsBox.y).toBeGreaterThanOrEqual(stackBox.y + stackBox.height + 4);
+
+    const bannerBoxes = await stateStack.locator(".offline-banner:visible").evaluateAll((elements) => elements.map((element) => {
+      const bounds = element.getBoundingClientRect();
+      const topmost = document.elementFromPoint(
+        bounds.left + bounds.width / 2,
+        bounds.top + bounds.height / 2,
+      );
+      return {
+        bottom: bounds.bottom,
+        exposed: topmost !== null && (topmost === element || element.contains(topmost)),
+        top: bounds.top,
+      };
+    }));
+    expect(bannerBoxes.length).toBeGreaterThan(0);
+    for (const [index, bannerBox] of bannerBoxes.entries()) {
+      expect(bannerBox.exposed).toBe(true);
+      if (index > 0) expect(bannerBox.top).toBeGreaterThanOrEqual(bannerBoxes[index - 1]!.bottom + 4);
+    }
+
+    const modelLabel = page.getByTestId("current-design-label");
+    if (await modelLabel.isVisible()) {
+      const modelLabelBox = await modelLabel.boundingBox();
+      expect(modelLabelBox).not.toBeNull();
+      if (!modelLabelBox) throw new Error("The current-design label has no visible layout box.");
+      expect(modelLabelBox.y).toBeGreaterThanOrEqual(stackBox.y + stackBox.height + 4);
+    }
+  }
+
+  const resizeHandles = page
+    .getByLabel("Ändra möbelns yttermått direkt i modellen")
+    .getByRole("button");
+  for (let index = 0; index < await resizeHandles.count(); index += 1) {
+    const handle = resizeHandles.nth(index);
+    await expect(handle).toBeVisible();
+    const handleIsExposed = await handle.evaluate((element) => {
       const bounds = element.getBoundingClientRect();
       const topmost = document.elementFromPoint(
         bounds.left + bounds.width / 2,
@@ -435,7 +468,7 @@ async function verifyViewerOverlayLayout(page: Page): Promise<void> {
       );
       return topmost !== null && (topmost === element || element.contains(topmost));
     });
-    expect(bannerIsExposed).toBe(true);
+    expect(handleIsExposed).toBe(true);
   }
 
   if (viewportWidth > 760) return;
@@ -459,6 +492,109 @@ async function verifyViewerOverlayLayout(page: Page): Promise<void> {
   });
   expect(placeholderFit.text).toBe("Välj del");
   expect(placeholderFit.textWidth).toBeLessThanOrEqual(placeholderFit.availableWidth);
+}
+
+async function verifyCanvasStateBannerStack(page: Page): Promise<void> {
+  const stateStack = page.getByTestId("canvas-state-banners");
+  await expect(stateStack).toBeVisible();
+
+  await stateStack.evaluate((element) => {
+    const makeBanner = (role: "alert" | "status", heading: string, message: string, retry = false) => {
+      const banner = document.createElement("div");
+      banner.className = `offline-banner canvas-state-banner${role === "alert" ? " error" : ""}`;
+      banner.setAttribute("role", role);
+      const icon = document.createElement("span");
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "!";
+      const text = document.createElement("span");
+      const strong = document.createElement("strong");
+      strong.textContent = heading;
+      text.append(strong, ` ${message}`);
+      banner.append(icon, text);
+      if (retry) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Försök igen";
+        banner.append(button);
+      }
+      return banner;
+    };
+    element.replaceChildren(
+      makeBanner("alert", "Inloggningen misslyckades.", "Sessionen behöver förnyas."),
+      makeBanner("alert", "Projektet kunde inte öppnas.", "Utkastet kunde inte läsas."),
+      makeBanner("status", "Servermodellen är inte tillgänglig.", "Förhandsvisningen kan hämtas igen.", true),
+    );
+  });
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+
+  const bannerBoxes = await stateStack.locator(".canvas-state-banner").evaluateAll((elements) => elements.map((element) => {
+    const bounds = element.getBoundingClientRect();
+    return { bottom: bounds.bottom, top: bounds.top };
+  }));
+  expect(bannerBoxes).toHaveLength(3);
+  for (let index = 1; index < bannerBoxes.length; index += 1) {
+    expect(bannerBoxes[index]!.top).toBeGreaterThanOrEqual(bannerBoxes[index - 1]!.bottom + 4);
+  }
+
+  const viewer = page.getByTestId("furniture-viewer");
+  const shortStackBox = await stateStack.boundingBox();
+  const shortViewerBox = await viewer.boundingBox();
+  expect(shortStackBox).not.toBeNull();
+  expect(shortViewerBox).not.toBeNull();
+  if (!shortStackBox || !shortViewerBox) throw new Error("The canvas state stack or viewer has no layout box.");
+  expect(shortViewerBox.y).toBeGreaterThanOrEqual(shortStackBox.y + shortStackBox.height + 4);
+
+  await stateStack.locator(".canvas-state-banner > span:nth-child(2)").evaluateAll((elements) => {
+    for (const [index, element] of elements.entries()) {
+      element.append(` ${`unbroken-${index}-`.repeat(220)}`);
+    }
+  });
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+
+  const overflow = await stateStack.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      clientHeight: element.clientHeight,
+      clientWidth: element.clientWidth,
+      overflowY: style.overflowY,
+      scrollHeight: element.scrollHeight,
+      scrollWidth: element.scrollWidth,
+    };
+  });
+  expect(["auto", "scroll"]).toContain(overflow.overflowY);
+  expect(overflow.scrollHeight).toBeGreaterThan(overflow.clientHeight);
+  expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth);
+
+  await stateStack.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await expect.poll(() => stateStack.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  const scrolledStackBox = await stateStack.boundingBox();
+  const lastBannerBox = await stateStack.locator(".canvas-state-banner").last().boundingBox();
+  expect(scrolledStackBox).not.toBeNull();
+  expect(lastBannerBox).not.toBeNull();
+  if (!scrolledStackBox || !lastBannerBox) throw new Error("The final canvas state message cannot be reached by scrolling.");
+  expect(lastBannerBox.y).toBeLessThan(scrolledStackBox.y + scrolledStackBox.height);
+  expect(lastBannerBox.y + lastBannerBox.height).toBeGreaterThan(scrolledStackBox.y);
+  const retryButton = stateStack.getByRole("button", { name: "Försök igen" });
+  const retryIsExposed = await retryButton.evaluate((element) => {
+    const bounds = element.getBoundingClientRect();
+    const topmost = document.elementFromPoint(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+    return topmost !== null && (topmost === element || element.contains(topmost));
+  });
+  expect(retryIsExposed).toBe(true);
+
+  const longStackBox = await stateStack.boundingBox();
+  const longViewerBox = await viewer.boundingBox();
+  const dimensionsBox = await page.getByLabel("Aktuella yttermått").boundingBox();
+  expect(longStackBox).not.toBeNull();
+  expect(longViewerBox).not.toBeNull();
+  expect(dimensionsBox).not.toBeNull();
+  if (!longStackBox || !longViewerBox || !dimensionsBox) {
+    throw new Error("The bounded canvas state stack lost the viewer or dimensions layout.");
+  }
+  expect(longViewerBox.y).toBeGreaterThanOrEqual(longStackBox.y + longStackBox.height + 4);
+  expect(dimensionsBox.y).toBeGreaterThanOrEqual(longViewerBox.y);
+  const horizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(horizontalOverflow).toBeLessThanOrEqual(0);
 }
 
 async function verifyMobileComponentPalette(page: Page): Promise<void> {
@@ -609,6 +745,7 @@ for (const visualCase of visualCases) {
       await verifyPersistentVisibleModel(page);
       await verifyViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions);
+      await verifyCanvasStateBannerStack(page);
     });
   });
 }

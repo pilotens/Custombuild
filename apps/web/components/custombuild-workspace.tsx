@@ -74,6 +74,7 @@ import {
   type FurniturePlanningBrief,
 } from "@/lib/furniture-planning";
 import type { FurnitureComparisonPreview, ViewMode } from "./furniture-viewer";
+import { CanvasStateBanners } from "./canvas-state-banners";
 import { ComponentPalette } from "./component-palette";
 import { DraftConflictBanner } from "./draft-conflict-banner";
 import { TemplatePicker } from "./template-picker";
@@ -1739,6 +1740,12 @@ export function CustombuildWorkspace() {
       : `Sparad ${saveTarget}`;
 
   const handleWorkspaceStageChange = changeWorkspaceStage;
+  const hasCanvasStateBanner = Boolean(
+    authError
+    || (projectError && !projectCreateOpen)
+    || displayedApiState === "offline"
+    || displayedApiState === "error",
+  );
 
   return (
     <div className={`app-shell cb-redesign-shell ${studioStyles.productShell}`}>
@@ -1935,7 +1942,10 @@ export function CustombuildWorkspace() {
           data-mode={workspaceStage}
           data-library={workspacePanels.componentLibraryOpen && workspaceStage === "studio"}
         >
-          <section className={`viewer-panel ${styles.semanticViewerPanel} ${studioStyles.modelStage}`} aria-label="Konstruktionsvy">
+          <section
+            className={`viewer-panel ${styles.semanticViewerPanel} ${studioStyles.modelStage} ${hasCanvasStateBanner ? "has-canvas-state-banner" : ""}`}
+            aria-label="Konstruktionsvy"
+          >
             <div
               className="viewer-toolbar"
               role="toolbar"
@@ -2003,6 +2013,14 @@ export function CustombuildWorkspace() {
                 onReload={reloadLatestDraft}
               />
             ) : null}
+            <CanvasStateBanners
+              apiMessage={displayedApiMessage}
+              apiState={displayedApiState === "offline" || displayedApiState === "error" ? displayedApiState : undefined}
+              authError={authError}
+              canRetryApi={Boolean(serverAvailable && hydrated && projectId && !hydrationBlocker)}
+              onRetryApi={retryServerPreview}
+              projectError={projectError && !projectCreateOpen ? projectError : undefined}
+            />
             {integrityEvaluation && (partCustomization || partEditNotice) ? (
               <div className={`structural-integrity-alert status-${integrityEvaluation.status.toLowerCase()}`} role="alert">
                 <AlertTriangle aria-hidden="true" size={19} />
@@ -2027,22 +2045,6 @@ export function CustombuildWorkspace() {
                 />
               ) : null}
               <div className={`${styles.canvasStage} ${studioStyles.canvas}`}>
-                {authError ? <div className="offline-banner error" role="alert"><CloudOff aria-hidden="true" size={14} /><span><strong>Inloggningen misslyckades.</strong> {authError}</span></div> : null}
-                {projectError && !projectCreateOpen ? <div className="offline-banner error" role="alert"><CloudOff aria-hidden="true" size={14} /><span><strong>Projektet kunde inte öppnas.</strong> {projectError}</span></div> : null}
-                {displayedApiState === "offline" || displayedApiState === "error" ? (
-                  <div className={`offline-banner ${displayedApiState === "error" ? "error" : ""}`} role="status">
-                    <CloudOff aria-hidden="true" size={14} />
-                    <span>
-                      <strong>{displayedApiState === "error" ? "Servermodellen är inte tillgänglig." : "Lokalt konstruktionsläge."}</strong>{" "}
-                      {displayedApiState === "error"
-                        ? displayedApiMessage
-                        : "Produktionsfiler och serverauktoritativ geometri är inte tillgängliga."}
-                    </span>
-                    {displayedApiState === "error" && serverAvailable && hydrated && projectId && !hydrationBlocker ? (
-                      <button type="button" onClick={retryServerPreview}>Försök igen</button>
-                    ) : null}
-                  </div>
-                ) : null}
                 <div className={studioStyles.modelLabel} data-testid="current-design-label">
                   <strong>Aktuell konstruktion</strong>
                   <small>{spec.width_mm} × {spec.height_mm} × {Math.max(spec.depth_mm, spec.base_cabinet_depth_mm)} mm</small>
