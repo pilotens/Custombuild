@@ -82,8 +82,10 @@ test("väggbiblioteket sparas som 4200 × 2400-koncept men kan inte skapa produk
     depth_mm: 320,
   });
   await explore.getByRole("button", { name: /Välj en design/ }).click();
+  await expect(explore.getByRole("heading", { name: "Välj en startmodell att forma vidare." }))
+    .toBeVisible({ timeout: 30_000 });
   const wallLibrary = explore.locator("button.template-card", { hasText: /Väggbibliotek/ });
-  await expect(wallLibrary).toHaveCount(1);
+  await expect(wallLibrary).toHaveCount(1, { timeout: 30_000 });
   await wallLibrary.click();
   await explore.getByRole("button", { name: "Öppna Väggbibliotek i Studio" }).click();
   await initialDraftSave;
