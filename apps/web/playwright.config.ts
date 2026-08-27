@@ -15,6 +15,19 @@ export const PLAYWRIGHT_PRODUCTION_RUNTIME_ENV = {
   CUSTOMBUILD_WEB_OIDC_REDIRECT_URI: "https://app.playwright.invalid/",
 } as const satisfies RuntimeEnvironment;
 
+// The visual and WCAG suites exercise a production build without a live API or
+// identity provider. Keep that deterministic browser fixture explicit and
+// isolated from both the runner's environment and the separately verified
+// production runtime contract.
+export const PLAYWRIGHT_OFFLINE_RUNTIME_ENV = {
+  APP_ENV: "test",
+  CUSTOMBUILD_WEB_API_URL: "",
+  CUSTOMBUILD_WEB_DEMO_TOKEN: "",
+  CUSTOMBUILD_WEB_OIDC_ISSUER: "",
+  CUSTOMBUILD_WEB_OIDC_CLIENT_ID: "",
+  CUSTOMBUILD_WEB_OIDC_REDIRECT_URI: "",
+} as const satisfies RuntimeEnvironment;
+
 export default defineConfig({
   testDir: "./e2e",
   testMatch: "**/*.spec.ts",
@@ -65,7 +78,7 @@ export default defineConfig({
           HOSTNAME: "127.0.0.1",
           PORT: String(port),
           NODE_ENV: "production",
-          ...PLAYWRIGHT_PRODUCTION_RUNTIME_ENV,
+          ...PLAYWRIGHT_OFFLINE_RUNTIME_ENV,
         },
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,

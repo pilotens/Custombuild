@@ -227,6 +227,63 @@ def test_images_are_built_once_archived_tested_then_pushed_without_rebuild() -> 
     assert 'imagetools inspect "$tagged_reference" --raw' not in publish_runs
 
 
+def test_exact_loaded_web_image_proves_fail_closed_production_runtime() -> None:
+    job_steps = steps(workflow()["jobs"]["test-release-bundle"])
+    named_steps = {step.get("name"): step for step in job_steps}
+    smoke = named_steps["Prove exact loaded web image production runtime boundary"]
+    run = str(smoke["run"])
+    step_names = [step.get("name") for step in job_steps]
+
+    assert step_names.index("Verify and load the exact archived images") < step_names.index(
+        "Prove exact loaded web image production runtime boundary"
+    ) < step_names.index("Start only the archived image objects")
+    assert 'image="custombuild-web:${GITHUB_SHA}"' in run
+    assert run.count('"$image" > /dev/null') == 2
+    assert "--env APP_ENV=production" in run
+    assert '--env "APP_ENV=${app_env}"' in run
+    assert "custombuild-web:ci" not in run
+
+    positive, negative = run.split(
+        "for invalid_case in app-env api-url demo-token oidc-issuer "
+        "oidc-client-id oidc-redirect-uri",
+        maxsplit=1,
+    )
+    for expected in (
+        "--env CUSTOMBUILD_WEB_API_URL=https://api.cd.invalid",
+        "--env CUSTOMBUILD_WEB_DEMO_TOKEN=",
+        "--env CUSTOMBUILD_WEB_OIDC_ISSUER=https://identity.cd.invalid/",
+        "--env CUSTOMBUILD_WEB_OIDC_CLIENT_ID=custombuild-web",
+        "--env CUSTOMBUILD_WEB_OIDC_REDIRECT_URI=https://app.cd.invalid/",
+        "csp_header=",
+        "grep --fixed-strings 'https://api.cd.invalid' <<< \"$csp_header\"",
+        "grep --fixed-strings 'https://identity.cd.invalid' <<< \"$csp_header\"",
+        "'Logga in'",
+        "'Lokalt konstruktionsläge.'",
+        "'demo-nordic-owner'",
+        'if [ "$positive_health" != healthy ]',
+    ):
+        assert expected in positive
+    for expected in (
+        "app-env) app_env=",
+        "api-url) api_url=",
+        "demo-token) demo_token=demo-nordic-owner",
+        "oidc-issuer) oidc_issuer=",
+        "oidc-client-id) oidc_client_id=",
+        "oidc-redirect-uri) oidc_redirect_uri=",
+        '--env "CUSTOMBUILD_WEB_API_URL=${api_url}"',
+        '--env "CUSTOMBUILD_WEB_DEMO_TOKEN=${demo_token}"',
+        '--env "CUSTOMBUILD_WEB_OIDC_ISSUER=${oidc_issuer}"',
+        '--env "CUSTOMBUILD_WEB_OIDC_CLIENT_ID=${oidc_client_id}"',
+        '--env "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI=${oidc_redirect_uri}"',
+        'case "$negative_status" in',
+        "2??|000)",
+        'if [ "$negative_health" != unhealthy ]',
+    ):
+        assert expected in negative
+    assert run.count("--format '{{.Image}}'") == 2
+    assert run.count('= "$expected_image_id"') == 2
+
+
 def test_same_sha_browser_wcag_live_restore_and_release_evidence_are_required() -> None:
     source = workflow_source()
 

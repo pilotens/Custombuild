@@ -1,11 +1,34 @@
 import { describe, expect, it } from "vitest";
 import { parsePublicRuntimeConfig } from "./lib/runtime-config";
 import playwrightConfig, {
+  PLAYWRIGHT_OFFLINE_RUNTIME_ENV,
   PLAYWRIGHT_PRODUCTION_RUNTIME_ENV,
 } from "./playwright.config";
 
-describe("Playwright production web server runtime", () => {
-  it("supplies a complete, non-secret production runtime only to the managed server", () => {
+describe("Playwright managed web server runtime", () => {
+  it("serves the production build with an explicit isolated offline test runtime", () => {
+    expect(parsePublicRuntimeConfig(PLAYWRIGHT_OFFLINE_RUNTIME_ENV)).toEqual({
+      appEnv: "test",
+    });
+    expect(PLAYWRIGHT_OFFLINE_RUNTIME_ENV).toEqual({
+      APP_ENV: "test",
+      CUSTOMBUILD_WEB_API_URL: "",
+      CUSTOMBUILD_WEB_DEMO_TOKEN: "",
+      CUSTOMBUILD_WEB_OIDC_ISSUER: "",
+      CUSTOMBUILD_WEB_OIDC_CLIENT_ID: "",
+      CUSTOMBUILD_WEB_OIDC_REDIRECT_URI: "",
+    });
+
+    expect(playwrightConfig.webServer).toMatchObject({
+      command: "node scripts/start.mjs",
+      env: expect.objectContaining({
+        NODE_ENV: "production",
+        ...PLAYWRIGHT_OFFLINE_RUNTIME_ENV,
+      }),
+    });
+  });
+
+  it("keeps a complete non-secret production fixture separate from browser snapshots", () => {
     expect(parsePublicRuntimeConfig(PLAYWRIGHT_PRODUCTION_RUNTIME_ENV)).toEqual({
       appEnv: "production",
       apiUrl: "https://api.playwright.invalid",
@@ -21,9 +44,7 @@ describe("Playwright production web server runtime", () => {
       "CUSTOMBUILD_WEB_OIDC_ISSUER",
       "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI",
     ]);
-
-    expect(playwrightConfig.webServer).toMatchObject({
-      command: "node scripts/start.mjs",
+    expect(playwrightConfig.webServer).not.toMatchObject({
       env: expect.objectContaining(PLAYWRIGHT_PRODUCTION_RUNTIME_ENV),
     });
   });

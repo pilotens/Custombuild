@@ -337,6 +337,150 @@ jobs:
             echo "VCS_REF=${GITHUB_SHA}"
             echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
           } >> "$GITHUB_ENV"
+      - name: Prove exact loaded web image production runtime boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          image="custombuild-web:${GITHUB_SHA}"
+          expected_image_id="$(docker image inspect "$image" --format '{{.Id}}')"
+          positive_container="custombuild-cd-web-production-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          negative_container=
+          cleanup() {
+            docker rm --force "$positive_container" "$negative_container" > /dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach --name "$positive_container" \
+            --publish 127.0.0.1:3102:3000 \
+            --health-start-period=0s \
+            --health-interval=1s \
+            --health-timeout=2s \
+            --health-retries=5 \
+            --env APP_ENV=production \
+            --env CUSTOMBUILD_WEB_API_URL=https://api.cd.invalid \
+            --env CUSTOMBUILD_WEB_DEMO_TOKEN= \
+            --env CUSTOMBUILD_WEB_OIDC_ISSUER=https://identity.cd.invalid/ \
+            --env CUSTOMBUILD_WEB_OIDC_CLIENT_ID=custombuild-web \
+            --env CUSTOMBUILD_WEB_OIDC_REDIRECT_URI=https://app.cd.invalid/ \
+            "$image" > /dev/null
+          test "$(docker container inspect "$positive_container" --format '{{.Image}}')" = "$expected_image_id"
+          docker container inspect "$positive_container" \
+            | jq --exit-status '.[0].Config.Env as $env
+                | ($env | index("APP_ENV=production")) != null
+                and ($env | index("CUSTOMBUILD_WEB_API_URL=https://api.cd.invalid")) != null
+                and ($env | index("CUSTOMBUILD_WEB_DEMO_TOKEN=")) != null
+                and ($env | index("CUSTOMBUILD_WEB_OIDC_ISSUER=https://identity.cd.invalid/")) != null
+                and ($env | index("CUSTOMBUILD_WEB_OIDC_CLIENT_ID=custombuild-web")) != null
+                and ($env | index("CUSTOMBUILD_WEB_OIDC_REDIRECT_URI=https://app.cd.invalid/")) != null' \
+            > /dev/null
+
+          positive_status=000
+          for attempt in {1..60}; do
+            positive_status="$(curl --silent --show-error \
+              --dump-header /tmp/custombuild-cd-web-production.headers \
+              --output /tmp/custombuild-cd-web-production.html \
+              --write-out '%{http_code}' \
+              http://127.0.0.1:3102/ || true)"
+            if [ "$positive_status" != 000 ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$positive_status" != 200 ]; then
+            docker logs "$positive_container"
+            exit 1
+          fi
+          csp_header="$(grep --ignore-case --max-count=1 \
+            '^content-security-policy:' /tmp/custombuild-cd-web-production.headers | tr -d '\r')"
+          grep --fixed-strings 'https://api.cd.invalid' <<< "$csp_header" > /dev/null
+          grep --fixed-strings 'https://identity.cd.invalid' <<< "$csp_header" > /dev/null
+          grep --fixed-strings 'Logga in' /tmp/custombuild-cd-web-production.html > /dev/null
+          ! grep --fixed-strings 'Lokalt konstruktionsläge.' /tmp/custombuild-cd-web-production.html
+          ! grep --fixed-strings 'demo-nordic-owner' /tmp/custombuild-cd-web-production.html
+          positive_health=starting
+          for attempt in {1..30}; do
+            test "$(docker container inspect "$positive_container" --format '{{.State.Running}}')" = true
+            positive_health="$(docker container inspect "$positive_container" --format '{{.State.Health.Status}}')"
+            if [ "$positive_health" = healthy ]; then
+              break
+            fi
+            sleep 1
+          done
+          if [ "$positive_health" != healthy ]; then
+            docker container inspect "$positive_container"
+            docker logs "$positive_container"
+            exit 1
+          fi
+          docker rm --force "$positive_container" > /dev/null
+
+          for invalid_case in app-env api-url demo-token oidc-issuer oidc-client-id oidc-redirect-uri; do
+            app_env=production
+            api_url=https://api.cd.invalid
+            demo_token=
+            oidc_issuer=https://identity.cd.invalid/
+            oidc_client_id=custombuild-web
+            oidc_redirect_uri=https://app.cd.invalid/
+            case "$invalid_case" in
+              app-env) app_env= ;;
+              api-url) api_url= ;;
+              demo-token) demo_token=demo-nordic-owner ;;
+              oidc-issuer) oidc_issuer= ;;
+              oidc-client-id) oidc_client_id= ;;
+              oidc-redirect-uri) oidc_redirect_uri= ;;
+            esac
+            negative_container="custombuild-cd-web-invalid-${invalid_case}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            docker run --detach --name "$negative_container" \
+              --publish 127.0.0.1:3103:3000 \
+              --health-start-period=0s \
+              --health-interval=1s \
+              --health-timeout=2s \
+              --health-retries=3 \
+              --env "APP_ENV=${app_env}" \
+              --env "CUSTOMBUILD_WEB_API_URL=${api_url}" \
+              --env "CUSTOMBUILD_WEB_DEMO_TOKEN=${demo_token}" \
+              --env "CUSTOMBUILD_WEB_OIDC_ISSUER=${oidc_issuer}" \
+              --env "CUSTOMBUILD_WEB_OIDC_CLIENT_ID=${oidc_client_id}" \
+              --env "CUSTOMBUILD_WEB_OIDC_REDIRECT_URI=${oidc_redirect_uri}" \
+              "$image" > /dev/null
+            test "$(docker container inspect "$negative_container" --format '{{.Image}}')" = "$expected_image_id"
+
+            negative_status=000
+            for attempt in {1..60}; do
+              negative_status="$(curl --silent \
+                --output "/tmp/custombuild-cd-web-invalid-${invalid_case}.html" \
+                --write-out '%{http_code}' \
+                http://127.0.0.1:3103/ || true)"
+              if [ "$negative_status" != 000 ]; then
+                break
+              fi
+              sleep 1
+            done
+            case "$negative_status" in
+              2??|000)
+                docker logs "$negative_container"
+                exit 1
+                ;;
+            esac
+            negative_health=starting
+            for attempt in {1..30}; do
+              if [ "$(docker container inspect "$negative_container" --format '{{.State.Running}}')" != true ]; then
+                docker logs "$negative_container"
+                exit 1
+              fi
+              negative_health="$(docker container inspect "$negative_container" --format '{{.State.Health.Status}}')"
+              if [ "$negative_health" = unhealthy ]; then
+                break
+              fi
+              sleep 1
+            done
+            if [ "$negative_health" != unhealthy ]; then
+              docker container inspect "$negative_container"
+              docker logs "$negative_container"
+              exit 1
+            fi
+            docker rm --force "$negative_container" > /dev/null
+            negative_container=
+          done
       - name: Install live-acceptance dependencies
         run: |
           uv sync --locked

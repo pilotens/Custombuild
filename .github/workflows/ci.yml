@@ -134,7 +134,7 @@ jobs:
       - run: pnpm --dir apps/web build
       - name: Install Playwright browser matrix
         run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
-      - name: Cross-browser production workspace smoke
+      - name: Cross-browser production-build offline workspace smoke
         run: pnpm --dir apps/web test:e2e
       - name: Upload Playwright diagnostics
         if: always()
