@@ -1,9 +1,19 @@
 import { defineConfig, devices } from "@playwright/test";
+import type { RuntimeEnvironment } from "./lib/runtime-config";
 
 const port = Number(process.env.PLAYWRIGHT_PORT ?? 3100);
 const externalBaseUrl = process.env.PLAYWRIGHT_BASE_URL;
 const baseURL = externalBaseUrl ?? `http://127.0.0.1:${port}`;
 const dockerHost = process.env.PLAYWRIGHT_DOCKER_HOST;
+
+export const PLAYWRIGHT_PRODUCTION_RUNTIME_ENV = {
+  APP_ENV: "production",
+  CUSTOMBUILD_WEB_API_URL: "https://api.playwright.invalid",
+  CUSTOMBUILD_WEB_DEMO_TOKEN: "",
+  CUSTOMBUILD_WEB_OIDC_ISSUER: "https://identity.playwright.invalid/",
+  CUSTOMBUILD_WEB_OIDC_CLIENT_ID: "custombuild-web-playwright",
+  CUSTOMBUILD_WEB_OIDC_REDIRECT_URI: "https://app.playwright.invalid/",
+} as const satisfies RuntimeEnvironment;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -55,6 +65,7 @@ export default defineConfig({
           HOSTNAME: "127.0.0.1",
           PORT: String(port),
           NODE_ENV: "production",
+          ...PLAYWRIGHT_PRODUCTION_RUNTIME_ENV,
         },
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
