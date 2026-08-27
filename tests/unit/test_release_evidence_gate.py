@@ -383,7 +383,7 @@ def test_final_gate_separates_pinned_deployment_platform_and_config_digests(
 
     for component, reference in release_evidence_gate.EXTERNAL_IMAGE_REFERENCES.items():
         resolution = report["runtime_registry_resolutions"][component]
-        assert report["runtime_scan_inputs"][component] == f"registry:{reference}"
+        assert report["runtime_scan_inputs"][component] == reference
         assert resolution["deployment_reference_digest"] == reference.rsplit("@", 1)[1]
         assert resolution["runtime_platform_manifest_digest"] == (
             report["runtime_platform_manifest_digests"][component]
@@ -441,6 +441,9 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
     assert release_evidence_gate._expected_scan_input(
         "postgres", REVISION
     ) == release_evidence_gate._expected_image_reference("postgres", REVISION)
+    assert release_evidence_gate._expected_scan_input(
+        "postgres", REVISION, pinned_registry_inputs=True
+    ) == release_evidence_gate._expected_image_reference("postgres", REVISION)
     for component in ("postgres", "redis", "volume-init"):
         assert "@sha256:" in release_evidence_gate._expected_scan_input(component, REVISION)
     assert len(release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]) == 49
@@ -472,6 +475,37 @@ def test_final_gate_rejects_tag_only_external_scan_input(
             restore_evidence_path=restore,
             runtime_evidence_path=runtime,
             sbom_directory=sboms,
+        )
+
+
+@pytest.mark.parametrize("component", ("postgres", "redis", "volume-init"))
+def test_final_gate_rejects_registry_selector_as_persisted_scan_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    component: str,
+) -> None:
+    static, backup, restore, runtime, sboms = _evidence(
+        tmp_path,
+        pinned_registry_inputs=True,
+    )
+    payload = json.loads(runtime.read_text(encoding="utf-8"))
+    image = next(item for item in payload["images"] if item["component"] == component)
+    image["scan_input"] = f"registry:{image['scan_input']}"
+    _write(runtime, payload)
+    _stub_source_identity(monkeypatch)
+
+    with pytest.raises(
+        EvidenceError,
+        match=rf"runtime image {component} has another scan input",
+    ):
+        build_final_report(
+            tmp_path,
+            static_report_path=static,
+            backup_directory=backup,
+            restore_evidence_path=restore,
+            runtime_evidence_path=runtime,
+            sbom_directory=sboms,
+            pinned_registry_inputs=True,
         )
 
 

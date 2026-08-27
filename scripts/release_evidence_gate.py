@@ -202,9 +202,16 @@ def _expected_scan_input(
     *,
     pinned_registry_inputs: bool = False,
 ) -> str:
+    """Return Grype's persisted, normalized source identity.
+
+    ``registry:`` is an invocation selector, not part of the source identity
+    recorded in ``source.target.userInput``.  Pinned registry mode still
+    requires the separate deployment/platform/config resolution proof below;
+    it must not rewrite the scan document's byte-exact input claim.
+    """
+
+    del pinned_registry_inputs
     reference = _expected_image_reference(component, revision)
-    if pinned_registry_inputs and component in EXTERNAL_IMAGE_REFERENCES:
-        return f"registry:{reference}"
     return reference
 
 
