@@ -2,6 +2,7 @@ import { expect, test, type Request } from "@playwright/test";
 import {
   provisionLiveProject,
   selectProjectBeforeNavigation,
+  waitForLiveWorkspaceReady,
   waitForSuccessfulProjectDraftSave,
 } from "./live-helpers";
 
@@ -70,23 +71,27 @@ test("väggbiblioteket sparas som 4200 × 2400-koncept men kan inte skapa produk
 
   const response = await page.goto("/", { waitUntil: "domcontentloaded" });
   expect(response?.status()).toBe(200);
+  await waitForLiveWorkspaceReady(page, project.project.id);
   const explore = page.locator("section.template-picker[data-presentation='embedded']");
   await expect(explore.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible({ timeout: 30_000 });
 
   // The direct gallery route must use the selected template's advertised
   // dimensions. Generic planning defaults must not mutate this 4200 mm model.
-  const initialDraftSave = waitForSuccessfulProjectDraftSave(page, project.project.id, {
-    furniture_type: "wall_library",
-    width_mm: 4_200,
-    height_mm: 2_400,
-    depth_mm: 320,
-  });
   await explore.getByRole("button", { name: /Välj en design/ }).click();
+  await expect(explore.getByRole("heading", { name: "Välj en startmodell att forma vidare." }))
+    .toBeVisible({ timeout: 30_000 });
   const wallLibrary = explore.locator("button.template-card", { hasText: /Väggbibliotek/ });
-  await expect(wallLibrary).toHaveCount(1);
+  await expect(wallLibrary).toHaveCount(1, { timeout: 30_000 });
   await wallLibrary.click();
-  await explore.getByRole("button", { name: "Öppna Väggbibliotek i Studio" }).click();
-  await initialDraftSave;
+  await Promise.all([
+    waitForSuccessfulProjectDraftSave(page, project.project.id, {
+      furniture_type: "wall_library",
+      width_mm: 4_200,
+      height_mm: 2_400,
+      depth_mm: 320,
+    }),
+    explore.getByRole("button", { name: "Öppna Väggbibliotek i Studio" }).click(),
+  ]);
   await expect(page.getByText("Sparad på servern", { exact: true })).toBeVisible({ timeout: 30_000 });
 
   await expect(page.getByRole("spinbutton", { name: "Bredd", exact: true })).toHaveValue("4200");

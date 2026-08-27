@@ -1,4 +1,4 @@
-import type { APIRequestContext, Page, Response, TestInfo } from "@playwright/test";
+import { expect, type APIRequestContext, type Page, type Response, type TestInfo } from "@playwright/test";
 
 interface LivePrincipal {
   user_id: string;
@@ -133,6 +133,21 @@ export async function selectProjectBeforeNavigation(
     selectionKey: key,
     project: provisioned.project,
   });
+}
+
+export async function waitForLiveWorkspaceReady(
+  page: Page,
+  projectId: string,
+): Promise<void> {
+  const activeProject = page.getByRole("combobox", { name: "Aktivt projekt" });
+  await expect(activeProject).toHaveValue(projectId, { timeout: 30_000 });
+  await expect(activeProject).toBeEnabled({ timeout: 30_000 });
+  await expect(page.getByTestId("server-draft-hydration-blocker"))
+    .toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByRole("status").filter({ hasText: "Verifierar projektets serverutkast" }))
+    .toHaveCount(0, { timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Vad vill du skapa?" }))
+    .toBeVisible({ timeout: 30_000 });
 }
 
 export function waitForSuccessfulProjectDraftSave(
