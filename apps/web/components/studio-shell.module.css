@@ -27,6 +27,17 @@
   background: #ded8cf;
 }
 
+/* Server state belongs to the canvas rather than the surrounding panel. This
+   keeps the banner out of the component palette's stacking context and gives
+   the X/Y/Z metadata its own overlay row at every viewport size. */
+.modelStage .canvas > :global(.offline-banner) {
+  top: 12px;
+}
+
+.modelStage .canvas:has(> :global(.offline-banner)) :global(.canvas-dimensions) {
+  top: 80px;
+}
+
 .builder {
   min-height: 0;
   grid-template-columns: var(--studio-rail) minmax(0, 1fr);
@@ -237,13 +248,6 @@
     /* The X/Y/Z chips and status strip already identify the current mobile
        model. Keep the redundant desktop badge from covering the geometry. */
     display: none;
-  }
-
-  /* The server banner occupies the first canvas row in check/build modes.
-     Move both dimension metadata rows below it instead of hiding either one
-     behind the warning. */
-  .modelStage:has(> :global(.offline-banner)) :global(.canvas-dimensions) {
-    top: 56px;
   }
 
 }

@@ -2003,22 +2003,6 @@ export function CustombuildWorkspace() {
                 onReload={reloadLatestDraft}
               />
             ) : null}
-            {authError ? <div className="offline-banner error" role="alert"><CloudOff aria-hidden="true" size={14} /><span><strong>Inloggningen misslyckades.</strong> {authError}</span></div> : null}
-            {projectError && !projectCreateOpen ? <div className="offline-banner error" role="alert"><CloudOff aria-hidden="true" size={14} /><span><strong>Projektet kunde inte öppnas.</strong> {projectError}</span></div> : null}
-            {displayedApiState === "offline" || displayedApiState === "error" ? (
-              <div className={`offline-banner ${displayedApiState === "error" ? "error" : ""}`} role="status">
-                <CloudOff aria-hidden="true" size={14} />
-                <span>
-                  <strong>{displayedApiState === "error" ? "Servermodellen är inte tillgänglig." : "Lokalt konstruktionsläge."}</strong>{" "}
-                  {displayedApiState === "error"
-                    ? displayedApiMessage
-                    : "Produktionsfiler och serverauktoritativ geometri är inte tillgängliga."}
-                </span>
-                {displayedApiState === "error" && serverAvailable && hydrated && projectId && !hydrationBlocker ? (
-                  <button type="button" onClick={retryServerPreview}>Försök igen</button>
-                ) : null}
-              </div>
-            ) : null}
             {integrityEvaluation && (partCustomization || partEditNotice) ? (
               <div className={`structural-integrity-alert status-${integrityEvaluation.status.toLowerCase()}`} role="alert">
                 <AlertTriangle aria-hidden="true" size={19} />
@@ -2043,6 +2027,22 @@ export function CustombuildWorkspace() {
                 />
               ) : null}
               <div className={`${styles.canvasStage} ${studioStyles.canvas}`}>
+                {authError ? <div className="offline-banner error" role="alert"><CloudOff aria-hidden="true" size={14} /><span><strong>Inloggningen misslyckades.</strong> {authError}</span></div> : null}
+                {projectError && !projectCreateOpen ? <div className="offline-banner error" role="alert"><CloudOff aria-hidden="true" size={14} /><span><strong>Projektet kunde inte öppnas.</strong> {projectError}</span></div> : null}
+                {displayedApiState === "offline" || displayedApiState === "error" ? (
+                  <div className={`offline-banner ${displayedApiState === "error" ? "error" : ""}`} role="status">
+                    <CloudOff aria-hidden="true" size={14} />
+                    <span>
+                      <strong>{displayedApiState === "error" ? "Servermodellen är inte tillgänglig." : "Lokalt konstruktionsläge."}</strong>{" "}
+                      {displayedApiState === "error"
+                        ? displayedApiMessage
+                        : "Produktionsfiler och serverauktoritativ geometri är inte tillgängliga."}
+                    </span>
+                    {displayedApiState === "error" && serverAvailable && hydrated && projectId && !hydrationBlocker ? (
+                      <button type="button" onClick={retryServerPreview}>Försök igen</button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className={studioStyles.modelLabel} data-testid="current-design-label">
                   <strong>Aktuell konstruktion</strong>
                   <small>{spec.width_mm} × {spec.height_mm} × {Math.max(spec.depth_mm, spec.base_cabinet_depth_mm)} mm</small>

@@ -413,23 +413,35 @@ async function verifyMobileViewerToolbar(
   return checkpoint;
 }
 
-async function verifyMobileViewerOverlayLayout(page: Page): Promise<void> {
-  if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 760) return;
-
-  const modelLabel = page.getByTestId("current-design-label");
+async function verifyViewerOverlayLayout(page: Page): Promise<void> {
+  const viewportWidth = page.viewportSize()?.width ?? Number.POSITIVE_INFINITY;
   const dimensions = page.getByLabel("Aktuella yttermått");
-  await expect(modelLabel).toBeHidden();
   const dimensionsBox = await dimensions.boundingBox();
   expect(dimensionsBox).not.toBeNull();
-  if (!dimensionsBox) throw new Error("The mobile model dimensions have no visible layout box.");
+  if (!dimensionsBox) throw new Error("The model dimensions have no visible layout box.");
 
   const serverBanner = page.locator(".offline-banner:visible");
   if (await serverBanner.count()) {
-    const serverBannerBox = await serverBanner.first().boundingBox();
+    const firstServerBanner = serverBanner.first();
+    const serverBannerBox = await firstServerBanner.boundingBox();
     expect(serverBannerBox).not.toBeNull();
-    if (!serverBannerBox) throw new Error("The mobile server banner has no visible layout box.");
+    if (!serverBannerBox) throw new Error("The server banner has no visible layout box.");
     expect(dimensionsBox.y).toBeGreaterThanOrEqual(serverBannerBox.y + serverBannerBox.height + 4);
+    const bannerIsExposed = await firstServerBanner.evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const topmost = document.elementFromPoint(
+        bounds.left + bounds.width / 2,
+        bounds.top + bounds.height / 2,
+      );
+      return topmost !== null && (topmost === element || element.contains(topmost));
+    });
+    expect(bannerIsExposed).toBe(true);
   }
+
+  if (viewportWidth > 760) return;
+
+  const modelLabel = page.getByTestId("current-design-label");
+  await expect(modelLabel).toBeHidden();
 
   const partSelector = page.getByLabel("Välj möbeldel att inspektera");
   const placeholderFit = await partSelector.evaluate((element) => {
@@ -566,7 +578,7 @@ for (const visualCase of visualCases) {
       await verifyMobileComponentPalette(page);
       viewerCheckpoint = await settleViewport(page, visualCase.viewport.width, true) ?? viewerCheckpoint;
       await verifyPersistentVisibleModel(page);
-      await verifyMobileViewerOverlayLayout(page);
+      await verifyViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`studio-${visualCase.name}.png`, screenshotOptions);
 
       await modes.getByRole("button", { name: /Kontroll/ }).click();
@@ -581,7 +593,7 @@ for (const visualCase of visualCases) {
         viewerCheckpoint,
       ) ?? viewerCheckpoint;
       await verifyPersistentVisibleModel(page);
-      await verifyMobileViewerOverlayLayout(page);
+      await verifyViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`kontroll-${visualCase.name}.png`, screenshotOptions);
 
       await modes.getByRole("button", { name: /Underlag/ }).click();
@@ -595,7 +607,7 @@ for (const visualCase of visualCases) {
         viewerCheckpoint,
       );
       await verifyPersistentVisibleModel(page);
-      await verifyMobileViewerOverlayLayout(page);
+      await verifyViewerOverlayLayout(page);
       await expect.soft(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions);
     });
   });
