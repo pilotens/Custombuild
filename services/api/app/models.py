@@ -542,7 +542,9 @@ class StoredObject(TimestampMixin, Base):
     owner_type: Mapped[str] = mapped_column(String(40))
     owner_id: Mapped[str] = mapped_column(String(36))
     idempotency_key: Mapped[str] = mapped_column(String(512))
-    state: Mapped[StoredObjectState] = mapped_column(Enum(StoredObjectState, native_enum=False))
+    state: Mapped[StoredObjectState] = mapped_column(
+        Enum(StoredObjectState, native_enum=False, length=16)
+    )
     lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

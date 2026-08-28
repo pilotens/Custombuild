@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from app.models import StoredObject
+from sqlalchemy import Enum
 
 from scripts.postgres_runtime_privileges import (
     API_TABLE_PRIVILEGES,
@@ -246,6 +248,16 @@ def test_storage_quota_migration_backfills_before_reference_constraints() -> Non
         source.index("def upgrade()"),
     )
     assert source.count('ondelete="RESTRICT"') >= 4
+
+
+def test_storage_object_state_metadata_matches_migrated_column_width() -> None:
+    source = STORAGE_QUOTA_MIGRATION.read_text(encoding="utf-8")
+    state_type = StoredObject.__table__.c.state.type
+
+    assert isinstance(state_type, Enum)
+    assert state_type.native_enum is False
+    assert state_type.length == 16
+    assert 'sa.Column("state", sa.String(length=16), nullable=False)' in source
 
 
 def test_current_runtime_allowlist_adds_only_required_storage_ledger_access() -> None:

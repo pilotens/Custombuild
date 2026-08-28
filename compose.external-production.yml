@@ -117,8 +117,6 @@ services:
       - /run/custombuild-state:size=1m,uid=65532,gid=65532,mode=0700
       - /tmp:size=16m,uid=65532,gid=65532,mode=0700
     cap_drop: ["ALL"]
-    security_opt:
-      - no-new-privileges:true
     pids_limit: 64
     mem_limit: 256m
     cpus: 0.5
@@ -142,6 +140,7 @@ services:
     networks: [backend]
 
   api:
+    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set the descriptor-pinned API image}
     build:
       args:
         APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}

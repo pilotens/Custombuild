@@ -26,6 +26,14 @@ S3_ACCESS_KEY_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 S3_BUCKET_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 SHA256_PATTERN = re.compile(r"[a-f0-9]{64}\Z")
 VOLUME_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,254}\Z")
+DIAGNOSTIC_URL_USERINFO_PATTERN = re.compile(
+    r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^@\s/]+@"
+)
+DIAGNOSTIC_SECRET_ASSIGNMENT_PATTERN = re.compile(
+    r"(?i)\b([A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|ACCESS_KEY|DATABASE_URL|REDIS_URL)"
+    r"[A-Z0-9_]*)\s*=\s*[^\s,;]+"
+)
+MAX_COMPOSE_DIAGNOSTIC_CHARS = 2_048
 MAX_DATABASE_INTEGER = 2**63 - 1
 CAPACITY_ENVIRONMENT_KEYS = (
     "STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256",
@@ -72,6 +80,18 @@ def _compose_tcp_port(value: object) -> int | None:
         return None
     port = int(value)
     return port if port <= 65_535 else None
+
+
+def _compose_error_diagnostic(stderr: str) -> str:
+    printable = "".join(
+        character if character.isprintable() else " " for character in stderr
+    )
+    collapsed = " ".join(printable.split())
+    redacted = DIAGNOSTIC_URL_USERINFO_PATTERN.sub(r"\1<redacted>@", collapsed)
+    redacted = DIAGNOSTIC_SECRET_ASSIGNMENT_PATTERN.sub(r"\1=<redacted>", redacted)
+    if len(redacted) > MAX_COMPOSE_DIAGNOSTIC_CHARS:
+        return "..." + redacted[-(MAX_COMPOSE_DIAGNOSTIC_CHARS - 3) :]
+    return redacted
 
 
 def _https(value: str) -> bool:
@@ -815,7 +835,11 @@ def render_compose(repo: Path) -> dict[str, Any]:
         check=False,
     )
     if completed.returncode:
-        raise RuntimeError("external-production Compose configuration could not be rendered")
+        message = "external-production Compose configuration could not be rendered"
+        diagnostic = _compose_error_diagnostic(completed.stderr)
+        if diagnostic:
+            message = f"{message}: {diagnostic}"
+        raise RuntimeError(message)
     value = json.loads(completed.stdout)
     if not isinstance(value, dict):
         raise RuntimeError("external-production Compose configuration is invalid")

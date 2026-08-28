@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import subprocess
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
+import yaml
 
-from scripts.check_external_production import external_production_issues
+from scripts.check_external_production import external_production_issues, render_compose
 
 
 def valid_config() -> dict:
@@ -275,6 +278,80 @@ def test_accepts_fail_closed_external_production_contract() -> None:
         )
         == []
     )
+
+
+def test_external_attestor_inherits_one_no_new_privileges_option() -> None:
+    base = yaml.safe_load(Path("compose.yml").read_text(encoding="utf-8"))
+    external = yaml.safe_load(
+        Path("compose.external-production.yml").read_text(encoding="utf-8")
+    )
+    base_options = base["services"]["storage-capacity-attestor"]["security_opt"]
+    overlay_options = external["services"]["storage-capacity-attestor"].get(
+        "security_opt", []
+    )
+
+    assert base_options + overlay_options == ["no-new-privileges:true"]
+
+
+def test_external_auxiliary_services_share_the_descriptor_api_image() -> None:
+    external = yaml.safe_load(
+        Path("compose.external-production.yml").read_text(encoding="utf-8")
+    )
+    services = external["services"]
+
+    assert services["api"]["image"] == services["storage-recovery"]["image"]
+    assert services["api"]["image"] == services["storage-capacity-attestor"]["image"]
+
+
+def test_rendered_auxiliary_services_reject_api_image_digest_drift() -> None:
+    config = deepcopy(valid_config())
+    config["services"]["storage-recovery"]["image"] = (
+        "ghcr.io/pilotens/custombuild-api@sha256:" + "b" * 64
+    )
+    config["services"]["storage-capacity-attestor"]["image"] = (
+        "ghcr.io/pilotens/custombuild-api@sha256:" + "c" * 64
+    )
+
+    issues = external_production_issues(config)
+
+    assert "storage-recovery does not use the exact API image" in issues
+    assert "storage-capacity-attestor does not use the exact API image" in issues
+
+
+def test_rejects_attestor_without_no_new_privileges() -> None:
+    config = deepcopy(valid_config())
+    config["services"]["storage-capacity-attestor"]["security_opt"] = []
+
+    assert (
+        "storage-capacity-attestor does not enforce no-new-privileges"
+        in external_production_issues(config)
+    )
+
+
+def test_render_failure_includes_bounded_sanitized_compose_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stderr = (
+        "x" * 3_000
+        + " POSTGRES_PASSWORD=top-secret-value "
+        + "services.storage-capacity-attestor.security_opt items at 0 and 1 are equal\x00"
+    )
+
+    def failed_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr("scripts.check_external_production.subprocess.run", failed_run)
+
+    with pytest.raises(RuntimeError) as error:
+        render_compose(tmp_path)
+
+    message = str(error.value)
+    assert len(message) <= 2_120
+    assert "top-secret-value" not in message
+    assert "POSTGRES_PASSWORD=<redacted>" in message
+    assert "\x00" not in message
+    assert "services.storage-capacity-attestor.security_opt items at 0 and 1 are equal" in message
 
 
 def test_rejects_mutable_or_privileged_storage_recovery() -> None:
