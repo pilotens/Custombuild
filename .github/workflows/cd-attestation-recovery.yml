@@ -1,47 +1,82 @@
 name: Recover verified promotion evidence
 
 on:
-  workflow_run:
-    workflows: ["Build-once release evidence"]
-    types: [completed]
+  push:
+    branches: [main]
 
 permissions: {}
 
 concurrency:
-  group: recover-promotion-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  group: recover-promotion-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
   recover-promotion:
-    if: >-
-      github.repository == 'pilotens/Custombuild' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.conclusion == 'failure'
+    if: github.repository == 'pilotens/Custombuild' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 120
     permissions:
       actions: read
       attestations: read
       contents: read
       packages: read
-    env:
-      SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-      SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
-      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Prove the failed source run is recoverable and nothing else
+      - name: Resolve the same-SHA build-once source run
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/recovery
+          source_run=''
+          for attempt in $(seq 1 360); do
+            source_run="$(
+              gh api \
+                -H 'Accept: application/vnd.github+json' \
+                -H 'X-GitHub-Api-Version: 2022-11-28' \
+                "/repos/${GITHUB_REPOSITORY}/actions/workflows/cd.yml/runs?event=push&head_sha=${GITHUB_SHA}&per_page=10" \
+                | jq -c --arg sha "$GITHUB_SHA" '
+                    .workflow_runs
+                    | map(select(.head_sha == $sha and .head_branch == "main" and .event == "push"))
+                    | sort_by(.run_number)
+                    | last // empty
+                  '
+            )"
+            if [ -n "$source_run" ] && [ "$(jq -r '.status' <<< "$source_run")" = completed ]; then
+              break
+            fi
+            sleep 15
+          done
+          test -n "$source_run"
+          test "$(jq -r '.status' <<< "$source_run")" = completed
+          printf '%s\n' "$source_run" > artifacts/recovery/source-run.json
+          source_run_id="$(jq -er '.id' <<< "$source_run")"
+          source_run_attempt="$(jq -er '.run_attempt' <<< "$source_run")"
+          source_conclusion="$(jq -er '.conclusion' <<< "$source_run")"
+          {
+            echo "SOURCE_RUN_ID=${source_run_id}"
+            echo "SOURCE_RUN_ATTEMPT=${source_run_attempt}"
+            echo "SOURCE_SHA=${GITHUB_SHA}"
+          } >> "$GITHUB_ENV"
+          if [ "$source_conclusion" = success ]; then
+            echo "RECOVERY_NEEDED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          test "$source_conclusion" = failure
+          echo "RECOVERY_NEEDED=true" >> "$GITHUB_ENV"
+
+      - name: Prove the failed source run is recoverable and nothing else
+        if: env.RECOVERY_NEEDED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
           jobs_json=artifacts/recovery/source-jobs.json
           gh api --paginate \
             -H 'Accept: application/vnd.github+json' \
@@ -62,20 +97,9 @@ jobs:
             ) and
             ([.jobs[] | select(.conclusion == "failure" and (.name | startswith("publish-images (") | not))] | length) == 0
           ' "$jobs_json" >/dev/null
-          source_run_json=artifacts/recovery/source-run.json
-          gh api \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2022-11-28' \
-            "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > "$source_run_json"
-          jq -e --arg sha "$SOURCE_SHA" --argjson attempt "$SOURCE_RUN_ATTEMPT" '
-            .head_sha == $sha and
-            .head_branch == "main" and
-            .event == "push" and
-            .conclusion == "failure" and
-            .run_attempt == $attempt
-          ' "$source_run_json" >/dev/null
 
       - name: Require exact attestation-verifier capabilities
+        if: env.RECOVERY_NEEDED == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -84,31 +108,37 @@ jobs:
           gh attestation verify --help | grep -F -- '--source-digest' >/dev/null
           gh attestation verify --help | grep -F -- '--deny-self-hosted-runners' >/dev/null
 
-      - name: Download exact accepted source-run image evidence
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          pattern: release-image-*-${{ github.event.workflow_run.head_sha }}
-          path: artifacts/release-images
-          merge-multiple: true
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
-
-      - name: Download exact accepted source-run release evidence
-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
-        with:
-          name: release-evidence-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
-          path: artifacts
-          github-token: ${{ github.token }}
-          run-id: ${{ github.event.workflow_run.id }}
+      - name: Download exact accepted source-run evidence
+        if: env.RECOVERY_NEEDED == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/release-images artifacts/source-release
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "release-image-*-${SOURCE_SHA}" \
+            --dir artifacts/source-images
+          find artifacts/source-images -mindepth 2 -maxdepth 2 -type f -exec cp {} artifacts/release-images/ \;
+          gh run download "$SOURCE_RUN_ID" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "release-evidence-${SOURCE_SHA}-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}" \
+            --dir artifacts/source-release
+          find artifacts/source-release -type f -path '*/release-readiness.json' -exec cp {} artifacts/release-readiness.json \;
+          test -f artifacts/release-readiness.json
 
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        if: env.RECOVERY_NEEDED == 'true'
 
       - name: Install pinned Cosign
+        if: env.RECOVERY_NEEDED == 'true'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.0.6
 
       - name: Authenticate read-only to GHCR
+        if: env.RECOVERY_NEEDED == 'true'
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
           registry: ghcr.io
@@ -116,14 +146,14 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Re-verify published identities without rebuilding
+        if: env.RECOVERY_NEEDED == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts/published artifacts/recovery
-          evidence=artifacts/release-evidence/release-readiness.json
-          test -f "$evidence"
+          mkdir -p artifacts/published
+          evidence=artifacts/release-readiness.json
           test "$(jq -er '.git_revision' "$evidence")" = "$SOURCE_SHA"
           test "$(jq -er '.software_release_ready' "$evidence")" = true
           test "$(jq -er '.commercial_release_ready' "$evidence")" = false
@@ -200,11 +230,12 @@ jobs:
           done
 
       - name: Render and independently verify original-run descriptor
+        if: env.RECOVERY_NEEDED == 'true'
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p artifacts/promotion
-          evidence=artifacts/release-evidence/release-readiness.json
+          evidence=artifacts/release-readiness.json
           source_manifest_sha256="$(jq -er '.source_manifest_sha256' "$evidence")"
           declare -a image_arguments=()
           for component in api worker web seaweedfs; do
@@ -239,6 +270,7 @@ jobs:
           (cd artifacts/promotion && sha256sum --check deploy-descriptor.sha256)
 
       - name: Prove digest-only no-build Compose input
+        if: env.RECOVERY_NEEDED == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -253,14 +285,14 @@ jobs:
           test "$(grep -c '@sha256:' artifacts/promotion/resolved-images.txt)" -eq 7
 
       - name: Upload recovered verifier evidence
-        if: always()
+        if: env.RECOVERY_NEEDED == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: recovered-promotion-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          name: recovered-promotion-${{ github.sha }}
           path: |
             artifacts/recovery
             artifacts/promotion
             artifacts/published
-            artifacts/release-evidence/release-readiness.json
-          if-no-files-found: warn
+            artifacts/release-readiness.json
+          if-no-files-found: error
           retention-days: 90
