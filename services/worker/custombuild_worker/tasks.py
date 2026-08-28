@@ -997,6 +997,13 @@ def _complete_job(
         if job.attempts > MAX_GENERATION_ATTEMPTS:
             _terminalize_attempt_budget(job, now=completed_at)
             return False
+        expected_engine_context_hash = sha256_hex(
+            canonical_json_bytes(job.production_engine_context_json)
+        )
+        if result.get("production_engine_context_hash") != expected_engine_context_hash:
+            raise ProductionBlockedError(
+                "generation result is not bound to the persisted production engine context"
+            )
         job.result_json = result
         artifact_records = [
             (

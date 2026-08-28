@@ -62,7 +62,7 @@ from custombuild_manufacturing.readiness import (
     build_workshop_readiness_report,
 )
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -2620,6 +2620,9 @@ def _complete_generation(
         )
         manifest_sha = hashlib.sha256(manifest_payload).hexdigest()
         job.result_json = {
+            "production_engine_context_hash": hashlib.sha256(
+                canonical_json_bytes(job.production_engine_context_json)
+            ).hexdigest(),
             "authoritative_geometry": True,
             "dfm_status": dfm_status,
             "design_review_package_status": package_status,
@@ -2815,6 +2818,9 @@ def _complete_blocked_cam_generation(
         manifest_payload = canonical_json_bytes(manifest)
         manifest_sha = hashlib.sha256(manifest_payload).hexdigest()
         job.result_json = {
+            "production_engine_context_hash": hashlib.sha256(
+                canonical_json_bytes(job.production_engine_context_json)
+            ).hexdigest(),
             "authoritative_geometry": True,
             "dfm_status": "BLOCK" if dfm_blocked else "PASS",
             "design_review_package_status": package_status,
@@ -6505,7 +6511,7 @@ def test_body_integrity_failure_can_be_repaired_after_cam_rejection(
         assert True in verification_modes
 
 
-def test_repair_handles_truthy_non_mapping_job_result_without_server_error() -> None:
+def test_reuse_rejects_truthy_non_mapping_success_result_without_mutation() -> None:
     with TestClient(app) as client:
         project = client.post(
             "/v1/projects", headers=HEADERS, json={"name": "Malformed result fixture"}
@@ -6525,10 +6531,14 @@ def test_repair_handles_truthy_non_mapping_job_result_without_server_error() -> 
             assert persisted is not None
             persisted.result_json = ["invalid"]  # type: ignore[assignment]
 
-        repaired = client.post(f"{base}/generate", headers=HEADERS, json={})
+        rejected = client.post(f"{base}/generate", headers=HEADERS, json={})
 
-        assert repaired.status_code == 202
-        assert repaired.json()["status"] == "queued"
+        assert rejected.status_code == 409
+        with get_session_factory()() as session:
+            persisted = session.get(GenerationJob, job["id"])
+            assert persisted is not None
+            assert persisted.status == JobStatus.succeeded
+            assert persisted.result_json == ["invalid"]
 
 
 def test_evidence_repair_downgrades_legacy_approved_status_without_cam_row() -> None:
@@ -7358,6 +7368,146 @@ def test_new_design_revision_supersedes_release_and_blocks_stale_artifacts() -> 
                 f"{base}/release",
                 headers=HEADERS,
                 json={"release_number": "STALE-R1", "confirmation": "RELEASE"},
+            ).status_code
+            == 409
+        )
+
+
+def test_result_context_hash_tamper_blocks_every_promotion_without_mutation() -> None:
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": "Result engine-context binding"},
+        ).json()
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"]),
+        ).json()
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+        job = client.post(f"{base}/generate", headers=HEADERS, json={}).json()
+        _complete_generation(job["id"], "d" * 64)
+
+        artifact_listing = client.get(f"/v1/jobs/{job['id']}/artifacts", headers=HEADERS)
+        assert artifact_listing.status_code == 200
+        signed_download_path = artifact_listing.json()[0]["download_path"]
+        assert (
+            client.post(
+                f"{base}/approve",
+                headers=HEADERS,
+                json={
+                    "approval_type": "cam",
+                    "reason": "Initial bound CAM review",
+                    "generation_job_id": job["id"],
+                },
+            ).status_code
+            == 200
+        )
+
+        with get_session_factory().begin() as session:
+            persisted = session.get(GenerationJob, job["id"])
+            assert persisted is not None and isinstance(persisted.result_json, dict)
+            tampered = deepcopy(persisted.result_json)
+            tampered["production_engine_context_hash"] = "0" * 64
+            persisted.result_json = tampered
+            flag_modified(persisted, "result_json")
+            before = {
+                "status": persisted.status,
+                "result": deepcopy(tampered),
+                "artifacts": session.scalar(
+                    select(func.count(Artifact.id)).where(
+                        Artifact.generation_job_id == persisted.id
+                    )
+                ),
+                "approvals": session.scalar(
+                    select(func.count(Approval.id)).where(
+                        Approval.design_version_id == persisted.design_version_id
+                    )
+                ),
+                "outbox": session.scalar(select(func.count(OutboxEvent.id))),
+            }
+
+        # Read-only recovery surfaces deliberately remain available so an
+        # operator can diagnose the detached legacy or tampered job.
+        readable_job = client.get(f"/v1/jobs/{job['id']}", headers=HEADERS)
+        readable_state = client.get(
+            f"/v1/projects/{project['id']}/production-state", headers=HEADERS
+        )
+        assert readable_job.status_code == readable_state.status_code == 200
+        assert readable_job.json()["result_json"]["production_engine_context_hash"] == "0" * 64
+
+        attempts = (
+            client.get(f"/v1/jobs/{job['id']}/artifacts", headers=HEADERS),
+            client.get(signed_download_path, headers=HEADERS),
+            client.post(
+                f"{base}/approve",
+                headers=HEADERS,
+                json={
+                    "approval_type": "cam",
+                    "reason": "Detached CAM evidence must not be reapproved",
+                    "generation_job_id": job["id"],
+                },
+            ),
+            client.post(
+                f"{base}/release",
+                headers=HEADERS,
+                json={"release_number": "DETACHED-R1", "confirmation": "RELEASE"},
+            ),
+            client.post(f"{base}/generate", headers=HEADERS, json={}),
+        )
+        assert [response.status_code for response in attempts] == [409, 409, 409, 409, 409]
+
+        with get_session_factory()() as session:
+            persisted = session.get(GenerationJob, job["id"])
+            assert persisted is not None
+            after = {
+                "status": persisted.status,
+                "result": persisted.result_json,
+                "artifacts": session.scalar(
+                    select(func.count(Artifact.id)).where(
+                        Artifact.generation_job_id == persisted.id
+                    )
+                ),
+                "approvals": session.scalar(
+                    select(func.count(Approval.id)).where(
+                        Approval.design_version_id == persisted.design_version_id
+                    )
+                ),
+                "outbox": session.scalar(select(func.count(OutboxEvent.id))),
+            }
+        assert after == before
+
+        # 0002 truthfully represented unknown historical context as canonical
+        # `{}`.  Its honest hash keeps the row inspectable but cannot confer
+        # current production authority.
+        with get_session_factory().begin() as session:
+            persisted = session.get(GenerationJob, job["id"])
+            assert persisted is not None and isinstance(persisted.result_json, dict)
+            persisted.production_engine_context_json = {}
+            legacy_result = deepcopy(persisted.result_json)
+            legacy_result["production_engine_context_hash"] = hashlib.sha256(b"{}").hexdigest()
+            persisted.result_json = legacy_result
+            flag_modified(persisted, "production_engine_context_json")
+            flag_modified(persisted, "result_json")
+
+        assert client.get(f"/v1/jobs/{job['id']}", headers=HEADERS).status_code == 200
+        assert (
+            client.get(
+                f"/v1/projects/{project['id']}/production-state", headers=HEADERS
+            ).status_code
+            == 200
+        )
+        assert client.get(f"/v1/jobs/{job['id']}/artifacts", headers=HEADERS).status_code == 409
+        assert client.get(signed_download_path, headers=HEADERS).status_code == 409
+        assert client.post(f"{base}/generate", headers=HEADERS, json={}).status_code == 409
+        assert (
+            client.post(
+                f"{base}/release",
+                headers=HEADERS,
+                json={"release_number": "LEGACY-R1", "confirmation": "RELEASE"},
             ).status_code
             == 409
         )

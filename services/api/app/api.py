@@ -624,6 +624,28 @@ def _artifact_filename(kind: str, revision: int) -> str | None:
     }.get(kind)
 
 
+def _require_generation_result_context_binding(job: GenerationJob) -> None:
+    """Bind a successful result to the exact persisted engine-context bytes.
+
+    The persisted context is the server-owned fact frozen when the job was
+    queued.  Recomputing only the current catalog context is insufficient: a
+    later result-row edit could otherwise replace or remove the worker's hash
+    while leaving every external artifact checksum intact.
+    """
+
+    engine_context = job.production_engine_context_json
+    result = job.result_json
+    try:
+        if not isinstance(engine_context, Mapping) or not isinstance(result, Mapping):
+            raise ProductionContextError("generation context binding is missing")
+        expected = hashlib.sha256(canonical_json_bytes(engine_context)).hexdigest()
+        actual = result.get("production_engine_context_hash")
+        if actual != expected:
+            raise ProductionContextError("generation result engine-context hash does not match")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ProductionContextError("generation context binding is malformed") from exc
+
+
 def _require_current_generation_context(
     job: GenerationJob,
     version: DesignVersion,
@@ -631,6 +653,7 @@ def _require_current_generation_context(
     """Reject a job frozen against any superseded production implementation."""
 
     try:
+        _require_generation_result_context_binding(job)
         _require_frozen_template_capability(version)
         result_json = version.result_json if isinstance(version.result_json, dict) else {}
         assert_job_matches_frozen_revision_context(
@@ -2996,6 +3019,10 @@ def generate_version(
                 {"previous_error": previous_error},
             )
         elif existing.status == JobStatus.succeeded:
+            # A succeeded row is immutable evidence.  Reject a detached result
+            # before the repair/reuse branch can delete artifacts, approvals or
+            # otherwise mutate production state.
+            _require_current_generation_context(existing, version)
             try:
                 missing, invalid, readiness_valid = _review_evidence_issues(
                     session,

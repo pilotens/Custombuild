@@ -98,6 +98,9 @@ def _seed_generation_job(
 
 def _generation_result() -> dict[str, Any]:
     return {
+        "production_engine_context_hash": worker_tasks.sha256_hex(
+            worker_tasks.canonical_json_bytes({"schema": "test"})
+        ),
         "bundle_object_key": "private/bundle.zip",
         "bundle_sha256": "a" * 64,
         "bundle_size_bytes": 100,
@@ -106,6 +109,47 @@ def _generation_result() -> dict[str, Any]:
         "manifest_size_bytes": 200,
         "evidence_artifacts": [],
     }
+
+
+def test_completion_rejects_detached_engine_context_before_state_or_artifacts(
+    worker_session_factory: sessionmaker[Session],
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    job, version = claim
+    token = job.lease_token
+    assert token is not None
+    detached = _generation_result()
+    detached["production_engine_context_hash"] = "0" * 64
+
+    with pytest.raises(
+        worker_tasks.ProductionBlockedError,
+        match="not bound to the persisted production engine context",
+    ):
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            token,
+            version,
+            detached,
+        )
+
+    with worker_session_factory() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.status == JobStatus.running
+        assert stored.lease_token == token
+        assert stored.result_json is None
+        assert list(session.scalars(select(Artifact))) == []
+        assert list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.entity_id == job_id,
+                    AuditEvent.action == "generation.succeeded",
+                )
+            )
+        ) == []
 
 
 def test_replaced_lease_rejects_old_worker_completion_and_failure(
