@@ -39,10 +39,10 @@ class PhysicalEvidenceKind(StrEnum):
     EDGE_BAND_SYSTEM = "edge_band_system"
 
 
-_BASE_REQUIRED_PHYSICAL_EVIDENCE_KINDS = tuple(
+REQUIRED_PHYSICAL_EVIDENCE_KINDS = tuple(
     kind for kind in PhysicalEvidenceKind if kind is not PhysicalEvidenceKind.EDGE_BAND_SYSTEM
 )
-REQUIRED_PHYSICAL_EVIDENCE_KINDS = tuple(PhysicalEvidenceKind)
+ALL_PHYSICAL_EVIDENCE_KINDS = tuple(PhysicalEvidenceKind)
 
 _DESIGN_BOUND_KINDS = frozenset(
     {
@@ -152,7 +152,7 @@ class PhysicalReleaseEvidence:
                 )
             ids.add(record.evidence_id)
             kinds.add(record.kind)
-        required = set(_BASE_REQUIRED_PHYSICAL_EVIDENCE_KINDS)
+        required = set(REQUIRED_PHYSICAL_EVIDENCE_KINDS)
         if self.edge_band_selection_required:
             required.add(PhysicalEvidenceKind.EDGE_BAND_SYSTEM)
         missing = required - kinds
