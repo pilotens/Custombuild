@@ -296,6 +296,15 @@ def test_postgres_bootstrap_never_auto_grants_future_runtime_tables() -> None:
     assert "GRANT USAGE, SELECT ON SEQUENCES" not in source
     assert "REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC" in source
     assert "REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC" in source
+    assert (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator\n"
+        "  REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;"
+    ) in source
+    assert (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator\n"
+        "  REVOKE EXECUTE ON FUNCTIONS FROM custombuild_api, custombuild_worker,\n"
+        "  custombuild_storage_attestor;"
+    ) in source
     assert "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC" in source
     assert "REVOKE ALL PRIVILEGES ON SCHEMA public" in source
     assert (

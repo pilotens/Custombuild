@@ -133,6 +133,14 @@ def runtime_privilege_statements() -> tuple[str, ...]:
             f"REVOKE ALL PRIVILEGES ON SEQUENCES FROM {all_untrusted_roles}"
         ),
         (
+            "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+            "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+        ),
+        (
+            "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+            f"REVOKE EXECUTE ON FUNCTIONS FROM {all_untrusted_roles}"
+        ),
+        (
             "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public "
             "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
         ),

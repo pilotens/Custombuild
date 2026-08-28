@@ -68,7 +68,7 @@ BEGIN
        OR (p_value::uuid)::text IS DISTINCT FROM p_value THEN
         RAISE EXCEPTION USING
             ERRCODE = '22023',
-            MESSAGE = 'STORAGE_CLAIM_INVALID: ' || pg_catalog.coalesce(p_name, 'uuid')
+            MESSAGE = 'STORAGE_CLAIM_INVALID: ' || COALESCE(p_name, 'uuid')
                 || ' must be a canonical lowercase UUID';
     END IF;
 END;
@@ -94,7 +94,7 @@ BEGIN
        OR pg_catalog.strpos(p_value, pg_catalog.chr(92)) > 0 THEN
         RAISE EXCEPTION USING
             ERRCODE = '22023',
-            MESSAGE = 'STORAGE_CLAIM_INVALID: ' || pg_catalog.coalesce(p_name, 'text')
+            MESSAGE = 'STORAGE_CLAIM_INVALID: ' || COALESCE(p_name, 'text')
                 || ' is not canonical';
     END IF;
 END;
@@ -170,7 +170,7 @@ BEGIN
                )
         INTO v_key_count, v_keys_allowed
         FROM pg_catalog.jsonb_object_keys(v_claim) AS claim_key(key);
-        IF v_key_count <> 8 OR NOT pg_catalog.coalesce(v_keys_allowed, false) THEN
+        IF v_key_count <> 8 OR NOT COALESCE(v_keys_allowed, false) THEN
             RAISE EXCEPTION USING
                 ERRCODE = '22023',
                 MESSAGE = 'STORAGE_CLAIM_INVALID: claim keys do not match the canonical schema';
@@ -497,7 +497,7 @@ BEGIN
                     MESSAGE = 'STORAGE_RESERVATION_BUSY: object has a different active lease';
             ELSE
                 UPDATE public.stored_objects
-                SET lease_expires_at = pg_catalog.greatest(lease_expires_at, v_expiry),
+                SET lease_expires_at = GREATEST(lease_expires_at, v_expiry),
                     updated_at = v_now
                 WHERE organization_id = p_organization_id
                   AND object_key = v_row.object_key;
@@ -621,7 +621,7 @@ BEGIN
                     || 'was lost';
         END IF;
         UPDATE public.stored_objects
-        SET lease_expires_at = pg_catalog.greatest(lease_expires_at, v_expiry),
+        SET lease_expires_at = GREATEST(lease_expires_at, v_expiry),
             updated_at = v_now
         WHERE organization_id = p_organization_id
           AND object_key = v_row.object_key;
@@ -843,7 +843,7 @@ BEGIN
                     OR generation_job.lease_expires_at > v_now
                 )
           )
-        ORDER BY pg_catalog.coalesce(
+        ORDER BY COALESCE(
                      candidate.lease_expires_at, candidate.claim_expires_at,
                      candidate.updated_at
                  ), candidate.object_key
@@ -1108,7 +1108,7 @@ BEGIN
                     MESSAGE = 'STORAGE_QUOTA_INVARIANT: generation retry storage '
                         || 'claim delay is outside the canonical window';
             END IF;
-            v_retry_after := pg_catalog.greatest(v_retry_after, v_candidate);
+            v_retry_after := GREATEST(v_retry_after, v_candidate);
         ELSIF v_row.state NOT IN ('reserved', 'committed', 'delete_pending') THEN
             RAISE EXCEPTION USING
                 ERRCODE = '55000',
@@ -1191,7 +1191,7 @@ BEGIN
                         MESSAGE = 'STORAGE_GENERATION_LIVENESS_INVALID: generation '
                             || 'storage claim delay is outside the canonical window';
                 END IF;
-                v_retry_after := pg_catalog.greatest(v_retry_after, v_candidate);
+                v_retry_after := GREATEST(v_retry_after, v_candidate);
             ELSIF v_row.state NOT IN ('reserved', 'committed', 'delete_pending') THEN
                 RAISE EXCEPTION USING
                     ERRCODE = '23503',
@@ -1637,6 +1637,15 @@ def upgrade() -> None:
     # PostgreSQL grants EXECUTE on newly created functions to PUBLIC by
     # default. Freeze future routines before creating this revision's entry
     # points, then sweep all current routines and regrant only the allow-list.
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+    )
+    op.execute(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM custombuild_api, custombuild_worker, "
+        "custombuild_storage_attestor"
+    )
     op.execute(
         "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public "
         "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"

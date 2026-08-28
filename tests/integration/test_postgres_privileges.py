@@ -553,9 +553,18 @@ def test_runtime_roles_cannot_mutate_identity_or_append_only_audit_data() -> Non
 @pytest.mark.postgres
 def test_future_migrator_objects_are_not_auto_granted_to_runtime_roles() -> None:
     _, migrator_url, api_url, worker_url = _urls()
+    attestor_url = os.getenv("CAPACITY_ATTESTOR_DATABASE_URL")
+    if not attestor_url:
+        if os.getenv("CI", "").lower() == "true":
+            pytest.fail(
+                "The future-object privilege probe requires "
+                "CAPACITY_ATTESTOR_DATABASE_URL in CI"
+            )
+        pytest.skip("The future-object privilege probe requires the attestor role")
     migrator = create_engine(migrator_url)
     api = create_engine(api_url)
     worker = create_engine(worker_url)
+    attestor = create_engine(attestor_url)
     try:
         with migrator.begin() as connection:
             connection.execute(text("DROP FUNCTION IF EXISTS runtime_privilege_future_function()"))
@@ -570,7 +579,7 @@ def test_future_migrator_objects_are_not_auto_granted_to_runtime_roles() -> None
                 )
             )
 
-        for engine in (api, worker):
+        for engine in (api, worker, attestor):
             _assert_statement_denied(
                 engine,
                 "SELECT id FROM runtime_privilege_future_table",
@@ -590,6 +599,7 @@ def test_future_migrator_objects_are_not_auto_granted_to_runtime_roles() -> None
             connection.execute(text("DROP SEQUENCE IF EXISTS runtime_privilege_future_sequence"))
         api.dispose()
         worker.dispose()
+        attestor.dispose()
         migrator.dispose()
 
 
@@ -1557,15 +1567,23 @@ def test_cold_start_recovery_reaps_expired_staging_and_rejects_racing_reference(
             )
             connection.execute(
                 text(
-                    "UPDATE storage_global_quotas SET reserved_bytes = :size_bytes, "
-                    "reserved_count = 1, capacity_verified = false, "
+                    "UPDATE storage_global_quotas SET "
+                    "byte_limit = GREATEST(byte_limit, committed_bytes + :quota_bytes), "
+                    "object_limit = GREATEST(object_limit, committed_count + :quota_count), "
+                    "reserved_bytes = :size_bytes, reserved_count = 1, "
+                    "capacity_verified = false, "
                     "capacity_bucket = :bucket, maintenance_token = NULL, "
                     "maintenance_started_at = NULL, maintenance_owner_expires_at = NULL, "
                     "maintenance_database_started_at = NULL, "
                     "recovery_database_started_at = NULL, recovery_completed_at = NULL, "
                     "updated_at = clock_timestamp() WHERE id = 1"
                 ),
-                {"size_bytes": size_bytes, "bucket": bucket},
+                {
+                    "size_bytes": size_bytes,
+                    "quota_bytes": race_reserved_bytes,
+                    "quota_count": race_reserved_count,
+                    "bucket": bucket,
+                },
             )
 
         # A crashed owner from a previous PostgreSQL boot may retain a future
@@ -2200,22 +2218,43 @@ def test_deferred_domain_reference_trigger_rejects_every_identity_mismatch(
         worker_url if reference_table == "artifacts" else api_url,
         connect_args={"options": "-c statement_timeout=10000"},
     )
-    global_before: tuple[int, int, object] | None = None
+    global_before: tuple[int, int, int, int, bool, object] | None = None
     statement_executed = False
     try:
         with bootstrap.begin() as connection:
             global_row = connection.execute(
                 text(
                     "SELECT committed_bytes, committed_count, byte_limit, object_limit, "
-                    "updated_at "
+                    "capacity_verified, updated_at "
                     "FROM storage_global_quotas WHERE id = 1 FOR UPDATE"
                 )
             ).one()
             global_before = (
                 int(global_row.committed_bytes),
                 int(global_row.committed_count),
+                int(global_row.byte_limit),
+                int(global_row.object_limit),
+                bool(global_row.capacity_verified),
                 global_row.updated_at,
             )
+            connection.execute(
+                text(
+                    "UPDATE storage_global_quotas SET "
+                    "byte_limit = GREATEST("
+                    "byte_limit, committed_bytes + reserved_bytes + :size_bytes), "
+                    "object_limit = GREATEST("
+                    "object_limit, committed_count + reserved_count + 1), "
+                    "capacity_verified = false, updated_at = clock_timestamp() "
+                    "WHERE id = 1"
+                ),
+                {"size_bytes": stored_identity["size_bytes"]},
+            )
+            global_row = connection.execute(
+                text(
+                    "SELECT committed_bytes, committed_count, byte_limit, object_limit "
+                    "FROM storage_global_quotas WHERE id = 1"
+                )
+            ).one()
             assert global_row.committed_bytes + int(stored_identity["size_bytes"]) <= (
                 global_row.byte_limit
             )
@@ -2428,14 +2467,20 @@ def test_deferred_domain_reference_trigger_rejects_every_identity_mismatch(
                 )
                 connection.execute(
                     text(
-                        "UPDATE storage_global_quotas SET committed_bytes = :committed_bytes, "
-                        "committed_count = :committed_count, updated_at = :updated_at "
+                        "UPDATE storage_global_quotas SET "
+                        "committed_bytes = :committed_bytes, "
+                        "committed_count = :committed_count, "
+                        "byte_limit = :byte_limit, object_limit = :object_limit, "
+                        "capacity_verified = :capacity_verified, updated_at = :updated_at "
                         "WHERE id = 1"
                     ),
                     {
                         "committed_bytes": global_before[0],
                         "committed_count": global_before[1],
-                        "updated_at": global_before[2],
+                        "byte_limit": global_before[2],
+                        "object_limit": global_before[3],
+                        "capacity_verified": global_before[4],
+                        "updated_at": global_before[5],
                     },
                 )
         runtime.dispose()

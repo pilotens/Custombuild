@@ -43,6 +43,15 @@ def test_storage_tables_are_read_only_to_both_untrusted_runtimes() -> None:
         "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public "
         "FROM custombuild_api, custombuild_worker"
     ) in sql
+    assert (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+    ) in runtime_privilege_statements()
+    assert (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM custombuild_api, custombuild_worker, "
+        "custombuild_storage_attestor"
+    ) in runtime_privilege_statements()
     assert "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC" in sql
 
 
@@ -108,6 +117,21 @@ def test_migration_definer_functions_have_frozen_search_path_and_db_clock() -> N
     assert "ledger_object_count <> v_global.committed_count" in source
     assert "ledger_bytes <> v_global.committed_bytes" in source
     assert "custombuild_storage_lock_capacity" in source
+
+
+def test_migration_uses_postgresql_conditional_expressions_without_schema_qualification() -> None:
+    source = MIGRATION.read_text(encoding="utf-8")
+
+    assert re.findall(
+        r"\bpg_catalog\.(?:coalesce|greatest|least|nullif)\s*\(",
+        source,
+        flags=re.IGNORECASE,
+    ) == []
+    assert "COALESCE(p_name, 'uuid')" in source
+    assert "COALESCE(p_name, 'text')" in source
+    assert "COALESCE(v_keys_allowed, false)" in source
+    assert source.count("GREATEST(lease_expires_at, v_expiry)") == 2
+    assert source.count("GREATEST(v_retry_after, v_candidate)") == 2
 
 
 def test_reservation_function_validates_exact_batch_before_mutating() -> None:
@@ -193,6 +217,12 @@ def test_reaper_is_token_bound_and_never_debits_before_finalization() -> None:
     finalize = source[finalize_start:finalize_end]
 
     assert "FOR UPDATE OF candidate SKIP LOCKED" in claim
+    assert (
+        "ORDER BY COALESCE(\n"
+        "                     candidate.lease_expires_at, candidate.claim_expires_at,\n"
+        "                     candidate.updated_at\n"
+        "                 ), candidate.object_key"
+    ) in claim
     assert "candidate.lease_expires_at <= v_now" in claim
     assert "candidate.claim_expires_at <= v_now" in claim
     assert "NOT EXISTS" in claim
@@ -303,7 +333,7 @@ def test_generation_retry_preflight_locks_terminal_job_then_storage_and_bounds_d
     assert "v_row.claim_expires_at > v_now" in preflight
     assert "EXTRACT(EPOCH FROM (v_row.claim_expires_at - v_now))" in preflight
     assert "v_candidate < 1 OR v_candidate > 3605" in preflight
-    assert "pg_catalog.greatest(v_retry_after, v_candidate)" in preflight
+    assert "GREATEST(v_retry_after, v_candidate)" in preflight
     assert "('reserved', 'committed', 'delete_pending')" in preflight
     assert "v_candidate := 5" in preflight
     assert "an invalid reaper claim" in preflight
@@ -375,9 +405,34 @@ def test_upgrade_revokes_helpers_and_never_grants_attestation_to_runtime(
         assert statements.count(f"ALTER FUNCTION {signature} OWNER TO custombuild_migrator") == 1
         assert statements.count(f"REVOKE ALL PRIVILEGES ON FUNCTION {signature} FROM PUBLIC") == 1
     assert (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+    ) in statements
+    assert (
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM custombuild_api, custombuild_worker, "
+        "custombuild_storage_attestor"
+    ) in statements
+    assert (
         "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator IN SCHEMA public "
         "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
     ) in sql
+    first_function = next(
+        index
+        for index, statement in enumerate(statements)
+        if "CREATE OR REPLACE FUNCTION public." in str(statement)
+    )
+    global_public_revoke = statements.index(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC"
+    )
+    global_runtime_revoke = statements.index(
+        "ALTER DEFAULT PRIVILEGES FOR ROLE custombuild_migrator "
+        "REVOKE EXECUTE ON FUNCTIONS FROM custombuild_api, custombuild_worker, "
+        "custombuild_storage_attestor"
+    )
+    assert global_public_revoke < first_function
+    assert global_runtime_revoke < first_function
     assert "must be provisioned before migration 0013" in sql
     assert "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC" in sql
     assert (

@@ -28,7 +28,7 @@ def _assert_foreign_key_violation(
 
 
 @pytest.mark.postgres
-def test_real_tables_enforce_rls_for_non_superuser() -> None:
+def test_real_tables_enforce_rls_for_non_superuser(request: pytest.FixtureRequest) -> None:
     tenant_graph_url = os.getenv("TENANT_GRAPH_DATABASE_URL")
     api_url = os.getenv("RLS_DATABASE_URL")
     if not tenant_graph_url or not api_url:
@@ -43,8 +43,81 @@ def test_real_tables_enforce_rls_for_non_superuser() -> None:
     user_b = str(uuid.uuid4())
     import_a = str(uuid.uuid4())
     import_b = str(uuid.uuid4())
+    object_key_a = f"private/{suffix}/a"
+    object_key_b = f"private/{suffix}/b"
     fixture_admin = create_engine(tenant_graph_url)
+    api_engine = create_engine(api_url)
+    global_before: dict[str, object] | None = None
+
+    def cleanup() -> None:
+        try:
+            if global_before is not None:
+                with fixture_admin.begin() as connection:
+                    connection.execute(
+                        text("DELETE FROM imported_assets WHERE id IN (:import_a, :import_b)"),
+                        {"import_a": import_a, "import_b": import_b},
+                    )
+                    connection.execute(
+                        text(
+                            "DELETE FROM stored_objects "
+                            "WHERE organization_id IN (:org_a, :org_b)"
+                        ),
+                        {"org_a": org_a, "org_b": org_b},
+                    )
+                    connection.execute(
+                        text(
+                            "DELETE FROM storage_tenant_quotas "
+                            "WHERE organization_id IN (:org_a, :org_b)"
+                        ),
+                        {"org_a": org_a, "org_b": org_b},
+                    )
+                    connection.execute(
+                        text("DELETE FROM organizations WHERE id IN (:org_a, :org_b)"),
+                        {"org_a": org_a, "org_b": org_b},
+                    )
+                    connection.execute(
+                        text("DELETE FROM users WHERE id IN (:user_a, :user_b)"),
+                        {"user_a": user_a, "user_b": user_b},
+                    )
+                    connection.execute(
+                        text(
+                            "UPDATE storage_global_quotas SET "
+                            "committed_bytes = :committed_bytes, "
+                            "committed_count = :committed_count, byte_limit = :byte_limit, "
+                            "object_limit = :object_limit, "
+                            "capacity_verified = :capacity_verified, "
+                            "updated_at = :updated_at WHERE id = 1"
+                        ),
+                        global_before,
+                    )
+        finally:
+            api_engine.dispose()
+            fixture_admin.dispose()
+
+    request.addfinalizer(cleanup)
     with fixture_admin.begin() as connection:
+        global_before = dict(
+            connection.execute(
+                text(
+                    "SELECT committed_bytes, committed_count, byte_limit, object_limit, "
+                    "capacity_verified, updated_at "
+                    "FROM storage_global_quotas WHERE id = 1 FOR UPDATE"
+                )
+            )
+            .mappings()
+            .one()
+        )
+        connection.execute(
+            text(
+                "UPDATE storage_global_quotas SET "
+                "byte_limit = GREATEST("
+                "byte_limit, committed_bytes + reserved_bytes + 24), "
+                "object_limit = GREATEST("
+                "object_limit, committed_count + reserved_count + 2), "
+                "capacity_verified = false, updated_at = clock_timestamp() "
+                "WHERE id = 1"
+            )
+        )
         connection.execute(
             text(
                 "INSERT INTO organizations (id, name, slug, created_at, updated_at) "
@@ -89,6 +162,54 @@ def test_real_tables_enforce_rls_for_non_superuser() -> None:
         )
         connection.execute(
             text(
+                "INSERT INTO storage_tenant_quotas ("
+                "organization_id, byte_limit, object_limit, reserved_bytes, "
+                "committed_bytes, reserved_count, committed_count, created_at, updated_at"
+                ") VALUES ("
+                ":organization_id, 1000000, 1000, 0, 12, 0, 1, now(), now())"
+            ),
+            [{"organization_id": org_a}, {"organization_id": org_b}],
+        )
+        connection.execute(
+            text(
+                "INSERT INTO stored_objects ("
+                "organization_id, object_key, project_id, sha256, size_bytes, media_type, "
+                "owner_type, owner_id, idempotency_key, state, lease_token, "
+                "lease_expires_at, claim_token, claim_expires_at, created_at, updated_at"
+                ") VALUES ("
+                ":organization_id, :object_key, :project_id, :sha256, 12, 'image/png', "
+                "'imported_asset', :owner_id, :idempotency_key, 'committed', "
+                "NULL, NULL, NULL, NULL, now(), now())"
+            ),
+            [
+                {
+                    "organization_id": org_a,
+                    "object_key": object_key_a,
+                    "project_id": project_a,
+                    "sha256": "a" * 64,
+                    "owner_id": import_a,
+                    "idempotency_key": f"imported:{import_a}",
+                },
+                {
+                    "organization_id": org_b,
+                    "object_key": object_key_b,
+                    "project_id": project_b,
+                    "sha256": "b" * 64,
+                    "owner_id": import_b,
+                    "idempotency_key": f"imported:{import_b}",
+                },
+            ],
+        )
+        connection.execute(
+            text(
+                "UPDATE storage_global_quotas SET "
+                "committed_bytes = committed_bytes + 24, "
+                "committed_count = committed_count + 2, updated_at = clock_timestamp() "
+                "WHERE id = 1"
+            )
+        )
+        connection.execute(
+            text(
                 "INSERT INTO imported_assets "
                 "(id, organization_id, project_id, sha256, object_key, size_bytes, "
                 "media_type, original_filename, created_by, created_at, updated_at) VALUES "
@@ -101,7 +222,7 @@ def test_real_tables_enforce_rls_for_non_superuser() -> None:
                     "organization_id": org_a,
                     "project_id": project_a,
                     "sha256": "a" * 64,
-                    "object_key": f"private/{suffix}/a",
+                    "object_key": object_key_a,
                     "created_by": user_a,
                 },
                 {
@@ -109,13 +230,12 @@ def test_real_tables_enforce_rls_for_non_superuser() -> None:
                     "organization_id": org_b,
                     "project_id": project_b,
                     "sha256": "b" * 64,
-                    "object_key": f"private/{suffix}/b",
+                    "object_key": object_key_b,
                     "created_by": user_b,
                 },
             ],
         )
 
-    api_engine = create_engine(api_url)
     with api_engine.begin() as connection:
         role = connection.execute(
             text(
@@ -154,7 +274,6 @@ def test_real_tables_enforce_rls_for_non_superuser() -> None:
             {"a": import_a, "b": import_b},
         ).scalars().all()
         assert visible_imports == [import_a]
-
 
 @pytest.mark.postgres
 def test_rls_rejects_cross_tenant_insert() -> None:
@@ -567,16 +686,21 @@ def test_tenant_foreign_keys_reject_cross_tenant_children_for_bypassrls_session(
         ),
         (
             "INSERT INTO releases "
-            "(id, organization_id, design_version_id, release_number, released_by, "
-            "manifest_sha256, created_at, updated_at) VALUES "
-            "(:id, :organization_id, :design_version_id, 'denied', :released_by, "
-            ":manifest_sha256, now(), now())",
+            "(id, organization_id, design_version_id, generation_job_id, release_number, "
+            "released_by, manifest_sha256, production_context_hash, "
+            "generation_result_json, artifact_inventory_json, created_at, updated_at) "
+            "VALUES (:id, :organization_id, :design_version_id, :generation_job_id, "
+            "'denied', :released_by, :manifest_sha256, :production_context_hash, "
+            "json_build_object('manifest_sha256', :manifest_sha256), "
+            "json_build_array(json_build_object()), now(), now())",
             {
                 "id": str(uuid.uuid4()),
                 "organization_id": org_b,
                 "design_version_id": version_a,
+                "generation_job_id": job_b,
                 "released_by": user_b,
                 "manifest_sha256": "6" * 64,
+                "production_context_hash": "f" * 64,
             },
             "fk_releases_org_design_version",
         ),
