@@ -9,6 +9,27 @@ def _workflow() -> str:
     return PROD_CI.read_text(encoding="utf-8")
 
 
+def test_release_browser_evidence_uses_direct_playwright_cli() -> None:
+    release_workflows = (
+        Path(".github/workflows/cd.yml"),
+        Path(".github/workflows/prod-ci.yml"),
+    )
+    chromium_command = (
+        "pnpm --dir apps/web exec playwright test --project=chromium-desktop"
+    )
+    wcag_command = (
+        "pnpm --dir apps/web exec playwright test e2e/accessibility.spec.ts "
+        "--project=chromium-desktop --output=wcag-test-results"
+    )
+
+    for path in release_workflows:
+        source = path.read_text(encoding="utf-8")
+        assert source.count(chromium_command) == 1
+        assert source.count(wcag_command) == 1
+        assert "test:e2e -- --project" not in source
+        assert "test:e2e:a11y -- --output" not in source
+
+
 def test_prod_ci_probes_the_exact_executed_native_runtimes() -> None:
     workflow = _workflow()
 

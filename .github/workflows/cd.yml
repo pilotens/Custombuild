@@ -98,7 +98,7 @@ jobs:
         env:
           PLAYWRIGHT_REAL_API: "0"
           PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-wcag
-        run: pnpm --dir apps/web test:e2e:a11y -- --output=wcag-test-results
+        run: pnpm --dir apps/web exec playwright test e2e/accessibility.spec.ts --project=chromium-desktop --output=wcag-test-results
       - name: Same-SHA Chromium Firefox and WebKit acceptance
         env:
           PLAYWRIGHT_REAL_API: "0"
