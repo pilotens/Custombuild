@@ -700,8 +700,10 @@ def test_tenant_foreign_keys_reject_cross_tenant_children_for_bypassrls_session(
             "released_by, manifest_sha256, production_context_hash, "
             "generation_result_json, artifact_inventory_json, created_at, updated_at) "
             "VALUES (:id, :organization_id, :design_version_id, :generation_job_id, "
-            "'denied', :released_by, :manifest_sha256, :production_context_hash, "
-            "json_build_object('manifest_sha256', CAST(:manifest_sha256 AS text)), "
+            "'denied', :released_by, CAST(:manifest_sha256 AS varchar(64)), "
+            ":production_context_hash, "
+            "json_build_object('manifest_sha256', "
+            "CAST(:manifest_sha256 AS varchar(64))), "
             "json_build_array(json_build_object()), now(), now())",
             {
                 "id": str(uuid.uuid4()),
