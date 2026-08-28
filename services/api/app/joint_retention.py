@@ -56,6 +56,7 @@ _EVIDENCE_KEYS = frozenset(
         "material_version",
         "tested_thickness_um",
         "test_report_id",
+        "issuer",
         "issued_at",
         "load_cases",
     }
@@ -143,6 +144,9 @@ def resolve_joint_retention_contract(
     evidence = _parse_evidence(evidence_bytes, expected_sha256=evidence_sha256)
     if evidence["schema_version"] != EVIDENCE_SCHEMA_VERSION:
         raise JointRetentionEvidenceError("unsupported joint-retention evidence schema")
+    _nonblank(evidence["test_report_id"], "test_report_id")
+    _nonblank(evidence["issuer"], "issuer")
+    _nonblank(evidence["issued_at"], "issued_at")
     if evidence["system_id"] != catalog["system_id"]:
         raise JointRetentionEvidenceError("evidence system does not match the selected catalogue entry")
     if evidence["system_version"] != catalog["system_version"]:
@@ -187,13 +191,13 @@ def resolve_joint_retention_contract(
                     ),
                 )
             )
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
             raise JointRetentionEvidenceError("unsupported retention load mode") from exc
 
     try:
         method = JointRetentionMethod(catalog["method"])
         machining_scope = JointRetentionMachiningScope(catalog["machining_scope"])
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise JointRetentionEvidenceError("unsupported joint-retention catalogue enum") from exc
 
     if machining_scope == JointRetentionMachiningScope.NO_ADDITIONAL_CNC and bound_feature_ids:
