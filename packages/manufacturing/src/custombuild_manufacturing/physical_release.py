@@ -21,14 +21,15 @@ class PhysicalEvidenceKind(StrEnum):
     """Externally proven facts required by the workshop-readiness boundary.
 
     Values deliberately mirror the readiness concepts instead of inventing a
-    second vocabulary. LOAD_TEST is kept as an additional explicit prototype
-    gate because a completed furniture prototype without a recorded load test
-    must not be enough for a physical-release decision.
+    second vocabulary. JOINT_RETENTION_SYSTEM and LOAD_TEST are additional
+    explicit gates: a geometrically valid DADO/joint coupon and a completed
+    prototype are not evidence of permanent retention or load-test success.
     """
 
     WALL_ANCHOR = "wall_anchor"
     CABINET_HARDWARE = "cabinet_hardware"
     MATERIAL_GRAIN = "material_grain"
+    JOINT_RETENTION_SYSTEM = "joint_retention_system"
     MACHINE_CALIBRATION = "machine_calibration"
     WCS_CONVENTION = "wcs_convention"
     MEASURED_TOOLING = "measured_tooling"
