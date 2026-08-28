@@ -1703,6 +1703,10 @@ def upgrade() -> None:
         "GRANT SELECT ON TABLE storage_global_quotas, storage_tenant_quotas, "
         f"stored_objects TO {_RUNTIME_ROLES}"
     )
+    # The API readiness probe reads only Alembic's current revision. Revision
+    # 0011 intentionally swept all earlier table grants, so restore this
+    # narrowly scoped metadata privilege on both fresh and upgraded clusters.
+    op.execute("GRANT SELECT ON TABLE alembic_version TO custombuild_api")
     op.execute("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC")
     op.execute(f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM {_RUNTIME_ROLES}")
     op.execute(
@@ -1759,6 +1763,7 @@ def downgrade() -> None:
         op.execute(f"DROP FUNCTION IF EXISTS {signature}")
     # Revision 0012 used direct ORM mutations.  Restore precisely that old ACL
     # when explicitly downgrading across this security boundary.
+    op.execute("REVOKE SELECT ON TABLE alembic_version FROM custombuild_api")
     op.execute(f"GRANT SELECT, UPDATE ON TABLE storage_global_quotas TO {_RUNTIME_ROLES}")
     op.execute(
         "GRANT SELECT, INSERT, UPDATE ON TABLE storage_tenant_quotas, stored_objects "

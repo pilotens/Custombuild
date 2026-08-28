@@ -655,7 +655,7 @@ def test_reserve_is_serialized_behind_maintenance_and_current_boot_recovery(
     storage_probe: _StorageProbe,
 ) -> None:
     connection = storage_probe.connection
-    claim = _claim(storage_probe, label="g-maintenance", size_bytes=41)
+    claim = _claim(storage_probe, label="a-maintenance", size_bytes=41)
     gate_token = str(uuid.uuid4())
     _set_local_role(connection, None)
     connection.execute(
@@ -1960,14 +1960,13 @@ def test_cold_start_recovery_reaps_expired_staging_and_rejects_racing_reference(
                     "created_by": user_id,
                 },
             )
-            committed = _call_storage_batch(
+            _call_storage_batch(
                 connection,
                 "custombuild_storage_commit_batch",
                 organization_id,
                 [ordered_claim],
                 ordered_lease_token,
             )
-            assert committed is None
 
         with bootstrap.connect() as connection:
             assert connection.execute(

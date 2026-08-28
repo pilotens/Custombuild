@@ -55,6 +55,15 @@ def test_storage_tables_are_read_only_to_both_untrusted_runtimes() -> None:
     assert "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC" in sql
 
 
+def test_api_readiness_can_only_read_alembic_revision_metadata() -> None:
+    assert API_TABLE_PRIVILEGES["alembic_version"] == ("SELECT",)
+    assert "alembic_version" not in WORKER_TABLE_PRIVILEGES
+
+    sql = ";\n".join(runtime_privilege_statements())
+    assert "GRANT SELECT ON TABLE alembic_version" in sql
+    assert "alembic_version TO custombuild_worker" not in sql
+
+
 def test_only_public_storage_entry_points_are_granted() -> None:
     api_functions = ROLE_FUNCTION_PRIVILEGES["custombuild_api"]
     worker_functions = ROLE_FUNCTION_PRIVILEGES["custombuild_worker"]
@@ -444,6 +453,7 @@ def test_upgrade_revokes_helpers_and_never_grants_attestation_to_runtime(
         "GRANT SELECT ON TABLE storage_global_quotas, storage_tenant_quotas, "
         "stored_objects TO custombuild_api, custombuild_worker"
     ) in sql
+    assert "GRANT SELECT ON TABLE alembic_version TO custombuild_api" in sql
     assert "GRANT EXECUTE ON FUNCTION public.custombuild_storage_reserve_batch" in sql
     for signature in migration._HELPER_FUNCTIONS:
         assert f"REVOKE ALL PRIVILEGES ON FUNCTION {signature} FROM PUBLIC" in sql
@@ -459,6 +469,22 @@ def test_upgrade_revokes_helpers_and_never_grants_attestation_to_runtime(
     assert (
         "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM custombuild_storage_attestor"
     ) in sql
+
+
+def test_downgrade_restores_pre_readiness_metadata_acl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = importlib.import_module(
+        "services.api.alembic.versions.0013_storage_quota_security_functions"
+    )
+    statements: list[str] = []
+    monkeypatch.setattr(migration.op, "execute", lambda statement: statements.append(statement))
+
+    migration.downgrade()
+
+    assert statements.count(
+        "REVOKE SELECT ON TABLE alembic_version FROM custombuild_api"
+    ) == 1
 
 
 def _postgres_urls() -> tuple[str, str, str, str] | None:

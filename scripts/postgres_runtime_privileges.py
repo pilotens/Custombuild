@@ -16,6 +16,10 @@ STORAGE_ATTESTOR_ROLE = "custombuild_storage_attestor"
 # are intentionally inaccessible even when Row-Level Security would otherwise
 # hide cross-tenant rows.
 API_TABLE_PRIVILEGES: dict[str, tuple[str, ...]] = {
+    # Readiness reports the exact applied schema revision through the normal
+    # API connection.  Alembic owns this single metadata row; the runtime can
+    # inspect it but can never mutate migration state.
+    "alembic_version": ("SELECT",),
     "users": ("SELECT",),
     "memberships": ("SELECT",),
     "projects": ("SELECT", "INSERT", "UPDATE"),

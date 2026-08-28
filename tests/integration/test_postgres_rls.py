@@ -208,33 +208,43 @@ def test_real_tables_enforce_rls_for_non_superuser(request: pytest.FixtureReques
                 "WHERE id = 1"
             )
         )
-        connection.execute(
-            text(
-                "INSERT INTO imported_assets "
-                "(id, organization_id, project_id, sha256, object_key, size_bytes, "
-                "media_type, original_filename, created_by, created_at, updated_at) VALUES "
-                "(:id, :organization_id, :project_id, :sha256, :object_key, 12, "
-                "'image/png', 'reference.png', :created_by, now(), now())"
-            ),
-            [
-                {
-                    "id": import_a,
-                    "organization_id": org_a,
-                    "project_id": project_a,
-                    "sha256": "a" * 64,
-                    "object_key": object_key_a,
-                    "created_by": user_a,
-                },
-                {
-                    "id": import_b,
-                    "organization_id": org_b,
-                    "project_id": project_b,
-                    "sha256": "b" * 64,
-                    "object_key": object_key_b,
-                    "created_by": user_b,
-                },
-            ],
-        )
+
+    # The exact-identity constraint is deferred and its SECURITY DEFINER owner
+    # remains subject to FORCE RLS. Commit each fixture under its own tenant
+    # context so the trigger proves the same boundary as a production write.
+    for parameters in (
+        {
+            "id": import_a,
+            "organization_id": org_a,
+            "project_id": project_a,
+            "sha256": "a" * 64,
+            "object_key": object_key_a,
+            "created_by": user_a,
+        },
+        {
+            "id": import_b,
+            "organization_id": org_b,
+            "project_id": project_b,
+            "sha256": "b" * 64,
+            "object_key": object_key_b,
+            "created_by": user_b,
+        },
+    ):
+        with fixture_admin.begin() as connection:
+            connection.execute(
+                text("SELECT set_config('app.current_organization_id', :tenant, true)"),
+                {"tenant": parameters["organization_id"]},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO imported_assets "
+                    "(id, organization_id, project_id, sha256, object_key, size_bytes, "
+                    "media_type, original_filename, created_by, created_at, updated_at) "
+                    "VALUES (:id, :organization_id, :project_id, :sha256, :object_key, "
+                    "12, 'image/png', 'reference.png', :created_by, now(), now())"
+                ),
+                parameters,
+            )
 
     with api_engine.begin() as connection:
         role = connection.execute(
@@ -691,7 +701,7 @@ def test_tenant_foreign_keys_reject_cross_tenant_children_for_bypassrls_session(
             "generation_result_json, artifact_inventory_json, created_at, updated_at) "
             "VALUES (:id, :organization_id, :design_version_id, :generation_job_id, "
             "'denied', :released_by, :manifest_sha256, :production_context_hash, "
-            "json_build_object('manifest_sha256', :manifest_sha256), "
+            "json_build_object('manifest_sha256', CAST(:manifest_sha256 AS text)), "
             "json_build_array(json_build_object()), now(), now())",
             {
                 "id": str(uuid.uuid4()),
