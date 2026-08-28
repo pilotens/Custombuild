@@ -36,7 +36,7 @@ def payload() -> dict[str, object]:
 
 
 def run_cli(path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return subprocess.run(  # noqa: S603 - fixed interpreter/script; no shell execution
         [sys.executable, "scripts/verify_physical_release_evidence.py", str(path), *extra],
         check=False,
         capture_output=True,
