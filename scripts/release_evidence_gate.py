@@ -14,19 +14,22 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 try:
     from scripts.compose_backup import MANIFEST_SCHEMA, BackupError, verify_manifest
-    from scripts.source_manifest import build_source_manifest
+    from scripts.source_manifest import build_source_manifest, verify_production_semantic_root
 except ModuleNotFoundError:  # Direct ``python scripts/release_evidence_gate.py`` execution.
     from compose_backup import (  # type: ignore[import-not-found,no-redef]
         MANIFEST_SCHEMA,
         BackupError,
         verify_manifest,
     )
-    from source_manifest import build_source_manifest  # type: ignore[import-not-found,no-redef]
+    from source_manifest import (  # type: ignore[import-not-found,no-redef]
+        build_source_manifest,
+        verify_production_semantic_root,
+    )
 
-STATIC_SCHEMA = "custombuild.release-readiness-static.v2"
+STATIC_SCHEMA = "custombuild.release-readiness-static.v3"
 RESTORE_SCHEMA = "custombuild.restore-drill.v3"
 RUNTIME_SCHEMA = "custombuild.runtime-release-evidence.v3"
-FINAL_SCHEMA = "custombuild.release-readiness-evidence.v1"
+FINAL_SCHEMA = "custombuild.release-readiness-evidence.v2"
 REQUIRED_IMAGES = frozenset(
     {"api", "worker", "web", "seaweedfs", "postgres", "redis", "volume-init"}
 )
@@ -535,6 +538,10 @@ def build_final_report(
     _assert_clean_repository(repo)
     revision = _git_revision(repo)
     source_manifest_sha256 = build_source_manifest(repo)[2]
+    try:
+        repository_content_root_sha256 = verify_production_semantic_root(repo).digest
+    except (OSError, RuntimeError) as exc:
+        raise EvidenceError(f"repository content root verification failed: {exc}") from exc
     static = _load(static_report_path, "static release report")
     runtime = _load(runtime_evidence_path, "runtime image evidence")
     restore = _load(restore_evidence_path, "restore evidence")
@@ -548,8 +555,16 @@ def build_final_report(
         or static.get("static_controls_ready") is not True
         or static.get("software_release_ready") is not False
         or static.get("runtime_evidence_required") is not True
+        or static.get("external_semantic_approval_required") is not True
     ):
         raise EvidenceError("static release controls are not ready")
+    static_content_root = static.get("repository_content_root_sha256")
+    if (
+        not isinstance(static_content_root, str)
+        or not SHA256.fullmatch(static_content_root)
+        or static_content_root != repository_content_root_sha256
+    ):
+        raise EvidenceError("static release report has another repository content root")
     for label, evidence in (
         ("static release report", static),
         ("coordinated backup", backup),
@@ -593,10 +608,9 @@ def build_final_report(
     row_counts = database_snapshot.get("row_counts")
     if not isinstance(row_counts, dict):
         raise EvidenceError("coordinated backup has no exact database row counts")
-    if (
-        restore.get("database_alembic_heads") != database_snapshot.get("alembic_heads")
-        or restore.get("database_project_rows") != row_counts.get("projects")
-    ):
+    if restore.get("database_alembic_heads") != database_snapshot.get(
+        "alembic_heads"
+    ) or restore.get("database_project_rows") != row_counts.get("projects"):
         raise EvidenceError("restore evidence did not reproduce the database recovery point")
     if restore.get("tenant_acceptance_required_before_traffic") is not True:
         raise EvidenceError(
@@ -670,9 +684,7 @@ def build_final_report(
                 not isinstance(registry_resolution, dict)
                 or set(registry_resolution) != REGISTRY_RESOLUTION_KEYS
             ):
-                raise EvidenceError(
-                    f"runtime image {component} has no exact registry resolution"
-                )
+                raise EvidenceError(f"runtime image {component} has no exact registry resolution")
             deployment_digest = str(image_reference).rsplit("@", 1)[-1]
             if registry_resolution.get("deployment_reference_digest") != deployment_digest:
                 raise EvidenceError(
@@ -683,9 +695,7 @@ def build_final_report(
                     f"runtime image {component} has another platform manifest digest"
                 )
             if registry_resolution.get("image_config_digest") != image_id:
-                raise EvidenceError(
-                    f"runtime image {component} has another registry config digest"
-                )
+                raise EvidenceError(f"runtime image {component} has another registry config digest")
         elif registry_resolution is not None:
             raise EvidenceError(
                 f"runtime image {component} has unexpected registry resolution evidence"
@@ -727,6 +737,8 @@ def build_final_report(
         "schema_version": FINAL_SCHEMA,
         "git_revision": revision,
         "source_manifest_sha256": source_manifest_sha256,
+        "repository_content_root_sha256": repository_content_root_sha256,
+        "external_semantic_approval_required": True,
         "software_release_ready": True,
         "commercial_release_ready": False,
         "physical_machine_release_ready": False,

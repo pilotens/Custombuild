@@ -460,6 +460,22 @@ def test_repository_content_root_rejects_untracked_missing_and_unsafe_types(
             build_repository_content_root(repo)
 
 
+def test_repository_content_root_control_cannot_be_a_tracked_symlink(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("creating symbolic links requires optional Windows privileges")
+    repo = _content_repo(tmp_path)
+    update_production_semantic_root(repo)
+    control = repo / PRODUCTION_SEMANTIC_ROOT_PATH
+    control.unlink()
+    control.symlink_to("../scripts/source.bin")
+    _git(repo, "add", PRODUCTION_SEMANTIC_ROOT_PATH)
+
+    with pytest.raises(SourceManifestError, match="symlinks are forbidden"):
+        build_repository_content_root(repo)
+
+
 @pytest.mark.parametrize(
     "raw_path",
     (b"../escape", b"/absolute", b"double//segment", b"back\\slash", b"line\nfeed"),
@@ -491,6 +507,7 @@ def test_semantic_root_control_fails_closed_on_malformed_or_unsafe_payload(
     path = repo / PRODUCTION_SEMANTIC_ROOT_PATH
     assert callable(mutation)
     path.write_bytes(mutation(path.read_bytes()))
+    _git(repo, "add", PRODUCTION_SEMANTIC_ROOT_PATH)
 
     with pytest.raises(SourceManifestError):
         verify_production_semantic_root(repo)
@@ -527,6 +544,114 @@ def test_repository_content_root_detects_index_inventory_race(
     with pytest.raises(SourceManifestError, match="index changed"):
         build_repository_content_root(repo)
     assert first[1] != ""
+
+
+def _ready_semantic_root_repo(tmp_path: Path) -> Path:
+    repo = _content_repo(tmp_path)
+    update_production_semantic_root(repo)
+    _git(repo, "add", PRODUCTION_SEMANTIC_ROOT_PATH)
+    return repo
+
+
+def test_semantic_root_snapshot_rejects_tracked_mutation_during_control_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ready_semantic_root_repo(tmp_path)
+    real_read = source_manifest._read_index_bound_regular_file
+    lock_path = PRODUCTION_SEMANTIC_ROOT_PATH.encode()
+
+    def racing_read(
+        candidate: Path,
+        raw_path: bytes,
+        *,
+        git_mode: str,
+        object_id: str,
+        object_format: str,
+    ) -> tuple[bytes, source_manifest.RepositoryFileState]:
+        result = real_read(
+            candidate,
+            raw_path,
+            git_mode=git_mode,
+            object_id=object_id,
+            object_format=object_format,
+        )
+        if raw_path == lock_path:
+            (repo / "scripts/source.bin").write_bytes(b"late tracked mutation")
+        return result
+
+    monkeypatch.setattr(source_manifest, "_read_index_bound_regular_file", racing_read)
+
+    with pytest.raises(SourceManifestError, match="tracked path changed"):
+        verify_production_semantic_root(repo)
+
+
+def test_semantic_root_snapshot_rejects_late_nonignored_untracked_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ready_semantic_root_repo(tmp_path)
+    real_read = source_manifest._read_index_bound_regular_file
+    lock_path = PRODUCTION_SEMANTIC_ROOT_PATH.encode()
+
+    def racing_read(
+        candidate: Path,
+        raw_path: bytes,
+        *,
+        git_mode: str,
+        object_id: str,
+        object_format: str,
+    ) -> tuple[bytes, source_manifest.RepositoryFileState]:
+        result = real_read(
+            candidate,
+            raw_path,
+            git_mode=git_mode,
+            object_id=object_id,
+            object_format=object_format,
+        )
+        if raw_path == lock_path:
+            (repo / "late-untracked.txt").write_text("race", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(source_manifest, "_read_index_bound_regular_file", racing_read)
+
+    with pytest.raises(SourceManifestError, match="inventory changed"):
+        verify_production_semantic_root(repo)
+
+
+def test_semantic_root_snapshot_rejects_control_and_index_mutation_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _ready_semantic_root_repo(tmp_path)
+    real_read = source_manifest._read_index_bound_regular_file
+    lock_path = PRODUCTION_SEMANTIC_ROOT_PATH.encode()
+
+    def racing_read(
+        candidate: Path,
+        raw_path: bytes,
+        *,
+        git_mode: str,
+        object_id: str,
+        object_format: str,
+    ) -> tuple[bytes, source_manifest.RepositoryFileState]:
+        result = real_read(
+            candidate,
+            raw_path,
+            git_mode=git_mode,
+            object_id=object_id,
+            object_format=object_format,
+        )
+        if raw_path == lock_path:
+            control = repo / PRODUCTION_SEMANTIC_ROOT_PATH
+            control.write_text('{"authorization":true}\n', encoding="utf-8")
+            _git(repo, "add", PRODUCTION_SEMANTIC_ROOT_PATH)
+        return result
+
+    monkeypatch.setattr(source_manifest, "_read_index_bound_regular_file", racing_read)
+
+    with pytest.raises(SourceManifestError, match="changed"):
+        verify_production_semantic_root(repo)
 
 
 def test_semantic_root_cli_updates_and_checks_exact_control(

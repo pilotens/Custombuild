@@ -25,11 +25,18 @@ except ModuleNotFoundError:  # Direct `python scripts/release_readiness.py` exec
     )
 
 try:
-    from scripts.source_manifest import SourceManifestError, build_source_manifest
-except ModuleNotFoundError:  # Direct `python scripts/release_readiness.py` execution.
-    from source_manifest import (  # type: ignore[import-not-found,no-redef]
+    from scripts.source_manifest import (
+        PRODUCTION_SEMANTIC_ROOT_PATH,
         SourceManifestError,
         build_source_manifest,
+        verify_production_semantic_root,
+    )
+except ModuleNotFoundError:  # Direct `python scripts/release_readiness.py` execution.
+    from source_manifest import (  # type: ignore[import-not-found,no-redef]
+        PRODUCTION_SEMANTIC_ROOT_PATH,
+        SourceManifestError,
+        build_source_manifest,
+        verify_production_semantic_root,
     )
 
 try:
@@ -1534,14 +1541,9 @@ def supply_chain_issues(repo: Path) -> list[str]:
         for line_number, line in enumerate(compose.read_text(encoding="utf-8").splitlines(), 1):
             stripped = line.strip()
             locally_built = (
-                stripped.startswith("image: custombuild-")
-                and "${VCS_REF:-uncommitted}" in stripped
+                stripped.startswith("image: custombuild-") and "${VCS_REF:-uncommitted}" in stripped
             )
-            if (
-                stripped.startswith("image:")
-                and "@sha256:" not in stripped
-                and not locally_built
-            ):
+            if stripped.startswith("image:") and "@sha256:" not in stripped and not locally_built:
                 issues.append(f"compose.yml:{line_number} uses an unpinned container image")
 
     for relative in (
@@ -1562,11 +1564,7 @@ def supply_chain_issues(repo: Path) -> list[str]:
             image_index = 2 if len(tokens) > 1 and tokens[1].startswith("--platform=") else 1
             image = tokens[image_index] if len(tokens) > image_index else ""
             reserved_scratch = image == "scratch" and image not in local_stages
-            if (
-                image not in local_stages
-                and not reserved_scratch
-                and "@sha256:" not in image
-            ):
+            if image not in local_stages and not reserved_scratch and "@sha256:" not in image:
                 issues.append(f"{relative}:{line_number} uses an unpinned base image")
             if "AS" in (token.upper() for token in tokens):
                 as_index = next(
@@ -1846,6 +1844,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "scripts/deploy_descriptor.py",
         *PRODUCTION_SEMANTIC_SOURCE_PATHS,
         "scripts/source_manifest.py",
+        PRODUCTION_SEMANTIC_ROOT_PATH,
         "scripts/restore_drill.py",
     )
     missing_files = [name for name in required_files if not (repo / name).is_file()]
@@ -1910,6 +1909,31 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
                 "Exact Docker build-context identity",
                 CheckStatus.PASS,
                 f"Canonical source manifest SHA-256: {source_manifest_sha256}",
+            )
+        )
+
+    repository_content_root_sha256: str | None = None
+    try:
+        repository_content_root_sha256 = verify_production_semantic_root(repo).digest
+    except (OSError, SourceManifestError) as exc:
+        checks.append(
+            ReleaseCheck(
+                "REPOSITORY_CONTENT_ROOT",
+                "Exact tracked repository content root",
+                CheckStatus.BLOCK,
+                str(exc),
+            )
+        )
+    else:
+        checks.append(
+            ReleaseCheck(
+                "REPOSITORY_CONTENT_ROOT",
+                "Exact tracked repository content root",
+                CheckStatus.PASS,
+                (
+                    f"Verified diagnostic SHA-256: {repository_content_root_sha256}; "
+                    "local authorization is false and external semantic approval remains required."
+                ),
             )
         )
 
@@ -2036,11 +2060,13 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
     )
     software_blockers = [item for item in checks if item.status is CheckStatus.BLOCK]
     return {
-        "schema_version": "custombuild.release-readiness-static.v2",
+        "schema_version": "custombuild.release-readiness-static.v3",
         "repository": str(repo),
         "git_revision": revision,
         "git_branch": branch,
         "source_manifest_sha256": source_manifest_sha256,
+        "repository_content_root_sha256": repository_content_root_sha256,
+        "external_semantic_approval_required": True,
         "static_controls_ready": not software_blockers,
         "software_release_ready": False,
         "runtime_evidence_required": True,

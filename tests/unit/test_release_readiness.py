@@ -740,6 +740,11 @@ def test_build_report_blocks_software_release_on_semantic_drift(
         "build_source_manifest",
         lambda _repo: ([], b"", "b" * 64),
     )
+    monkeypatch.setattr(
+        release_readiness,
+        "verify_production_semantic_root",
+        lambda _repo: SimpleNamespace(digest="c" * 64),
+    )
     monkeypatch.setattr(release_readiness, "resolved_compose", lambda _repo: {})
     monkeypatch.setattr(release_readiness, "compose_hardening_issues", lambda _config: [])
     monkeypatch.setattr(release_readiness, "supply_chain_issues", lambda _repo: [])
@@ -758,6 +763,21 @@ def test_build_report_blocks_software_release_on_semantic_drift(
     assert "worker result can claim production cutting" in semantic_check["detail"]
     assert report["static_controls_ready"] is False
     assert report["software_release_ready"] is False
+    assert report["repository_content_root_sha256"] == "c" * 64
+    assert report["external_semantic_approval_required"] is True
+    assert report["schema_version"] == "custombuild.release-readiness-static.v3"
+
+    def stale_root(_repo: Path) -> object:
+        raise release_readiness.SourceManifestError("semantic root is stale")
+
+    monkeypatch.setattr(release_readiness, "verify_production_semantic_root", stale_root)
+    stale_report = build_report(Path.cwd(), require_clean=True)
+    root_check = next(
+        check for check in stale_report["checks"] if check["code"] == "REPOSITORY_CONTENT_ROOT"
+    )
+    assert root_check["status"] == "BLOCK"
+    assert stale_report["repository_content_root_sha256"] is None
+    assert stale_report["static_controls_ready"] is False
 
 
 def write_empty_vulnerability_policy(root: Path) -> None:

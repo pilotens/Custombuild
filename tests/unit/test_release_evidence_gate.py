@@ -5,6 +5,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import pytest
@@ -15,6 +16,7 @@ from scripts.release_evidence_gate import EvidenceError, build_final_report
 
 REVISION = "1" * 40
 SOURCE = "2" * 64
+CONTENT_ROOT = "3" * 64
 SEAWEED_ID = "sha256:" + "3" * 64
 EXTERNAL_SBOM_IDENTITIES = {
     "postgres": (
@@ -89,9 +91,11 @@ def _evidence(
     _write(
         static,
         {
-            "schema_version": "custombuild.release-readiness-static.v2",
+            "schema_version": "custombuild.release-readiness-static.v3",
             "git_revision": REVISION,
             "source_manifest_sha256": SOURCE,
+            "repository_content_root_sha256": CONTENT_ROOT,
+            "external_semantic_approval_required": True,
             "static_controls_ready": True,
             "software_release_ready": False,
             "runtime_evidence_required": True,
@@ -284,15 +288,15 @@ def _evidence(
             },
         )
         runtime_image = {
-                "component": component,
-                "image_id": image_id,
-                "image_reference": image_reference,
-                "manifest_digest": manifest_digest,
-                "scan_input": scan_input,
-                "sbom_sha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
-                "scan_status": "PASS",
-                "scan_sha256": hashlib.sha256(scan.read_bytes()).hexdigest(),
-            }
+            "component": component,
+            "image_id": image_id,
+            "image_reference": image_reference,
+            "manifest_digest": manifest_digest,
+            "scan_input": scan_input,
+            "sbom_sha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
+            "scan_status": "PASS",
+            "scan_sha256": hashlib.sha256(scan.read_bytes()).hexdigest(),
+        }
         if pinned_registry_inputs and component in EXTERNAL_RUNTIME_IDENTITIES:
             runtime_image["registry_resolution"] = {
                 "deployment_reference_digest": image_reference.rsplit("@", 1)[1],
@@ -319,6 +323,11 @@ def _stub_source_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         release_evidence_gate, "build_source_manifest", lambda _repo: ({}, b"", SOURCE)
     )
+    monkeypatch.setattr(
+        release_evidence_gate,
+        "verify_production_semantic_root",
+        lambda _repo: SimpleNamespace(digest=CONTENT_ROOT),
+    )
 
 
 def _rehash_runtime_file(runtime: Path, component: str, field: str, path: Path) -> None:
@@ -333,11 +342,7 @@ def test_final_gate_binds_all_release_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     static, backup, restore, runtime, sboms = _evidence(tmp_path)
-    monkeypatch.setattr(release_evidence_gate, "_assert_clean_repository", lambda _repo: None)
-    monkeypatch.setattr(release_evidence_gate, "_git_revision", lambda _repo: REVISION)
-    monkeypatch.setattr(
-        release_evidence_gate, "build_source_manifest", lambda _repo: ({}, b"", SOURCE)
-    )
+    _stub_source_identity(monkeypatch)
 
     report = build_final_report(
         tmp_path,
@@ -349,6 +354,9 @@ def test_final_gate_binds_all_release_evidence(
     )
 
     assert report["software_release_ready"] is True
+    assert report["schema_version"] == "custombuild.release-readiness-evidence.v2"
+    assert report["repository_content_root_sha256"] == CONTENT_ROOT
+    assert report["external_semantic_approval_required"] is True
     assert report["backup_manifest_schema"] == MANIFEST_SCHEMA
     assert report["runtime_image_ids"]["seaweedfs"] == SEAWEED_ID
     assert report["runtime_image_references"]["api"] == f"custombuild-api:{REVISION}"
@@ -359,6 +367,33 @@ def test_final_gate_binds_all_release_evidence(
     assert set(report["runtime_sbom_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_scan_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_manifest_digests"]) == release_evidence_gate.REQUIRED_IMAGES
+
+
+def test_final_gate_recomputes_and_requires_the_checked_repository_content_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    static, backup, restore, runtime, sboms = _evidence(tmp_path)
+    _stub_source_identity(monkeypatch)
+
+    def stale_root(_repo: Path) -> object:
+        raise RuntimeError("stale production semantic root")
+
+    monkeypatch.setattr(
+        release_evidence_gate,
+        "verify_production_semantic_root",
+        stale_root,
+    )
+
+    with pytest.raises(EvidenceError, match="content root verification failed"):
+        build_final_report(
+            tmp_path,
+            static_report_path=static,
+            backup_directory=backup,
+            restore_evidence_path=restore,
+            runtime_evidence_path=runtime,
+            sbom_directory=sboms,
+        )
 
 
 def test_final_gate_separates_pinned_deployment_platform_and_config_digests(
@@ -385,11 +420,12 @@ def test_final_gate_separates_pinned_deployment_platform_and_config_digests(
         resolution = report["runtime_registry_resolutions"][component]
         assert report["runtime_scan_inputs"][component] == reference
         assert resolution["deployment_reference_digest"] == reference.rsplit("@", 1)[1]
-        assert resolution["runtime_platform_manifest_digest"] == (
-            report["runtime_platform_manifest_digests"][component]
+        assert (
+            resolution["runtime_platform_manifest_digest"]
+            == (report["runtime_platform_manifest_digests"][component])
         )
-        assert resolution["image_config_digest"] == (
-            report["runtime_image_config_digests"][component]
+        assert (
+            resolution["image_config_digest"] == (report["runtime_image_config_digests"][component])
         )
 
 
@@ -549,11 +585,7 @@ def test_final_gate_rejects_a_scan_from_another_image(
         hashlib.sha256(scan.read_bytes()).hexdigest()
     )
     _write(runtime, payload)
-    monkeypatch.setattr(release_evidence_gate, "_assert_clean_repository", lambda _repo: None)
-    monkeypatch.setattr(release_evidence_gate, "_git_revision", lambda _repo: REVISION)
-    monkeypatch.setattr(
-        release_evidence_gate, "build_source_manifest", lambda _repo: ({}, b"", SOURCE)
-    )
+    _stub_source_identity(monkeypatch)
 
     with pytest.raises(EvidenceError, match="not bound to its exact SBOM target"):
         build_final_report(
@@ -755,6 +787,11 @@ def test_final_gate_parses_and_rejects_invalid_runtime_scans(
     (
         "static_revision",
         "static_source",
+        "static_schema",
+        "static_content_root_mismatch",
+        "static_content_root_omitted",
+        "static_external_false",
+        "static_external_omitted",
         "backup_revision",
         "backup_source",
         "restore_revision",
@@ -800,6 +837,16 @@ def test_final_gate_rejects_cross_source_or_incomplete_evidence(
         payloads[case.removesuffix("_revision")]["git_revision"] = "f" * 40
     elif case.endswith("_source"):
         payloads[case.removesuffix("_source")]["source_manifest_sha256"] = "f" * 64
+    elif case == "static_schema":
+        payloads["static"]["schema_version"] = "custombuild.release-readiness-static.v2"
+    elif case == "static_content_root_mismatch":
+        payloads["static"]["repository_content_root_sha256"] = "f" * 64
+    elif case == "static_content_root_omitted":
+        del payloads["static"]["repository_content_root_sha256"]
+    elif case == "static_external_false":
+        payloads["static"]["external_semantic_approval_required"] = False
+    elif case == "static_external_omitted":
+        del payloads["static"]["external_semantic_approval_required"]
     elif case == "missing_image":
         payloads["runtime"]["images"].pop()
     elif case == "duplicate_image":
@@ -832,9 +879,7 @@ def test_final_gate_rejects_cross_source_or_incomplete_evidence(
     elif case == "unsafe_runtime_role":
         payloads["restore"]["database_runtime_roles"]["roles"]["worker_safe"] = False
     elif case == "missing_public_grant_proof":
-        del payloads["restore"]["database_runtime_roles"]["roles"][
-            "public_object_grants_absent"
-        ]
+        del payloads["restore"]["database_runtime_roles"]["roles"]["public_object_grants_absent"]
     elif case == "missing_migrator_mutation":
         payloads["restore"]["database_runtime_roles"]["migrator_schema_mutation_verified"] = False
     elif case == "api_rls_bool_visible":
@@ -853,11 +898,7 @@ def test_final_gate_rejects_cross_source_or_incomplete_evidence(
         raise AssertionError(case)
     for name, path in paths.items():
         _write(path, payloads[name])
-    monkeypatch.setattr(release_evidence_gate, "_assert_clean_repository", lambda _repo: None)
-    monkeypatch.setattr(release_evidence_gate, "_git_revision", lambda _repo: REVISION)
-    monkeypatch.setattr(
-        release_evidence_gate, "build_source_manifest", lambda _repo: ({}, b"", SOURCE)
-    )
+    _stub_source_identity(monkeypatch)
 
     with pytest.raises(EvidenceError):
         build_final_report(
@@ -990,11 +1031,7 @@ def test_final_gate_rejects_incomplete_or_tampered_sbom_set(
         _rehash_runtime_file(runtime, "api", "sbom_sha256", api_sbom)
     else:  # pragma: no cover - parameter list is exhaustive.
         raise AssertionError(case)
-    monkeypatch.setattr(release_evidence_gate, "_assert_clean_repository", lambda _repo: None)
-    monkeypatch.setattr(release_evidence_gate, "_git_revision", lambda _repo: REVISION)
-    monkeypatch.setattr(
-        release_evidence_gate, "build_source_manifest", lambda _repo: ({}, b"", SOURCE)
-    )
+    _stub_source_identity(monkeypatch)
 
     with pytest.raises(EvidenceError):
         build_final_report(

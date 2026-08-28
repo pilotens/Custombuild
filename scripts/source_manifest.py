@@ -169,6 +169,7 @@ class DockerIgnore:
 
 
 FileState = tuple[int, int, int, int]
+RepositoryFileState = tuple[int, int, int, int, int, int]
 
 
 def _state(path: Path) -> FileState:
@@ -539,7 +540,7 @@ def _read_index_bound_regular_file(
     git_mode: str,
     object_id: str,
     object_format: str,
-) -> bytes:
+) -> tuple[bytes, RepositoryFileState]:
     path_text = _safe_git_path(raw_path)
     if git_mode == "120000":
         raise SourceManifestError(f"tracked symlinks are forbidden: {path_text}")
@@ -611,7 +612,26 @@ def _read_index_bound_regular_file(
     object_hash.update(payload)
     if object_hash.hexdigest() != object_id:
         raise SourceManifestError(f"working-tree bytes differ from the Git index: {path_text}")
-    return payload
+    return payload, state_after
+
+
+def _repository_path_state(repo: Path, raw_path: bytes) -> RepositoryFileState:
+    path_text = _safe_git_path(raw_path)
+    path = repo.joinpath(*path_text.split("/"))
+    try:
+        current = path.lstat()
+    except OSError as exc:
+        raise SourceManifestError(
+            f"tracked path disappeared during repository verification: {path_text}"
+        ) from exc
+    return (
+        current.st_mode,
+        current.st_size,
+        current.st_mtime_ns,
+        current.st_ctime_ns,
+        current.st_dev,
+        current.st_ino,
+    )
 
 
 def _merkle_root(leaves: list[bytes], *, object_format: str) -> str:
@@ -635,8 +655,12 @@ def _merkle_root(leaves: list[bytes], *, object_format: str) -> str:
     return root.hexdigest()
 
 
-def build_repository_content_root(repo: Path) -> RepositoryContentRoot:
-    """Hash every safe tracked stage-0 file and prove index/worktree agreement.
+def _build_repository_content_snapshot(
+    repo: Path,
+    *,
+    bind_control: bool,
+) -> tuple[RepositoryContentRoot, bytes | None]:
+    """Hash a single index/worktree snapshot and optionally bind its control bytes.
 
     Non-ignored untracked paths fail closed. Ignored untracked files remain outside
     this diagnostic by design. The checked control file excludes itself to avoid a
@@ -654,11 +678,14 @@ def build_repository_content_root(repo: Path) -> RepositoryContentRoot:
         raise SourceManifestError("Git top-level path must be valid UTF-8") from exc
     if Path(top_level).resolve() != root:
         raise SourceManifestError("repository content root must run at the Git top level")
-    object_format = (
-        _git_bytes(root, "rev-parse", "--show-object-format")
-        .strip()
-        .decode("ascii", errors="strict")
-    )
+    try:
+        object_format = (
+            _git_bytes(root, "rev-parse", "--show-object-format")
+            .strip()
+            .decode("ascii", errors="strict")
+        )
+    except UnicodeDecodeError as exc:
+        raise SourceManifestError("Git object format must be ASCII") from exc
     if object_format not in {"sha1", "sha256"}:
         raise SourceManifestError(f"unsupported Git object format: {object_format!r}")
 
@@ -678,10 +705,32 @@ def build_repository_content_root(repo: Path) -> RepositoryContentRoot:
     lock_path = PRODUCTION_SEMANTIC_ROOT_PATH.encode("utf-8")
     entries = _parse_stage_zero_inventory(inventory_before)
     leaves: list[bytes] = []
+    tracked_states: dict[bytes, RepositoryFileState] = {}
+    control_bytes: bytes | None = None
     for raw_path, git_mode, object_id in entries:
         if raw_path == lock_path:
+            if git_mode == "120000":
+                raise SourceManifestError(
+                    f"tracked symlinks are forbidden: {PRODUCTION_SEMANTIC_ROOT_PATH}"
+                )
+            if git_mode == "160000":
+                raise SourceManifestError(
+                    f"tracked submodules are forbidden: {PRODUCTION_SEMANTIC_ROOT_PATH}"
+                )
+            if git_mode != "100644":
+                raise SourceManifestError(
+                    "production semantic root control must use Git mode 100644"
+                )
+            if bind_control:
+                control_bytes, tracked_states[raw_path] = _read_index_bound_regular_file(
+                    root,
+                    raw_path,
+                    git_mode=git_mode,
+                    object_id=object_id,
+                    object_format=object_format,
+                )
             continue
-        payload = _read_index_bound_regular_file(
+        payload, tracked_states[raw_path] = _read_index_bound_regular_file(
             root,
             raw_path,
             git_mode=git_mode,
@@ -699,6 +748,15 @@ def build_repository_content_root(repo: Path) -> RepositoryContentRoot:
         leaf.update(bytes.fromhex(object_id))
         leaves.append(leaf.digest())
 
+    if bind_control and control_bytes is None:
+        raise SourceManifestError("production semantic root control is not tracked")
+    for raw_path, expected_state in tracked_states.items():
+        if _repository_path_state(root, raw_path) != expected_state:
+            path_text = _safe_git_path(raw_path)
+            raise SourceManifestError(
+                f"tracked path changed during repository verification: {path_text}"
+            )
+
     inventory_after = _git_bytes(
         root,
         "ls-files",
@@ -713,11 +771,20 @@ def build_repository_content_root(repo: Path) -> RepositoryContentRoot:
         or _index_snapshot(root) != index_before
     ):
         raise SourceManifestError("repository inventory changed while content was hashed")
-    return RepositoryContentRoot(
-        digest=_merkle_root(leaves, object_format=object_format),
-        git_object_format=object_format,
-        tracked_entry_count=len(leaves),
+    return (
+        RepositoryContentRoot(
+            digest=_merkle_root(leaves, object_format=object_format),
+            git_object_format=object_format,
+            tracked_entry_count=len(leaves),
+        ),
+        control_bytes,
     )
+
+
+def build_repository_content_root(repo: Path) -> RepositoryContentRoot:
+    """Hash every safe tracked stage-0 file and prove index/worktree agreement."""
+
+    return _build_repository_content_snapshot(repo, bind_control=False)[0]
 
 
 def production_semantic_root_payload(identity: RepositoryContentRoot) -> dict[str, Any]:
@@ -738,12 +805,9 @@ def _canonical_control_bytes(payload: dict[str, Any]) -> bytes:
 
 
 def verify_production_semantic_root(repo: Path) -> RepositoryContentRoot:
-    identity = build_repository_content_root(repo)
-    path = repo.resolve() / PRODUCTION_SEMANTIC_ROOT_PATH
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise SourceManifestError(f"missing production semantic root control: {path}") from exc
+    identity, raw = _build_repository_content_snapshot(repo, bind_control=True)
+    if raw is None:  # pragma: no cover - the snapshot helper fails closed first.
+        raise SourceManifestError("production semantic root control is not tracked")
     if len(raw) > 4096:
         raise SourceManifestError("production semantic root control exceeds its size limit")
 

@@ -18,7 +18,8 @@ from typing import Any
 
 SCHEMA_VERSION = "custombuild.deploy-descriptor.v2"
 PUBLICATION_SCHEMA_VERSION = "custombuild.published-image.v2"
-RELEASE_EVIDENCE_SCHEMA_VERSION = "custombuild.release-readiness-evidence.v1"
+RELEASE_EVIDENCE_SCHEMA_VERSION = "custombuild.release-readiness-evidence.v2"
+STATIC_REPORT_SCHEMA_VERSION = "custombuild.release-readiness-static.v3"
 REGISTRY_OVERLAY_SCHEMA_VERSION = "custombuild.compose-registry.v1"
 PROMOTION_WORKFLOW_PATH = ".github/workflows/cd.yml"
 PROMOTION_SOURCE_REF = "refs/heads/main"
@@ -307,9 +308,7 @@ def render_publication_evidence(
     )
     if registry_name != application_image_name(repository, component):
         raise DescriptorError("publication registry image has another component name")
-    if not isinstance(image_config_digest, str) or not DIGEST.fullmatch(
-        image_config_digest
-    ):
+    if not isinstance(image_config_digest, str) or not DIGEST.fullmatch(image_config_digest):
         raise DescriptorError("image_config_digest must be a lowercase SHA-256 digest")
     archive_sha256 = _sha256(archive_sha256, label="archive_sha256")
     publication: dict[str, Any] = {
@@ -457,6 +456,13 @@ def _release_evidence(
         raise DescriptorError("release evidence belongs to another Git revision")
     if evidence.get("source_manifest_sha256") != source_manifest_sha256:
         raise DescriptorError("release evidence belongs to another source manifest")
+    repository_content_root = evidence.get("repository_content_root_sha256")
+    if not isinstance(repository_content_root, str) or not SHA256.fullmatch(
+        repository_content_root
+    ):
+        raise DescriptorError("release evidence has no valid repository content root")
+    if evidence.get("external_semantic_approval_required") is not True:
+        raise DescriptorError("release evidence suppresses required external semantic approval")
     if evidence.get("software_release_ready") is not True:
         raise DescriptorError("release evidence did not pass the software gate")
     if evidence.get("commercial_release_ready") is not False:
@@ -466,6 +472,11 @@ def _release_evidence(
     static_report = evidence.get("static_report")
     if (
         not isinstance(static_report, dict)
+        or static_report.get("schema_version") != STATIC_REPORT_SCHEMA_VERSION
+        or static_report.get("git_revision") != git_revision
+        or static_report.get("source_manifest_sha256") != source_manifest_sha256
+        or static_report.get("repository_content_root_sha256") != repository_content_root
+        or static_report.get("external_semantic_approval_required") is not True
         or static_report.get("static_controls_ready") is not True
     ):
         raise DescriptorError("release evidence did not preserve passed static controls")
@@ -490,9 +501,8 @@ def _release_evidence(
     ):
         raise DescriptorError("release evidence has another image config digest set")
     deployment_digests = evidence.get("runtime_deployment_reference_digests")
-    if (
-        not isinstance(deployment_digests, dict)
-        or set(deployment_digests) != set(PINNED_RUNTIME_IMAGES)
+    if not isinstance(deployment_digests, dict) or set(deployment_digests) != set(
+        PINNED_RUNTIME_IMAGES
     ):
         raise DescriptorError("release evidence has another deployment reference set")
     scan_inputs = evidence.get("runtime_scan_inputs")
@@ -508,12 +518,8 @@ def _release_evidence(
             )
     for component, digest in pinned_deployment_digests.items():
         if deployment_digests.get(component) != digest:
-            raise DescriptorError(
-                f"release evidence has another deployment digest for {component}"
-            )
-        if scan_inputs.get(component) != (
-            f"registry:{PINNED_RUNTIME_SCAN_REFERENCES[component]}"
-        ):
+            raise DescriptorError(f"release evidence has another deployment digest for {component}")
+        if scan_inputs.get(component) != (f"registry:{PINNED_RUNTIME_SCAN_REFERENCES[component]}"):
             raise DescriptorError(
                 f"release evidence has another registry scan input for {component}"
             )
@@ -526,13 +532,8 @@ def _release_evidence(
             raise DescriptorError(
                 f"release evidence breaks the deployment-to-platform link for {component}"
             )
-        if (
-            resolution["runtime_platform_manifest_digest"]
-            != platform_manifest_digests[component]
-        ):
-            raise DescriptorError(
-                f"release evidence has another platform manifest for {component}"
-            )
+        if resolution["runtime_platform_manifest_digest"] != platform_manifest_digests[component]:
+            raise DescriptorError(f"release evidence has another platform manifest for {component}")
         if resolution["image_config_digest"] != config_digests[component]:
             raise DescriptorError(
                 f"release evidence has another registry config digest for {component}"
@@ -658,9 +659,7 @@ def _validate_descriptor_object(
     for component in APPLICATION_COMPONENTS:
         config_digest = config_digests[component]
         if not isinstance(config_digest, str) or not DIGEST.fullmatch(config_digest):
-            raise DescriptorError(
-                f"application_image_config_digests.{component} is invalid"
-            )
+            raise DescriptorError(f"application_image_config_digests.{component} is invalid")
         _sha256(
             archive_digests[component],
             label=f"application_image_archive_sha256.{component}",
@@ -680,10 +679,7 @@ def _validate_descriptor_object(
     for component, publication in publications.items():
         if publication["registry_image"] != images[component]:
             raise DescriptorError(f"publication evidence {component} has another registry image")
-        if (
-            publication["registry_manifest_digest"]
-            != deployment_reference_digests[component]
-        ):
+        if publication["registry_manifest_digest"] != deployment_reference_digests[component]:
             raise DescriptorError(
                 f"publication evidence {component} has another registry manifest digest"
             )
@@ -692,11 +688,10 @@ def _validate_descriptor_object(
                 f"publication evidence {component} has another image config digest"
             )
         if publication["archive_sha256"] != archive_digests[component]:
-            raise DescriptorError(
-                f"publication evidence {component} has another archive digest"
-            )
-        if hashlib.sha256(publication_evidence_bytes[component]).hexdigest() != (
-            publication_digests[component]
+            raise DescriptorError(f"publication evidence {component} has another archive digest")
+        if (
+            hashlib.sha256(publication_evidence_bytes[component]).hexdigest()
+            != (publication_digests[component])
         ):
             raise DescriptorError(f"publication evidence {component} digest does not match")
 
@@ -723,8 +718,7 @@ def _validate_descriptor_object(
         git_revision=git_revision,
         source_manifest_sha256=source_manifest_sha256,
         application_config_digests={
-            component: str(config_digests[component])
-            for component in APPLICATION_COMPONENTS
+            component: str(config_digests[component]) for component in APPLICATION_COMPONENTS
         },
         pinned_deployment_digests={
             component: deployment_reference_digests[component]
@@ -870,9 +864,7 @@ def registry_overlay_issues(path: Path) -> list[str]:
     except (OSError, UnicodeError):
         return ["compose.registry.yml is missing or unreadable"]
     if source != EXPECTED_REGISTRY_OVERLAY:
-        return [
-            "compose.registry.yml does not exactly bind descriptor images and --no-build"
-        ]
+        return ["compose.registry.yml does not exactly bind descriptor images and --no-build"]
     return []
 
 
@@ -977,9 +969,7 @@ def main() -> int:
             label="release evidence",
             maximum_size=MAX_RELEASE_EVIDENCE_BYTES,
         )
-        publication_evidence_bytes = _read_publication_directory(
-            args.publication_directory
-        )
+        publication_evidence_bytes = _read_publication_directory(args.publication_directory)
         if args.command == "render":
             application_images = {
                 component: str(getattr(args, f"{component}_image"))
