@@ -3,10 +3,10 @@ from __future__ import annotations
 import pytest
 
 from custombuild_manufacturing.physical_release import (
-    REQUIRED_PHYSICAL_EVIDENCE_KINDS,
     PhysicalEvidenceKind,
     PhysicalEvidenceRecord,
     PhysicalReleaseEvidence,
+    REQUIRED_PHYSICAL_EVIDENCE_KINDS,
     physical_release_evidence_complete,
 )
 
@@ -54,7 +54,9 @@ def test_missing_physical_evidence_fails_closed() -> None:
         machine_profile_sha256=evidence.machine_profile_sha256,
         material_catalog_sha256=evidence.material_catalog_sha256,
         records=tuple(
-            record for record in evidence.records if record.kind is not PhysicalEvidenceKind.LOAD_TEST
+            record
+            for record in evidence.records
+            if record.kind is not PhysicalEvidenceKind.LOAD_TEST
         ),
     )
     assert physical_release_evidence_complete(incomplete) is False
