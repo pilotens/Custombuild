@@ -1,4 +1,4 @@
-import { expect, test, type Request } from "@playwright/test";
+import { expect, test, type Page, type Request, type TestInfo } from "@playwright/test";
 import {
   provisionLiveProject,
   selectProjectBeforeNavigation,
@@ -57,6 +57,20 @@ function isVersionValidation(request: Request): boolean {
 function isVersionGeneration(request: Request): boolean {
   return request.method() === "POST"
     && /^\/v1\/projects\/[^/]+\/versions\/\d+\/generate$/.test(requestPath(request));
+}
+
+async function captureProductionEvidence(
+  page: Page,
+  testInfo: TestInfo,
+  fileName: string,
+): Promise<void> {
+  // Playwright 1.62's WebKit screenshotter injects an un-nonced `body {}`
+  // stylesheet to synchronize animations. The production CSP correctly
+  // rejects that test-only style and WebKit reports it as a console error.
+  // Chromium/Firefox still provide the diagnostic images; keep WebKit focused
+  // on the real cross-browser flow without mutating the page under test.
+  if (testInfo.project.name.startsWith("webkit-")) return;
+  await page.screenshot({ path: testInfo.outputPath(fileName), fullPage: true });
 }
 
 test.skip(
@@ -312,7 +326,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(warningConfirmation).toBeVisible();
   await expect(warningConfirmation).not.toBeChecked();
-  await page.screenshot({ path: testInfo.outputPath("01-simple-review.png"), fullPage: true });
+  await captureProductionEvidence(page, testInfo, "01-simple-review.png");
   await warningConfirmation.check();
 
   const createPackage = productionDialog.getByRole("button", { name: "Skapa underlag", exact: true });
@@ -410,7 +424,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     "workshop_readiness",
   ]));
   expect(artifactKinds.filter(camBlockedArtifactKindIsForbidden)).toEqual([]);
-  await page.screenshot({ path: testInfo.outputPath("02-underlag-ready.png"), fullPage: true });
+  await captureProductionEvidence(page, testInfo, "02-underlag-ready.png");
 
   const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
   await downloadButton.click();
