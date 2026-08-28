@@ -1,0 +1,280 @@
+name: Recover verified promotion evidence
+
+on:
+  workflow_run:
+    workflows: ["Build-once release evidence"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: recover-promotion-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+  cancel-in-progress: false
+
+jobs:
+  recover-promotion:
+    if: >-
+      github.repository == 'pilotens/Custombuild' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      attestations: read
+    env:
+      SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+      SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Prove the failed source run is recoverable and nothing else
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/recovery
+          jobs_json=artifacts/recovery/source-jobs.json
+          gh api --paginate \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100" \
+            --jq '.jobs[]' | jq -s '{jobs:.}' > "$jobs_json"
+
+          jq -e --arg sha "$SOURCE_SHA" '
+            (.jobs | length) >= 10 and
+            ([.jobs[] | select(.name == "test-release-bundle" and .conclusion == "success")] | length) == 1 and
+            ([.jobs[] | select(.name == "deployment-descriptor" and .conclusion == "skipped")] | length) == 1 and
+            ([.jobs[] | select(.name | startswith("publish-images ("))] | length) == 4 and
+            all(.jobs[] | select(.name | startswith("publish-images ("));
+              .conclusion == "failure" and
+              ([.steps[] | select(.name == "Push the exact tested object without rebuilding" and .conclusion == "success")] | length) == 1 and
+              ([.steps[] | select(.name == "Sign the exact digest with GitHub OIDC" and .conclusion == "success")] | length) == 1 and
+              ([.steps[] | select(.name == "Create the GitHub artifact attestation" and .conclusion == "success")] | length) == 1 and
+              ([.steps[] | select(.name == "Verify exact signer and attestation policy" and .conclusion == "failure")] | length) == 1
+            ) and
+            ([.jobs[] | select(.conclusion == "failure" and (.name | startswith("publish-images (") | not))] | length) == 0
+          ' "$jobs_json" >/dev/null
+
+          source_run_json=artifacts/recovery/source-run.json
+          gh api \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" > "$source_run_json"
+          jq -e --arg sha "$SOURCE_SHA" --argjson attempt "$SOURCE_RUN_ATTEMPT" '
+            .head_sha == $sha and
+            .head_branch == "main" and
+            .event == "push" and
+            .conclusion == "failure" and
+            .run_attempt == $attempt
+          ' "$source_run_json" >/dev/null
+
+      - name: Require a modern GitHub attestation verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(gh --version | awk 'NR==1 {print $3}')"
+          python3 - "$version" <<'PY'
+          import sys
+          raw = sys.argv[1].split('-')[0]
+          parts = tuple(int(item) for item in raw.split('.')[:3])
+          if parts < (2, 97, 0):
+              raise SystemExit(f"GitHub CLI {raw} is too old; require >= 2.97.0")
+          PY
+          gh attestation verify --help | grep -F -- '--bundle-from-oci' >/dev/null
+          gh attestation verify --help | grep -F -- '--signer-workflow' >/dev/null
+          gh attestation verify --help | grep -F -- '--source-digest' >/dev/null
+
+      - name: Download exact accepted source-run image evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          pattern: release-image-*-${{ github.event.workflow_run.head_sha }}
+          path: artifacts/release-images
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Download exact accepted source-run release evidence
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: release-evidence-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Authenticate read-only to GHCR
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Re-verify published signatures and attestations without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/published artifacts/recovery
+          evidence=artifacts/release-evidence/release-readiness.json
+          test -f "$evidence"
+          test "$(jq -er '.git_revision' "$evidence")" = "$SOURCE_SHA"
+          test "$(jq -er '.software_release_ready' "$evidence")" = true
+          test "$(jq -er '.commercial_release_ready' "$evidence")" = false
+          test "$(jq -er '.physical_machine_release_ready' "$evidence")" = false
+
+          registry_repository="$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REPOSITORY")"
+          expected_source_manifest="$(jq -er '.source_manifest_sha256' "$evidence")"
+          current_source_manifest="$(python3 scripts/source_manifest.py --repo .)"
+          test "$current_source_manifest" = "$expected_source_manifest"
+
+          for component in api worker web seaweedfs; do
+            metadata="artifacts/release-images/image-${component}.json"
+            archive="artifacts/release-images/image-${component}.tar"
+            test -f "$metadata"
+            test -f "$archive"
+            test -f "${archive}.sha256"
+            (cd artifacts/release-images && sha256sum --check "image-${component}.tar.sha256")
+            test "$(jq -er '.component' "$metadata")" = "$component"
+            test "$(jq -er '.git_revision' "$metadata")" = "$SOURCE_SHA"
+            test "$(jq -er '.source_manifest_sha256' "$metadata")" = "$expected_source_manifest"
+            archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+            test "$(jq -er '.archive_sha256' "$metadata")" = "$archive_sha256"
+
+            subject_name="ghcr.io/${registry_repository}-${component}"
+            tagged_reference="${subject_name}:${SOURCE_SHA}-${SOURCE_RUN_ID}-${SOURCE_RUN_ATTEMPT}"
+            registry_digest="$(docker buildx imagetools inspect "$tagged_reference" | awk '$1 == "Digest:" {print $2; exit}')"
+            [[ "$registry_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+            exact_reference="${subject_name}@${registry_digest}"
+
+            raw_manifest="artifacts/recovery/registry-${component}.json"
+            docker buildx imagetools inspect "$exact_reference" --raw > "$raw_manifest"
+            registry_config_digest="$(jq -er '.config.digest | select(test("^sha256:[a-f0-9]{64}$"))' "$raw_manifest")"
+            expected_config_digest="$(jq -er '.image_config_digest' "$metadata")"
+            test "$registry_config_digest" = "$expected_config_digest"
+            test "$expected_config_digest" = "$(jq -er --arg component "$component" '.runtime_image_config_digests[$component]' "$evidence")"
+
+            cosign_output="artifacts/published/cosign-${component}.json"
+            verified=false
+            for attempt in $(seq 1 12); do
+              if cosign verify \
+                --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/cd.yml@refs/heads/main" \
+                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+                "$exact_reference" > "$cosign_output"; then
+                verified=true
+                break
+              fi
+              sleep 15
+            done
+            test "$verified" = true
+            test -s "$cosign_output"
+
+            attestation_output="artifacts/published/github-attestation-${component}.txt"
+            verified=false
+            for attempt in $(seq 1 12); do
+              if gh attestation verify "oci://${exact_reference}" \
+                --bundle-from-oci \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/cd.yml" \
+                --cert-oidc-issuer https://token.actions.githubusercontent.com \
+                --source-ref refs/heads/main \
+                --source-digest "$SOURCE_SHA" \
+                --deny-self-hosted-runners \
+                > "$attestation_output" 2> "artifacts/recovery/github-attestation-${component}.stderr"; then
+                verified=true
+                break
+              fi
+              sleep 15
+            done
+            test "$verified" = true
+            test -s "$attestation_output"
+
+            python3 scripts/deploy_descriptor.py publication \
+              --component "$component" \
+              --repository "$GITHUB_REPOSITORY" \
+              --git-revision "$SOURCE_SHA" \
+              --source-manifest-sha256 "$expected_source_manifest" \
+              --workflow-run-id "$SOURCE_RUN_ID" \
+              --workflow-run-attempt "$SOURCE_RUN_ATTEMPT" \
+              --registry-image "$exact_reference" \
+              --image-config-digest "$expected_config_digest" \
+              --archive-sha256 "$archive_sha256" \
+              --output "artifacts/published/image-${component}.json" \
+              --sha256-output "artifacts/published/image-${component}.sha256"
+          done
+
+      - name: Render and verify original-run deployment descriptor
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/promotion
+          evidence=artifacts/release-evidence/release-readiness.json
+          source_manifest_sha256="$(jq -er '.source_manifest_sha256' "$evidence")"
+          declare -a image_arguments=()
+          for component in api worker web seaweedfs; do
+            metadata="artifacts/published/image-${component}.json"
+            (cd artifacts/published && sha256sum --check "image-${component}.sha256")
+            reference="$(jq -er '.registry_image | select(test("^ghcr\\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$"))' "$metadata")"
+            image_arguments+=("--${component}-image" "$reference")
+          done
+          python3 scripts/deploy_descriptor.py render \
+            --repository "$GITHUB_REPOSITORY" \
+            --git-revision "$SOURCE_SHA" \
+            --source-manifest-sha256 "$source_manifest_sha256" \
+            --workflow-run-id "$SOURCE_RUN_ID" \
+            --workflow-run-attempt "$SOURCE_RUN_ATTEMPT" \
+            --release-evidence "$evidence" \
+            --publication-directory artifacts/published \
+            "${image_arguments[@]}" \
+            --output artifacts/promotion/deploy-descriptor.json \
+            --sha256-output artifacts/promotion/deploy-descriptor.sha256 \
+            --compose-env-output artifacts/promotion/deploy-images.env
+          python3 scripts/deploy_descriptor.py verify \
+            --repository "$GITHUB_REPOSITORY" \
+            --git-revision "$SOURCE_SHA" \
+            --source-manifest-sha256 "$source_manifest_sha256" \
+            --workflow-run-id "$SOURCE_RUN_ID" \
+            --workflow-run-attempt "$SOURCE_RUN_ATTEMPT" \
+            --release-evidence "$evidence" \
+            --publication-directory artifacts/published \
+            --compose-env-output artifacts/promotion/verified-deploy-images.env \
+            artifacts/promotion/deploy-descriptor.json
+          cmp artifacts/promotion/deploy-images.env artifacts/promotion/verified-deploy-images.env
+          (cd artifacts/promotion && sha256sum --check deploy-descriptor.sha256)
+
+      - name: Prove digest-only no-build Compose input
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS='=' read -r name value; do
+            test "$name" = "$(tr -cd 'A-Z0-9_' <<< "$name")"
+            export "${name}=${value}"
+          done < artifacts/promotion/verified-deploy-images.env
+          jq -r '.images[]' artifacts/promotion/deploy-descriptor.json | sort --unique > artifacts/promotion/expected-images.txt
+          docker compose --file compose.yml --file compose.registry.yml config --images | sort --unique > artifacts/promotion/resolved-images.txt
+          diff --unified artifacts/promotion/expected-images.txt artifacts/promotion/resolved-images.txt
+          test "$(jq -r '.images[]' artifacts/promotion/deploy-descriptor.json | grep -c '@sha256:')" -eq 7
+          test "$(grep -c '@sha256:' artifacts/promotion/resolved-images.txt)" -eq 7
+
+      - name: Upload recovered verified promotion input
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: recovered-promotion-${{ github.event.workflow_run.head_sha }}-${{ github.event.workflow_run.id }}-${{ github.event.workflow_run.run_attempt }}
+          path: |
+            artifacts/recovery
+            artifacts/promotion
+            artifacts/published
+            artifacts/release-evidence/release-readiness.json
+          if-no-files-found: warn
+          retention-days: 90
