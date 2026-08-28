@@ -1,9 +1,24 @@
 name: ${COMPOSE_PROJECT_NAME:?Set a unique production COMPOSE_PROJECT_NAME}
 
+x-storage-capacity-environment: &storage-capacity-environment
+  STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256: ${STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256:?Set the canonical operator-config SHA-256}
+  STORAGE_CAPACITY_VOLUME_IDENTITY: ${STORAGE_CAPACITY_VOLUME_IDENTITY:?Set the immutable provider volume identity}
+  STORAGE_CAPACITY_PROVISIONED_BYTES: ${STORAGE_CAPACITY_PROVISIONED_BYTES:?Set exact provisioned bytes}
+  STORAGE_CAPACITY_METADATA_OVERHEAD_BYTES: ${STORAGE_CAPACITY_METADATA_OVERHEAD_BYTES:?Set reserved metadata overhead bytes}
+  STORAGE_CAPACITY_EMERGENCY_RESERVE_BYTES: ${STORAGE_CAPACITY_EMERGENCY_RESERVE_BYTES:?Set emergency reserve bytes}
+  STORAGE_CAPACITY_HEADROOM_BYTES: ${STORAGE_CAPACITY_HEADROOM_BYTES:?Set metadata plus emergency headroom bytes}
+  STORAGE_CAPACITY_BYTE_LIMIT: ${STORAGE_CAPACITY_BYTE_LIMIT:?Set the attested logical byte limit}
+  STORAGE_CAPACITY_OBJECT_LIMIT: ${STORAGE_CAPACITY_OBJECT_LIMIT:?Set the attested object limit}
+  STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256: ${STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256:?Set the exact deploy-descriptor SHA-256}
+  STORAGE_CAPACITY_MAX_AGE_SECONDS: "600"
+
 # Fail-closed override for an externally reachable deployment.  Keep host
 # publishes on loopback and terminate TLS in a reviewed reverse proxy.
 services:
   postgres:
+    # Never let the container runtime revive PostgreSQL behind a completed
+    # one-shot recovery barrier. Operators restart the ordered Compose graph.
+    restart: "no"
     environment:
       APP_ENV: production
       POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
@@ -13,6 +28,8 @@ services:
       MIGRATOR_DATABASE_PASSWORD: ${MIGRATOR_DATABASE_PASSWORD:?Set MIGRATOR_DATABASE_PASSWORD}
       API_DATABASE_PASSWORD: ${API_DATABASE_PASSWORD:?Set API_DATABASE_PASSWORD}
       WORKER_DATABASE_PASSWORD: ${WORKER_DATABASE_PASSWORD:?Set WORKER_DATABASE_PASSWORD}
+      CAPACITY_ATTESTOR_DATABASE_USER: ${CAPACITY_ATTESTOR_DATABASE_USER:?Set CAPACITY_ATTESTOR_DATABASE_USER}
+      CAPACITY_ATTESTOR_DATABASE_PASSWORD: ${CAPACITY_ATTESTOR_DATABASE_PASSWORD:?Set CAPACITY_ATTESTOR_DATABASE_PASSWORD}
 
   redis:
     environment:
@@ -23,6 +40,7 @@ services:
       AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+      S3_BACKUP_ENDPOINT: ${S3_BACKUP_ENDPOINT:?Set the loopback-bound backup endpoint}
 
   migrate:
     build:
@@ -37,6 +55,91 @@ services:
       APP_ENV: production
       PRODUCTION_FOUR_EYES_REQUIRED: "true"
       DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+        restart: true
+
+  storage-recovery:
+    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set the descriptor-pinned API image}
+    environment:
+      APP_ENV: production
+      PRODUCTION_FOUR_EYES_REQUIRED: "true"
+      DATABASE_URL: ${MIGRATION_DATABASE_URL:?Set MIGRATION_DATABASE_URL}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+        restart: true
+      object-storage:
+        condition: service_healthy
+
+  storage-capacity-attestor:
+    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set the descriptor-pinned API image}
+    user: "65532:65532"
+    command:
+      - python
+      - -m
+      - scripts.storage_capacity_preflight
+      - --operator-config
+      - /run/custombuild/storage-capacity-operator.json
+      - --deploy-descriptor
+      - /run/custombuild/deploy-descriptor.json
+      - --volume-path
+      - /storage-volume
+      - --evidence-directory
+      - /evidence
+      - --watch-interval-seconds
+      - "300"
+      - --heartbeat-file
+      - /run/custombuild-state/capacity-heartbeat.json
+    environment:
+      <<: *storage-capacity-environment
+      APP_ENV: production
+      OBJECT_STORAGE_VOLUME_NAME: ${OBJECT_STORAGE_VOLUME_NAME:?Set the immutable preprovisioned volume name}
+      DATABASE_URL: ${CAPACITY_ATTESTOR_DATABASE_URL:?Set the dedicated storage-attestor database URL}
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+    volumes:
+      - object-storage-data:/storage-volume:ro
+      - ${STORAGE_CAPACITY_OPERATOR_CONFIG_PATH:?Set the operator-config path}:/run/custombuild/storage-capacity-operator.json:ro
+      - ${DEPLOY_DESCRIPTOR_PATH:?Set the verified deploy-descriptor path}:/run/custombuild/deploy-descriptor.json:ro
+      - ${STORAGE_CAPACITY_EVIDENCE_DIRECTORY:?Set the durable evidence directory}:/evidence
+    read_only: true
+    tmpfs:
+      - /run/custombuild-state:size=1m,uid=65532,gid=65532,mode=0700
+      - /tmp:size=16m,uid=65532,gid=65532,mode=0700
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import pathlib,time; p=pathlib.Path('/run/custombuild-state/capacity-heartbeat.json'); age=time.time()-p.stat().st_mtime; assert p.is_file() and 0 <= age <= 420"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 900s
+    restart: unless-stopped
+    depends_on:
+      storage-recovery:
+        condition: service_completed_successfully
+        restart: true
+      object-storage:
+        condition: service_healthy
+    networks: [backend]
 
   api:
     build:
@@ -48,21 +151,30 @@ services:
         SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
         DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
     environment:
+      <<: *storage-capacity-environment
       APP_ENV: production
       PRODUCTION_FOUR_EYES_REQUIRED: "true"
       AUTH_MODE: oidc
+      REQUEST_BODY_IDLE_TIMEOUT_SECONDS: ${REQUEST_BODY_IDLE_TIMEOUT_SECONDS:-5}
+      REQUEST_BODY_TOTAL_TIMEOUT_SECONDS: ${REQUEST_BODY_TOTAL_TIMEOUT_SECONDS:-30}
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
       OIDC_ISSUER: ${OIDC_ISSUER:?Set the HTTPS OIDC issuer}
       TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:?Set the private CIDR of the reviewed TLS proxy}
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:?Set OIDC_AUDIENCE}
       CORS_ORIGINS: ${CORS_ORIGINS:?Set the HTTPS public web origin}
       ARTIFACT_SIGNING_SECRET: ${ARTIFACT_SIGNING_SECRET:?Set ARTIFACT_SIGNING_SECRET}
+      ARTIFACT_STREAM_TIMEOUT_SECONDS: ${ARTIFACT_STREAM_TIMEOUT_SECONDS:-120}
       S3_ENDPOINT: http://object-storage:8333
-      S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT:?Set the HTTPS public artifact origin}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+    depends_on:
+      storage-capacity-attestor:
+        condition: service_healthy
+        restart: true
 
   worker:
     build:
@@ -74,14 +186,21 @@ services:
         SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
         DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
     environment:
+      <<: *storage-capacity-environment
       APP_ENV: production
       PRODUCTION_FOUR_EYES_REQUIRED: "true"
       DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
       S3_ENDPOINT: http://object-storage:8333
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+    depends_on:
+      storage-capacity-attestor:
+        condition: service_healthy
+        restart: true
 
   scheduler:
     build:
@@ -93,14 +212,21 @@ services:
         SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
         DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
     environment:
+      <<: *storage-capacity-environment
       APP_ENV: production
       PRODUCTION_FOUR_EYES_REQUIRED: "true"
       DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
       REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
       S3_ENDPOINT: http://object-storage:8333
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+    depends_on:
+      storage-capacity-attestor:
+        condition: service_healthy
+        restart: true
 
   web:
     build:
@@ -118,3 +244,8 @@ services:
       CUSTOMBUILD_WEB_OIDC_ISSUER: ${OIDC_ISSUER:?Set the HTTPS OIDC issuer}
       CUSTOMBUILD_WEB_OIDC_CLIENT_ID: ${CUSTOMBUILD_WEB_OIDC_CLIENT_ID:?Set the OIDC client id}
       CUSTOMBUILD_WEB_OIDC_REDIRECT_URI: ${CUSTOMBUILD_WEB_OIDC_REDIRECT_URI:?Set the HTTPS redirect URI}
+
+volumes:
+  object-storage-data:
+    external: true
+    name: ${OBJECT_STORAGE_VOLUME_NAME:?Set the immutable preprovisioned volume name}

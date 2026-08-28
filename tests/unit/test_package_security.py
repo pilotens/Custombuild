@@ -27,6 +27,8 @@ from custombuild_manufacturing import (
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DFM_GRAIN_BLOCKER_CODE,
     MANIFEST_CONTEXT_HASH_FIELDS,
+    MAX_CORE_DOCUMENT_BYTES,
+    MAX_PRODUCTION_BUNDLE_BYTES,
     ArtifactFile,
     DFMIssue,
     DFMReport,
@@ -78,9 +80,7 @@ def _review_design(*, edge_band_selection_required: bool = False):
     return build_bookcase(
         BookcaseDesignSpec(
             design_id=(
-                "package-security-edge"
-                if edge_band_selection_required
-                else "package-security"
+                "package-security-edge" if edge_band_selection_required else "package-security"
             ),
             parameters=BookcaseParameters(
                 edge_band_thickness_um=1_000 if edge_band_selection_required else 0,
@@ -365,9 +365,7 @@ def test_generation_plan_rejects_unbound_registration_inputs(case: str) -> None:
         registrations = {stock.stock_id: {0: object()}}
     elif case == "method-id-unsafe":
         registrations = {
-            stock.stock_id: {
-                0: TwoSidedRegistration("fixture/unsafe", valid_plan.points)
-            }
+            stock.stock_id: {0: TwoSidedRegistration("fixture/unsafe", valid_plan.points)}
         }
     elif case == "points-duplicated":
         point = Point2D(50_000, 50_000)
@@ -809,9 +807,7 @@ def test_reader_rejects_grain_blocker_contradicting_nondirectional_grouped_bom()
     grouped_bom["groups"][0]["group_id"] = grouped_bom_group_id(
         grouped_bom["groups"][0]["signature"]
     )
-    grouped_bom["group_fingerprint"] = sha256_hex(
-        canonical_json_bytes(grouped_bom["groups"])
-    )
+    grouped_bom["group_fingerprint"] = sha256_hex(canonical_json_bytes(grouped_bom["groups"]))
     nondirectional_readiness = build_workshop_readiness_report(
         authoritative_cad=True,
         dfm_passed=False,
@@ -854,9 +850,7 @@ def test_reader_rejects_rehashed_grouped_bom_axis_drift_from_grain_issue() -> No
     grouped_bom["groups"][0]["group_id"] = grouped_bom_group_id(
         grouped_bom["groups"][0]["signature"]
     )
-    grouped_bom["group_fingerprint"] = sha256_hex(
-        canonical_json_bytes(grouped_bom["groups"])
-    )
+    grouped_bom["group_fingerprint"] = sha256_hex(canonical_json_bytes(grouped_bom["groups"]))
     forged_core = tuple(
         replace(artifact, data=canonical_json_bytes(grouped_bom))
         if artifact.path == "bom/grouped-bom.json"
@@ -886,9 +880,7 @@ def test_reader_rejects_grain_issue_omitting_an_identical_grouped_bom_part() -> 
     grouped_bom["groups"][0]["part_ids"] = ["example", "example-2"]
     grouped_bom["groups"][0]["quantity"] = 2
     grouped_bom["part_instance_count"] = 2
-    grouped_bom["group_fingerprint"] = sha256_hex(
-        canonical_json_bytes(grouped_bom["groups"])
-    )
+    grouped_bom["group_fingerprint"] = sha256_hex(canonical_json_bytes(grouped_bom["groups"]))
     forged_core = tuple(
         replace(artifact, data=canonical_json_bytes(grouped_bom))
         if artifact.path == "bom/grouped-bom.json"
@@ -921,9 +913,7 @@ def test_reader_rejects_rehashed_split_identical_grouped_bom_rows() -> None:
     grouped_bom["groups"].append(split_row)
     grouped_bom["group_count"] = 2
     grouped_bom["part_instance_count"] = 2
-    grouped_bom["group_fingerprint"] = sha256_hex(
-        canonical_json_bytes(grouped_bom["groups"])
-    )
+    grouped_bom["group_fingerprint"] = sha256_hex(canonical_json_bytes(grouped_bom["groups"]))
     forged_core = tuple(
         replace(artifact, data=canonical_json_bytes(grouped_bom))
         if artifact.path == "bom/grouped-bom.json"
@@ -951,9 +941,7 @@ def test_reader_rejects_rehashed_noncanonical_grouped_bom_group_id() -> None:
         next(artifact.data for artifact in core if artifact.path == "bom/grouped-bom.json")
     )
     grouped_bom["groups"][0]["group_id"] = "bom-group:0000000000000000"
-    grouped_bom["group_fingerprint"] = sha256_hex(
-        canonical_json_bytes(grouped_bom["groups"])
-    )
+    grouped_bom["group_fingerprint"] = sha256_hex(canonical_json_bytes(grouped_bom["groups"]))
     forged_core = tuple(
         replace(artifact, data=canonical_json_bytes(grouped_bom))
         if artifact.path == "bom/grouped-bom.json"
@@ -991,9 +979,7 @@ def test_reader_rejects_rehashed_noncanonical_grouped_bom_row_order() -> None:
     )
     grouped_bom["group_count"] = 2
     grouped_bom["part_instance_count"] = 2
-    grouped_bom["group_fingerprint"] = sha256_hex(
-        canonical_json_bytes(grouped_bom["groups"])
-    )
+    grouped_bom["group_fingerprint"] = sha256_hex(canonical_json_bytes(grouped_bom["groups"]))
     forged_core = tuple(
         replace(artifact, data=canonical_json_bytes(grouped_bom))
         if artifact.path == "bom/grouped-bom.json"
@@ -1018,11 +1004,7 @@ def test_reader_rejects_stock_status_grain_warning_for_nondirectional_grouped_bo
     context = replace(context, cad_status="GENERATED")
     core = status_review_core_artifacts(blocker_code="STOCK_PROFILE_MISSING")
     report = json.loads(
-        next(
-            artifact.data
-            for artifact in core
-            if artifact.path == "validation/dfm-report.json"
-        )
+        next(artifact.data for artifact in core if artifact.path == "validation/dfm-report.json")
     )
     directional_part = PartSpec(
         "invented-directional-part",
@@ -1579,9 +1561,7 @@ def test_reader_rejects_rehashed_coordinated_bom_grouped_dfm_axis_drift() -> Non
     assert reader.fieldnames is not None
     grouped = json.loads(files["bom/grouped-bom.json"])
     target_group = next(
-        group
-        for group in grouped["groups"]
-        if group["signature"]["grain_direction"] in {"X", "Y"}
+        group for group in grouped["groups"] if group["signature"]["grain_direction"] in {"X", "Y"}
     )
     target_ids = set(target_group["part_ids"])
     replacement_axis = "Y" if target_group["signature"]["grain_direction"] == "X" else "X"
@@ -1622,8 +1602,7 @@ def test_reader_rejects_rehashed_grouped_dfm_ghost_part() -> None:
     for group in grouped["groups"]:
         if original in group["part_ids"]:
             group["part_ids"] = sorted(
-                ghost if part_id == original else part_id
-                for part_id in group["part_ids"]
+                ghost if part_id == original else part_id for part_id in group["part_ids"]
             )
     grouped["group_fingerprint"] = sha256_hex(canonical_json_bytes(grouped["groups"]))
     for issue in report["issues"]:
@@ -1984,6 +1963,28 @@ def test_package_reader_rejects_corruption_missing_manifest_and_unsafe_entries()
         read_and_verify_package(bomb)
 
 
+@pytest.mark.parametrize("payload", (b"", bytearray(b"not-exact-bytes")))
+def test_package_reader_rejects_empty_or_non_bytes_payload_before_zip_parse(
+    payload: object,
+) -> None:
+    with pytest.raises(ArtifactError, match="canonical size limit"):
+        read_and_verify_package(payload)  # type: ignore[arg-type]
+
+
+def test_package_reader_rejects_oversize_bundle_before_zip_parse() -> None:
+    payload = b"x" * (MAX_PRODUCTION_BUNDLE_BYTES + 1)
+
+    with pytest.raises(ArtifactError, match="canonical size limit"):
+        read_and_verify_package(payload)
+
+
+def test_package_reader_applies_canonical_manifest_limit_before_reading_entry() -> None:
+    payload = make_zip([("manifest.json", b"x" * (MAX_CORE_DOCUMENT_BYTES + 1))])
+
+    with pytest.raises(ArtifactError, match="entry is too large: manifest.json"):
+        read_and_verify_package(payload)
+
+
 @pytest.mark.parametrize(
     "symlink_path",
     ("model/design.step", "assembly/assembly-manual.pdf"),
@@ -2111,9 +2112,7 @@ def test_package_reader_rejects_checksum_missing_and_unlisted_files() -> None:
         read_and_verify_package(make_zip(list(tampered.items())))
 
     missing = {
-        name: data
-        for name, data in entries.items()
-        if name != "assembly/assembly-manual.pdf"
+        name: data for name, data in entries.items() if name != "assembly/assembly-manual.pdf"
     }
     with pytest.raises(ArtifactError, match="missing from ZIP"):
         read_and_verify_package(make_zip(list(missing.items())))

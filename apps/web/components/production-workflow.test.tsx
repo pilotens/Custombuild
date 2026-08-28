@@ -417,6 +417,9 @@ function apiClient(state?: Partial<ProductionStateRead>): ProductionApi {
     generateVersion: vi.fn(async () => queuedJob),
     getJob: vi.fn(async () => succeededJob),
     listArtifacts: vi.fn(async () => completeArtifacts),
+    downloadArtifact: vi.fn(async () => new Blob(["verified bundle"], {
+      type: "application/zip",
+    })),
   };
 }
 
@@ -1430,9 +1433,16 @@ describe("ProductionWorkflow", () => {
       }],
       latest_job: succeededJob,
     });
+    const verifiedBlob = new Blob(["verified bundle"], { type: "application/zip" });
+    vi.mocked(api.downloadArtifact).mockResolvedValue(verifiedBlob);
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-bundle");
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
     let suggestedFileName: string | undefined;
+    let clickedUrl: string | undefined;
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
       suggestedFileName = this.download;
+      clickedUrl = this.href;
+      expect(revokeObjectUrl).not.toHaveBeenCalled();
     });
 
     render(
@@ -1498,8 +1508,97 @@ describe("ProductionWorkflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
     await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
     expect(anchorClick).toHaveBeenCalledOnce();
-    expect(suggestedFileName).toBe("designgranskningspaket.zip");
+    expect(api.downloadArtifact).toHaveBeenCalledWith(bundle);
+    expect(createObjectUrl).toHaveBeenCalledWith(verifiedBlob);
+    expect(clickedUrl).toBe("blob:verified-bundle");
+    expect(suggestedFileName).toBe("custombuild-design-review-rev-1.zip");
+    await waitFor(() => expect(revokeObjectUrl).toHaveBeenCalledExactlyOnceWith(
+      "blob:verified-bundle",
+    ));
     expect(api.approveVersion).not.toHaveBeenCalled();
+  });
+
+  it("revokes a pending verified Blob URL exactly once when the workflow unmounts", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:pending-bundle");
+    const revokeObjectUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const rendered = render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+
+    const clearTimeout = vi.spyOn(window, "clearTimeout");
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+    await waitFor(() => expect(createObjectUrl).toHaveBeenCalledOnce());
+    expect(revokeObjectUrl).not.toHaveBeenCalled();
+
+    rendered.unmount();
+    expect(clearTimeout).toHaveBeenCalled();
+    expect(revokeObjectUrl).toHaveBeenCalledExactlyOnceWith("blob:pending-bundle");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(revokeObjectUrl).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed without creating a browser download when byte verification fails", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    vi.mocked(api.downloadArtifact).mockRejectedValue(new ApiError(
+      "Artefaktens innehåll matchar inte den signerade SHA-256-identiteten.",
+      409,
+    ));
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL");
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/SHA-256-identiteten/i);
+    expect(api.downloadArtifact).toHaveBeenCalledWith(bundle);
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(anchorClick).not.toHaveBeenCalled();
   });
 
   it("accepts a complete versioned generated-CAM review package", async () => {
@@ -1597,7 +1696,7 @@ describe("ProductionWorkflow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
     await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
     expect(anchorClick).toHaveBeenCalledOnce();
-    expect(suggestedFileName).toBe("designgranskningspaket.zip");
+    expect(suggestedFileName).toBe("custombuild-design-review-rev-1.zip");
     expect(api.approveVersion).not.toHaveBeenCalled();
   });
 

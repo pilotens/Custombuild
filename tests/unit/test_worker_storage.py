@@ -214,3 +214,35 @@ def test_worker_turns_an_s3_read_stall_into_an_actionable_job_error(
         "artifact storage is temporarily unavailable; verify the object store and retry"
     )
     assert "private-object-store" not in str(caught.value)
+
+
+def test_worker_never_bootstraps_a_missing_production_bucket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class MissingBucketStorage:
+        create_calls = 0
+
+        def head_bucket(self, **_kwargs: Any) -> None:
+            raise ClientError(
+                {
+                    "Error": {"Code": "NoSuchBucket", "Message": "missing"},
+                    "ResponseMetadata": {"HTTPStatusCode": 404},
+                },
+                "HeadBucket",
+            )
+
+        def create_bucket(self, **_kwargs: Any) -> None:
+            self.create_calls += 1
+
+    storage_client = MissingBucketStorage()
+    monkeypatch.setattr(worker_tasks, "_s3_client", lambda: storage_client)
+    monkeypatch.setattr(
+        worker_tasks,
+        "WORKER_SETTINGS",
+        SimpleNamespace(s3_bucket="private-artifacts"),
+    )
+
+    with pytest.raises(ArtifactStorageUnavailableError):
+        worker_tasks._put_object("org/job/evidence.json", b"evidence", "application/json")
+
+    assert storage_client.create_calls == 0

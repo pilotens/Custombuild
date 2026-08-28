@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DesignSpec, ResolvedDesign } from "@/lib/design-types";
 
 const apiMock = vi.hoisted(() => ({
@@ -98,6 +98,10 @@ const sourceSpec: DesignSpec = {
 };
 
 describe("workspace production preview recovery", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     apiMock.previewDesign.mockReset();
     apiMock.previewTransportFailures = 0;
@@ -118,37 +122,63 @@ describe("workspace production preview recovery", () => {
   });
 
   it("clears the cached preview and issues one retry for an otherwise unchanged spec", async () => {
+    vi.useFakeTimers();
     render(<CustombuildWorkspace />);
 
-    const retry = await screen.findByRole("button", { name: "Hämta om serverpreview" });
-    await waitFor(() => expect(apiMock.previewDesign).toHaveBeenCalledTimes(1), { timeout: 3_000 });
-    await waitFor(() => expect(screen.getByTestId("production-drawer")).toHaveAttribute(
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const retry = screen.getByRole("button", { name: "Hämta om serverpreview" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(apiMock.previewDesign).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("production-drawer")).toHaveAttribute(
       "data-design-source",
       "server-preview",
-    ));
+    );
     const firstSpec = apiMock.previewDesign.mock.calls[0]?.[0];
 
     fireEvent.click(retry);
     expect(screen.getByTestId("production-drawer")).toHaveAttribute("data-design-source", "local");
-    await waitFor(() => expect(apiMock.previewDesign).toHaveBeenCalledTimes(2), { timeout: 3_000 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(apiMock.previewDesign).toHaveBeenCalledTimes(2);
     expect(apiMock.previewDesign.mock.calls[1]?.[0]).toEqual(firstSpec);
-    await waitFor(() => expect(screen.getByTestId("production-drawer")).toHaveAttribute(
+    expect(screen.getByTestId("production-drawer")).toHaveAttribute(
       "data-design-source",
       "server-preview",
-    ));
+    );
 
-    await new Promise((resolve) => window.setTimeout(resolve, 650));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(650);
+    });
     expect(apiMock.previewDesign).toHaveBeenCalledTimes(2);
   });
 
   it("recovers automatically after a transient server restart", async () => {
+    vi.useFakeTimers();
     apiMock.previewTransportFailures = 1;
     render(<CustombuildWorkspace />);
 
-    expect(await screen.findByText("Servermodellen är inte tillgänglig.")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(screen.getByText("Servermodellen är inte tillgänglig.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Försök igen" })).toBeInTheDocument();
-    await waitFor(() => expect(apiMock.previewDesign).toHaveBeenCalledTimes(2), { timeout: 4_000 });
-    await waitFor(() => expect(screen.queryByText("Servermodellen är inte tillgänglig.")).not.toBeInTheDocument());
+    expect(apiMock.previewDesign).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(apiMock.previewDesign).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Servermodellen är inte tillgänglig.")).not.toBeInTheDocument();
     expect(screen.getByTestId("production-drawer")).toHaveAttribute(
       "data-design-source",
       "server-preview",

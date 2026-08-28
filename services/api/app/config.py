@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from ipaddress import ip_network
 from pathlib import Path
@@ -15,13 +16,31 @@ from .config_guards import (
     validate_production_build_identity,
     validate_production_database_url,
     validate_production_redis_url,
+    validate_production_s3_bucket,
     validate_production_s3_credentials,
 )
 
 DEPENDENCY_LOCK_PATH = Path(__file__).resolve().parents[3] / "uv.lock"
+MAX_DATABASE_INTEGER = 2**63 - 1
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_VOLUME_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,254}\Z")
+PRODUCTION_CAPACITY_FIELDS = frozenset(
+    {
+        "s3_bucket",
+        "storage_capacity_operator_config_sha256",
+        "storage_capacity_volume_identity",
+        "storage_capacity_provisioned_bytes",
+        "storage_capacity_metadata_overhead_bytes",
+        "storage_capacity_emergency_reserve_bytes",
+        "storage_capacity_headroom_bytes",
+        "storage_capacity_byte_limit",
+        "storage_capacity_object_limit",
+        "storage_capacity_deploy_descriptor_sha256",
+        "storage_capacity_max_age_seconds",
+    }
+)
 PRIVATE_PROXY_NETWORKS = tuple(
-    ip_network(value)
-    for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
+    ip_network(value) for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
 )
 
 
@@ -38,10 +57,14 @@ class Settings(BaseSettings):
     auth_mode: Literal["development", "oidc"] = "development"
     production_four_eyes_required: bool = False
     database_url: str = "sqlite+pysqlite:///./custombuild.db"
+    database_statement_timeout_seconds: int = Field(default=60, ge=1, le=120)
+    database_lock_timeout_seconds: int = Field(default=10, ge=1, le=30)
     redis_url: str = "redis://localhost:6379/0"
     readiness_timeout_seconds: int = Field(default=2, ge=1, le=10)
     rate_limit_requests: int = Field(default=180, ge=10, le=10_000)
     rate_limit_window_seconds: int = Field(default=60, ge=1, le=3_600)
+    request_body_idle_timeout_seconds: int = Field(default=5, ge=1, le=30)
+    request_body_total_timeout_seconds: int = Field(default=30, ge=5, le=120)
     trusted_proxy_cidrs: str = ""
     oidc_issuer: str = ""
     oidc_audience: str = "custombuild-api"
@@ -50,26 +73,94 @@ class Settings(BaseSettings):
         min_length=32,
     )
     artifact_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
+    artifact_stream_timeout_seconds: int = Field(default=120, ge=30, le=600)
     s3_endpoint: str = "http://localhost:9000"
-    s3_public_endpoint: str = "http://localhost:9000"
     s3_access_key: str = "custombuild"
     s3_secret_key: str = "development-only-object-secret"  # noqa: S105
     s3_bucket: str = "custombuild-artifacts"
+    storage_capacity_operator_config_sha256: str = "unverified"
+    storage_capacity_volume_identity: str = "development-local-volume"
+    storage_capacity_provisioned_bytes: int = Field(
+        default=256 * 1024**3,
+        ge=1,
+        le=MAX_DATABASE_INTEGER,
+    )
+    storage_capacity_metadata_overhead_bytes: int = Field(
+        default=1024**3,
+        ge=1,
+        le=MAX_DATABASE_INTEGER,
+    )
+    storage_capacity_emergency_reserve_bytes: int = Field(
+        default=4 * 1024**3,
+        ge=1,
+        le=MAX_DATABASE_INTEGER,
+    )
+    storage_capacity_headroom_bytes: int = Field(
+        default=5 * 1024**3,
+        ge=1,
+        le=MAX_DATABASE_INTEGER,
+    )
+    storage_capacity_byte_limit: int = Field(
+        default=251 * 1024**3,
+        ge=1,
+        le=MAX_DATABASE_INTEGER,
+    )
+    storage_capacity_object_limit: int = Field(
+        default=1_000_000,
+        ge=1,
+        le=MAX_DATABASE_INTEGER,
+    )
+    storage_capacity_deploy_descriptor_sha256: str = "unverified"
+    storage_capacity_max_age_seconds: int = Field(default=600, ge=60, le=600)
     cors_origins: str = "http://localhost:3000"
 
     @model_validator(mode="after")
     def production_guards(self) -> Settings:
+        if self.database_lock_timeout_seconds >= self.database_statement_timeout_seconds:
+            raise ValueError(
+                "DATABASE_LOCK_TIMEOUT_SECONDS must be shorter than the statement timeout"
+            )
+        if self.request_body_idle_timeout_seconds > self.request_body_total_timeout_seconds:
+            raise ValueError(
+                "REQUEST_BODY_IDLE_TIMEOUT_SECONDS cannot exceed the total body timeout"
+            )
+        if (
+            self.storage_capacity_headroom_bytes
+            != self.storage_capacity_metadata_overhead_bytes
+            + self.storage_capacity_emergency_reserve_bytes
+        ):
+            raise ValueError(
+                "STORAGE_CAPACITY_HEADROOM_BYTES must equal metadata overhead plus "
+                "emergency reserve"
+            )
+        if self.storage_capacity_headroom_bytes >= self.storage_capacity_provisioned_bytes:
+            raise ValueError(
+                "STORAGE_CAPACITY_PROVISIONED_BYTES must exceed capacity headroom"
+            )
+        if self.storage_capacity_byte_limit > (
+            self.storage_capacity_provisioned_bytes
+            - self.storage_capacity_headroom_bytes
+        ):
+            raise ValueError(
+                "STORAGE_CAPACITY_BYTE_LIMIT exceeds attested usable storage"
+            )
         if self.app_env == "production" and self.auth_mode != "oidc":
             raise ValueError("production requires AUTH_MODE=oidc")
         if self.app_env == "production" and not self.production_four_eyes_required:
-            raise ValueError(
-                "production requires PRODUCTION_FOUR_EYES_REQUIRED=true"
-            )
+            raise ValueError("production requires PRODUCTION_FOUR_EYES_REQUIRED=true")
         if self.auth_mode == "oidc" and self.app_env != "production":
             raise ValueError("OIDC mode requires APP_ENV=production")
         if self.auth_mode == "oidc" and not self.oidc_issuer:
             raise ValueError("OIDC_ISSUER is required in OIDC mode")
         if self.app_env == "production":
+            missing_capacity_fields = sorted(
+                PRODUCTION_CAPACITY_FIELDS - self.model_fields_set
+            )
+            if missing_capacity_fields:
+                raise ValueError(
+                    "production requires explicit storage-capacity settings: "
+                    + ", ".join(missing_capacity_fields)
+                )
             validate_production_build_identity(
                 app_version=self.app_version,
                 vcs_ref=self.vcs_ref,
@@ -129,17 +220,38 @@ class Settings(BaseSettings):
             raise ValueError("production artifact signing secret must be replaced")
         if self.app_env == "production":
             validate_production_s3_credentials(self.s3_access_key, self.s3_secret_key)
-            public_s3 = urlparse(self.s3_public_endpoint)
+            validate_production_s3_bucket(self.s3_bucket)
             if (
-                public_s3.scheme != "https"
-                or not public_s3.hostname
-                or public_s3.username is not None
-                or public_s3.password is not None
-                or public_s3.params
-                or public_s3.query
-                or public_s3.fragment
+                _SHA256_PATTERN.fullmatch(
+                    self.storage_capacity_operator_config_sha256
+                )
+                is None
             ):
-                raise ValueError("production artifact links require an HTTPS public S3 endpoint")
+                raise ValueError(
+                    "production requires STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256"
+                )
+            if (
+                _VOLUME_IDENTITY_PATTERN.fullmatch(
+                    self.storage_capacity_volume_identity
+                )
+                is None
+            ):
+                raise ValueError(
+                    "production requires a canonical STORAGE_CAPACITY_VOLUME_IDENTITY"
+                )
+            if (
+                _SHA256_PATTERN.fullmatch(
+                    self.storage_capacity_deploy_descriptor_sha256
+                )
+                is None
+            ):
+                raise ValueError(
+                    "production requires STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256"
+                )
+            if self.storage_capacity_max_age_seconds != 600:
+                raise ValueError(
+                    "production STORAGE_CAPACITY_MAX_AGE_SECONDS must be exactly 600"
+                )
         return self
 
     @property

@@ -1,5 +1,5 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiMock = vi.hoisted(() => ({
   configured: true,
@@ -89,6 +89,11 @@ import { workspaceIntentEnvelopeFromSpec } from "@/lib/workspace-design-envelope
 const principal = { organization_id: "org-1", user_id: "user-1" };
 
 describe("fail-closed project hydration", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     apiMock.drafts.clear();
     apiMock.draftWaits.clear();
@@ -184,6 +189,7 @@ describe("fail-closed project hydration", () => {
   });
 
   it("hydrates and autosaves the exact back mounting and material choices from Studio", async () => {
+    vi.useFakeTimers();
     const explicitBackSpec = {
       ...DEFAULT_DESIGN_SPEC,
       design_id: "project-good",
@@ -209,8 +215,11 @@ describe("fail-closed project hydration", () => {
     });
 
     render(<CustombuildWorkspace />);
-    expect(await screen.findByTestId("furniture-viewer")).toBeInTheDocument();
-    expect(await screen.findByRole("radio", { name: /Utanpåliggande/ })).toBeChecked();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("furniture-viewer")).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /Utanpåliggande/ })).toBeChecked();
     expect(screen.getByLabelText("Välj MDF 6 mm för bakstycket")).toHaveAttribute("aria-pressed", "true");
 
     apiMock.updates.mockClear();
@@ -219,18 +228,19 @@ describe("fail-closed project hydration", () => {
 
     expect(screen.getByRole("radio", { name: /Infällt i not/ })).toBeChecked();
     expect(screen.getByLabelText("Välj Björkplywood 6 mm för bakstycket")).toHaveAttribute("aria-pressed", "true");
-    await waitFor(() => {
-      expect(apiMock.updates).toHaveBeenCalledWith(
-        "project-good",
-        "shelving",
-        expect.objectContaining({
-          back_panel: true,
-          back_panel_type: "inset_groove",
-          back_material_id: "birch-plywood-6",
-        }),
-        expect.any(Number),
-      );
-    }, { timeout: 2_500 });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(apiMock.updates).toHaveBeenCalledWith(
+      "project-good",
+      "shelving",
+      expect.objectContaining({
+        back_panel: true,
+        back_panel_type: "inset_groove",
+        back_material_id: "birch-plywood-6",
+      }),
+      expect.any(Number),
+    );
   });
 
   it("never falls back to a local model for HTTP, null or wrong-project responses", async () => {
@@ -361,6 +371,7 @@ describe("fail-closed project hydration", () => {
   });
 
   it("creates a separate blank product from Control and preserves the previous project draft", async () => {
+    vi.useFakeTimers();
     window.history.replaceState({}, "", "/?project=project-good&mode=check");
     apiMock.createProject.mockImplementationOnce(async (name: string) => {
       const project = { id: "project-new", name, archived: false };
@@ -378,7 +389,10 @@ describe("fail-closed project hydration", () => {
     });
 
     render(<CustombuildWorkspace />);
-    expect(await screen.findByTestId("furniture-viewer")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("furniture-viewer")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Skapa ny produkt" }));
     fireEvent.change(screen.getByLabelText("Nytt projekt"), {
@@ -386,17 +400,22 @@ describe("fail-closed project hydration", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Skapa" }));
 
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
     const projectSelect = screen.getByRole("combobox", { name: "Aktivt projekt" });
-    await waitFor(() => expect(projectSelect).toHaveValue("project-new"));
-    expect(await screen.findByRole("heading", { name: "Vad vill du skapa?" })).toBeInTheDocument();
+    expect(projectSelect).toHaveValue("project-new");
+    expect(screen.getByRole("heading", { name: "Vad vill du skapa?" })).toBeInTheDocument();
     expect(screen.queryByTestId("furniture-viewer")).not.toBeInTheDocument();
     expect(window.location.search).toBe("?project=project-new&mode=explore");
 
-    await waitFor(() => {
-      const freshDraft = readWorkspaceDraft(window.localStorage, principal, "project-new");
-      expect(freshDraft?.workspaceSelected).toBe(false);
-      expect(freshDraft?.spec.design_id).toBe("project-new");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(450);
     });
+    const freshDraft = readWorkspaceDraft(window.localStorage, principal, "project-new");
+    expect(freshDraft?.workspaceSelected).toBe(false);
+    expect(freshDraft?.spec.design_id).toBe("project-new");
     expect(readWorkspaceDraft(window.localStorage, principal, "project-good")?.spec.design_id)
       .toBe("project-good");
 
@@ -411,10 +430,11 @@ describe("fail-closed project hydration", () => {
     expect(window.location.search).toBe("?project=project-new&mode=explore");
 
     fireEvent.click(screen.getByRole("button", { name: /Börja tomt/ }));
-    expect(await screen.findByTestId("furniture-viewer")).toBeInTheDocument();
-    await waitFor(() => {
-      expect(apiMock.updates.mock.calls.some(([projectId]) => projectId === "project-new")).toBe(true);
-    }, { timeout: 2_000 });
+    expect(screen.getByTestId("furniture-viewer")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+    expect(apiMock.updates.mock.calls.some(([projectId]) => projectId === "project-new")).toBe(true);
     for (const [updatedProjectId, , updatedSpec] of apiMock.updates.mock.calls) {
       expect((updatedSpec as { design_id?: string }).design_id).toBe(updatedProjectId);
     }
@@ -444,13 +464,19 @@ describe("fail-closed project hydration", () => {
   });
 
   it("preserves quarantined v3 raw across valid server hydration and autosave", async () => {
+    vi.useFakeTimers();
     const key = workspaceDraftKey(principal, "project-good");
     const raw = '{"version":3,"spec":{"width_mm":"unsafe"}}';
     window.localStorage.setItem(key, raw);
 
     render(<CustombuildWorkspace />);
-    expect(await screen.findByTestId("furniture-viewer")).toBeInTheDocument();
-    await new Promise((resolve) => window.setTimeout(resolve, 550));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("furniture-viewer")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(450);
+    });
     expect(window.localStorage.getItem(key)).toBe(raw);
   });
 

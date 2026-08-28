@@ -23,6 +23,7 @@ GENERATION_LEASE_HEARTBEAT_MIGRATION = (
 )
 TENANT_GRAPH_MIGRATION = MIGRATIONS / "0010_tenant_graph_foreign_keys.py"
 RUNTIME_ROLE_PRIVILEGES_MIGRATION = MIGRATIONS / "0011_runtime_role_privileges.py"
+STORAGE_QUOTA_MIGRATION = MIGRATIONS / "0012_storage_quota_ledger.py"
 TEMPLATE_CAPABILITY_MIGRATION = MIGRATIONS / "0005_template_capability_identity.py"
 
 
@@ -180,9 +181,14 @@ def test_runtime_role_migration_revokes_blanket_defaults_before_explicit_grants(
     privilege_sql = ";\n".join(statements)
 
     assert 'down_revision = "0010_tenant_graph_foreign_keys"' in source
-    assert "runtime_privilege_statements" in source
+    assert "FROZEN_PRIVILEGE_STATEMENTS" in source
+    assert "scripts.postgres_runtime_privileges" not in source
+    assert "storage_global_quotas" not in source
+    assert "storage_tenant_quotas" not in source
+    assert "stored_objects" not in source
     assert "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public" in privilege_sql
     assert "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public" in privilege_sql
+    assert "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public" in privilege_sql
     assert "REVOKE ALL PRIVILEGES ON TABLES" in privilege_sql
     assert "REVOKE ALL PRIVILEGES ON SEQUENCES" in privilege_sql
     assert "FROM PUBLIC" in privilege_sql
@@ -202,6 +208,75 @@ def test_runtime_role_migration_revokes_blanket_defaults_before_explicit_grants(
     assert "releases" not in WORKER_TABLE_PRIVILEGES
 
 
+def test_storage_quota_migration_backfills_before_reference_constraints() -> None:
+    source = STORAGE_QUOTA_MIGRATION.read_text(encoding="utf-8")
+    tombstone_ddl = source.split(
+        'op.create_table(\n        "storage_object_tombstones"', 1
+    )[1].split('op.create_table(\n        "stored_objects"', 1)[0]
+
+    assert 'down_revision = "0011_runtime_role_privileges"' in source
+    assert "STORAGE_QUOTA_BACKFILL_FAILED" in source
+    assert "GLOBAL_STORAGE_BYTE_LIMIT" not in source
+    assert "TENANT_STORAGE_BYTE_LIMIT" in source
+    assert '"capacity_verified"' in source
+    assert "0, :committed_count, false" in source
+    assert '"provisioned_bytes"' in source
+    assert '"capacity_evidence_sha256"' in source
+    assert "max(global_bytes, 1)" in source
+    assert "reserved_bytes <= byte_limit - committed_bytes" in source
+    assert "reserved_count <= object_limit - committed_count" in source
+    assert "ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY" in source
+    assert "ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY" in source
+    assert "current_setting('app.current_organization_id', true)" in source
+    assert "'delete_pending'" in source
+    assert "'reaping'" in source
+    assert 'sa.Column("claim_token"' in source
+    assert "artifact.kind || ':' || artifact.id" in source
+    assert "global_object_keys: set[str] = set()" in source
+    assert "duplicate physical legacy" in source
+    assert 'sa.PrimaryKeyConstraint("capacity_bucket", "object_key")' in tombstone_ddl
+    assert 'name="uq_storage_tombstones_bucket_idempotency_key"' in tombstone_ddl
+    assert "ForeignKeyConstraint" not in tombstone_ddl
+    assert 'name="uq_stored_objects_global_object_key"' in source
+    # Revision 0012 creates and backfills the ledger without exposing mutable
+    # table privileges. Revision 0013 installs the reviewed function-only ACL.
+    assert "runtime_privilege_statements" not in source
+    assert source.index("_backfill_existing_objects()") < source.index(
+        '"fk_imported_assets_stored_object"',
+        source.index("def upgrade()"),
+    )
+    assert source.count('ondelete="RESTRICT"') >= 4
+
+
+def test_current_runtime_allowlist_adds_only_required_storage_ledger_access() -> None:
+    expected = {
+        "storage_global_quotas": ("SELECT",),
+        "storage_tenant_quotas": ("SELECT",),
+        "stored_objects": ("SELECT",),
+    }
+
+    for table, privileges in expected.items():
+        assert API_TABLE_PRIVILEGES[table] == privileges
+        assert WORKER_TABLE_PRIVILEGES[table] == privileges
+
+
+def test_fresh_upgrade_revision_0011_never_mentions_revision_0012_tables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = importlib.import_module(
+        "services.api.alembic.versions.0011_runtime_role_privileges"
+    )
+    statements: list[str] = []
+    monkeypatch.setattr(migration.op, "execute", lambda statement: statements.append(statement))
+
+    migration.upgrade()
+
+    sql = ";\n".join(statements)
+    assert "storage_global_quotas" not in sql
+    assert "storage_tenant_quotas" not in sql
+    assert "stored_objects" not in sql
+
+
 def test_postgres_bootstrap_never_auto_grants_future_runtime_tables() -> None:
     source = Path("infra/postgres/init-roles.sh").read_text(encoding="utf-8")
 
@@ -209,6 +284,7 @@ def test_postgres_bootstrap_never_auto_grants_future_runtime_tables() -> None:
     assert "GRANT USAGE, SELECT ON SEQUENCES" not in source
     assert "REVOKE ALL PRIVILEGES ON TABLES FROM PUBLIC" in source
     assert "REVOKE ALL PRIVILEGES ON SEQUENCES FROM PUBLIC" in source
+    assert "REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC" in source
     assert "REVOKE ALL PRIVILEGES ON SCHEMA public" in source
     assert (
         "REVOKE ALL PRIVILEGES ON TABLES FROM custombuild_api, custombuild_worker"
@@ -216,6 +292,10 @@ def test_postgres_bootstrap_never_auto_grants_future_runtime_tables() -> None:
     )
     assert (
         "REVOKE ALL PRIVILEGES ON SEQUENCES FROM custombuild_api, custombuild_worker"
+        in source
+    )
+    assert (
+        "REVOKE EXECUTE ON FUNCTIONS FROM custombuild_api, custombuild_worker"
         in source
     )
 

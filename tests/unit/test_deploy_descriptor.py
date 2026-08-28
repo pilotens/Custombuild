@@ -418,6 +418,8 @@ def test_descriptor_mutations_fail_closed(
         (("application_image_archive_sha256",), "api"),
         (("publication_evidence_sha256",), "api"),
         (("roles",), "migrate"),
+        (("roles",), "storage-recovery"),
+        (("roles",), "storage-capacity-attestor"),
         (("signing_policy",), "cosign"),
         (("signing_policy", "github_attestations"), "source_digest"),
     ),

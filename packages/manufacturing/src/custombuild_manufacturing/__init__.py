@@ -2,6 +2,19 @@
 
 from typing import Any
 
+from .artifact_limits import (
+    MAX_API_TRANSIENT_BYTES,
+    MAX_ARTIFACT_BYTES,
+    MAX_CATALOG_SOURCE_BYTES,
+    MAX_CORE_DOCUMENT_BYTES,
+    MAX_EVIDENCE_ARTIFACTS,
+    MAX_EVIDENCE_TOTAL_BYTES,
+    MAX_HTTP_REQUEST_BYTES,
+    MAX_PRODUCTION_BUNDLE_BYTES,
+    MAX_READINESS_STATUS_BYTES,
+    artifact_size_limit,
+    valid_artifact_size,
+)
 from .dfm import (
     DFM_ENGINE_VERSION,
     STOCK_PROFILE_MISSING_CODE,
@@ -128,6 +141,15 @@ def build_production_bundle(*args: Any, **kwargs: Any) -> Any:
 __all__ = [
     "ArtifactError",
     "ArtifactFile",
+    "MAX_ARTIFACT_BYTES",
+    "MAX_API_TRANSIENT_BYTES",
+    "MAX_CATALOG_SOURCE_BYTES",
+    "MAX_CORE_DOCUMENT_BYTES",
+    "MAX_EVIDENCE_ARTIFACTS",
+    "MAX_EVIDENCE_TOTAL_BYTES",
+    "MAX_PRODUCTION_BUNDLE_BYTES",
+    "MAX_READINESS_STATUS_BYTES",
+    "MAX_HTTP_REQUEST_BYTES",
     "CAMOperation",
     "CAMStageStatus",
     "DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
@@ -192,6 +214,7 @@ __all__ = [
     "blocked_cam_artifact_violation",
     "build_manifest",
     "build_production_bundle",
+    "artifact_size_limit",
     "build_workshop_readiness_report",
     "blocked_design_review_package_status",
     "dado_retention_evidence_missing",
@@ -230,4 +253,5 @@ __all__ = [
     "validate_manifest_artifact_entries",
     "validate_manifest_context_contract",
     "validate_workshop_evidence_binding",
+    "valid_artifact_size",
 ]

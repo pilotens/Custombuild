@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,8 +35,15 @@ class FakeConnection:
     def __exit__(self, *_args: object) -> None:
         return None
 
-    def execute(self, statement: object, parameters: object | None = None) -> None:
+    def execute(
+        self, statement: object, parameters: object | None = None
+    ) -> SimpleNamespace | None:
         self.executions.append((str(statement), parameters))
+        if "FROM alembic_version" in str(statement):
+            return SimpleNamespace(
+                scalars=lambda: (readiness.REQUIRED_DATABASE_REVISION,)
+            )
+        return None
 
 
 class FakeEngine:
@@ -100,8 +108,156 @@ def test_database_probe_sets_postgres_statement_timeout(
             "SELECT set_config('statement_timeout', :timeout, true)",
             {"timeout": "3s"},
         ),
+        ("SELECT version_num FROM alembic_version ORDER BY version_num", None),
         ("SELECT 1", None),
     ]
+
+
+def test_database_probe_rejects_an_older_schema_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection("postgresql")
+
+    def execute(statement: object, parameters: object | None = None) -> SimpleNamespace | None:
+        connection.executions.append((str(statement), parameters))
+        if "FROM alembic_version" in str(statement):
+            return SimpleNamespace(scalars=lambda: ("0013_storage_quota_security_functions",))
+        return None
+
+    connection.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+
+    with pytest.raises(RuntimeError, match="schema revision"):
+        readiness.check_database(settings())
+
+
+class CapacityResult:
+    def __init__(self, row: dict[str, object]) -> None:
+        self.row = row
+
+    def mappings(self) -> CapacityResult:
+        return self
+
+    def one_or_none(self) -> dict[str, object]:
+        return self.row
+
+
+class CapacityConnection(FakeConnection):
+    def __init__(self, row: dict[str, object]) -> None:
+        super().__init__("postgresql")
+        self.row = row
+
+    def execute(
+        self,
+        statement: object,
+        parameters: object | None = None,
+    ) -> CapacityResult | None:
+        self.executions.append((str(statement), parameters))
+        if "FROM storage_global_quotas" in str(statement):
+            return CapacityResult(self.row)
+        return None
+
+
+def _capacity_settings() -> SimpleNamespace:
+    return SimpleNamespace(
+        app_env="production",
+        readiness_timeout_seconds=3,
+        storage_capacity_provisioned_bytes=1_000,
+        storage_capacity_metadata_overhead_bytes=100,
+        storage_capacity_emergency_reserve_bytes=100,
+        storage_capacity_headroom_bytes=200,
+        storage_capacity_byte_limit=800,
+        storage_capacity_object_limit=100,
+        storage_capacity_volume_identity="volume-0001",
+        storage_capacity_operator_config_sha256="a" * 64,
+        storage_capacity_deploy_descriptor_sha256="b" * 64,
+        storage_capacity_max_age_seconds=600,
+        s3_bucket="production-bucket",
+    )
+
+
+def _capacity_row(now: datetime) -> dict[str, object]:
+    return {
+        "capacity_verified": True,
+        "provisioned_bytes": 1_000,
+        "metadata_overhead_bytes": 100,
+        "emergency_reserve_bytes": 100,
+        "capacity_headroom_bytes": 200,
+        "byte_limit": 800,
+        "object_limit": 100,
+        "volume_identity": "volume-0001",
+        "capacity_bucket": "production-bucket",
+        "capacity_operator_config_sha256": "a" * 64,
+        "deploy_descriptor_sha256": "b" * 64,
+        "inventory_sha256": "c" * 64,
+        "capacity_evidence_sha256": "d" * 64,
+        "reserved_bytes": 20,
+        "committed_bytes": 100,
+        "reserved_count": 1,
+        "committed_count": 2,
+        "inventory_object_count": 2,
+        "inventory_bytes": 100,
+        "ledger_object_count": 2,
+        "ledger_bytes": 100,
+        "database_now": now,
+        "database_started_at": now - timedelta(hours=1),
+        "maintenance_token": None,
+        "maintenance_started_at": None,
+        "maintenance_owner_expires_at": None,
+        "recovery_database_started_at": now - timedelta(hours=1),
+        "recovery_completed_at": now - timedelta(minutes=30),
+        "capacity_verified_at": now - timedelta(seconds=5),
+        "capacity_attested_at": now - timedelta(seconds=6),
+    }
+
+
+def test_storage_capacity_probe_requires_exact_fresh_runtime_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+    row = _capacity_row(now)
+    connection = CapacityConnection(row)
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+
+    readiness.check_storage_capacity(_capacity_settings())  # type: ignore[arg-type]
+
+    row["capacity_operator_config_sha256"] = "e" * 64
+    with pytest.raises(RuntimeError, match="runtime settings"):
+        readiness.check_storage_capacity(_capacity_settings())  # type: ignore[arg-type]
+    row.update(_capacity_row(now))
+    row["capacity_verified_at"] = now - timedelta(seconds=601)
+    with pytest.raises(RuntimeError, match="stale"):
+        readiness.check_storage_capacity(_capacity_settings())  # type: ignore[arg-type]
+
+
+def test_storage_capacity_accepts_trusted_counter_changes_after_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+    row = _capacity_row(now)
+    row["committed_count"] = 3
+    row["committed_bytes"] = 140
+    connection = CapacityConnection(row)
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+
+    readiness.check_storage_capacity(_capacity_settings())  # type: ignore[arg-type]
+
+
+def test_storage_capacity_rejects_active_gate_and_stale_boot_proof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+    row = _capacity_row(now)
+    connection = CapacityConnection(row)
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+
+    row["maintenance_token"] = "00000000-0000-0000-0000-000000000099"  # noqa: S105
+    with pytest.raises(RuntimeError, match="maintenance"):
+        readiness.check_storage_capacity(_capacity_settings())  # type: ignore[arg-type]
+    row.update(_capacity_row(now))
+    row["recovery_database_started_at"] = now - timedelta(hours=2)
+    with pytest.raises(RuntimeError, match="stale"):
+        readiness.check_storage_capacity(_capacity_settings())  # type: ignore[arg-type]
 
 
 class FakeRedisClient:
@@ -187,19 +343,30 @@ def test_dependency_probe_reports_all_failures_and_continues(
     def object_storage(_settings: Settings) -> None:
         calls.append("object_storage")
 
+    def storage_capacity(_settings: Settings) -> None:
+        calls.append("storage_capacity")
+
     def rule_engine(_settings: Settings) -> None:
         calls.append("rule_engine")
 
     monkeypatch.setattr(readiness, "check_database", database)
     monkeypatch.setattr(readiness, "check_redis", redis)
+    monkeypatch.setattr(readiness, "check_storage_capacity", storage_capacity)
     monkeypatch.setattr(readiness, "check_object_storage", object_storage)
     monkeypatch.setattr(readiness, "check_rule_engine", rule_engine)
 
     statuses, failures = readiness.probe_dependencies(settings())
 
-    assert sorted(calls) == ["database", "object_storage", "redis", "rule_engine"]
+    assert sorted(calls) == [
+        "database",
+        "object_storage",
+        "redis",
+        "rule_engine",
+        "storage_capacity",
+    ]
     assert statuses == {
         "database": "ok",
+        "storage_capacity": "ok",
         "redis": "unavailable",
         "object_storage": "ok",
         "rule_engine": "ok",

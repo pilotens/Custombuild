@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
+import socket
+import time
 from collections.abc import Callable
+from io import BytesIO
+from threading import Event
 
 import pytest
 from custombuild_manufacturing import MANIFEST_CONTEXT_HASH_FIELDS
@@ -10,6 +16,7 @@ from custombuild_manufacturing.review_status import (
     BLOCKED_CAM_REQUIRED_ACTIONS as MANUFACTURING_BLOCKED_CAM_REQUIRED_ACTIONS,
 )
 
+from scripts import live_acceptance as live_acceptance_module
 from scripts.live_acceptance import (
     BLOCKED_CAM_REQUIRED_ACTIONS,
     CONTEXT_HASH_FIELDS,
@@ -24,9 +31,11 @@ from scripts.live_acceptance import (
     STOCK_SELECTION_ROLE,
     AcceptanceFailure,
     HttpResult,
+    _read_bounded_http_body,
     _safe_zip_path,
     blocked_cam_artifact_violation,
     blocked_cam_evidence_kind_is_forbidden,
+    download_artifact,
     manifest_context,
     verify_blocked_cam_endpoint_rejection,
     verify_design_review_dfm_report,
@@ -38,6 +47,303 @@ from scripts.live_acceptance import (
     verify_status_readiness_alignment,
     verify_workshop_readiness,
 )
+
+
+class _UnexpectedDownloadClient:
+    def request(self, *_args: object, **_kwargs: object) -> HttpResult:
+        raise AssertionError("unsafe download path reached the network")
+
+
+@pytest.mark.parametrize(
+    "download_path",
+    (
+        "/v1/artifacts/22222222-2222-4222-8222-222222222222/download?"
+        f"expires=4000000000&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/../download?"
+        f"expires=4000000000&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/%2e%2e/download?"
+        f"expires=4000000000&signature={'a' * 64}",
+        "https://api.example.test/v1/artifacts/11111111-1111-4111-8111-111111111111/"
+        f"download?expires=4000000000&signature={'a' * 64}",
+        "//api.example.test/v1/artifacts/11111111-1111-4111-8111-111111111111/"
+        f"download?expires=4000000000&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=4000000000&signature={'a' * 64}#fragment",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=4000000000&signature={'a' * 64}&extra=true",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"signature={'a' * 64}&expires=4000000000",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=0&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=1&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=04000000000&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=4000000000&signature={'A' * 64}",
+        "\n/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=4000000000&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111\t/download?"
+        f"expires=4000000000&signature={'a' * 64}",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires=4000000000&signature={'a' * 64}\r",
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111\\download?"
+        f"expires=4000000000&signature={'a' * 64}",
+    ),
+)
+def test_live_acceptance_rejects_noncanonical_artifact_download_paths(
+    download_path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(live_acceptance_module.time, "time", lambda: 3_999_999_700.0)
+    with pytest.raises(AcceptanceFailure, match="unsafe download path"):
+        download_artifact(
+            _UnexpectedDownloadClient(),  # type: ignore[arg-type]
+            download_path,
+            artifact_id="11111111-1111-4111-8111-111111111111",
+            artifact_kind="production_bundle",
+            revision=3,
+            expected_size=1,
+            expected_content_type="application/octet-stream",
+            expected_sha256="a" * 64,
+        )
+
+
+class _RecordingBody(BytesIO):
+    def __init__(self, payload: bytes) -> None:
+        super().__init__(payload)
+        self.close_calls = 0
+        self.read_sizes: list[int] = []
+
+    def read(self, size: int = -1) -> bytes:
+        self.read_sizes.append(size)
+        return super().read(size)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        super().close()
+
+
+def test_live_acceptance_reads_only_one_byte_beyond_the_declared_body() -> None:
+    body = _RecordingBody(b"abcd")
+
+    with pytest.raises(AcceptanceFailure, match="exceeds its declared size"):
+        _read_bounded_http_body(
+            body,
+            maximum_body_bytes=3,
+            total_read_seconds=0.5,
+        )
+
+    assert body.read_sizes == [4]
+    assert body.close_calls == 1
+
+
+class _SlowDripBody:
+    def __init__(self) -> None:
+        self.closed = Event()
+        self.close_calls = 0
+
+    def read(self, _size: int = -1) -> bytes:
+        self.closed.wait(2.0)
+        return b"x"
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.closed.set()
+
+
+def test_live_acceptance_aborts_a_slow_drip_at_one_absolute_deadline() -> None:
+    body = _SlowDripBody()
+    started = time.monotonic()
+
+    with pytest.raises(AcceptanceFailure, match="total read deadline"):
+        _read_bounded_http_body(
+            body,
+            maximum_body_bytes=3,
+            total_read_seconds=0.01,
+        )
+
+    assert time.monotonic() - started < 0.5
+    assert body.close_calls == 1
+
+
+class _SocketBody:
+    def __init__(self, connection: socket.socket) -> None:
+        self.connection = connection
+        self.fp = connection.makefile("rb")
+        self.close_calls = 0
+
+    def read(self, size: int = -1) -> bytes:
+        return self.fp.read(size)
+
+    def close(self) -> None:
+        self.close_calls += 1
+        self.fp.close()
+        self.connection.close()
+
+
+def test_live_acceptance_shuts_down_a_real_blocked_socket_at_the_deadline() -> None:
+    receiving, sending = socket.socketpair()
+    body = _SocketBody(receiving)
+    sending.sendall(b"x")
+    started = time.monotonic()
+    try:
+        with pytest.raises(AcceptanceFailure, match="total read deadline"):
+            _read_bounded_http_body(
+                body,
+                maximum_body_bytes=3,
+                total_read_seconds=0.01,
+            )
+    finally:
+        sending.close()
+
+    assert time.monotonic() - started < 0.5
+    assert body.close_calls == 1
+
+
+class _StaticDownloadClient:
+    request_timeout = 0.5
+
+    def __init__(self, headers: dict[str, str]) -> None:
+        self.headers = headers
+        self.request_kwargs: dict[str, object] = {}
+
+    def request(self, *_args: object, **kwargs: object) -> HttpResult:
+        self.request_kwargs = kwargs
+        return HttpResult(200, "http://api.test/download", self.headers, b"x")
+
+
+def _download_headers(*, disposition: str, cache_control: str) -> dict[str, str]:
+    digest = hashlib.sha256(b"x").digest()
+    digest_hex = digest.hex()
+    return {
+        "content-length": "1",
+        "content-type": "application/json",
+        "etag": f'"{digest_hex}"',
+        "digest": "sha-256=" + base64.b64encode(digest).decode("ascii"),
+        "content-disposition": disposition,
+        "cache-control": cache_control,
+    }
+
+
+def _download_with_headers(
+    headers: dict[str, str],
+    *,
+    expires_at: int | None = None,
+) -> _StaticDownloadClient:
+    client = _StaticDownloadClient(headers)
+    effective_expiry = expires_at if expires_at is not None else int(time.time()) + 300
+    download_artifact(
+        client,  # type: ignore[arg-type]
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires={effective_expiry}&signature={'a' * 64}",
+        artifact_id="11111111-1111-4111-8111-111111111111",
+        artifact_kind="stock_selection",
+        revision=3,
+        expected_size=1,
+        expected_content_type="application/json",
+        expected_sha256=hashlib.sha256(b"x").hexdigest(),
+    )
+    return client
+
+
+def test_live_acceptance_accepts_the_one_hour_expiry_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 2_000_000_000
+    monkeypatch.setattr(live_acceptance_module.time, "time", lambda: float(now))
+
+    client = _download_with_headers(
+        _download_headers(
+            disposition='attachment; filename="custombuild-stock-selection-rev-3.json"',
+            cache_control="private, no-store, no-transform, max-age=0",
+        ),
+        expires_at=now + 3_600,
+    )
+
+    assert client.request_kwargs["follow_redirects"] is False
+
+
+@pytest.mark.parametrize("expiry_offset", (0, 3_601))
+def test_live_acceptance_rejects_expired_or_far_future_download_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    expiry_offset: int,
+) -> None:
+    now = 2_000_000_000
+    monkeypatch.setattr(live_acceptance_module.time, "time", lambda: float(now))
+    path = (
+        "/v1/artifacts/11111111-1111-4111-8111-111111111111/download?"
+        f"expires={now + expiry_offset}&signature={'a' * 64}"
+    )
+
+    with pytest.raises(AcceptanceFailure, match="unsafe download path"):
+        download_artifact(
+            _UnexpectedDownloadClient(),  # type: ignore[arg-type]
+            path,
+            artifact_id="11111111-1111-4111-8111-111111111111",
+            artifact_kind="stock_selection",
+            revision=3,
+            expected_size=1,
+            expected_content_type="application/json",
+            expected_sha256="a" * 64,
+        )
+
+
+def test_live_acceptance_binds_filename_revision_and_exact_cache_directives() -> None:
+    client = _download_with_headers(
+        _download_headers(
+            disposition='attachment; filename="custombuild-stock-selection-rev-3.json"',
+            cache_control="private, no-store, no-transform, max-age=0",
+        )
+    )
+
+    assert client.request_kwargs["maximum_body_bytes"] == 1
+    assert client.request_kwargs["total_read_seconds"] == 0.5
+
+
+@pytest.mark.parametrize(
+    "disposition",
+    (
+        'attachment; filename="custombuild-stock-selection-rev-2.json"',
+        'attachment; filename="custombuild-generation-plan-rev-3.json"',
+        'attachment; filename="custombuild-artifact.bin"',
+    ),
+)
+def test_live_acceptance_rejects_filename_kind_or_revision_drift(
+    disposition: str,
+) -> None:
+    with pytest.raises(AcceptanceFailure, match="Content-Disposition"):
+        _download_with_headers(
+            _download_headers(
+                disposition=disposition,
+                cache_control="private, no-store, no-transform, max-age=0",
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("cache_control", "message"),
+    (
+        ("private, x-no-storey, no-transform, max-age=0", "may be cached"),
+        ("x-private, no-store, no-transform, max-age=0", "may be cached"),
+        ("private, no-store, no-transformevil, max-age=0", "may be transformed"),
+        (
+            "public, private, no-store, no-transform, max-age=0",
+            "contains unexpected directives",
+        ),
+    ),
+)
+def test_live_acceptance_rejects_cache_control_substring_spoofs(
+    cache_control: str,
+    message: str,
+) -> None:
+    with pytest.raises(AcceptanceFailure, match=message):
+        _download_with_headers(
+            _download_headers(
+                disposition='attachment; filename="custombuild-stock-selection-rev-3.json"',
+                cache_control=cache_control,
+            )
+        )
 
 
 def test_live_acceptance_hashes_the_exact_manifest_context_contract() -> None:
@@ -316,9 +622,7 @@ def _grain_package_status() -> dict[str, object]:
 def _retention_package_status() -> dict[str, object]:
     payload = _package_status(blocked=True)
     payload["blocker_codes"] = [DADO_RETENTION_EVIDENCE_MISSING]
-    payload["required_action"] = BLOCKED_CAM_REQUIRED_ACTIONS[
-        DADO_RETENTION_EVIDENCE_MISSING
-    ]
+    payload["required_action"] = BLOCKED_CAM_REQUIRED_ACTIONS[DADO_RETENTION_EVIDENCE_MISSING]
     return payload
 
 

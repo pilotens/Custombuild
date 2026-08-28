@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from scripts.backup_freshness import backup_freshness
-from scripts.compose_backup import MANIFEST_SCHEMA, SEAWEEDFS_IMAGE, build_manifest
+from scripts.compose_backup import (
+    MANIFEST_SCHEMA,
+    SEAWEEDFS_IMAGE,
+    TOMBSTONE_HISTORY_SCHEMA,
+    build_manifest,
+)
 
 NOW = datetime(2026, 8, 11, 18, 0, tzinfo=UTC)
 
@@ -28,7 +36,16 @@ def create_backup(
                 "captured_at": (database_captured_at or created_at).isoformat(),
                 "wal_lsn": "0/16B6C50",
                 "alembic_heads": ["0004_design_source_provenance"],
-                "row_counts": {"alembic_version": 1, "projects": 1},
+                "row_counts": {
+                    "alembic_version": 1,
+                    "projects": 1,
+                    "storage_object_tombstones": 0,
+                },
+                "tombstone_history": {
+                    "schema_version": TOMBSTONE_HISTORY_SCHEMA,
+                    "count": 0,
+                    "sha256": hashlib.sha256(b"[]").hexdigest(),
+                },
             },
             "git_revision": "3" * 40,
             "source_manifest_sha256": "2" * 64,
@@ -116,3 +133,34 @@ def test_payload_verification_detects_tampering(tmp_path: Path) -> None:
 
     assert result["status"] == "INVALID"
     assert "Quarantine" in result["solution"]
+
+
+@pytest.mark.parametrize("mutation", ("missing", "bad_digest", "count_mismatch"))
+def test_freshness_rejects_invalid_tombstone_proof_without_payload_verification(
+    mutation: str,
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "invalid-history"
+    create_backup(directory, created_at=NOW - timedelta(hours=1))
+    path = directory / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    snapshot = manifest["database_snapshot"]
+    if mutation == "missing":
+        del snapshot["tombstone_history"]
+    elif mutation == "bad_digest":
+        snapshot["tombstone_history"]["sha256"] = "not-a-digest"
+    elif mutation == "count_mismatch":
+        snapshot["tombstone_history"]["count"] = 1
+    else:  # pragma: no cover - parameter list is exhaustive.
+        raise AssertionError(mutation)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = backup_freshness(
+        tmp_path,
+        max_age=timedelta(hours=24),
+        now=NOW,
+        verify_payloads=False,
+    )
+
+    assert result["status"] == "INVALID"
+    assert result["invalid_manifest_count"] == 1

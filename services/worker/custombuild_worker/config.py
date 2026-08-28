@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -9,12 +10,31 @@ from app.config_guards import (
     validate_production_build_identity,
     validate_production_database_url,
     validate_production_redis_url,
+    validate_production_s3_bucket,
     validate_production_s3_credentials,
 )
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEPENDENCY_LOCK_PATH = Path(__file__).resolve().parents[3] / "uv.lock"
+MAX_DATABASE_INTEGER = 2**63 - 1
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_VOLUME_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,254}\Z")
+PRODUCTION_CAPACITY_FIELDS = frozenset(
+    {
+        "s3_bucket",
+        "storage_capacity_operator_config_sha256",
+        "storage_capacity_volume_identity",
+        "storage_capacity_provisioned_bytes",
+        "storage_capacity_metadata_overhead_bytes",
+        "storage_capacity_emergency_reserve_bytes",
+        "storage_capacity_headroom_bytes",
+        "storage_capacity_byte_limit",
+        "storage_capacity_object_limit",
+        "storage_capacity_deploy_descriptor_sha256",
+        "storage_capacity_max_age_seconds",
+    }
+)
 
 
 class WorkerSettings(BaseSettings):
@@ -28,15 +48,71 @@ class WorkerSettings(BaseSettings):
     source_manifest_sha256: str = "unknown"
     dependency_lock_sha256: str = "unknown"
     database_url: str = "sqlite+pysqlite:///./custombuild-worker.db"
+    database_statement_timeout_seconds: int = Field(default=60, ge=1, le=120)
+    database_lock_timeout_seconds: int = Field(default=10, ge=1, le=30)
     redis_url: str = "redis://localhost:6379/0"
     s3_endpoint: str = "http://localhost:9000"
     s3_access_key: str = "custombuild"
     s3_secret_key: str = "development-only-object-secret"  # noqa: S105
     s3_bucket: str = Field(default="custombuild-artifacts", min_length=1)
+    storage_capacity_operator_config_sha256: str = "unverified"
+    storage_capacity_volume_identity: str = "development-local-volume"
+    storage_capacity_provisioned_bytes: int = Field(
+        default=256 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER
+    )
+    storage_capacity_metadata_overhead_bytes: int = Field(
+        default=1024**3, ge=1, le=MAX_DATABASE_INTEGER
+    )
+    storage_capacity_emergency_reserve_bytes: int = Field(
+        default=4 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER
+    )
+    storage_capacity_headroom_bytes: int = Field(
+        default=5 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER
+    )
+    storage_capacity_byte_limit: int = Field(
+        default=251 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER
+    )
+    storage_capacity_object_limit: int = Field(
+        default=1_000_000, ge=1, le=MAX_DATABASE_INTEGER
+    )
+    storage_capacity_deploy_descriptor_sha256: str = "unverified"
+    storage_capacity_max_age_seconds: int = Field(default=600, ge=60, le=600)
 
     @model_validator(mode="after")
     def production_guards(self) -> WorkerSettings:
+        if self.database_lock_timeout_seconds >= self.database_statement_timeout_seconds:
+            raise ValueError(
+                "DATABASE_LOCK_TIMEOUT_SECONDS must be shorter than the statement timeout"
+            )
+        if (
+            self.storage_capacity_headroom_bytes
+            != self.storage_capacity_metadata_overhead_bytes
+            + self.storage_capacity_emergency_reserve_bytes
+        ):
+            raise ValueError(
+                "STORAGE_CAPACITY_HEADROOM_BYTES must equal metadata overhead plus "
+                "emergency reserve"
+            )
+        if self.storage_capacity_headroom_bytes >= self.storage_capacity_provisioned_bytes:
+            raise ValueError(
+                "STORAGE_CAPACITY_PROVISIONED_BYTES must exceed capacity headroom"
+            )
+        if self.storage_capacity_byte_limit > (
+            self.storage_capacity_provisioned_bytes
+            - self.storage_capacity_headroom_bytes
+        ):
+            raise ValueError(
+                "STORAGE_CAPACITY_BYTE_LIMIT exceeds attested usable storage"
+            )
         if self.app_env == "production":
+            missing_capacity_fields = sorted(
+                PRODUCTION_CAPACITY_FIELDS - self.model_fields_set
+            )
+            if missing_capacity_fields:
+                raise ValueError(
+                    "production worker requires explicit storage-capacity settings: "
+                    + ", ".join(missing_capacity_fields)
+                )
             validate_production_build_identity(
                 app_version=self.app_version,
                 vcs_ref=self.vcs_ref,
@@ -52,6 +128,38 @@ class WorkerSettings(BaseSettings):
             )
             validate_production_redis_url(self.redis_url)
             validate_production_s3_credentials(self.s3_access_key, self.s3_secret_key)
+            validate_production_s3_bucket(self.s3_bucket)
+            if (
+                _SHA256_PATTERN.fullmatch(
+                    self.storage_capacity_operator_config_sha256
+                )
+                is None
+            ):
+                raise ValueError(
+                    "production worker requires STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256"
+                )
+            if (
+                _VOLUME_IDENTITY_PATTERN.fullmatch(
+                    self.storage_capacity_volume_identity
+                )
+                is None
+            ):
+                raise ValueError(
+                    "production worker requires a canonical storage volume identity"
+                )
+            if (
+                _SHA256_PATTERN.fullmatch(
+                    self.storage_capacity_deploy_descriptor_sha256
+                )
+                is None
+            ):
+                raise ValueError(
+                    "production worker requires STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256"
+                )
+            if self.storage_capacity_max_age_seconds != 600:
+                raise ValueError(
+                    "production worker STORAGE_CAPACITY_MAX_AGE_SECONDS must be 600"
+                )
         return self
 
     @property

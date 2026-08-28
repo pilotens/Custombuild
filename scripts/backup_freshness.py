@@ -9,7 +9,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scripts.compose_backup import MANIFEST_SCHEMA, BackupError, verify_manifest
+from scripts.compose_backup import (
+    MANIFEST_SCHEMA,
+    BackupError,
+    validate_tombstone_history,
+    verify_manifest,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +46,19 @@ def _read_candidate(path: Path) -> BackupCandidate:
     database_snapshot = value.get("database_snapshot")
     if not isinstance(database_snapshot, dict):
         raise ValueError("manifest has no PostgreSQL snapshot")
+    row_counts = database_snapshot.get("row_counts")
+    tombstone_count = (
+        row_counts.get("storage_object_tombstones") if isinstance(row_counts, dict) else None
+    )
+    if isinstance(tombstone_count, bool) or not isinstance(tombstone_count, int):
+        raise ValueError("manifest has no exact tombstone table row count")
+    try:
+        validate_tombstone_history(
+            database_snapshot.get("tombstone_history"),
+            expected_count=tombstone_count,
+        )
+    except BackupError as exc:
+        raise ValueError("manifest has invalid tombstone history evidence") from exc
     return BackupCandidate(
         directory=path.parent,
         created_at=_timestamp(value.get("created_at"), label="creation"),
@@ -82,6 +100,12 @@ def backup_freshness(
         "invalid_manifest_count": len(invalid),
     }
     if not valid:
+        if invalid:
+            return {
+                **base,
+                "status": "INVALID",
+                "solution": "Inspect the invalid manifest, then create a new verified backup.",
+            }
         return {
             **base,
             "status": "MISSING",

@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from threading import Event, Thread, current_thread
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import app.api as api_module
+import app.artifact_operations as artifact_operations
 import app.auth as auth_module
 import app.design_service as design_service_module
 import app.storage as storage_module
@@ -35,9 +40,18 @@ from app.models import (
     Project,
     Release,
     Role,
+    StorageGlobalQuota,
+    StorageTenantQuota,
+    StoredObject,
+    StoredObjectState,
     User,
 )
 from app.schemas import BookcasePreviewInput, WorkspaceIntentV1
+from app.storage_quota import (
+    StorageObjectClaim,
+    commit_storage_batch_in_transaction,
+    reserve_storage_batch_in_transaction,
+)
 from botocore.exceptions import ClientError
 from custombuild_manufacturing import (
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
@@ -48,6 +62,9 @@ from custombuild_manufacturing import (
     DFM_GRAIN_REQUIRED_ACTION,
     DFM_GRAIN_RULE_MESSAGE,
     MANIFEST_CONTEXT_HASH_FIELDS,
+    MAX_CORE_DOCUMENT_BYTES,
+    MAX_EVIDENCE_ARTIFACTS,
+    MAX_EVIDENCE_TOTAL_BYTES,
     DFMIssue,
     DFMReport,
     Severity,
@@ -61,22 +78,82 @@ from custombuild_manufacturing.readiness import (
     LEGACY_WORKSHOP_READINESS_SCHEMA_VERSION,
     build_workshop_readiness_report,
 )
+from custombuild_worker import tasks as worker_tasks
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, func, select
+from redis.exceptions import RedisError
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
+from starlette.requests import ClientDisconnect
+from starlette.types import Message, Scope
 
 HEADERS = {"Authorization": "Bearer demo-nordic-owner"}
-FOUR_EYES_REVIEWER_HEADERS = {
-    "Authorization": "Bearer demo-nordic-four-eyes-reviewer"
-}
+FOUR_EYES_REVIEWER_HEADERS = {"Authorization": "Bearer demo-nordic-four-eyes-reviewer"}
 FOUR_EYES_REVIEWER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 _REAL_DADO_RETENTION_GATE = api_module._require_resolved_dado_retention
+
+
+class _SimulatedVerifiedDownload:
+    """API-boundary token; storage's sealed implementation has dedicated tests."""
+
+    def __init__(
+        self,
+        expectation: storage_module.StoredObjectExpectation,
+        payload: bytes | None = None,
+    ) -> None:
+        self.sha256 = expectation.sha256
+        self.size_bytes = expectation.size_bytes
+        self.content_type = expectation.content_type
+        self._expectation = expectation
+        self._payload = payload
+        self.closed = False
+        self.close_calls = 0
+
+    def validation_bytes(self, *, max_bytes: int) -> bytes:
+        assert not self.closed
+        payload = self._payload or _simulated_verified_review_document(
+            self._expectation,
+            max_bytes=max_bytes,
+        )
+        assert len(payload) <= max_bytes
+        return payload
+
+    def iter_bytes(self) -> Any:
+        payload = self._payload
+        remaining = self.size_bytes
+        offset = 0
+        try:
+            while remaining:
+                chunk_size = min(1024 * 1024, remaining)
+                remaining -= chunk_size
+                if payload is None:
+                    yield b"x" * chunk_size
+                else:
+                    yield payload[offset : offset + chunk_size]
+                    offset += chunk_size
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            self.close_calls += 1
 
 
 @pytest.fixture(autouse=True)
 def _avoid_external_object_storage(monkeypatch: pytest.MonkeyPatch) -> None:
     """Endpoint tests opt into simulated failures; storage behavior has focused unit tests."""
+
+    def open_verified(
+        expectation: storage_module.StoredObjectExpectation,
+        *,
+        max_bytes: int,
+    ) -> _SimulatedVerifiedDownload:
+        if expectation.size_bytes > max_bytes:
+            raise storage_module.ArtifactIntegrityError("size limit")
+        return _SimulatedVerifiedDownload(expectation)
 
     monkeypatch.setattr(
         api_module,
@@ -87,6 +164,11 @@ def _avoid_external_object_storage(monkeypatch: pytest.MonkeyPatch) -> None:
         api_module,
         "read_verified_stored_object",
         _simulated_verified_review_document,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "open_verified_stored_object",
+        open_verified,
     )
     monkeypatch.setattr(api_module, "store_immutable_object", lambda *_args: None)
     # Most integration cases exercise deeper approval, tamper and release
@@ -635,9 +717,7 @@ def approve_design(client: TestClient, base: str) -> None:
 
 
 def _enable_production_four_eyes(monkeypatch: pytest.MonkeyPatch) -> None:
-    configured = get_settings().model_copy(
-        update={"production_four_eyes_required": True}
-    )
+    configured = get_settings().model_copy(update={"production_four_eyes_required": True})
     monkeypatch.setattr(api_module, "get_settings", lambda: configured)
 
 
@@ -701,6 +781,102 @@ def upload_reference(
     assert payload["image_sha256"] == hashlib.sha256(REFERENCE_IMAGE_BYTES).hexdigest()
     assert "object_key" not in payload
     return payload
+
+
+@pytest.mark.parametrize("operation", ("reference", "evidence"))
+def test_upload_storage_io_does_not_block_the_application_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    storage_started = Event()
+    release_storage = Event()
+    upload_responses: list[Any] = []
+    health_responses: list[Any] = []
+
+    def blocking_store(*_args: object) -> None:
+        storage_started.set()
+        assert release_storage.wait(timeout=10)
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": f"Non-blocking {operation} storage"},
+        ).json()
+        if operation == "reference":
+            monkeypatch.setattr(api_module, "store_immutable_object", blocking_store)
+
+            def upload() -> None:
+                upload_responses.append(
+                    client.post(
+                        f"/v1/projects/{project['id']}/imports/inspect",
+                        headers=HEADERS,
+                        files={
+                            "document": (
+                                "non-blocking.png",
+                                REFERENCE_IMAGE_BYTES,
+                                "image/png",
+                            )
+                        },
+                    )
+                )
+
+            expected_status = 200
+        else:
+            version = client.post(
+                f"/v1/projects/{project['id']}/versions",
+                headers=HEADERS,
+                json=version_payload(project["id"]),
+            ).json()
+            monkeypatch.setattr(api_module, "store_evidence_object", blocking_store)
+
+            def upload() -> None:
+                upload_responses.append(
+                    client.post(
+                        f"/v1/projects/{project['id']}/evidence",
+                        headers=HEADERS,
+                        data={
+                            "evidence_type": "hardware",
+                            "rule_id": "CB-HARDWARE-001",
+                            "catalog_id": "non-blocking-hardware",
+                            "catalog_version": "2026.1",
+                            "design_hash": version["design_hash"],
+                        },
+                        files={
+                            "document": (
+                                "non-blocking.png",
+                                REFERENCE_IMAGE_BYTES,
+                                "image/png",
+                            )
+                        },
+                    )
+                )
+
+            expected_status = 201
+
+        upload_thread = Thread(target=upload)
+        upload_thread.start()
+        assert storage_started.wait(timeout=5)
+
+        health_complete = Event()
+
+        def check_health() -> None:
+            health_responses.append(client.get("/health"))
+            health_complete.set()
+
+        health_thread = Thread(target=check_health)
+        health_thread.start()
+        try:
+            assert health_complete.wait(timeout=2), "provider I/O blocked the event loop"
+        finally:
+            release_storage.set()
+            health_thread.join(timeout=5)
+            upload_thread.join(timeout=5)
+
+    assert len(health_responses) == 1
+    assert health_responses[0].status_code == 200
+    assert len(upload_responses) == 1
+    assert upload_responses[0].status_code == expected_status
 
 
 def verified_reference_provenance(
@@ -1049,9 +1225,10 @@ def test_explicit_back_material_roundtrips_preview_draft_and_frozen_revision() -
         preview_payload = preview_response.json()
         assert preview_payload["spec"]["material"]["material_id"] == "birch-plywood"
         assert preview_payload["spec"]["back_material"]["material_id"] == "mdf-6"
-        assert next(
-            part for part in preview_payload["parts"] if part["kind"] == "back"
-        )["material_id"] == "mdf-6"
+        assert (
+            next(part for part in preview_payload["parts"] if part["kind"] == "back")["material_id"]
+            == "mdf-6"
+        )
 
         saved = client.put(
             f"/v1/projects/{project['id']}/draft",
@@ -1066,9 +1243,7 @@ def test_explicit_back_material_roundtrips_preview_draft_and_frozen_revision() -
         assert saved.status_code == 200
         saved_payload = saved.json()
         assert saved_payload["spec_json"]["back_material_id"] == "mdf-6"
-        assert saved_payload["result_json"]["spec"]["back_material"]["material_id"] == (
-            "mdf-6"
-        )
+        assert saved_payload["result_json"]["spec"]["back_material"]["material_id"] == ("mdf-6")
         assert saved_payload["design_hash"] == preview_payload["design_hash"]
         restored_draft = client.get(
             f"/v1/projects/{project['id']}/draft",
@@ -1086,15 +1261,11 @@ def test_explicit_back_material_roundtrips_preview_draft_and_frozen_revision() -
         assert version.status_code == 201
         version_payload_json = version.json()
         assert version_payload_json["design_hash"] == preview_payload["design_hash"]
-        assert version_payload_json["spec_json"]["back_material"]["material_id"] == (
-            "mdf-6"
+        assert version_payload_json["spec_json"]["back_material"]["material_id"] == ("mdf-6")
+        assert version_payload_json["spec_json"]["back_material"]["version"] == ("screening-2026.1")
+        assert (
+            version_payload_json["result_json"]["spec"]["back_material"]["material_id"] == "mdf-6"
         )
-        assert version_payload_json["spec_json"]["back_material"]["version"] == (
-            "screening-2026.1"
-        )
-        assert version_payload_json["result_json"]["spec"]["back_material"][
-            "material_id"
-        ] == "mdf-6"
         restored_version = client.get(
             f"/v1/projects/{project['id']}/versions/{version_payload_json['revision']}",
             headers=HEADERS,
@@ -1541,7 +1712,7 @@ def test_reference_upload_and_clipboard_paste_reuse_the_same_immutable_digest(
     assert len(stored) == 1
     assert stored[0][1] == REFERENCE_IMAGE_BYTES
     assert stored[0][3] == uploaded["image_sha256"]
-    assert stored[0][0].endswith(f"/sha256/{uploaded['image_sha256']}")
+    assert stored[0][0].endswith(f"/sha256/{uploaded['image_sha256']}/{uploaded['import_id']}")
     with get_session_factory()() as session:
         assets = list(
             session.scalars(select(ImportedAsset).where(ImportedAsset.project_id == project["id"]))
@@ -2017,6 +2188,150 @@ def test_failed_generation_can_be_requeued_without_duplicate_successful_jobs() -
         assert repeated.json()["status"] == "queued"
 
 
+def test_failed_generation_retry_waits_for_active_storage_claim_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects", headers=HEADERS, json={"name": "Busy failed generation retry"}
+        ).json()
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"]),
+        ).json()
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+        generated = client.post(f"{base}/generate", headers=HEADERS, json={}).json()
+        with get_session_factory().begin() as session:
+            failed = session.get(GenerationJob, generated["id"])
+            assert failed is not None
+            failed.status = JobStatus.failed
+            failed.attempts = 4
+            failed.error = "retry fixture"
+            failed.finished_at = datetime.now(UTC)
+
+        monkeypatch.setattr(
+            api_module,
+            "prepare_generation_storage_retry",
+            lambda *_args, **_kwargs: 73,
+        )
+        response = client.post(f"{base}/generate", headers=HEADERS, json={})
+
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "73"
+        assert response.json()["detail"]["code"] == "GENERATION_STORAGE_RETRY_BUSY"
+        with get_session_factory()() as session:
+            failed_after = session.get(GenerationJob, generated["id"])
+            retry_events = [
+                event
+                for event in session.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_key.like("generation-manual-retry:%")
+                    )
+                )
+                if event.payload_json.get("job_id") == generated["id"]
+            ]
+            retry_audits = list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.action == "generation.requeued",
+                        AuditEvent.entity_id == generated["id"],
+                    )
+                )
+            )
+
+        assert failed_after is not None
+        assert failed_after.status == JobStatus.failed
+        assert failed_after.attempts == 4
+        assert failed_after.error == "retry fixture"
+        assert retry_events == []
+        assert retry_audits == []
+
+
+def test_failed_generation_retry_maps_a_late_trigger_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects", headers=HEADERS, json={"name": "Late retry claim race"}
+        ).json()
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"]),
+        ).json()
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+        generated = client.post(f"{base}/generate", headers=HEADERS, json={}).json()
+        with get_session_factory().begin() as session:
+            failed = session.get(GenerationJob, generated["id"])
+            assert failed is not None
+            failed.status = JobStatus.failed
+            failed.attempts = 2
+            failed.error = "late race fixture"
+
+        monkeypatch.setattr(
+            api_module,
+            "prepare_generation_storage_retry",
+            lambda *_args, **_kwargs: 0,
+        )
+        original_flush = Session.flush
+
+        def reject_late_claim(self: Session, *args: object, **kwargs: object) -> None:
+            retry_job = next(
+                (
+                    item
+                    for item in self.identity_map.values()
+                    if isinstance(item, GenerationJob) and item.id == generated["id"]
+                ),
+                None,
+            )
+            if retry_job is not None and retry_job.status == JobStatus.queued:
+                raise DBAPIError(
+                    "UPDATE generation_jobs",
+                    {},
+                    RuntimeError("STORAGE_GENERATION_RETRY_BUSY:17"),
+                    False,
+                )
+            original_flush(self, *args, **kwargs)
+
+        monkeypatch.setattr(Session, "flush", reject_late_claim)
+        response = client.post(f"{base}/generate", headers=HEADERS, json={})
+
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "17"
+        assert response.json()["detail"]["code"] == "GENERATION_STORAGE_RETRY_BUSY"
+        with get_session_factory()() as session:
+            failed_after = session.get(GenerationJob, generated["id"])
+            retry_events = [
+                event
+                for event in session.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_key.like("generation-manual-retry:%")
+                    )
+                )
+                if event.payload_json.get("job_id") == generated["id"]
+            ]
+            retry_audits = list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.action == "generation.requeued",
+                        AuditEvent.entity_id == generated["id"],
+                    )
+                )
+            )
+
+        assert failed_after is not None
+        assert failed_after.status == JobStatus.failed
+        assert failed_after.attempts == 2
+        assert failed_after.error == "late race fixture"
+        assert retry_events == []
+        assert retry_audits == []
+
+
 @pytest.mark.parametrize(
     "invalid_selection",
     (
@@ -2186,6 +2501,75 @@ def test_api_readiness_accepts_canonical_nonblocking_generation_claims(
 
     assert api_module._generation_result_claims_are_safe(result) is True
     assert api_module._workshop_readiness_is_valid(result) is True
+
+
+def _bounded_artifact_result(
+    evidence_artifacts: list[dict[str, object]],
+) -> dict[str, object]:
+    return {
+        "bundle_object_key": "private/production.zip",
+        "bundle_sha256": "a" * 64,
+        "bundle_size_bytes": 1,
+        "manifest_object_key": "private/manifest.json",
+        "manifest_sha256": "b" * 64,
+        "manifest_size_bytes": 1,
+        "evidence_artifacts": evidence_artifacts,
+    }
+
+
+def test_artifact_expectations_reject_inventory_count_before_iterating_entries() -> None:
+    evidence = [
+        {
+            "kind": f"extra_{index:03d}",
+            "object_key": f"private/evidence/{index:03d}",
+            "sha256": "c" * 64,
+            "size_bytes": 1,
+            "content_type": "application/octet-stream",
+        }
+        for index in range(MAX_EVIDENCE_ARTIFACTS + 1)
+    ]
+    job = SimpleNamespace(result_json=_bounded_artifact_result(evidence))
+
+    expectations, invalid = api_module._artifact_expectations(job)
+
+    assert set(expectations) == {"production_bundle", "manifest"}
+    assert invalid == ["evidence_artifacts"]
+
+
+def test_artifact_expectations_reject_total_bytes_and_duplicate_object_keys() -> None:
+    item_size = 3 * 1024 * 1024
+    evidence = [
+        {
+            "kind": f"extra_{index:03d}",
+            "object_key": f"private/evidence/{index:03d}",
+            "sha256": "c" * 64,
+            "size_bytes": item_size,
+            "content_type": "application/octet-stream",
+        }
+        for index in range(MAX_EVIDENCE_TOTAL_BYTES // item_size + 1)
+    ]
+    job = SimpleNamespace(result_json=_bounded_artifact_result(evidence))
+
+    _expectations, invalid = api_module._artifact_expectations(job)
+
+    assert invalid == ["evidence_artifacts"]
+
+    duplicate_key = _bounded_artifact_result(
+        [
+            {
+                "kind": "dfm_report",
+                "object_key": "private/manifest.json",
+                "sha256": "d" * 64,
+                "size_bytes": 1,
+                "content_type": "application/json",
+            }
+        ]
+    )
+    duplicate_expectations, duplicate_invalid = api_module._artifact_expectations(
+        SimpleNamespace(result_json=duplicate_key)
+    )
+    assert "dfm_report" not in duplicate_expectations
+    assert duplicate_invalid == ["dfm_report"]
 
 
 def _manifest_document_for_job(
@@ -2508,6 +2892,103 @@ def _simulated_verified_review_document(
     return payload
 
 
+def _persist_committed_artifact_records(
+    session: Session,
+    job: GenerationJob,
+    records: list[dict[str, Any]],
+) -> None:
+    """Persist worker-shaped artifact rows with their exact committed ledger batch."""
+
+    version = session.get(DesignVersion, job.design_version_id)
+    assert version is not None
+    lease_token = str(uuid4())
+    attempt_id = worker_tasks._generation_attempt_id(job.id, lease_token)
+    claims = tuple(
+        StorageObjectClaim(
+            project_id=version.project_id,
+            object_key=str(record["object_key"]),
+            sha256=str(record["sha256"]),
+            size_bytes=int(record["size_bytes"]),
+            media_type=str(record["content_type"]),
+            owner_type="generation_job",
+            owner_id=job.id,
+            idempotency_key=(
+                f"generation:{job.id}:{record['kind']}:"
+                f"{worker_tasks._generation_artifact_id(attempt_id, str(record['kind']))}"
+            ),
+        )
+        for record in records
+    )
+    reserve_storage_batch_in_transaction(
+        session,
+        job.organization_id,
+        claims,
+        lease_token=lease_token,
+        lease_duration=timedelta(minutes=15),
+    )
+    commit_storage_batch_in_transaction(
+        session,
+        job.organization_id,
+        claims,
+        lease_token=lease_token,
+    )
+    for record in records:
+        artifact_id = worker_tasks._generation_artifact_id(
+            attempt_id,
+            str(record["kind"]),
+        )
+        session.add(
+            Artifact(
+                id=artifact_id,
+                organization_id=job.organization_id,
+                generation_job_id=job.id,
+                kind=str(record["kind"]),
+                object_key=str(record["object_key"]),
+                sha256=str(record["sha256"]),
+                size_bytes=int(record["size_bytes"]),
+                content_type=str(record["content_type"]),
+            )
+        )
+
+
+def _rewrite_committed_artifact_identity(
+    session: Session,
+    job: GenerationJob,
+    artifact: Artifact,
+    *,
+    sha256: str,
+    size_bytes: int,
+    content_type: str,
+) -> None:
+    """Keep a checksum-consistent fixture rewrite exact in ledger and quota counters."""
+
+    version = session.get(DesignVersion, job.design_version_id)
+    stored = session.get(StoredObject, (job.organization_id, artifact.object_key))
+    global_quota = session.get(StorageGlobalQuota, 1)
+    tenant_quota = session.get(StorageTenantQuota, job.organization_id)
+    assert version is not None
+    assert stored is not None
+    assert stored.state == StoredObjectState.committed
+    assert stored.project_id == version.project_id
+    assert stored.owner_type == "generation_job"
+    assert stored.owner_id == job.id
+    assert stored.idempotency_key == (f"generation:{job.id}:{artifact.kind}:{artifact.id}")
+    assert global_quota is not None
+    assert tenant_quota is not None
+
+    byte_delta = size_bytes - stored.size_bytes
+    global_quota.committed_bytes += byte_delta
+    tenant_quota.committed_bytes += byte_delta
+    assert global_quota.committed_bytes >= 0
+    assert tenant_quota.committed_bytes >= 0
+    stored.sha256 = sha256
+    stored.size_bytes = size_bytes
+    stored.media_type = content_type
+    artifact.sha256 = sha256
+    artifact.size_bytes = size_bytes
+    artifact.content_type = content_type
+
+
 def _complete_generation(
     job_id: str,
     _manifest_sha_seed: str,
@@ -2654,18 +3135,7 @@ def _complete_generation(
             },
             *evidence_artifacts,
         ]
-        for record in records:
-            session.add(
-                Artifact(
-                    organization_id=DEV_ORG_NORDIC,
-                    generation_job_id=job.id,
-                    kind=str(record["kind"]),
-                    object_key=str(record["object_key"]),
-                    sha256=str(record["sha256"]),
-                    size_bytes=int(record["size_bytes"]),
-                    content_type=str(record["content_type"]),
-                )
-            )
+        _persist_committed_artifact_records(session, job, records)
 
 
 def _complete_blocked_cam_generation(
@@ -2855,18 +3325,7 @@ def _complete_blocked_cam_generation(
             },
             *evidence_artifacts,
         ]
-        for record in records:
-            session.add(
-                Artifact(
-                    organization_id=DEV_ORG_NORDIC,
-                    generation_job_id=job.id,
-                    kind=str(record["kind"]),
-                    object_key=str(record["object_key"]),
-                    sha256=str(record["sha256"]),
-                    size_bytes=int(record["size_bytes"]),
-                    content_type=str(record["content_type"]),
-                )
-            )
+        _persist_committed_artifact_records(session, job, records)
         return {
             readiness_expectation.object_key: readiness_payload,
             dfm_expectation.object_key: dfm_payload,
@@ -2973,9 +3432,16 @@ def _convert_to_generated_status_with_missing_manifest_cam(
                 )
             )
             assert artifact is not None
-            artifact.sha256 = str(item["sha256"])
-            artifact.size_bytes = len(payload)
+            _rewrite_committed_artifact_identity(
+                session,
+                job,
+                artifact,
+                sha256=str(item["sha256"]),
+                size_bytes=len(payload),
+                content_type=artifact.content_type,
+            )
 
+        added_records: list[dict[str, Any]] = []
         for kind, content_type in (
             ("operations", "application/json"),
             ("validation_backplot", "image/svg+xml"),
@@ -2989,13 +3455,8 @@ def _convert_to_generated_status_with_missing_manifest_cam(
                 "content_type": content_type,
             }
             result["evidence_artifacts"].append(item)
-            session.add(
-                Artifact(
-                    organization_id=DEV_ORG_NORDIC,
-                    generation_job_id=job.id,
-                    **item,
-                )
-            )
+            added_records.append(item)
+        _persist_committed_artifact_records(session, job, added_records)
 
         readiness_expectation = storage_module.StoredObjectExpectation(
             object_key=str(readiness_item["object_key"]),
@@ -3055,8 +3516,14 @@ def _convert_to_generated_status_with_missing_manifest_cam(
             )
         )
         assert manifest_artifact is not None
-        manifest_artifact.sha256 = manifest_sha
-        manifest_artifact.size_bytes = len(manifest_payload)
+        _rewrite_committed_artifact_identity(
+            session,
+            job,
+            manifest_artifact,
+            sha256=manifest_sha,
+            size_bytes=len(manifest_payload),
+            content_type=manifest_artifact.content_type,
+        )
         result.update(
             design_review_package_status=package_status,
             workshop_readiness=readiness,
@@ -3113,9 +3580,14 @@ def _persist_strict_review_documents(
             )
         )
         assert readiness_artifact is not None
-        readiness_artifact.sha256 = readiness_sha
-        readiness_artifact.size_bytes = len(readiness_payload)
-        readiness_artifact.content_type = readiness_content_type
+        _rewrite_committed_artifact_identity(
+            session,
+            job,
+            readiness_artifact,
+            sha256=readiness_sha,
+            size_bytes=len(readiness_payload),
+            content_type=readiness_content_type,
+        )
 
         readiness_expectation = storage_module.StoredObjectExpectation(
             object_key=str(readiness_item["object_key"]),
@@ -3196,8 +3668,14 @@ def _persist_strict_review_documents(
             )
         )
         assert manifest_artifact is not None
-        manifest_artifact.sha256 = manifest_sha
-        manifest_artifact.size_bytes = len(manifest_payload)
+        _rewrite_committed_artifact_identity(
+            session,
+            job,
+            manifest_artifact,
+            sha256=manifest_sha,
+            size_bytes=len(manifest_payload),
+            content_type=manifest_artifact.content_type,
+        )
         job.result_json = result
         flag_modified(job, "result_json")
         return {
@@ -3259,9 +3737,14 @@ def _rewrite_bound_review_document(
             )
         )
         assert artifact is not None
-        artifact.sha256 = digest
-        artifact.size_bytes = len(payload)
-        artifact.content_type = content_type
+        _rewrite_committed_artifact_identity(
+            session,
+            job,
+            artifact,
+            sha256=digest,
+            size_bytes=len(payload),
+            content_type=content_type,
+        )
 
         manifest_key = str(result["manifest_object_key"])
         manifest = json.loads(documents[manifest_key])
@@ -3287,8 +3770,14 @@ def _rewrite_bound_review_document(
             )
         )
         assert manifest_artifact is not None
-        manifest_artifact.sha256 = manifest_sha
-        manifest_artifact.size_bytes = len(manifest_payload)
+        _rewrite_committed_artifact_identity(
+            session,
+            job,
+            manifest_artifact,
+            sha256=manifest_sha,
+            size_bytes=len(manifest_payload),
+            content_type=manifest_artifact.content_type,
+        )
         job.result_json = result
         flag_modified(job, "result_json")
         documents[object_key] = payload
@@ -3341,8 +3830,14 @@ def _remove_bound_review_document(
             )
         )
         assert manifest_artifact is not None
-        manifest_artifact.sha256 = manifest_sha
-        manifest_artifact.size_bytes = len(manifest_payload)
+        _rewrite_committed_artifact_identity(
+            session,
+            job,
+            manifest_artifact,
+            sha256=manifest_sha,
+            size_bytes=len(manifest_payload),
+            content_type=manifest_artifact.content_type,
+        )
         job.result_json = result
         flag_modified(job, "result_json")
         documents.pop(str(item["object_key"]))
@@ -3370,6 +3865,79 @@ def _create_strict_review_job(
     generated = client.post(f"{base}/generate", headers=HEADERS, json={}).json()
     _complete_generation(generated["id"], "7" * 64)
     return version, generated, base
+
+
+def _create_strict_review_job_with_bound_evidence(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    name: str,
+) -> tuple[dict[str, Any], dict[str, Any], str, str, str, dict[str, bytes]]:
+    """Create a checked job whose request is bound to one mutable evidence row."""
+
+    monkeypatch.setattr(api_module, "store_evidence_object", lambda *_args: None)
+    project = client.post(
+        "/v1/projects",
+        headers=HEADERS,
+        json={"name": name},
+    ).json()
+    version = client.post(
+        f"/v1/projects/{project['id']}/versions",
+        headers=HEADERS,
+        json=version_payload(project["id"]),
+    ).json()
+    uploaded = client.post(
+        f"/v1/projects/{project['id']}/evidence",
+        headers=HEADERS,
+        data={
+            "evidence_type": "hardware",
+            "rule_id": "CB-HARDWARE-001",
+            "catalog_id": "hardware-current-at-generation",
+            "catalog_version": "2026.1",
+            "design_hash": version["design_hash"],
+        },
+        files={
+            "document": (
+                "hardware.png",
+                b"\x89PNG\r\n\x1a\nbound-evidence-race",
+                "image/png",
+            )
+        },
+    )
+    assert uploaded.status_code == 201
+    evidence_id = str(uploaded.json()["id"])
+    with get_session_factory()() as session:
+        evidence = session.get(ExternalEvidence, evidence_id)
+        assert evidence is not None
+        evidence_object_key = evidence.object_key
+
+    base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+    assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+    approve_design(client, base)
+    generated_response = client.post(
+        f"{base}/generate",
+        headers=HEADERS,
+        json=valid_production_context() | {"external_evidence_ids": [evidence_id]},
+    )
+    assert generated_response.status_code == 202
+    generated = generated_response.json()
+    _complete_generation(generated["id"], "7" * 64)
+    with get_session_factory()() as session:
+        stored_job = session.get(GenerationJob, generated["id"])
+        assert stored_job is not None
+        readiness = build_workshop_readiness_report(
+            authoritative_cad=True,
+            dfm_passed=True,
+            operation_count=36,
+            setup_count=2,
+            validation_backplot=True,
+            validation_program=True,
+            edge_band_selection_required=True,
+            material_grain_binding_required=False,
+            external_evidence=tuple(stored_job.request_json["external_evidence"]),
+        ).as_dict()
+    documents = _persist_strict_review_documents(generated["id"], readiness=readiness)
+    return version, generated, base, evidence_id, evidence_object_key, documents
 
 
 def _review_mutation_snapshot(version_id: str) -> tuple[Any, ...]:
@@ -3462,9 +4030,7 @@ def test_four_eyes_accepts_two_users_and_rechecks_manipulated_release(
             approvals = {
                 approval.approval_type: approval
                 for approval in session.scalars(
-                    select(Approval).where(
-                        Approval.design_version_id == version["id"]
-                    )
+                    select(Approval).where(Approval.design_version_id == version["id"])
                 )
             }
             assert approvals["design"].approved_by == DEV_USER_NORDIC
@@ -3485,14 +4051,106 @@ def test_four_eyes_accepts_two_users_and_rechecks_manipulated_release(
     with get_session_factory()() as session:
         persisted = session.get(DesignVersion, version["id"])
         releases = list(
-            session.scalars(
-                select(Release).where(Release.design_version_id == version["id"])
-            )
+            session.scalars(select(Release).where(Release.design_version_id == version["id"]))
         )
     assert persisted is not None
     assert persisted.status == DesignStatus.released
     assert persisted.immutable is True
     assert len(releases) == 1
+
+
+@pytest.mark.parametrize(
+    ("approval_type", "changed_values", "expected_code"),
+    (
+        (
+            "design",
+            {"reason": "Design approval changed during evidence verification"},
+            "DESIGN_APPROVAL_SNAPSHOT_STALE",
+        ),
+        (
+            "cam",
+            {"manifest_sha256": "f" * 64},
+            "CAM_APPROVAL_SNAPSHOT_STALE",
+        ),
+    ),
+)
+def test_release_reloads_approvals_changed_during_review_storage_io(
+    monkeypatch: pytest.MonkeyPatch,
+    approval_type: str,
+    changed_values: dict[str, object],
+    expected_code: str,
+) -> None:
+    """A cached design or CAM approval must never survive the final object read."""
+
+    changed = False
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"Release approval race {approval_type}",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+        cam = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "CAM evidence reviewed before concurrent mutation",
+                "generation_job_id": generated["id"],
+            },
+        )
+        assert cam.status_code == 200, cam.json()
+
+        def read_then_change_approval(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> bytes:
+            nonlocal changed
+            payload = documents[expectation.object_key]
+            assert len(payload) <= max_bytes
+            assert len(payload) == expectation.size_bytes
+            assert hashlib.sha256(payload).hexdigest() == expectation.sha256
+            if not changed:
+                changed = True
+                with get_session_factory().begin() as racing_session:
+                    racing_session.execute(
+                        update(Approval)
+                        .where(
+                            Approval.design_version_id == version["id"],
+                            Approval.approval_type == approval_type,
+                        )
+                        .values(**changed_values)
+                        .execution_options(synchronize_session=False)
+                    )
+            return payload
+
+        monkeypatch.setattr(
+            api_module,
+            "read_verified_stored_object",
+            read_then_change_approval,
+        )
+        released = client.post(
+            f"{base}/release",
+            headers=HEADERS,
+            json={
+                "release_number": f"RACE-{approval_type.upper()}",
+                "confirmation": "RELEASE",
+            },
+        )
+
+    assert changed is True
+    assert released.status_code == 409
+    assert released.json()["detail"]["code"] == expected_code
+    with get_session_factory()() as session:
+        persisted_version = session.get(DesignVersion, version["id"])
+        releases = list(
+            session.scalars(select(Release).where(Release.design_version_id == version["id"]))
+        )
+    assert persisted_version is not None
+    assert persisted_version.status == DesignStatus.approved
+    assert persisted_version.immutable is False
+    assert releases == []
 
 
 def test_manifest_context_uses_unprefixed_domain_template_version() -> None:
@@ -3570,8 +4228,7 @@ def test_artifact_access_revalidates_current_bound_external_evidence(
         generated = client.post(
             f"{base}/generate",
             headers=HEADERS,
-            json=valid_production_context()
-            | {"external_evidence_ids": [uploaded.json()["id"]]},
+            json=valid_production_context() | {"external_evidence_ids": [uploaded.json()["id"]]},
         )
         assert generated.status_code == 202
         job = generated.json()
@@ -3609,6 +4266,76 @@ def test_artifact_access_revalidates_current_bound_external_evidence(
     assert calls
 
 
+def test_artifact_listing_rejects_evidence_revoked_during_storage_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The limiter and DB refresh must cover the final external-object read."""
+
+    limiter_attempts: list[int] = []
+    mutated = False
+    with TestClient(app) as client:
+        (
+            _version,
+            generated,
+            _base,
+            evidence_id,
+            evidence_object_key,
+            documents,
+        ) = _create_strict_review_job_with_bound_evidence(
+            client,
+            monkeypatch,
+            name="Evidence revoked during artifact listing",
+        )
+        _install_strict_review_reader(monkeypatch, documents, [])
+
+        def verify_then_revoke(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            stream_hash: bool,
+        ) -> None:
+            nonlocal mutated
+            if expectation.object_key != evidence_object_key or not stream_hash or mutated:
+                return
+            mutated = True
+            try:
+                unexpected_lease = api_module._TENANT_REVIEW_LIMITER.acquire(DEV_ORG_NORDIC)
+            except HTTPException as exc:
+                limiter_attempts.append(exc.status_code)
+            else:
+                limiter_attempts.append(200)
+                unexpected_lease.close()
+            with get_session_factory().begin() as racing_session:
+                racing_session.execute(
+                    update(ExternalEvidence)
+                    .where(ExternalEvidence.id == evidence_id)
+                    .values(revoked_at=datetime.now(UTC))
+                    .execution_options(synchronize_session=False)
+                )
+
+        signed = False
+
+        def must_not_sign(_artifact_id: str, _organization_id: str, _expires: int) -> str:
+            nonlocal signed
+            signed = True
+            raise AssertionError("revoked evidence received a signed artifact link")
+
+        monkeypatch.setattr(api_module, "verify_stored_object", verify_then_revoke)
+        monkeypatch.setattr(api_module, "sign_artifact_access", must_not_sign)
+        response = client.get(
+            f"/v1/jobs/{generated['id']}/artifacts",
+            headers=HEADERS,
+        )
+
+    assert mutated is True
+    assert limiter_attempts == [429]
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] in {
+        "EXTERNAL_EVIDENCE_STALE",
+        "EXTERNAL_EVIDENCE_SNAPSHOT_STALE",
+    }
+    assert signed is False
+
+
 def test_stock_selection_and_generation_plan_are_exact_downloadable_review_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3642,16 +4369,1290 @@ def test_stock_selection_and_generation_plan_are_exact_downloadable_review_evide
         assert listing.status_code == 200
         kinds = {item["kind"] for item in listing.json()}
         assert {"stock_selection", "generation_plan"} <= kinds
-        bundle = next(item for item in listing.json() if item["kind"] == "production_bundle")
-        download = client.get(
-            bundle["download_path"],
-            headers=HEADERS,
-            follow_redirects=False,
-        )
-        assert download.status_code == 307
+        expected_filenames = {
+            "stock_selection": (f"custombuild-stock-selection-rev-{version['revision']}.json"),
+            "generation_plan": (f"custombuild-generation-plan-rev-{version['revision']}.json"),
+        }
+        for kind, expected_filename in expected_filenames.items():
+            artifact = next(item for item in listing.json() if item["kind"] == kind)
+            download = client.get(
+                artifact["download_path"],
+                headers=HEADERS,
+                follow_redirects=False,
+            )
+            assert download.status_code == 200
+            assert len(download.content) == artifact["size_bytes"]
+            assert download.headers["content-type"] == "application/json"
+            assert download.headers["content-length"] == str(artifact["size_bytes"])
+            assert download.headers["etag"] == f'"{artifact["sha256"]}"'
+            assert download.headers["digest"] == (
+                "sha-256=" + base64.b64encode(bytes.fromhex(artifact["sha256"])).decode("ascii")
+            )
+            assert download.headers["content-disposition"] == (
+                f'attachment; filename="{expected_filename}"'
+            )
+            assert download.headers.get_list("cache-control") == [
+                "private, no-store, no-transform, max-age=0"
+            ]
+            assert "location" not in download.headers
 
     plan_reads = [key for key, _max_bytes in calls if key == str(plan_item["object_key"])]
     assert len(plan_reads) == 2
+
+
+def test_download_reuses_the_verified_target_spool_and_checks_every_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name="One GET verified manifest download",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        reads: list[tuple[str, int]] = []
+        _install_strict_review_reader(monkeypatch, documents, reads)
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            expectations, invalid = api_module._artifact_expectations(job)
+            assert not invalid
+            expectation = expectations["manifest"]
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "manifest",
+                )
+            )
+            assert artifact is not None
+
+        opened: list[_SimulatedVerifiedDownload] = []
+
+        def open_manifest(
+            observed: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            assert observed == expectation
+            assert max_bytes == MAX_CORE_DOCUMENT_BYTES
+            token = _SimulatedVerifiedDownload(observed, documents[observed.object_key])
+            opened.append(token)
+            return token
+
+        monkeypatch.setattr(api_module, "open_verified_stored_object", open_manifest)
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = api_module.sign_artifact_access(
+            artifact.id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        response = client.get(
+            f"/v1/artifacts/{artifact.id}/download?expires={expires}&signature={signature}",
+            headers=HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200
+    assert response.content == documents[expectation.object_key]
+    assert len(opened) == 1
+    assert opened[0].closed is True
+    assert opened[0].close_calls == 1
+    assert expectation.object_key not in {key for key, _limit in reads}
+    assert len(reads) == 5
+
+
+def test_download_closes_the_verified_target_when_a_sibling_fails_integrity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name="Sibling evidence blocks download",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            expectations, invalid = api_module._artifact_expectations(job)
+            assert not invalid
+            target = expectations["production_bundle"]
+            failed_sibling_key = expectations["design_glb"].object_key
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "production_bundle",
+                )
+            )
+            assert artifact is not None
+
+        opened: list[_SimulatedVerifiedDownload] = []
+
+        def open_bundle(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            assert expectation == target
+            assert expectation.size_bytes <= max_bytes
+            token = _SimulatedVerifiedDownload(expectation)
+            opened.append(token)
+            return token
+
+        def reject_sibling(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            stream_hash: bool,
+        ) -> None:
+            assert stream_hash is False
+            if expectation.object_key == failed_sibling_key:
+                raise api_module.ArtifactIntegrityError("private sibling corruption")
+
+        monkeypatch.setattr(api_module, "open_verified_stored_object", open_bundle)
+        monkeypatch.setattr(api_module, "verify_stored_object", reject_sibling)
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = api_module.sign_artifact_access(
+            artifact.id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        response = client.get(
+            f"/v1/artifacts/{artifact.id}/download?expires={expires}&signature={signature}",
+            headers=HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 409
+    assert "private sibling corruption" not in response.text
+    assert len(opened) == 1
+    assert opened[0].close_calls == 1
+
+
+@pytest.mark.parametrize(
+    "invalidation",
+    ("new_revision", "archived_project", "superseded_version"),
+)
+def test_download_rechecks_current_revision_after_storage_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    invalidation: str,
+) -> None:
+    """A verified spool must not escape after concurrent design invalidation."""
+
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name=f"Download current-version race {invalidation}",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            stored_version = session.get(DesignVersion, job.design_version_id)
+            assert stored_version is not None
+            expectations, invalid = api_module._artifact_expectations(job)
+            assert not invalid
+            target = expectations["production_bundle"]
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "production_bundle",
+                )
+            )
+            assert artifact is not None
+            artifact_id = artifact.id
+            project_id = stored_version.project_id
+            revision = stored_version.revision
+            version_id = stored_version.id
+
+        opened: list[_SimulatedVerifiedDownload] = []
+
+        def open_then_invalidate(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            assert expectation == target
+            assert expectation.size_bytes <= max_bytes
+            with get_session_factory().begin() as racing_session:
+                if invalidation == "new_revision":
+                    racing_session.execute(
+                        update(Project)
+                        .where(Project.id == project_id)
+                        .values(current_revision=revision + 1)
+                        .execution_options(synchronize_session=False)
+                    )
+                elif invalidation == "archived_project":
+                    racing_session.execute(
+                        update(Project)
+                        .where(Project.id == project_id)
+                        .values(archived=True)
+                        .execution_options(synchronize_session=False)
+                    )
+                else:
+                    racing_session.execute(
+                        update(DesignVersion)
+                        .where(DesignVersion.id == version_id)
+                        .values(status=DesignStatus.superseded)
+                        .execution_options(synchronize_session=False)
+                    )
+            token = _SimulatedVerifiedDownload(expectation)
+            opened.append(token)
+            return token
+
+        monkeypatch.setattr(
+            api_module,
+            "open_verified_stored_object",
+            open_then_invalidate,
+        )
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = api_module.sign_artifact_access(
+            artifact_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        response = client.get(
+            f"/v1/artifacts/{artifact_id}/download?expires={expires}&signature={signature}",
+            headers=HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Production artifacts are stale after a design change"
+    assert len(opened) == 1
+    assert opened[0].close_calls == 1
+
+
+def test_download_rechecks_current_revision_after_bound_evidence_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last potentially remote evidence check must precede the final refresh."""
+
+    real_bound_check = api_module._require_current_bound_job_evidence
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name="Download bound-evidence current-version race",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            stored_version = session.get(DesignVersion, job.design_version_id)
+            assert stored_version is not None
+            expectations, invalid = api_module._artifact_expectations(job)
+            assert not invalid
+            target = expectations["production_bundle"]
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "production_bundle",
+                )
+            )
+            assert artifact is not None
+            artifact_id = artifact.id
+            project_id = stored_version.project_id
+            revision = stored_version.revision
+
+        opened: list[_SimulatedVerifiedDownload] = []
+
+        def open_bundle(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            assert expectation == target
+            assert expectation.size_bytes <= max_bytes
+            token = _SimulatedVerifiedDownload(expectation)
+            opened.append(token)
+            return token
+
+        def check_then_supersede(
+            session: Session,
+            organization_id: str,
+            job: GenerationJob,
+            version: DesignVersion,
+        ) -> None:
+            real_bound_check(session, organization_id, job, version)
+            with get_session_factory().begin() as racing_session:
+                racing_session.execute(
+                    update(Project)
+                    .where(Project.id == project_id)
+                    .values(current_revision=revision + 1)
+                    .execution_options(synchronize_session=False)
+                )
+
+        monkeypatch.setattr(api_module, "open_verified_stored_object", open_bundle)
+        monkeypatch.setattr(
+            api_module,
+            "_require_current_bound_job_evidence",
+            check_then_supersede,
+        )
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = api_module.sign_artifact_access(
+            artifact_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        response = client.get(
+            f"/v1/artifacts/{artifact_id}/download?expires={expires}&signature={signature}",
+            headers=HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Production artifacts are stale after a design change"
+    assert len(opened) == 1
+    assert opened[0].close_calls == 1
+
+
+def test_artifact_listing_rechecks_current_revision_after_review_storage_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Listing must not mint signed links after concurrent supersession."""
+
+    real_review_check = api_module._require_review_evidence
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name="Artifact listing current-version race",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            stored_version = session.get(DesignVersion, job.design_version_id)
+            assert stored_version is not None
+            project_id = stored_version.project_id
+            revision = stored_version.revision
+
+        def check_then_supersede(
+            session: Session,
+            organization_id: str,
+            job: GenerationJob,
+            *,
+            stream_hash: bool,
+            require_cam: bool,
+            bind_review_documents: bool,
+        ) -> None:
+            real_review_check(
+                session,
+                organization_id,
+                job,
+                stream_hash=stream_hash,
+                require_cam=require_cam,
+                bind_review_documents=bind_review_documents,
+            )
+            with get_session_factory().begin() as racing_session:
+                racing_session.execute(
+                    update(Project)
+                    .where(Project.id == project_id)
+                    .values(current_revision=revision + 1)
+                    .execution_options(synchronize_session=False)
+                )
+
+        signed = False
+
+        def must_not_sign(_artifact_id: str, _organization_id: str, _expires: int) -> str:
+            nonlocal signed
+            signed = True
+            raise AssertionError("stale artifact link was signed")
+
+        monkeypatch.setattr(api_module, "_require_review_evidence", check_then_supersede)
+        monkeypatch.setattr(api_module, "sign_artifact_access", must_not_sign)
+        response = client.get(
+            f"/v1/jobs/{generated['id']}/artifacts",
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Production artifacts are stale after a design change"
+    assert signed is False
+
+
+@pytest.mark.parametrize("fail_after_messages", (0, 1), ids=("response-start", "first-body"))
+def test_download_response_closes_on_real_asgi_disconnect(
+    fail_after_messages: int,
+) -> None:
+    payload = b"never requested because the client disconnected"
+    expectation = storage_module.StoredObjectExpectation(
+        object_key="private/pre-first-byte.zip",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
+        content_type="application/zip",
+    )
+    verified = _SimulatedVerifiedDownload(expectation, payload)
+
+    response = api_module._verified_artifact_response(
+        verified,
+        filename="custombuild-pre-first-byte.zip",
+    )
+
+    assert verified.closed is False
+    assert verified.close_calls == 0
+
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        if len(sent) == fail_after_messages:
+            raise OSError("simulated disconnected client")
+        sent.append(message)
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/v1/artifacts/example/download",
+        "raw_path": b"/v1/artifacts/example/download",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 443),
+    }
+
+    with pytest.raises(ClientDisconnect):
+        asyncio.run(response(scope, receive, send))
+
+    assert verified.closed is True
+    assert verified.close_calls == 1
+
+
+def test_download_stream_deadline_closes_bytes_and_releases_the_tenant_slot() -> None:
+    payload = b"slow consumer bytes"
+    expectation = storage_module.StoredObjectExpectation(
+        object_key="private/slow-consumer.zip",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size_bytes=len(payload),
+        content_type="application/zip",
+    )
+    verified = _SimulatedVerifiedDownload(expectation, payload)
+    limiter = api_module._TenantDownloadLimiter()
+    lease = limiter.acquire(DEV_ORG_NORDIC)
+    response = api_module._verified_artifact_response(
+        verified,
+        filename="custombuild-slow-consumer.zip",
+        tenant_lease=lease,
+        stream_timeout_seconds=0.01,
+    )
+
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        if message["type"] == "http.response.body":
+            await asyncio.Event().wait()
+
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.4"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "https",
+        "path": "/v1/artifacts/example/download",
+        "raw_path": b"/v1/artifacts/example/download",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 443),
+    }
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(response(scope, receive, send))
+
+    assert verified.closed is True
+    assert verified.close_calls == 1
+    replacement = limiter.acquire(DEV_ORG_NORDIC)
+    replacement.close()
+
+
+def test_download_request_scope_closes_before_dependency_teardown_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dependency cleanup cannot strand response-owned bytes before __call__."""
+
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name="Download dependency teardown ownership",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            expectations, invalid = api_module._artifact_expectations(job)
+            assert not invalid
+            target = expectations["production_bundle"]
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "production_bundle",
+                )
+            )
+            assert artifact is not None
+            artifact_id = artifact.id
+
+        opened: list[_SimulatedVerifiedDownload] = []
+
+        def open_bundle(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            assert expectation == target
+            assert expectation.size_bytes <= max_bytes
+            token = _SimulatedVerifiedDownload(expectation)
+            opened.append(token)
+            return token
+
+        def failing_tenant_session() -> Any:
+            session = get_session_factory()()
+            try:
+                yield session
+            finally:
+                session.close()
+                raise RuntimeError("simulated dependency teardown failure")
+
+        monkeypatch.setattr(api_module, "open_verified_stored_object", open_bundle)
+        app.dependency_overrides[api_module.tenant_session] = failing_tenant_session
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = api_module.sign_artifact_access(
+            artifact_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        try:
+            with pytest.raises(RuntimeError, match="dependency teardown failure"):
+                client.get(
+                    f"/v1/artifacts/{artifact_id}/download?expires={expires}&signature={signature}",
+                    headers=HEADERS,
+                    follow_redirects=False,
+                )
+        finally:
+            app.dependency_overrides.pop(api_module.tenant_session, None)
+
+    assert len(opened) == 1
+    assert opened[0].closed is True
+    assert opened[0].close_calls == 1
+    replacement = api_module._TENANT_DOWNLOAD_LIMITER.acquire(DEV_ORG_NORDIC)
+    replacement.close()
+
+
+def test_tenant_download_limiter_is_fair_and_idempotently_released() -> None:
+    limiter = api_module._TenantDownloadLimiter()
+    nordic = limiter.acquire(DEV_ORG_NORDIC)
+    atelier = limiter.acquire("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+
+    with pytest.raises(HTTPException) as rejected:
+        limiter.acquire(DEV_ORG_NORDIC)
+
+    assert rejected.value.status_code == 429
+    assert rejected.value.headers == {"Retry-After": "5"}
+    nordic.close()
+    nordic.close()
+    replacement = limiter.acquire(DEV_ORG_NORDIC)
+    replacement.close()
+    atelier.close()
+
+
+def test_artifact_operation_limiter_enforces_global_capacity_and_releases() -> None:
+    limiter = api_module._TenantDownloadLimiter(max_active=2)
+    first = limiter.acquire("tenant-a")
+    second = limiter.acquire("tenant-b")
+
+    with pytest.raises(HTTPException) as rejected:
+        limiter.acquire("tenant-c")
+
+    assert rejected.value.status_code == 503
+    assert rejected.value.headers == {"Retry-After": "5"}
+    first.close()
+    replacement = limiter.acquire("tenant-c")
+    replacement.close()
+    second.close()
+
+
+def test_download_and_review_share_one_global_operation_limiter() -> None:
+    assert api_module._TENANT_DOWNLOAD_LIMITER is api_module._TENANT_REVIEW_LIMITER
+
+
+def test_postgres_advisory_lock_failure_maps_to_coordination_unavailable() -> None:
+    class FailingPostgresSession:
+        @staticmethod
+        def get_bind() -> Any:
+            return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+        @staticmethod
+        def scalar(*_args: object, **_kwargs: object) -> object:
+            raise SQLAlchemyError("simulated advisory lock dependency failure")
+
+    with pytest.raises(artifact_operations.ArtifactOperationUnavailableError):
+        api_module._acquire_database_artifact_operation_locks(
+            FailingPostgresSession(),  # type: ignore[arg-type]
+            DEV_ORG_NORDIC,
+        )
+
+
+def test_generate_and_approve_reject_before_handler_io_when_tenant_operation_is_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        _version, _generated, base = _create_strict_review_job(
+            client,
+            name="Generate and approve global artifact-operation gate",
+        )
+        approval_payload = design_approval_payload(client, base)
+        handler_calls: list[tuple[object, ...]] = []
+        provider_calls: list[tuple[object, ...]] = []
+
+        def must_not_enter_handler(*args: object, **_kwargs: object) -> None:
+            handler_calls.append(args)
+            raise AssertionError("artifact-operation gate allowed handler I/O")
+
+        def must_not_enter_provider(*args: object, **_kwargs: object) -> None:
+            provider_calls.append(args)
+            raise AssertionError("artifact-operation gate allowed provider I/O")
+
+        monkeypatch.setattr(api_module, "tenant_version", must_not_enter_handler)
+        monkeypatch.setattr(api_module, "verify_stored_object", must_not_enter_provider)
+        monkeypatch.setattr(api_module, "read_verified_stored_object", must_not_enter_provider)
+        monkeypatch.setattr(api_module, "open_verified_stored_object", must_not_enter_provider)
+
+        lease = api_module._TENANT_DOWNLOAD_LIMITER.acquire(DEV_ORG_NORDIC)
+        try:
+            responses = (
+                client.post(f"{base}/generate", headers=HEADERS, json={}),
+                client.post(
+                    f"{base}/approve",
+                    headers=HEADERS,
+                    json=approval_payload,
+                ),
+            )
+        finally:
+            lease.close()
+
+    assert handler_calls == []
+    assert provider_calls == []
+    for response in responses:
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "5"
+        assert response.json()["detail"] == (
+            "Another verified artifact operation is already active for this tenant"
+        )
+    replacement = api_module._TENANT_REVIEW_LIMITER.acquire(DEV_ORG_NORDIC)
+    replacement.close()
+
+
+def test_shared_replica_lease_rejects_generate_and_approve_before_handler_io(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lease owned by replica A must gate replica B before SQL or storage I/O."""
+
+    shared_store = artifact_operations.InMemoryArtifactOperationStore()
+    replica_a = artifact_operations.ArtifactOperationLeaseManager(shared_store)
+    replica_b = artifact_operations.ArtifactOperationLeaseManager(shared_store)
+
+    with TestClient(app) as client:
+        _version, _generated, base = _create_strict_review_job(
+            client,
+            name="Cross-replica artifact-operation gate",
+        )
+        approval_payload = design_approval_payload(client, base)
+        active = asyncio.run(replica_a.acquire(DEV_ORG_NORDIC))
+        handler_calls: list[tuple[object, ...]] = []
+        provider_calls: list[tuple[object, ...]] = []
+
+        def must_not_enter_handler(*args: object, **_kwargs: object) -> None:
+            handler_calls.append(args)
+            raise AssertionError("shared lease allowed handler I/O on replica B")
+
+        def must_not_enter_provider(*args: object, **_kwargs: object) -> None:
+            provider_calls.append(args)
+            raise AssertionError("shared lease allowed provider I/O on replica B")
+
+        monkeypatch.setattr(api_module, "_artifact_operation_lease_manager", lambda: replica_b)
+        monkeypatch.setattr(api_module, "tenant_version", must_not_enter_handler)
+        monkeypatch.setattr(api_module, "verify_stored_object", must_not_enter_provider)
+        monkeypatch.setattr(api_module, "read_verified_stored_object", must_not_enter_provider)
+        monkeypatch.setattr(api_module, "open_verified_stored_object", must_not_enter_provider)
+        try:
+            responses = (
+                client.post(f"{base}/generate", headers=HEADERS, json={}),
+                client.post(
+                    f"{base}/approve",
+                    headers=HEADERS,
+                    json=approval_payload,
+                ),
+            )
+        finally:
+            assert asyncio.run(replica_a.release(active)) is True
+
+    assert handler_calls == []
+    assert provider_calls == []
+    for response in responses:
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "5"
+        assert response.json()["detail"] == (
+            "Another verified artifact operation is already active for this tenant"
+        )
+    replacement = asyncio.run(replica_b.acquire(DEV_ORG_NORDIC))
+    assert asyncio.run(replica_b.release(replacement)) is True
+
+
+@pytest.mark.parametrize("failure", ("redis_unavailable", "ownership_lost"))
+def test_shared_lease_failure_is_503_before_handler_or_storage_io(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """Coordination ambiguity must fail closed on mutating and streaming routes."""
+
+    with TestClient(app) as client:
+        _version, generated, base = _create_strict_review_job(
+            client,
+            name=f"Fail-closed shared lease {failure}",
+        )
+        approval_payload = design_approval_payload(client, base)
+        with get_session_factory()() as session:
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == generated["id"],
+                    Artifact.kind == "production_bundle",
+                )
+            )
+            assert artifact is not None
+            artifact_id = artifact.id
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = storage_module.sign_artifact_access(
+            artifact_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+
+        if failure == "redis_unavailable":
+
+            class UnavailableRedisClient:
+                async def eval(
+                    self,
+                    _script: str,
+                    _numkeys: int,
+                    *_keys_and_args: object,
+                ) -> object:
+                    raise RedisError("simulated Redis outage")
+
+            manager: Any = artifact_operations.ArtifactOperationLeaseManager(
+                artifact_operations.RedisArtifactOperationStore(
+                    "redis://unused",
+                    operation_timeout_seconds=0.1,
+                    client=UnavailableRedisClient(),
+                )
+            )
+        else:
+
+            @asynccontextmanager
+            async def ownership_lost(_tenant_id: str) -> AsyncIterator[None]:
+                raise artifact_operations.ArtifactOperationOwnershipLostError(
+                    "simulated ownership loss"
+                )
+                yield  # pragma: no cover - marks this as an async context manager
+
+            manager = SimpleNamespace(lease=ownership_lost)
+
+        handler_calls: list[tuple[object, ...]] = []
+        provider_calls: list[tuple[object, ...]] = []
+
+        def must_not_enter_handler(*args: object, **_kwargs: object) -> None:
+            handler_calls.append(args)
+            raise AssertionError("coordination failure allowed handler I/O")
+
+        def must_not_enter_provider(*args: object, **_kwargs: object) -> None:
+            provider_calls.append(args)
+            raise AssertionError("coordination failure allowed provider I/O")
+
+        monkeypatch.setattr(api_module, "_artifact_operation_lease_manager", lambda: manager)
+        monkeypatch.setattr(api_module, "tenant_version", must_not_enter_handler)
+        monkeypatch.setattr(api_module, "verify_stored_object", must_not_enter_provider)
+        monkeypatch.setattr(api_module, "read_verified_stored_object", must_not_enter_provider)
+        monkeypatch.setattr(api_module, "open_verified_stored_object", must_not_enter_provider)
+
+        responses = (
+            client.post(f"{base}/generate", headers=HEADERS, json={}),
+            client.post(
+                f"{base}/approve",
+                headers=HEADERS,
+                json=approval_payload,
+            ),
+            client.get(
+                f"/v1/artifacts/{artifact_id}/download?expires={expires}&signature={signature}",
+                headers=HEADERS,
+                follow_redirects=False,
+            ),
+        )
+
+    assert handler_calls == []
+    assert provider_calls == []
+    for response in responses:
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "5"
+        assert response.json()["detail"] == (
+            "Verified artifact operation coordination is temporarily unavailable"
+        )
+
+
+def test_download_holds_shared_lease_through_stream_and_releases_on_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A response-owned spool keeps both replica and local gates until ASGI exits."""
+
+    shared_store = artifact_operations.InMemoryArtifactOperationStore()
+    download_replica = artifact_operations.ArtifactOperationLeaseManager(shared_store)
+    competing_replica = artifact_operations.ArtifactOperationLeaseManager(shared_store)
+    stream_started = Event()
+    disconnect_client = Event()
+    stream_errors: list[BaseException] = []
+    sent: list[Message] = []
+    download_thread: Thread | None = None
+
+    with TestClient(app) as client:
+        _version, generated, base = _create_strict_review_job(
+            client,
+            name="Cross-replica streaming lease lifetime",
+        )
+        approval_payload = design_approval_payload(client, base)
+        documents = _persist_strict_review_documents(generated["id"])
+        provider_calls: list[tuple[str, int]] = []
+        _install_strict_review_reader(monkeypatch, documents, provider_calls)
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            expectations, invalid = api_module._artifact_expectations(job)
+            assert not invalid
+            target = expectations["manifest"]
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "manifest",
+                )
+            )
+            assert artifact is not None
+            artifact_id = artifact.id
+
+        opened: list[_SimulatedVerifiedDownload] = []
+
+        def open_manifest(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            assert expectation == target
+            assert max_bytes == MAX_CORE_DOCUMENT_BYTES
+            verified = _SimulatedVerifiedDownload(
+                expectation,
+                documents[expectation.object_key],
+            )
+            opened.append(verified)
+            return verified
+
+        def select_replica() -> artifact_operations.ArtifactOperationLeaseManager:
+            assert download_thread is not None
+            return download_replica if current_thread() is download_thread else competing_replica
+
+        handler_calls: list[tuple[object, ...]] = []
+
+        def must_not_enter_handler(*args: object, **_kwargs: object) -> None:
+            handler_calls.append(args)
+            raise AssertionError("active download allowed competing handler I/O")
+
+        monkeypatch.setattr(api_module, "open_verified_stored_object", open_manifest)
+        monkeypatch.setattr(
+            api_module,
+            "require_committed_storage_binding",
+            lambda *_args, **_kwargs: object(),
+        )
+        monkeypatch.setattr(api_module, "_artifact_operation_lease_manager", select_replica)
+        monkeypatch.setattr(api_module, "tenant_version", must_not_enter_handler)
+
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = storage_module.sign_artifact_access(
+            artifact_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        path = f"/v1/artifacts/{artifact_id}/download"
+        query = f"expires={expires}&signature={signature}".encode("ascii")
+        scope: Scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "https",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": query,
+            "headers": [
+                (b"authorization", HEADERS["Authorization"].encode("ascii")),
+                (b"content-length", b"0"),
+            ],
+            "client": ("127.0.0.44", 43001),
+            "server": ("testserver", 443),
+        }
+        request_received = False
+
+        async def receive() -> Message:
+            nonlocal request_received
+            if not request_received:
+                request_received = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+            if message["type"] == "http.response.start":
+                stream_started.set()
+                await asyncio.to_thread(disconnect_client.wait)
+                raise OSError("simulated client disconnect during response start")
+
+        def run_download() -> None:
+            try:
+                asyncio.run(app(scope, receive, send))
+            except BaseException as exc:
+                stream_errors.append(exc)
+
+        download_thread = Thread(target=run_download, name="replica-a-download")
+        download_thread.start()
+        try:
+            assert stream_started.wait(timeout=10), stream_errors
+            provider_count = len(provider_calls)
+            responses = (
+                client.post(f"{base}/generate", headers=HEADERS, json={}),
+                client.post(
+                    f"{base}/approve",
+                    headers=HEADERS,
+                    json=approval_payload,
+                ),
+            )
+            assert handler_calls == []
+            assert len(provider_calls) == provider_count
+            for response in responses:
+                assert response.status_code == 429
+                assert response.headers["retry-after"] == "5"
+        finally:
+            disconnect_client.set()
+            download_thread.join(timeout=10)
+
+    assert download_thread.is_alive() is False
+    assert [message["status"] for message in sent if message["type"] == "http.response.start"] == [
+        200
+    ]
+    assert stream_errors
+    assert len(opened) == 1
+    assert opened[0].closed is True
+    assert opened[0].close_calls == 1
+    replacement = asyncio.run(competing_replica.acquire(DEV_ORG_NORDIC))
+    assert asyncio.run(competing_replica.release(replacement)) is True
+    try:
+        local_replacement = api_module._TENANT_DOWNLOAD_LIMITER.acquire(DEV_ORG_NORDIC)
+    except HTTPException:
+        # Keep a failed regression isolated: the assertion still fails, but a
+        # leaked process-local slot must not cascade into unrelated tests.
+        api_module._TENANT_DOWNLOAD_LIMITER._release(DEV_ORG_NORDIC)
+        raise
+    local_replacement.close()
+
+
+@pytest.mark.parametrize("failure", ("redis_unavailable", "ownership_lost"))
+def test_stream_stops_and_closes_when_shared_lease_heartbeat_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """A post-start coordination failure must cancel bytes and release both gates."""
+
+    body_started = Event()
+    renewal_attempted = Event()
+
+    class RenewalFailureStore(artifact_operations.InMemoryArtifactOperationStore):
+        async def renew(
+            self,
+            tenant_key_hash: str,
+            owner_token: str,
+            ttl_seconds: int,
+        ) -> artifact_operations.ArtifactOperationRenewResult:
+            while not body_started.is_set():
+                await asyncio.sleep(0.001)
+            renewal_attempted.set()
+            if failure == "redis_unavailable":
+                raise artifact_operations.ArtifactOperationUnavailableError(
+                    "simulated Redis heartbeat outage"
+                )
+            return artifact_operations.ArtifactOperationRenewResult(
+                renewed=False,
+                server_time_ms=0,
+                expires_at_ms=0,
+            )
+
+    store = RenewalFailureStore()
+    manager = artifact_operations.ArtifactOperationLeaseManager(
+        store,
+        heartbeat_interval_seconds=0.001,
+    )
+    response_started = Event()
+    stream_errors: list[BaseException] = []
+    sent: list[Message] = []
+
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name=f"Streaming heartbeat failure {failure}",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+        with get_session_factory()() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None
+            expectations, invalid = api_module._artifact_expectations(job)
+            assert not invalid
+            target = expectations["manifest"]
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "manifest",
+                )
+            )
+            assert artifact is not None
+            artifact_id = artifact.id
+
+        opened: list[_SimulatedVerifiedDownload] = []
+
+        def open_manifest(
+            expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            assert expectation == target
+            assert max_bytes == MAX_CORE_DOCUMENT_BYTES
+            verified = _SimulatedVerifiedDownload(
+                expectation,
+                documents[expectation.object_key],
+            )
+            opened.append(verified)
+            return verified
+
+        monkeypatch.setattr(api_module, "open_verified_stored_object", open_manifest)
+        monkeypatch.setattr(
+            api_module,
+            "require_committed_storage_binding",
+            lambda *_args, **_kwargs: object(),
+        )
+        monkeypatch.setattr(api_module, "_artifact_operation_lease_manager", lambda: manager)
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = storage_module.sign_artifact_access(
+            artifact_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        path = f"/v1/artifacts/{artifact_id}/download"
+        scope: Scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "https",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": (f"expires={expires}&signature={signature}".encode("ascii")),
+            "headers": [
+                (b"authorization", HEADERS["Authorization"].encode("ascii")),
+                (b"content-length", b"0"),
+            ],
+            "client": ("127.0.0.45", 43002),
+            "server": ("testserver", 443),
+        }
+        request_received = False
+
+        async def receive() -> Message:
+            nonlocal request_received
+            if not request_received:
+                request_received = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+            if message["type"] == "http.response.start":
+                response_started.set()
+                return
+            if message["type"] == "http.response.body" and message.get("body"):
+                body_started.set()
+                await asyncio.Event().wait()
+
+        def run_download() -> None:
+            try:
+                asyncio.run(app(scope, receive, send))
+            except BaseException as exc:
+                stream_errors.append(exc)
+
+        stream_thread = Thread(target=run_download, name=f"heartbeat-{failure}")
+        stream_thread.start()
+        stream_thread.join(timeout=10)
+
+    assert response_started.is_set()
+    assert body_started.is_set()
+    assert renewal_attempted.is_set()
+    assert stream_thread.is_alive() is False
+    assert stream_errors
+    assert [message["status"] for message in sent if message["type"] == "http.response.start"] == [
+        200
+    ]
+    assert len(opened) == 1
+    assert opened[0].closed is True
+    assert opened[0].close_calls == 1
+    replacement_manager = artifact_operations.ArtifactOperationLeaseManager(store)
+    replacement = asyncio.run(replacement_manager.acquire(DEV_ORG_NORDIC))
+    assert asyncio.run(replacement_manager.release(replacement)) is True
+    local_replacement = api_module._TENANT_DOWNLOAD_LIMITER.acquire(DEV_ORG_NORDIC)
+    local_replacement.close()
+
+
+def test_artifact_operation_scope_is_reentrant_only_for_the_same_tenant() -> None:
+    other_organization_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    assert api_module._ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.get() is None
+
+    with api_module._artifact_operation_scope(DEV_ORG_NORDIC):
+        assert api_module._ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.get() == DEV_ORG_NORDIC
+        with api_module._artifact_operation_scope(DEV_ORG_NORDIC):
+            assert api_module._ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.get() == DEV_ORG_NORDIC
+        with (
+            pytest.raises(RuntimeError, match="cannot switch tenant"),
+            api_module._artifact_operation_scope(other_organization_id),
+        ):
+            raise AssertionError("cross-tenant scope unexpectedly opened")
+        with pytest.raises(HTTPException) as still_owned:
+            api_module._TENANT_REVIEW_LIMITER.acquire(DEV_ORG_NORDIC)
+        assert still_owned.value.status_code == 429
+
+    assert api_module._ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.get() is None
+    replacement = api_module._TENANT_REVIEW_LIMITER.acquire(DEV_ORG_NORDIC)
+    replacement.close()
+
+
+def test_worker_completion_gate_does_not_require_api_only_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custombuild_worker import tasks as worker_tasks
+
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name="Worker-owned completion runtime",
+        )
+        documents = _persist_strict_review_documents(generated["id"])
+        _install_strict_review_reader(monkeypatch, documents, [])
+
+    build_identity = dict(get_settings().build_identity)
+    monkeypatch.setattr(
+        worker_tasks,
+        "WORKER_SETTINGS",
+        SimpleNamespace(
+            s3_bucket="production-artifacts",
+            build_identity=build_identity,
+        ),
+    )
+    monkeypatch.setattr(worker_tasks, "_s3_client", object)
+
+    def must_not_load_api_settings() -> None:
+        raise AssertionError("worker completion loaded API-only OIDC/runtime settings")
+
+    monkeypatch.setattr(api_module, "get_settings", must_not_load_api_settings)
+    with get_session_factory()() as session:
+        job = session.get(GenerationJob, generated["id"])
+        assert job is not None
+        worker_tasks._validate_completion_evidence(
+            session,
+            DEV_ORG_NORDIC,
+            job,
+        )
+
+
+def test_artifact_listing_is_wired_to_the_per_tenant_review_limiter() -> None:
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name="Tenant review limiter wiring",
+        )
+        lease = api_module._TENANT_REVIEW_LIMITER.acquire(DEV_ORG_NORDIC)
+        try:
+            rejected = client.get(
+                f"/v1/jobs/{generated['id']}/artifacts",
+                headers=HEADERS,
+            )
+        finally:
+            lease.close()
+
+    assert rejected.status_code == 429
+    assert rejected.headers["retry-after"] == "5"
+    replacement = api_module._TENANT_REVIEW_LIMITER.acquire(DEV_ORG_NORDIC)
+    replacement.close()
+
+
+@pytest.mark.parametrize("invalid_size", (True, 0, 32 * 1024 * 1024 + 1))
+def test_download_rejects_invalid_result_size_before_opening_storage(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_size: object,
+) -> None:
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name=f"Invalid download size claim {invalid_size!r}",
+        )
+        _persist_strict_review_documents(generated["id"])
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            result = deepcopy(job.result_json)
+            result["bundle_size_bytes"] = invalid_size
+            job.result_json = result
+            flag_modified(job, "result_json")
+            artifact = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == job.id,
+                    Artifact.kind == "production_bundle",
+                )
+            )
+            assert artifact is not None
+            artifact_id = artifact.id
+
+        opened = False
+
+        def must_not_open(
+            _expectation: storage_module.StoredObjectExpectation,
+            *,
+            max_bytes: int,
+        ) -> _SimulatedVerifiedDownload:
+            nonlocal opened
+            opened = True
+            raise AssertionError(f"storage opened with cap {max_bytes}")
+
+        monkeypatch.setattr(api_module, "open_verified_stored_object", must_not_open)
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = api_module.sign_artifact_access(
+            artifact_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        response = client.get(
+            f"/v1/artifacts/{artifact_id}/download?expires={expires}&signature={signature}",
+            headers=HEADERS,
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 409
+    assert opened is False
 
 
 def test_generated_status_cannot_claim_a_validation_program_the_plan_did_not_request(
@@ -3806,19 +5807,18 @@ def _substitute_generation_bundle(job_id: str) -> tuple[str, str, str]:
 
 
 @pytest.mark.parametrize(
-    ("endpoint", "actual_manifest_binding", "streams_bundle"),
+    ("endpoint", "actual_manifest_binding"),
     (
-        ("listing", None, False),
-        ("download", "e" * 64, False),
-        ("cam_approval", None, True),
-        ("release", "e" * 64, True),
+        ("listing", None),
+        ("download", "e" * 64),
+        ("cam_approval", None),
+        ("release", "e" * 64),
     ),
 )
 def test_review_endpoints_reject_coordinated_bundle_substitution(
     monkeypatch: pytest.MonkeyPatch,
     endpoint: str,
     actual_manifest_binding: str | None,
-    streams_bundle: bool,
 ) -> None:
     with TestClient(app) as client:
         version, generated, base = _create_strict_review_job(
@@ -3864,6 +5864,27 @@ def test_review_endpoints_reject_coordinated_bundle_substitution(
                 raise api_module.ArtifactIntegrityError("bundle manifest binding does not match")
 
         monkeypatch.setattr(api_module, "verify_stored_object", verify)
+        if endpoint == "download":
+
+            def open_substituted_bundle(
+                expectation: storage_module.StoredObjectExpectation,
+                *,
+                max_bytes: int,
+            ) -> _SimulatedVerifiedDownload:
+                assert expectation.size_bytes <= max_bytes
+                required = dict(expectation.required_metadata)
+                bundle_verifications.append((required, False))
+                if required.get("manifest-sha256") != actual_manifest_binding:
+                    raise api_module.ArtifactIntegrityError(
+                        "bundle manifest binding does not match"
+                    )
+                return _SimulatedVerifiedDownload(expectation)
+
+            monkeypatch.setattr(
+                api_module,
+                "open_verified_stored_object",
+                open_substituted_bundle,
+            )
         if endpoint == "listing":
             response = client.get(
                 f"/v1/jobs/{generated['id']}/artifacts",
@@ -3901,7 +5922,15 @@ def test_review_endpoints_reject_coordinated_bundle_substitution(
 
     assert response.status_code == 409
     assert _review_mutation_snapshot(version["id"]) == before
-    assert bundle_verifications == [({"manifest-sha256": manifest_sha}, streams_bundle)]
+    # Download checks the immutable ledger before provider I/O.  The broader
+    # review routes stream-check the claimed bundle first and reject its retained
+    # manifest binding, still before any state mutation.
+    expected_verifications = (
+        []
+        if endpoint == "download"
+        else [({"manifest-sha256": manifest_sha}, endpoint in {"cam_approval", "release"})]
+    )
+    assert bundle_verifications == expected_verifications
 
 
 def test_bundle_binding_storage_outage_is_503_and_nonmutating(
@@ -4065,7 +6094,7 @@ def test_blocked_cam_review_package_is_downloadable_but_cannot_be_cam_approved(
             headers=HEADERS,
             follow_redirects=False,
         )
-        assert download.status_code == 307
+        assert download.status_code == 200
 
         cam = client.post(
             f"{base}/approve",
@@ -4239,7 +6268,7 @@ def test_grain_review_package_records_opaque_evidence_but_remains_cam_blocked(
             headers=HEADERS,
             follow_redirects=False,
         )
-        assert download.status_code == 307
+        assert download.status_code == 200
         assert len(calls) == 12
         cam = client.post(
             f"{base}/approve",
@@ -4455,8 +6484,18 @@ def test_worker_stock_grain_projection_matches_frozen_api_contract(
                 f"{int(round(float(request['back_stock_height_mm']) * 1000))}um"
             ),
         )
+        storage_lease_token = str(uuid4())
+        job.lease_token = storage_lease_token
         with pytest.raises(WorkerStocksCaptured):
-            worker_tasks._generate(job, stored_version)
+            worker_tasks._generate(
+                job,
+                stored_version,
+                lease_token=storage_lease_token,
+                lease_guard=worker_tasks._GenerationLeaseGuard(
+                    job.organization_id,
+                    storage_lease_token,
+                ),
+            )
 
     assert captured["stock_ids"] == expected_stock_ids
     assert len(set(captured["stock_ids"])) == 2
@@ -5235,7 +7274,9 @@ def test_listing_rejects_generated_status_when_manifest_omits_claimed_cam(
         listing = client.get(f"/v1/jobs/{generated['id']}/artifacts", headers=HEADERS)
 
     assert listing.status_code == 409
-    assert len(calls) == 6
+    # Fail as soon as the four documents needed to disprove the generated CAM
+    # claim have been checked; no unrelated provider reads should follow.
+    assert len(calls) == 4
 
 
 @pytest.mark.parametrize("endpoint", ("listing", "download"))
@@ -5274,7 +7315,7 @@ def test_blocked_review_semantic_storage_failure_is_503_and_nonmutating(
             *,
             max_bytes: int,
         ) -> bytes:
-            assert max_bytes in (64 * 1024, 8 * 1024 * 1024)
+            assert max_bytes in (64 * 1024, MAX_CORE_DOCUMENT_BYTES)
             raise storage_module.ArtifactStorageUnavailableError(
                 "private-provider-name unavailable"
             )
@@ -5377,7 +7418,7 @@ def test_cam_and_release_accept_exact_checksum_bound_readiness_documents(
     assert released.json()["status"] == "released"
     assert len(calls) == 12
     assert [max_bytes for _key, max_bytes in calls].count(64 * 1024) == 4
-    assert [max_bytes for _key, max_bytes in calls].count(8 * 1024 * 1024) == 8
+    assert [max_bytes for _key, max_bytes in calls].count(MAX_CORE_DOCUMENT_BYTES) == 8
     assert set(documents).isdisjoint(separately_verified)
     with get_session_factory()() as session:
         persisted = session.get(DesignVersion, version["id"])
@@ -5454,7 +7495,7 @@ def test_cam_and_release_reject_result_readiness_tamper_with_objects_intact(
 
     assert len(calls) == 18
     assert [max_bytes for _key, max_bytes in calls].count(64 * 1024) == 6
-    assert [max_bytes for _key, max_bytes in calls].count(8 * 1024 * 1024) == 12
+    assert [max_bytes for _key, max_bytes in calls].count(MAX_CORE_DOCUMENT_BYTES) == 12
 
 
 @pytest.mark.parametrize(
@@ -5577,10 +7618,10 @@ def test_cam_rejects_checksum_valid_manifest_contract_malformation(
     assert sorted(max_bytes for _key, max_bytes in calls) == [
         64 * 1024,
         64 * 1024,
-        8 * 1024 * 1024,
-        8 * 1024 * 1024,
-        8 * 1024 * 1024,
-        8 * 1024 * 1024,
+        MAX_CORE_DOCUMENT_BYTES,
+        MAX_CORE_DOCUMENT_BYTES,
+        MAX_CORE_DOCUMENT_BYTES,
+        MAX_CORE_DOCUMENT_BYTES,
     ]
 
 
@@ -5640,7 +7681,7 @@ def test_semantic_document_read_failures_are_generic_and_do_not_mutate_review(
         *,
         max_bytes: int,
     ) -> bytes:
-        assert max_bytes in (64 * 1024, 8 * 1024 * 1024)
+        assert max_bytes in (64 * 1024, MAX_CORE_DOCUMENT_BYTES)
         raise storage_error
 
     monkeypatch.setattr(api_module, "read_verified_stored_object", fail_read)
@@ -6302,6 +8343,84 @@ def test_generate_repairs_incomplete_succeeded_job_and_invalidates_cam() -> None
         assert repair_audits[0].payload_json["cam_approvals_remaining"] == 0
 
 
+def test_succeeded_evidence_repair_waits_for_active_storage_claim_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name="Busy succeeded evidence repair",
+        )
+        cam_approval = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Reviewed before the active cleanup claim",
+                "generation_job_id": generated["id"],
+            },
+        )
+        assert cam_approval.status_code == 200
+        with get_session_factory().begin() as session:
+            session.execute(
+                delete(Artifact).where(
+                    Artifact.generation_job_id == generated["id"],
+                    Artifact.kind == "validation_backplot",
+                )
+            )
+
+        monkeypatch.setattr(
+            api_module,
+            "prepare_generation_storage_retry",
+            lambda *_args, **_kwargs: 41,
+        )
+        response = client.post(f"{base}/generate", headers=HEADERS, json={})
+
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "41"
+        assert response.json()["detail"]["code"] == "GENERATION_STORAGE_RETRY_BUSY"
+        with get_session_factory()() as session:
+            job_after = session.get(GenerationJob, generated["id"])
+            version_after = session.get(DesignVersion, version["id"])
+            artifacts_after = list(
+                session.scalars(
+                    select(Artifact).where(Artifact.generation_job_id == generated["id"])
+                )
+            )
+            approval_after = session.scalar(
+                select(Approval).where(
+                    Approval.design_version_id == version["id"],
+                    Approval.approval_type == "cam",
+                )
+            )
+            repair_events = list(
+                session.scalars(
+                    select(OutboxEvent).where(
+                        OutboxEvent.event_key.like(
+                            f"generation-evidence-repair:{generated['id']}:%"
+                        )
+                    )
+                )
+            )
+            repair_audits = list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.action == "generation.evidence_repair_queued",
+                        AuditEvent.entity_id == generated["id"],
+                    )
+                )
+            )
+
+        assert job_after is not None and job_after.status == JobStatus.succeeded
+        assert job_after.result_json is not None
+        assert version_after is not None and version_after.status == DesignStatus.approved
+        assert len(artifacts_after) == 10
+        assert approval_after is not None
+        assert approval_after.generation_job_id == generated["id"]
+        assert repair_events == []
+        assert repair_audits == []
+
+
 def test_artifact_listing_rejects_a_database_row_not_bound_to_job_result() -> None:
     with TestClient(app) as client:
         project = client.post(
@@ -6955,17 +9074,7 @@ def test_freecad_cam_approval_requires_both_persisted_evidence_artifacts() -> No
                         "content_type": content_type,
                     }
                 )
-                session.add(
-                    Artifact(
-                        organization_id=DEV_ORG_NORDIC,
-                        generation_job_id=job["id"],
-                        kind=kind,
-                        object_key=f"evidence/{job['id']}/{kind}",
-                        sha256="e" * 64,
-                        size_bytes=128,
-                        content_type=content_type,
-                    )
-                )
+            _persist_committed_artifact_records(session, generation, freecad_artifacts)
             generation.result_json = {
                 **generation.result_json,
                 "evidence_artifacts": [
@@ -7342,8 +9451,9 @@ def test_new_design_revision_supersedes_release_and_blocks_stale_artifacts() -> 
 
         artifact_listing = client.get(f"/v1/jobs/{job['id']}/artifacts", headers=HEADERS)
         assert artifact_listing.status_code == 200
-        public_s3 = get_settings().s3_public_endpoint.rstrip("/") + "/"
-        assert artifact_listing.json()[0]["download_url"].startswith(public_s3)
+        first_artifact = artifact_listing.json()[0]
+        assert first_artifact["download_url"] == first_artifact["download_path"]
+        assert first_artifact["download_path"].startswith("/v1/artifacts/")
         stale_download_path = artifact_listing.json()[0]["download_path"]
 
         changed_spec = valid_spec() | {"width_mm": 710}

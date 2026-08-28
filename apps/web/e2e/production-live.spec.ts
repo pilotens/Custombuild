@@ -63,18 +63,17 @@ test.skip(
   process.env.PLAYWRIGHT_REAL_API !== "1",
   "Requires the complete Compose API, worker, database, queue and object storage.",
 );
-test.skip(
-  ({ browserName }) => browserName !== "chromium",
-  "The state-mutating manufacturing acceptance runs once in Chromium; offline UX smoke covers all engines.",
-);
-
 test("det verkliga designgranskningsflödet kan skapa och hämta ett granskningspaket", async ({
   page,
   request,
 }, testInfo) => {
   test.setTimeout(6 * 60_000);
   await page.setViewportSize({ width: 966, height: 1197 });
-  const project = await provisionLiveProject(request, testInfo, "production-flow");
+  const project = await provisionLiveProject(
+    request,
+    testInfo,
+    `production-flow-${testInfo.project.name}`,
+  );
   await selectProjectBeforeNavigation(page, project);
   const apiUrl = process.env.PLAYWRIGHT_API_URL?.replace(/\/$/, "");
   expect(apiUrl).toBeTruthy();
@@ -262,6 +261,8 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   ]);
   expect(createResponse.ok(), `Version POST returned HTTP ${createResponse.status()}`).toBe(true);
   expect(validationResponse.ok(), `Validation POST returned HTTP ${validationResponse.status()}`).toBe(true);
+  const createdVersion = await createResponse.json() as { revision?: unknown };
+  expect(createdVersion.revision).toBe(1);
   const createPayload = createResponse.request().postDataJSON() as {
     spec: Record<string, unknown>;
     production_context: Record<string, unknown>;
@@ -414,8 +415,8 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
   await downloadButton.click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(
-    /^custombuild-design-review-rev-\d+\.zip$/,
+  expect(download.suggestedFilename()).toBe(
+    `custombuild-design-review-rev-${String(createdVersion.revision)}.zip`,
   );
   expect(await download.failure()).toBeNull();
   const stream = await download.createReadStream();
@@ -509,11 +510,8 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     (failure) =>
       !(
         failure.endsWith(": net::ERR_ABORTED")
-        && (
-          (failure.includes("/custombuild-artifacts/") && failure.includes("/production.zip?"))
-          // The editor intentionally cancels a superseded latest-wins preview request.
-          || failure.includes("/v1/designs/autofix")
-        )
+        // The editor intentionally cancels a superseded latest-wins preview request.
+        && failure.includes("/v1/designs/autofix")
       ),
   );
   expect(unexpectedFailedRequests).toEqual([]);

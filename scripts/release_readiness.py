@@ -76,6 +76,8 @@ class VulnerabilityExceptionKey:
 
 VULNERABILITY_EXCEPTION_SCHEMA = "custombuild.vulnerability-exceptions.v2"
 VULNERABILITY_SEVERITIES = frozenset({"Negligible", "Low", "Medium", "High", "Critical"})
+REVIEWED_GRYPE_SCAN_ACTION = "anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
+REVIEWED_GRYPE_VERSION = "v0.110.0"
 PRODUCTION_SEMANTIC_SOURCE_PATHS = (
     "packages/manufacturing/src/custombuild_manufacturing/package.py",
     "packages/manufacturing/src/custombuild_manufacturing/readiness.py",
@@ -193,7 +195,7 @@ def _call_name(node: ast.expr) -> str | None:
     return None
 
 
-def _expression_path(node: ast.expr) -> tuple[str, ...] | None:
+def _expression_path(node: ast.expr | None) -> tuple[str, ...] | None:
     if isinstance(node, ast.Name):
         return (node.id,)
     if isinstance(node, ast.Attribute):
@@ -423,8 +425,37 @@ def _returned_dict_literal(function: FunctionNode) -> ast.Dict | None:
     if len(assignments) != 1:
         return None
     assignment_index, assignment_value = assignments[0]
-    if assignment_index + 1 != return_index or not isinstance(assignment_value, ast.Dict):
+    if not isinstance(assignment_value, ast.Dict) or assignment_index >= return_index:
         return None
+    for statement in function.body[assignment_index + 1 : return_index]:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Subscript | ast.Attribute)
+                and isinstance(node.ctx, ast.Store | ast.Del)
+                and (_expression_path(node.value) or ())[:1] == (value.id,)
+            ):
+                return None
+            if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Attribute) and (
+                    _expression_path(node.func.value) or ()
+                )[:1] == (value.id,):
+                    return None
+                direct_arguments = [*node.args, *(item.value for item in node.keywords)]
+                if (
+                    any(
+                        isinstance(argument, ast.Name) and argument.id == value.id
+                        for argument in direct_arguments
+                    )
+                    and _call_name(node) != "MappingProxyType"
+                ):
+                    return None
+            assignment = _simple_name_assignment(node) if isinstance(node, ast.stmt) else None
+            if (
+                assignment is not None
+                and isinstance(assignment[1], ast.Name)
+                and assignment[1].id == value.id
+            ):
+                return None
     return assignment_value
 
 
@@ -713,11 +744,34 @@ def _worker_stock_projection_is_safe(tree: ast.Module, generate: FunctionNode) -
 
 
 def _worker_semantic_document_evidence_is_persisted(
+    tree: ast.Module,
     generate: FunctionNode,
     *,
     path: str,
     kind: str,
 ) -> bool:
+    assignments = _module_assignments(tree)
+    contract_values = assignments.get("_EVIDENCE_ARTIFACT_CONTRACTS", [])
+    contracts = (
+        contract_values[0]
+        if len(contract_values) == 1 and isinstance(contract_values[0], ast.Dict)
+        else None
+    )
+    path_constant = {
+        "validation/generation-plan.json": "GENERATION_PLAN_ARTIFACT_PATH",
+    }.get(path)
+    named_contract_is_exact = contracts is not None and any(
+        (
+            _static_ast_value(key_node) == path
+            or (path_constant is not None and _expression_path(key_node) == (path_constant,))
+        )
+        and isinstance(value_node, ast.Tuple | ast.List)
+        and bool(value_node.elts)
+        and _static_ast_value(value_node.elts[0]) == kind
+        for key_node, value_node in zip(contracts.keys, contracts.values, strict=True)
+        if key_node is not None
+    )
+
     candidates = _top_level_assignments_to(generate, "evidence_candidates")
     if len(candidates) != 1 or not isinstance(candidates[0][1], ast.ListComp):
         return False
@@ -728,7 +782,15 @@ def _worker_semantic_document_evidence_is_persisted(
         or comprehension.generators[0].target.id != "artifact"
         or _expression_path(comprehension.generators[0].iter) != ("bundle", "artifacts")
         or not any(
-            isinstance(node, ast.Constant) and node.value == path
+            (isinstance(node, ast.Constant) and node.value == path)
+            or (
+                isinstance(node, ast.Compare)
+                and len(node.ops) == 1
+                and isinstance(node.ops[0], ast.In)
+                and len(node.comparators) == 1
+                and _expression_path(node.left) == ("artifact", "path")
+                and _expression_path(node.comparators[0]) == ("_EVIDENCE_ARTIFACT_CONTRACTS",)
+            )
             for condition in comprehension.generators[0].ifs
             for node in ast.walk(condition)
         )
@@ -740,17 +802,418 @@ def _worker_semantic_document_evidence_is_persisted(
             not isinstance(node, ast.Call)
             or not isinstance(node.func, ast.Attribute)
             or node.func.attr != "get"
-            or not isinstance(node.func.value, ast.Dict)
+            or not (
+                isinstance(node.func.value, ast.Dict)
+                or _expression_path(node.func.value) == ("_EVIDENCE_ARTIFACT_CONTRACTS",)
+            )
             or not node.args
             or _expression_path(node.args[0]) != ("artifact", "path")
         ):
             continue
-        if any(
+        inline_contract_is_exact = isinstance(node.func.value, ast.Dict) and any(
             _static_ast_value(key) == path and _static_ast_value(value) == kind
-            for key, value in zip(node.func.value.keys, node.func.value.values, strict=True)
-        ):
+            for key, value in zip(
+                node.func.value.keys,
+                node.func.value.values,
+                strict=True,
+            )
+        )
+        if named_contract_is_exact or inline_contract_is_exact:
             return True
     return False
+
+
+def _required_keyword_only_argument(function: FunctionNode, name: str) -> bool:
+    for argument, default in zip(
+        function.args.kwonlyargs,
+        function.args.kw_defaults,
+        strict=True,
+    ):
+        if argument.arg == name:
+            return default is None
+    return False
+
+
+def _call_uses_positional_paths(
+    node: ast.expr,
+    name: str,
+    paths: tuple[tuple[str, ...], ...],
+) -> bool:
+    return (
+        isinstance(node, ast.Call)
+        and _call_name(node) == name
+        and len(node.args) == len(paths)
+        and not node.keywords
+        and tuple(_expression_path(argument) for argument in node.args) == paths
+    )
+
+
+def _str_wrapped_call(node: ast.expr, name: str) -> ast.Call | None:
+    if (
+        not isinstance(node, ast.Call)
+        or _call_name(node) != "str"
+        or len(node.args) != 1
+        or node.keywords
+        or not isinstance(node.args[0], ast.Call)
+        or _call_name(node.args[0]) != name
+    ):
+        return None
+    return node.args[0]
+
+
+def _joined_string_contract(
+    node: ast.expr,
+    bindings: dict[str, ast.expr],
+    *,
+    required_paths: frozenset[tuple[str, ...]],
+    required_literals: tuple[str, ...],
+    exact_paths: bool = False,
+) -> bool:
+    resolved = _resolved_binding(node, bindings)
+    if not isinstance(resolved, ast.JoinedStr):
+        return False
+    paths = frozenset(
+        path
+        for value in resolved.values
+        if isinstance(value, ast.FormattedValue)
+        if (path := _expression_path(value.value)) is not None
+    )
+    literal = "".join(
+        value.value
+        for value in resolved.values
+        if isinstance(value, ast.Constant) and isinstance(value.value, str)
+    )
+    paths_match = paths == required_paths if exact_paths else required_paths.issubset(paths)
+    return paths_match and all(fragment in literal for fragment in required_literals)
+
+
+def _uuid_incarnation_helpers_are_safe(tree: ast.Module) -> bool:
+    attempt = _simple_function(tree, "_generation_attempt_id")
+    artifact = _simple_function(tree, "_generation_artifact_id")
+    if attempt is None or artifact is None:
+        return False
+
+    attempt_bindings = _function_bindings(attempt)
+    job_uuid = attempt_bindings.get("job_uuid")
+    canonical_lease = attempt_bindings.get("canonical_lease_token")
+    attempt_returns = [
+        node.value
+        for node in ast.walk(attempt)
+        if isinstance(node, ast.Return) and node.value is not None
+    ]
+    attempt_uuid5 = (
+        _str_wrapped_call(attempt_returns[0], "uuid5")
+        if len(attempt_returns) == 1
+        else None
+    )
+    lease_uuid = (
+        _str_wrapped_call(canonical_lease, "UUID")
+        if canonical_lease is not None
+        else None
+    )
+    attempt_safe = (
+        job_uuid is not None
+        and _call_uses_positional_paths(job_uuid, "UUID", (("job_id",),))
+        and lease_uuid is not None
+        and len(lease_uuid.args) == 1
+        and _expression_path(lease_uuid.args[0]) == ("lease_token",)
+        and attempt_uuid5 is not None
+        and len(attempt_uuid5.args) == 2
+        and not attempt_uuid5.keywords
+        and _expression_path(attempt_uuid5.args[0]) == ("job_uuid",)
+        and _joined_string_contract(
+            attempt_uuid5.args[1],
+            attempt_bindings,
+            required_paths=frozenset({("canonical_lease_token",)}),
+            required_literals=("storage-attempt:",),
+            exact_paths=True,
+        )
+    )
+
+    artifact_bindings = _function_bindings(artifact)
+    attempt_uuid = artifact_bindings.get("attempt_uuid")
+    artifact_returns = [
+        node.value
+        for node in ast.walk(artifact)
+        if isinstance(node, ast.Return) and node.value is not None
+    ]
+    artifact_uuid5 = (
+        _str_wrapped_call(artifact_returns[0], "uuid5")
+        if len(artifact_returns) == 1
+        else None
+    )
+    artifact_safe = (
+        attempt_uuid is not None
+        and _call_uses_positional_paths(attempt_uuid, "UUID", (("attempt_id",),))
+        and artifact_uuid5 is not None
+        and len(artifact_uuid5.args) == 2
+        and not artifact_uuid5.keywords
+        and tuple(_expression_path(argument) for argument in artifact_uuid5.args)
+        == (("attempt_uuid",), ("kind",))
+    )
+    return attempt_safe and artifact_safe
+
+
+def _binding_is_exact_call(
+    bindings: dict[str, ast.expr],
+    binding_name: str,
+    call_name: str,
+    paths: tuple[tuple[str, ...], ...],
+) -> bool:
+    value = bindings.get(binding_name)
+    return value is not None and _call_uses_positional_paths(value, call_name, paths)
+
+
+def _binding_is_artifact_id_for_static_kind(
+    bindings: dict[str, ast.expr],
+    binding_name: str,
+    kind: str,
+) -> bool:
+    value = bindings.get(binding_name)
+    return (
+        isinstance(value, ast.Call)
+        and _call_name(value) == "_generation_artifact_id"
+        and len(value.args) == 2
+        and not value.keywords
+        and _expression_path(value.args[0]) == ("attempt_id",)
+        and _static_ast_value(value.args[1]) == kind
+    )
+
+
+def _binding_is_exact_call_or_empty_when_disabled(
+    bindings: dict[str, ast.expr],
+    binding_name: str,
+    call_name: str,
+    paths: tuple[tuple[str, ...], ...],
+    enabled_path: tuple[str, ...],
+) -> bool:
+    value = bindings.get(binding_name)
+    if value is None:
+        return False
+    if _call_uses_positional_paths(value, call_name, paths):
+        return True
+    return (
+        isinstance(value, ast.IfExp)
+        and _expression_path(value.test) == enabled_path
+        and _call_uses_positional_paths(value.body, call_name, paths)
+        and _static_ast_value(value.orelse) == ()
+    )
+
+
+def _single_call_binds_keyword_and_argument(
+    function: FunctionNode,
+    call_name: str,
+    keyword: str,
+    keyword_path: tuple[str, ...],
+    argument_path: tuple[str, ...],
+) -> bool:
+    calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and _call_name(node) == call_name
+    ]
+    if len(calls) != 1:
+        return False
+    keywords = _call_keywords(calls[0])
+    return bool(
+        keywords is not None
+        and _expression_path(keywords.get(keyword)) == keyword_path
+        and any(_expression_path(argument) == argument_path for argument in calls[0].args)
+    )
+
+
+def _generate_checks_exact_job_lease(generate: FunctionNode) -> bool:
+    return any(
+        isinstance(branch, ast.If)
+        and len(branch.body) == 1
+        and isinstance(branch.body[0], ast.Raise)
+        and isinstance(branch.test, ast.Compare)
+        and len(branch.test.ops) == 1
+        and isinstance(branch.test.ops[0], ast.NotEq)
+        and len(branch.test.comparators) == 1
+        and {
+            _expression_path(branch.test.left),
+            _expression_path(branch.test.comparators[0]),
+        }
+        == {("job", "lease_token"), ("lease_token",)}
+        for branch in generate.body
+    )
+
+
+def _generation_storage_claim_contract_is_safe(function: FunctionNode) -> bool:
+    bindings = _function_bindings(function)
+    if not _binding_is_exact_call(
+        bindings,
+        "attempt_id",
+        "_generation_attempt_id",
+        (("job", "id"), ("lease_token",)),
+    ):
+        return False
+    expected_prefix = bindings.get("expected_prefix")
+    if expected_prefix is None or not _joined_string_contract(
+        expected_prefix,
+        bindings,
+        required_paths=frozenset({("attempt_id",)}),
+        required_literals=("/attempts/", "/artifacts/"),
+    ):
+        return False
+    if not _binding_is_exact_call(
+        bindings,
+        "artifact_id",
+        "_generation_artifact_id",
+        (("attempt_id",), ("kind",)),
+    ):
+        return False
+    prefix_guard = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "startswith"
+        and _expression_path(node.func.value) == ("object_key",)
+        and len(node.args) == 1
+        and _joined_string_contract(
+            node.args[0],
+            bindings,
+            required_paths=frozenset({("expected_prefix",), ("artifact_id",)}),
+            required_literals=("/",),
+            exact_paths=True,
+        )
+        for node in ast.walk(function)
+    )
+    constructors = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and _call_name(node) == "StorageObjectClaim"
+    ]
+    if len(constructors) != 1:
+        return False
+    keywords = _call_keywords(constructors[0])
+    return bool(
+        prefix_guard
+        and keywords is not None
+        and _expression_path(keywords.get("object_key")) == ("object_key",)
+        and _expression_path(keywords.get("owner_id")) == ("job", "id")
+        and keywords.get("idempotency_key") is not None
+        and _joined_string_contract(
+            keywords["idempotency_key"],
+            bindings,
+            required_paths=frozenset({("job", "id"), ("kind",), ("artifact_id",)}),
+            required_literals=("generation:",),
+            exact_paths=True,
+        )
+    )
+
+
+def _generation_object_keys_are_attempt_bound(generate: FunctionNode) -> bool:
+    bindings = _function_bindings(generate)
+    required_keys = {
+        "evidence_key": frozenset({("attempt_id",), ("artifact_id",)}),
+        "bundle_key": frozenset({("attempt_id",), ("bundle_artifact_id",)}),
+        "manifest_key": frozenset({("attempt_id",), ("manifest_artifact_id",)}),
+    }
+    for name, paths in required_keys.items():
+        value = bindings.get(name)
+        if value is None or not _joined_string_contract(
+            value,
+            bindings,
+            required_paths=paths,
+            required_literals=("/attempts/", "/artifacts/"),
+        ):
+            return False
+    return (
+        _binding_is_exact_call(
+            bindings,
+            "artifact_id",
+            "_generation_artifact_id",
+            (("attempt_id",), ("kind",)),
+        )
+        and _binding_is_artifact_id_for_static_kind(
+            bindings, "bundle_artifact_id", "production_bundle"
+        )
+        and _binding_is_artifact_id_for_static_kind(
+            bindings, "manifest_artifact_id", "manifest"
+        )
+    )
+
+
+def _completion_persists_attempt_artifact_id(function: FunctionNode) -> bool:
+    bindings = _function_bindings(function)
+    if (
+        not _binding_is_exact_call(
+            bindings,
+            "attempt_id",
+            "_generation_attempt_id",
+            (("job", "id"), ("lease_token",)),
+        )
+        or not _binding_is_exact_call(
+            bindings,
+            "artifact_id",
+            "_generation_artifact_id",
+            (("attempt_id",), ("kind",)),
+        )
+    ):
+        return False
+    constructors = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and _call_name(node) == "Artifact"
+    ]
+    if len(constructors) != 1:
+        return False
+    keywords = _call_keywords(constructors[0])
+    return bool(
+        keywords is not None
+        and _expression_path(keywords.get("id")) == ("artifact_id",)
+        and _binding_is_exact_call_or_empty_when_disabled(
+            bindings,
+            "storage_claims",
+            "_generation_storage_claims",
+            (("job",), ("version",), ("result",), ("lease_token",)),
+            ("require_storage_reservation",),
+        )
+        and _single_call_binds_keyword_and_argument(
+            function,
+            "commit_storage_batch_in_transaction",
+            "lease_token",
+            ("lease_token",),
+            ("storage_claims",),
+        )
+    )
+
+
+def _worker_storage_incarnation_is_safe(tree: ast.Module) -> bool:
+    generate = _simple_function(tree, "_generate")
+    claims = _simple_function(tree, "_generation_storage_claims")
+    complete = _simple_function(tree, "_complete_job")
+    if generate is None or claims is None or complete is None:
+        return False
+    generate_bindings = _function_bindings(generate)
+    return (
+        _uuid_incarnation_helpers_are_safe(tree)
+        and _required_keyword_only_argument(generate, "lease_token")
+        and _generate_checks_exact_job_lease(generate)
+        and _binding_is_exact_call(
+            generate_bindings,
+            "attempt_id",
+            "_generation_attempt_id",
+            (("job", "id"), ("lease_token",)),
+        )
+        and _binding_is_exact_call(
+            generate_bindings,
+            "claims",
+            "_generation_storage_claims",
+            (("job",), ("version",), ("frozen_result",), ("lease_token",)),
+        )
+        and _single_call_binds_keyword_and_argument(
+            generate,
+            "reserve_storage_batch",
+            "lease_token",
+            ("lease_token",),
+            ("claims",),
+        )
+        and _generation_storage_claim_contract_is_safe(claims)
+        and _generation_object_keys_are_attempt_bound(generate)
+        and _completion_persists_attempt_artifact_id(complete)
+    )
 
 
 def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) -> None:
@@ -810,8 +1273,18 @@ def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) 
         ("validation/stock-selection.json", "stock_selection", "stock-selection snapshot"),
         ("validation/generation-plan.json", "generation_plan", "generation plan"),
     ):
-        if not _worker_semantic_document_evidence_is_persisted(generate, path=path, kind=kind):
+        if not _worker_semantic_document_evidence_is_persisted(
+            tree,
+            generate,
+            path=path,
+            kind=kind,
+        ):
             issues.append(f"{relative} does not persist the checksum-bound {label}")
+    if not _worker_storage_incarnation_is_safe(tree):
+        issues.append(
+            f"{relative} does not bind generation keys, idempotency and Artifact.id "
+            "to one explicit lease-derived attempt"
+        )
 
 
 def _raising_guards(function: FunctionNode) -> list[ast.expr]:
@@ -839,6 +1312,116 @@ def _negates_safe_predicate(node: ast.AST) -> bool:
         and len(node.operand.args) == 1
         and not node.operand.keywords
         and _expression_path(node.operand.args[0]) == ("job", "result_json")
+    )
+
+
+def _reachable_nested_statements(statements: list[ast.stmt]) -> list[ast.stmt]:
+    """Descend through unconditional containers, never conditional/caught decoys."""
+
+    reachable: list[ast.stmt] = []
+    for statement in statements:
+        reachable.append(statement)
+        if isinstance(statement, ast.For | ast.AsyncFor):
+            reachable.extend(_reachable_nested_statements(statement.body))
+            reachable.extend(_reachable_nested_statements(statement.orelse))
+        elif isinstance(statement, ast.With | ast.AsyncWith):
+            reachable.extend(_reachable_nested_statements(statement.body))
+    return reachable
+
+
+def _release_archive_binds_artifact_id(tree: ast.Module) -> bool:
+    resolver = _simple_function(tree, "_resolve_release_archive")
+    if resolver is None:
+        return False
+    bindings = _function_bindings(resolver)
+    for branch in _reachable_nested_statements(resolver.body):
+        if (
+            not isinstance(branch, ast.If)
+            or len(branch.body) != 1
+            or not isinstance(branch.body[0], ast.Raise)
+        ):
+            continue
+        for comparison in ast.walk(branch.test):
+            if (
+                not isinstance(comparison, ast.Compare)
+                or len(comparison.ops) != 1
+                or not isinstance(comparison.ops[0], ast.NotEq)
+                or len(comparison.comparators) != 1
+            ):
+                continue
+            left = _resolved_binding(comparison.left, bindings)
+            right = _resolved_binding(comparison.comparators[0], bindings)
+            candidates = ((left, right), (right, left))
+            if any(
+                _expression_path(stored) == ("stored", "idempotency_key")
+                and _joined_string_contract(
+                    expected,
+                    bindings,
+                    required_paths=frozenset(
+                        {("job", "id"), ("artifact", "kind"), ("artifact", "id")}
+                    ),
+                    required_literals=("generation:",),
+                    exact_paths=True,
+                )
+                for stored, expected in candidates
+            ):
+                return True
+    return False
+
+
+def _str_uuid4_incarnation(node: ast.expr) -> bool:
+    call = _str_wrapped_call(node, "uuid4")
+    return call is not None and not call.args and not call.keywords
+
+
+def _import_asset_uses_uuid_incarnation(tree: ast.Module) -> bool:
+    inspect_import = _simple_function(tree, "inspect_import")
+    if inspect_import is None:
+        return False
+    bindings = _function_bindings(inspect_import)
+    asset_id = bindings.get("asset_id")
+    object_key = bindings.get("object_key")
+    if (
+        asset_id is None
+        or not _str_uuid4_incarnation(asset_id)
+        or object_key is None
+        or not _joined_string_contract(
+            object_key,
+            bindings,
+            required_paths=frozenset({("asset_id",)}),
+            required_literals=("/reference-imports/", "sha256/"),
+        )
+    ):
+        return False
+    claims = [
+        node
+        for node in ast.walk(inspect_import)
+        if isinstance(node, ast.Call) and _call_name(node) == "StorageObjectClaim"
+    ]
+    assets = [
+        node
+        for node in ast.walk(inspect_import)
+        if isinstance(node, ast.Call) and _call_name(node) == "ImportedAsset"
+    ]
+    if len(claims) != 1 or len(assets) != 1:
+        return False
+    claim_keywords = _call_keywords(claims[0])
+    asset_keywords = _call_keywords(assets[0])
+    return bool(
+        claim_keywords is not None
+        and asset_keywords is not None
+        and _expression_path(claim_keywords.get("object_key")) == ("object_key",)
+        and _expression_path(claim_keywords.get("owner_id")) == ("asset_id",)
+        and claim_keywords.get("idempotency_key") is not None
+        and _joined_string_contract(
+            claim_keywords["idempotency_key"],
+            bindings,
+            required_paths=frozenset({("asset_id",)}),
+            required_literals=("imported:",),
+            exact_paths=True,
+        )
+        and _expression_path(asset_keywords.get("id")) == ("asset_id",)
+        and _expression_path(asset_keywords.get("object_key")) == ("object_key",)
     )
 
 
@@ -873,6 +1456,12 @@ def _check_api_semantics(tree: ast.Module, relative: str, issues: list[str]) -> 
     has_total_predicate_guard = any(_negates_safe_predicate(guard) for guard in guards)
     if not has_exact_geometry_guard or not has_total_predicate_guard:
         issues.append(f"{relative} release path does not fail closed on generation claims")
+    if not _release_archive_binds_artifact_id(tree):
+        issues.append(
+            f"{relative} does not bind stored generation idempotency to Artifact.id"
+        )
+    if not _import_asset_uses_uuid_incarnation(tree):
+        issues.append(f"{relative} does not give imported objects a UUID key incarnation")
 
 
 def _context_equality_is_required(function: FunctionNode) -> bool:
@@ -1392,7 +1981,13 @@ def resolved_compose(repo: Path) -> dict[str, Any]:
 def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
     issues: list[str] = []
     services = config.get("services", {})
-    for name in ("api", "worker", "web"):
+    for name in (
+        "storage-recovery",
+        "storage-capacity-attestor",
+        "api",
+        "worker",
+        "web",
+    ):
         service = services.get(name, {})
         if service.get("read_only") is not True:
             issues.append(f"{name} is not read-only")
@@ -1405,9 +2000,28 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         issues.append("api has no dependency-backed readiness healthcheck")
     if not services.get("worker", {}).get("healthcheck"):
         issues.append("worker has no Celery healthcheck")
-    for name in ("postgres", "redis", "object-storage", "api", "worker", "web"):
+    attestor_healthcheck = services.get("storage-capacity-attestor", {}).get("healthcheck", {})
+    attestor_health_test = (
+        attestor_healthcheck.get("test", []) if isinstance(attestor_healthcheck, dict) else []
+    )
+    if "capacity-heartbeat.json" not in " ".join(
+        str(value) for value in (attestor_health_test or [])
+    ):
+        issues.append("storage-capacity-attestor health does not verify its heartbeat")
+    for name in (
+        "redis",
+        "object-storage",
+        "storage-capacity-attestor",
+        "api",
+        "worker",
+        "web",
+    ):
         if services.get(name, {}).get("restart") != "unless-stopped":
             issues.append(f"{name} does not use the unless-stopped restart policy")
+    if services.get("postgres", {}).get("restart") != "no":
+        issues.append("postgres automatic restart can bypass the storage-recovery barrier")
+    if services.get("storage-recovery", {}).get("restart") != "no":
+        issues.append("storage-recovery is not an exact one-shot service")
     for name in (
         "postgres",
         "redis",
@@ -1415,6 +2029,8 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         "api",
         "worker",
         "scheduler",
+        "storage-recovery",
+        "storage-capacity-attestor",
         "web",
     ):
         pids_limit = services.get(name, {}).get("pids_limit")
@@ -1466,6 +2082,63 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
     if api_dependency.get("condition") != "service_healthy":
         issues.append("web does not wait for API readiness")
 
+    def dependency_condition(service_name: str, dependency_name: str) -> str:
+        dependencies = services.get(service_name, {}).get("depends_on", {})
+        dependency = dependencies.get(dependency_name, {}) if isinstance(dependencies, dict) else {}
+        return str(dependency.get("condition", "")) if isinstance(dependency, dict) else ""
+
+    def dependency_restarts(service_name: str, dependency_name: str) -> bool:
+        dependencies = services.get(service_name, {}).get("depends_on", {})
+        dependency = dependencies.get(dependency_name, {}) if isinstance(dependencies, dict) else {}
+        return (
+            isinstance(dependency, dict)
+            and dependency.get("required", True) is not False
+            and dependency.get("restart") is True
+        )
+
+    recovery_command = services.get("storage-recovery", {}).get("command", [])
+    if isinstance(recovery_command, str):
+        recovery_command_text = recovery_command
+    elif isinstance(recovery_command, list):
+        recovery_command_text = " ".join(str(item) for item in recovery_command)
+    else:
+        recovery_command_text = ""
+    if recovery_command_text != "python -m scripts.storage_recovery":
+        issues.append("storage-recovery does not run the exact recovery entrypoint")
+    recovery_service = services.get("storage-recovery", {})
+    if str(recovery_service.get("user", "")) != "65532:65532":
+        issues.append("storage-recovery does not run as the fixed non-root user")
+    if recovery_service.get("ports"):
+        issues.append("storage-recovery publishes a network port")
+    if recovery_service.get("volumes"):
+        issues.append("storage-recovery mounts a host or named volume")
+    if dependency_condition("migrate", "postgres") != "service_healthy":
+        issues.append("migrate does not wait for healthy PostgreSQL")
+    if not dependency_restarts("migrate", "postgres"):
+        issues.append("migrate does not restart after a Compose-managed PostgreSQL update")
+    if dependency_condition("storage-recovery", "migrate") != "service_completed_successfully":
+        issues.append("storage-recovery does not wait for completed migrations")
+    if not dependency_restarts("storage-recovery", "migrate"):
+        issues.append("storage-recovery does not restart after a Compose-managed migration")
+    if dependency_condition("storage-recovery", "object-storage") != "service_healthy":
+        issues.append("storage-recovery does not wait for healthy object storage")
+    if (
+        dependency_condition("storage-capacity-attestor", "storage-recovery")
+        != "service_completed_successfully"
+    ):
+        issues.append("storage-capacity-attestor does not wait for completed storage recovery")
+    if not dependency_restarts("storage-capacity-attestor", "storage-recovery"):
+        issues.append(
+            "storage-capacity-attestor does not restart after Compose-managed storage recovery"
+        )
+    if dependency_condition("storage-capacity-attestor", "object-storage") != "service_healthy":
+        issues.append("storage-capacity-attestor does not wait for healthy object storage")
+    for name in ("api", "worker", "scheduler"):
+        if dependency_condition(name, "storage-capacity-attestor") != "service_healthy":
+            issues.append(f"{name} does not wait for healthy storage capacity evidence")
+        if not dependency_restarts(name, "storage-capacity-attestor"):
+            issues.append(f"{name} does not restart after Compose-managed capacity attestation")
+
     def attached_networks(service_name: str) -> set[str]:
         value = services.get(service_name, {}).get("networks", {})
         if isinstance(value, dict):
@@ -1473,6 +2146,22 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         if isinstance(value, list):
             return {str(name) for name in value}
         return set()
+
+    def mounted_volume(service_name: str, target: str) -> dict[str, Any] | None:
+        mounts = services.get(service_name, {}).get("volumes", []) or []
+        for mount in mounts:
+            if isinstance(mount, dict) and mount.get("target") == target:
+                return mount
+            if isinstance(mount, str):
+                parts = mount.split(":")
+                if len(parts) >= 2 and parts[1] == target:
+                    return {
+                        "source": parts[0],
+                        "target": parts[1],
+                        "type": ("bind" if parts[0].startswith(("/", ".")) else "volume"),
+                        "read_only": len(parts) >= 3 and parts[2] == "ro",
+                    }
+        return None
 
     networks = config.get("networks", {})
     backend = networks.get("backend", {}) if isinstance(networks, dict) else {}
@@ -1489,6 +2178,22 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         service_networks = attached_networks(name)
         if "backend" not in service_networks or "edge" in service_networks:
             issues.append(f"{name} is not isolated to the backend network")
+    if attached_networks("storage-recovery") != {"backend"}:
+        issues.append("storage-recovery is not isolated to the backend network")
+    if attached_networks("storage-capacity-attestor") != {"backend"}:
+        issues.append("storage-capacity-attestor is not isolated to the backend network")
+    object_storage_mount = mounted_volume("object-storage", "/data")
+    attestor_storage_mount = mounted_volume("storage-capacity-attestor", "/storage-volume")
+    if (
+        object_storage_mount is None
+        or attestor_storage_mount is None
+        or object_storage_mount.get("type") != "volume"
+        or attestor_storage_mount.get("type") != "volume"
+        or not object_storage_mount.get("source")
+        or attestor_storage_mount.get("source") != object_storage_mount.get("source")
+        or attestor_storage_mount.get("read_only") is not True
+    ):
+        issues.append("storage-capacity-attestor does not read the object-storage volume")
     if "artifact-ingress" not in attached_networks("object-storage"):
         issues.append("object-storage has no isolated host-publish ingress network")
     if "artifact-ingress" in attached_networks("web"):
@@ -1522,7 +2227,32 @@ def supply_chain_issues(repo: Path) -> list[str]:
         issues.append("supply-chain workflow does not generate an SBOM")
     if "anchore/scan-action@" not in evidence:
         issues.append("supply-chain workflow does not enforce vulnerability scanning")
-    scan_count = evidence.count("anchore/scan-action@")
+    evidence_lines = evidence.splitlines()
+    scan_steps: list[tuple[str, list[str]]] = []
+    for index, line in enumerate(evidence_lines):
+        match = action_pattern.match(line)
+        if match is None or not match.group(1).startswith("anchore/scan-action@"):
+            continue
+        action = match.group(1)
+        action_indent = len(line) - len(line.lstrip())
+        versions: list[str] = []
+        for following in evidence_lines[index + 1 :]:
+            stripped = following.lstrip()
+            following_indent = len(following) - len(stripped)
+            if stripped and (
+                following_indent < action_indent
+                or (following_indent <= action_indent and stripped.startswith("- "))
+            ):
+                break
+            version_match = re.match(r"^\s+grype-version:\s*([^#\s]+)", following)
+            if version_match is not None:
+                versions.append(version_match.group(1))
+        scan_steps.append((action, versions))
+    scan_count = len(scan_steps)
+    if any(action != REVIEWED_GRYPE_SCAN_ACTION for action, _versions in scan_steps):
+        issues.append("supply-chain workflow does not use the reviewed Grype scan action")
+    if any(versions != [REVIEWED_GRYPE_VERSION] for _action, versions in scan_steps):
+        issues.append("supply-chain workflow does not pin every scan to reviewed Grype v0.110.0")
     if evidence.count("config: .grype.yaml") < scan_count:
         issues.append("supply-chain workflow does not load the reviewed Grype policy")
     if evidence.count("fail-build: true") < scan_count:
@@ -1838,10 +2568,23 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "docs/SECURITY.md",
         ".github/workflows/supply-chain.yml",
         ".github/workflows/cd.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/prod-ci.yml",
         "scripts/compose_backup.py",
         "scripts/backup_freshness.py",
         "scripts/check_external_production.py",
         "scripts/deploy_descriptor.py",
+        "scripts/storage_capacity_development.py",
+        "scripts/storage_capacity_preflight.py",
+        "scripts/storage_capacity_refresh.py",
+        "scripts/storage_recovery.py",
+        "services/api/alembic/versions/0012_storage_quota_ledger.py",
+        "services/api/alembic/versions/0013_storage_quota_security_functions.py",
+        "services/api/alembic/versions/0014_release_generation_binding.py",
+        "services/api/app/artifact_operations.py",
+        "services/api/app/storage_capacity.py",
+        "services/api/app/storage_quota.py",
+        "services/api/app/storage_reaper.py",
         *PRODUCTION_SEMANTIC_SOURCE_PATHS,
         "scripts/source_manifest.py",
         PRODUCTION_SEMANTIC_ROOT_PATH,
@@ -1980,8 +2723,13 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
             )
         )
 
-    prod_workflow = (repo / ".github/workflows/prod-ci.yml").read_text(encoding="utf-8")
-    stale_source = "working-directory: prod" in prod_workflow or "prod/compose.yml" in prod_workflow
+    prod_workflow_path = repo / ".github/workflows/prod-ci.yml"
+    prod_workflow = (
+        prod_workflow_path.read_text(encoding="utf-8") if prod_workflow_path.is_file() else ""
+    )
+    stale_source = not prod_workflow or any(
+        marker in prod_workflow for marker in ("working-directory: prod", "prod/compose.yml")
+    )
     checks.append(
         ReleaseCheck(
             "CI_SOURCE",
@@ -1990,7 +2738,11 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
             (
                 "Production CI targets the repository root."
                 if not stale_source
-                else "Production CI still targets the legacy prod snapshot."
+                else (
+                    "Production CI workflow is missing."
+                    if not prod_workflow
+                    else "Production CI still targets the legacy prod snapshot."
+                )
             ),
         )
     )

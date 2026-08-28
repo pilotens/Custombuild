@@ -40,6 +40,7 @@ jobs:
       MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
       RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
       WORKER_RLS_DATABASE_URL: postgresql+psycopg://custombuild_worker:strong-worker-database-test-password@localhost:5432/custombuild
+      CAPACITY_ATTESTOR_DATABASE_URL: postgresql+psycopg://custombuild_storage_attestor:strong-capacity-attestor-test-password@localhost:5432/custombuild
       TENANT_GRAPH_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
       UV_CACHE_DIR: /tmp/custombuild-cd-quality-uv-cache
       RELEASE_EVIDENCE_DIR: artifacts/release-evidence
@@ -74,7 +75,8 @@ jobs:
           CREATE ROLE custombuild_migrator LOGIN PASSWORD 'strong-migrator-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           CREATE ROLE custombuild_api LOGIN PASSWORD 'strong-api-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           CREATE ROLE custombuild_worker LOGIN PASSWORD 'strong-worker-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker;
+          CREATE ROLE custombuild_storage_attestor LOGIN PASSWORD 'strong-capacity-attestor-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker, custombuild_storage_attestor;
           GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
           SQL
       - name: Migrate and check the release schema
@@ -491,7 +493,7 @@ jobs:
         run: |
           uv sync --locked
           pnpm install --frozen-lockfile
-          pnpm --dir apps/web exec playwright install --with-deps chromium
+          pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
       - name: Recheck source freeze before runtime acceptance
         run: >-
           python3 scripts/source_manifest.py --repo .
@@ -562,7 +564,10 @@ jobs:
           PLAYWRIGHT_ENVIRONMENT: prod
           PLAYWRIGHT_REAL_API: "1"
           PLAYWRIGHT_RUN_ID: cd-${{ github.run_id }}-${{ github.run_attempt }}
-        run: pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+        run: |
+          pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+          pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
+            --project=firefox-desktop --project=webkit-desktop
       - name: Create and verify coordinated backup
         run: >-
           uv run python scripts/compose_backup.py --compose compose.yml
@@ -666,6 +671,8 @@ jobs:
           volume_init_id="$(image_id "$volume_init_ref")"
           test "$api_id" = "$(runtime_id api)"
           test "$api_id" = "$(runtime_id migrate)"
+          test "$api_id" = "$(runtime_id storage-recovery)"
+          test "$api_id" = "$(runtime_id storage-capacity-attestor)"
           test "$worker_id" = "$(runtime_id worker)"
           test "$worker_id" = "$(runtime_id scheduler)"
           test "$web_id" = "$(runtime_id web)"

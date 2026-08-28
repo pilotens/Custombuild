@@ -112,6 +112,15 @@ These tokens work only with `AUTH_MODE=development`. Set `APP_ENV=production`
 for any production deployment. That mode requires HTTPS OIDC/CORS/artifact
 endpoints and rejects development authentication, placeholder credentials and a
 non-PostgreSQL database. The supplied `.env.example` is development-only.
+Even locally, the continuous storage-capacity attestor uses the separate
+`custombuild_storage_attestor` login. Compose runs the one-shot
+`storage-recovery` service with the migrator credential after migrations and
+before the attestor; API, worker and scheduler cannot start unless recovery
+exits successfully and the attestor becomes healthy. The migrator credential
+must never be supplied as `CAPACITY_ATTESTOR_DATABASE_URL` or to a long-running
+service. PostgreSQL intentionally has no container-runtime automatic restart;
+database recovery or replacement must use the ordered Compose operation so the
+one-shot recovery and attestation barriers rerun before writers.
 
 ## Product flow
 

@@ -46,6 +46,58 @@ function exactServerParts(spec: DesignSpec = DEFAULT_DESIGN_SPEC) {
   }));
 }
 
+async function sha256Hex(content: Uint8Array): Promise<string> {
+  const buffer = new ArrayBuffer(content.byteLength);
+  new Uint8Array(buffer).set(content);
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(digest)]
+    .map((value) => value.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function sha256Base64(sha256: string): string {
+  const bytes = Array.from({ length: 32 }, (_, index) => (
+    Number.parseInt(sha256.slice(index * 2, index * 2 + 2), 16)
+  ));
+  return btoa(String.fromCharCode(...bytes));
+}
+
+function artifactResponse(
+  content: Uint8Array,
+  artifact: { content_type: string; sha256: string; size_bytes: number; download_path: string },
+  overrides: {
+    headers?: Record<string, string | undefined>;
+    redirected?: boolean;
+    status?: number;
+    url?: string;
+  } = {},
+): Response {
+  const headers = new Headers({
+    "Content-Length": String(artifact.size_bytes),
+    "Content-Type": artifact.content_type,
+    Digest: `sha-256=${sha256Base64(artifact.sha256)}`,
+    ETag: `"${artifact.sha256}"`,
+  });
+  for (const [name, value] of Object.entries(overrides.headers ?? {})) {
+    if (value === undefined) headers.delete(name);
+    else headers.set(name, value);
+  }
+  const body = new ArrayBuffer(content.byteLength);
+  new Uint8Array(body).set(content);
+  const response = new Response(body, {
+    status: overrides.status ?? 200,
+    headers,
+  });
+  Object.defineProperties(response, {
+    redirected: { configurable: true, value: overrides.redirected ?? false },
+    url: {
+      configurable: true,
+      value: overrides.url ?? `https://api.example.test${artifact.download_path}`,
+    },
+  });
+  return response;
+}
+
 describe("API preview normalization", () => {
   it("merges a tolerant server response with deterministic local output", () => {
     const result = normalizePreviewResponse(
@@ -969,15 +1021,16 @@ describe("production API contract", () => {
       });
   });
 
-  it("accepts only complete, signed web artifact links from the typed endpoint", async () => {
+  it("accepts only complete signed relative artifact paths and discards external URLs", async () => {
+    const downloadPath = `/v1/artifacts/artifact-1/download?expires=1780000000&signature=${"b".repeat(64)}`;
     const payload = [{
       id: "artifact-1",
       kind: "production_bundle",
       sha256: "a".repeat(64),
       size_bytes: 2_048,
       content_type: "application/zip",
-      download_url: "https://artifacts.example.test/bundle.zip?signature=fresh",
-      download_path: "/v1/artifacts/artifact-1/download?signature=signed",
+      download_url: "https://untrusted-storage.example.test/bundle.zip?signature=fresh",
+      download_path: downloadPath,
     }];
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
       JSON.stringify(payload),
@@ -985,7 +1038,10 @@ describe("production API contract", () => {
     ));
     const api = new CustombuildApiClient("https://api.example.test/", "tenant-token");
 
-    await expect(api.listArtifacts("job /1")).resolves.toEqual(payload);
+    await expect(api.listArtifacts("job /1")).resolves.toEqual([{
+      ...payload[0],
+      download_url: downloadPath,
+    }]);
     expect(fetchMock).toHaveBeenCalledWith(
       "https://api.example.test/v1/jobs/job%20%2F1/artifacts",
       expect.objectContaining({
@@ -998,13 +1054,117 @@ describe("production API contract", () => {
       ...payload[0],
       download_url: "javascript:alert(1)",
     }]), { status: 200, headers: { "Content-Type": "application/json" } }));
-    await expect(api.listArtifacts("job-2")).rejects.toThrow(ApiError);
+    await expect(api.listArtifacts("job-2")).resolves.toEqual([{
+      ...payload[0],
+      download_url: downloadPath,
+    }]);
 
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([{
       ...payload[0],
       sha256: "not-a-sha",
     }]), { status: 200, headers: { "Content-Type": "application/json" } }));
     await expect(api.listArtifacts("job-3")).rejects.toThrow(/ogiltig artefaktlänk/i);
+
+    for (const invalidPath of [
+      `https://evil.example/v1/artifacts/artifact-1/download?expires=1780000000&signature=${"b".repeat(64)}`,
+      `//evil.example/v1/artifacts/artifact-1/download?expires=1780000000&signature=${"b".repeat(64)}`,
+      `/v1/artifacts/other/download?expires=1780000000&signature=${"b".repeat(64)}`,
+      `/v1/artifacts/artifact-1/download?expires=1780000000&signature=${"b".repeat(64)}&next=evil`,
+      "/v1/artifacts/artifact-1/download?expires=1780000000&signature=unsigned",
+    ]) {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify([{
+        ...payload[0],
+        download_path: invalidPath,
+      }]), { status: 200, headers: { "Content-Type": "application/json" } }));
+      await expect(api.listArtifacts("job-invalid")).rejects.toThrow(/signerad artefaktsökväg/i);
+    }
+  });
+
+  it("downloads only authenticated same-origin bytes whose headers, size and SHA-256 agree", async () => {
+    const content = new TextEncoder().encode("verified review bundle");
+    const sha256 = await sha256Hex(content);
+    const artifact = {
+      id: "artifact-1",
+      kind: "production_bundle",
+      sha256,
+      size_bytes: content.byteLength,
+      content_type: "application/zip",
+      download_url: "https://untrusted-storage.example.test/bundle.zip",
+      download_path: `/v1/artifacts/artifact-1/download?expires=1780000000&signature=${"c".repeat(64)}`,
+    } satisfies import("./api-client").ArtifactRead;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      artifactResponse(content, artifact),
+    );
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    const blob = await api.downloadArtifact(artifact);
+
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.type).toBe("application/zip");
+    expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual(Array.from(content));
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://api.example.test${artifact.download_path}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/zip",
+          Authorization: "Bearer tenant-token",
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal: undefined,
+      },
+    );
+  });
+
+  it("rejects a tampered artifact body even when every response header claims the expected digest", async () => {
+    const expected = new TextEncoder().encode("expected bytes");
+    const tampered = new TextEncoder().encode("tampered bytes");
+    expect(tampered.byteLength).toBe(expected.byteLength);
+    const artifact = {
+      id: "artifact-2",
+      kind: "production_bundle",
+      sha256: await sha256Hex(expected),
+      size_bytes: expected.byteLength,
+      content_type: "application/zip",
+      download_url: "ignored",
+      download_path: `/v1/artifacts/artifact-2/download?expires=1780000000&signature=${"d".repeat(64)}`,
+    } satisfies import("./api-client").ArtifactRead;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      artifactResponse(tampered, artifact),
+    );
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.downloadArtifact(artifact)).rejects.toThrow(/SHA-256-identiteten/i);
+
+    fetchMock.mockResolvedValueOnce(artifactResponse(tampered.slice(1), artifact));
+    await expect(api.downloadArtifact(artifact)).rejects.toThrow(/faktiska storlek/i);
+  });
+
+  it.each([
+    ["missing Content-Length", { headers: { "Content-Length": undefined } }],
+    ["non-canonical Content-Length", { headers: { "Content-Length": "04" } }],
+    ["wrong Content-Type", { headers: { "Content-Type": "application/octet-stream" } }],
+    ["missing Digest", { headers: { Digest: undefined } }],
+    ["wrong ETag", { headers: { ETag: `"${"e".repeat(64)}"` } }],
+    ["HTTP error", { status: 409 }],
+    ["HTTP redirect", { redirected: true }],
+    ["cross-origin response", { url: "https://evil.example/bundle.zip" }],
+  ])("rejects artifact download metadata: %s", async (_name, overrides) => {
+    const content = new TextEncoder().encode("safe");
+    const artifact = {
+      id: "artifact-3",
+      kind: "production_bundle",
+      sha256: await sha256Hex(content),
+      size_bytes: content.byteLength,
+      content_type: "application/zip",
+      download_url: "ignored",
+      download_path: `/v1/artifacts/artifact-3/download?expires=1780000000&signature=${"f".repeat(64)}`,
+    } satisfies import("./api-client").ArtifactRead;
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(artifactResponse(content, artifact, overrides));
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.downloadArtifact(artifact)).rejects.toThrow(ApiError);
   });
 
   it("binds release confirmation and rejects incomplete release evidence", async () => {

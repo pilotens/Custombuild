@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from threading import Event, Thread
+from threading import Event, Lock, Thread
+from types import MappingProxyType
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 import boto3
 from app.db import set_tenant_context
@@ -31,8 +33,20 @@ from app.models import (
 from app.storage import (
     ArtifactIntegrityError,
     ArtifactStorageUnavailableError,
+    storage_runtime,
     store_create_once_object,
 )
+from app.storage_quota import (
+    StorageClaimConflict,
+    StorageObjectClaim,
+    StorageQuotaExceeded,
+    StorageQuotaInvariantError,
+    StorageReservationBusy,
+    commit_storage_batch_in_transaction,
+    renew_storage_batch_lease,
+    reserve_storage_batch,
+)
+from app.storage_reaper import StorageReapStatus, reap_storage_batch
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from celery import Celery
@@ -48,6 +62,11 @@ from custombuild_domain import (
 )
 from custombuild_manufacturing import (
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
+    DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
+    GENERATION_PLAN_ARTIFACT_PATH,
+    GENERATION_PLAN_ARTIFACT_ROLE,
+    MAX_EVIDENCE_ARTIFACTS,
+    MAX_EVIDENCE_TOTAL_BYTES,
     ArtifactFile,
     CAMStageStatus,
     ManifestContext,
@@ -56,6 +75,7 @@ from custombuild_manufacturing import (
     build_production_bundle,
     canonical_json_bytes,
     sha256_hex,
+    valid_artifact_size,
 )
 from custombuild_manufacturing.production_context import (
     ProductionContextError,
@@ -68,7 +88,9 @@ from custombuild_manufacturing.production_context import (
 )
 from custombuild_manufacturing.readiness import ReadinessValidationError
 from custombuild_rules import RuleStatus, evaluate_design
-from sqlalchemy import and_, create_engine, or_, select
+from redis import Redis
+from redis.exceptions import RedisError
+from sqlalchemy import and_, create_engine, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_worker_settings
@@ -90,6 +112,65 @@ IMMEDIATE_TERMINAL_GENERATION_ERRORS = (
     ProductionBlockedError,
     ReadinessValidationError,
 )
+_EVIDENCE_ARTIFACT_CONTRACTS: Mapping[str, tuple[str, str, str]] = {
+    "validation/dfm-report.json": (
+        "dfm_report",
+        "application/json",
+        "DFM_VALIDATION_REPORT",
+    ),
+    DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH: (
+        "design_review_package_status",
+        "application/json",
+        DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
+    ),
+    "validation/stock-selection.json": (
+        "stock_selection",
+        "application/json",
+        "STOCK_SELECTION_SNAPSHOT",
+    ),
+    GENERATION_PLAN_ARTIFACT_PATH: (
+        "generation_plan",
+        "application/json",
+        GENERATION_PLAN_ARTIFACT_ROLE,
+    ),
+    "cam/operations.json": (
+        "operations",
+        "application/json",
+        "MACHINE_NEUTRAL_OPERATIONS",
+    ),
+    "cam/validation-backplot.svg": (
+        "validation_backplot",
+        "image/svg+xml",
+        "VALIDATION_BACKPLOT",
+    ),
+    "model/design.glb": ("design_glb", "model/gltf-binary", "WEB_PREVIEW_GLB"),
+    "model/design.fcstd": (
+        "design_fcstd",
+        "application/vnd.freecad",
+        "NON_AUTHORITATIVE_FREECAD_PROJECT",
+    ),
+    "validation/cad-interchange-status.json": (
+        "cad_interchange_status",
+        "application/json",
+        "CAD_INTERCHANGE_STATUS",
+    ),
+    "validation/source-provenance.json": (
+        "source_provenance",
+        "application/json",
+        "SOURCE_PROVENANCE",
+    ),
+    "validation/workshop-readiness.json": (
+        "workshop_readiness",
+        "application/json",
+        "WORKSHOP_READINESS_REPORT",
+    ),
+    "assembly/assembly-readiness.json": (
+        "assembly_readiness",
+        "application/json",
+        "ASSEMBLY_READINESS",
+    ),
+}
+_SETUP_EVIDENCE_PATH = re.compile(r"cam/setups/[A-Za-z0-9][A-Za-z0-9._-]*\.svg")
 celery_app = Celery("custombuild-worker", broker=REDIS_URL, backend=REDIS_URL)
 celery_app.conf.update(
     task_serializer="json",
@@ -109,18 +190,38 @@ celery_app.conf.update(
             "task": "custombuild.recover_stale_jobs",
             "schedule": GENERATION_RECOVERY_INTERVAL_SECONDS,
         },
+        "reap-abandoned-storage": {
+            "task": "custombuild.reap_abandoned_storage",
+            "schedule": 60.0,
+        },
     },
 )
+
+_engine_connect_args: dict[str, object]
+if DATABASE_URL.startswith("sqlite"):
+    _engine_connect_args = {"check_same_thread": False}
+else:
+    _engine_connect_args = {
+        "options": (
+            "-c statement_timeout="
+            f"{WORKER_SETTINGS.database_statement_timeout_seconds * 1000} "
+            "-c lock_timeout="
+            f"{WORKER_SETTINGS.database_lock_timeout_seconds * 1000}"
+        )
+    }
 
 _engine = create_engine(
     DATABASE_URL,
     pool_pre_ping=True,
-    connect_args={"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {},
+    connect_args=_engine_connect_args,
 )
 SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
 MAX_GENERATION_ATTEMPTS = 4
 MAX_OUTBOX_PUBLISH_ATTEMPTS = 5
 DEFAULT_SCHEDULER_BATCH_LIMIT = 50
+DEFAULT_STORAGE_REAPER_BATCH_LIMIT = 25
+STORAGE_REAPER_TENANT_BATCH_LIMIT = 10
+STORAGE_REAPER_CURSOR_KEY = "custombuild:scheduler:storage-reaper:tenant-cursor:v1"
 TERMINAL_JOB_STATUSES = frozenset({JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled})
 GENERATION_DEADLINE_ERROR = "Generation job exceeded the server deadline of 120 minutes"
 S3_CONNECT_TIMEOUT_SECONDS = 3
@@ -135,8 +236,68 @@ class GenerationDeadlineExceeded(RuntimeError):
     """The worker reached the server-owned bounded execution window."""
 
 
+class GenerationLeaseOwnershipLost(RuntimeError):
+    """The worker can no longer prove ownership of its generation side effects."""
+
+
+class GenerationStorageReservationBusy(RuntimeError):
+    """A prior attempt still owns this job's exact immutable storage batch."""
+
+    def __init__(self, message: str, *, retry_after_seconds: int) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class _GenerationLeaseGuard:
+    """Share fail-closed job/quota lease state with the heartbeat thread."""
+
+    def __init__(self, organization_id: str, lease_token: str) -> None:
+        self.organization_id = organization_id
+        self.lease_token = lease_token
+        self._claims: tuple[StorageObjectClaim, ...] = ()
+        self._failure: Exception | None = None
+        self._lock = Lock()
+
+    def bind_storage_claims(self, claims: tuple[StorageObjectClaim, ...]) -> None:
+        with self._lock:
+            if self._failure is not None:
+                raise GenerationLeaseOwnershipLost(str(self._failure)) from self._failure
+            if self._claims and self._claims != claims:
+                raise RuntimeError("generation storage lease cannot change its claim batch")
+            self._claims = claims
+
+    def storage_claims(self) -> tuple[StorageObjectClaim, ...]:
+        with self._lock:
+            return self._claims
+
+    def fail(self, exc: Exception) -> None:
+        with self._lock:
+            if self._failure is None:
+                self._failure = exc
+
+    def check(self) -> None:
+        with self._lock:
+            failure = self._failure
+        if failure is not None:
+            raise GenerationLeaseOwnershipLost(
+                "generation or storage reservation lease ownership was lost"
+            ) from failure
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def _database_time(session: Session, override: datetime | None = None) -> datetime:
+    """Use PostgreSQL's clock for lease decisions shared across replicas."""
+
+    if session.get_bind().dialect.name == "postgresql":
+        value = session.scalar(select(func.clock_timestamp()))
+        if not isinstance(value, datetime):
+            raise RuntimeError("database did not return a canonical lease timestamp")
+    else:
+        value = override or _utcnow()
+    return _as_utc(value)
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -194,12 +355,44 @@ def _organization_ids() -> tuple[str, ...]:
     """
 
     with SessionFactory.begin() as session:
-        organization_ids = tuple(
-            session.scalars(select(Organization.id).order_by(Organization.id))
-        )
+        organization_ids = tuple(session.scalars(select(Organization.id).order_by(Organization.id)))
     if any(not _valid_event_identifier(item) for item in organization_ids):
         raise RuntimeError("organization registry contains a non-canonical identifier")
     return organization_ids
+
+
+def _storage_reaper_start_index(tenant_count: int) -> int:
+    """Advance one durable Redis cursor so bounded scans cannot starve tenants."""
+
+    if tenant_count <= 0:
+        return 0
+    client: Redis = Redis.from_url(
+        REDIS_URL,
+        decode_responses=True,
+        socket_connect_timeout=2,
+        socket_timeout=2,
+        retry_on_timeout=False,
+    )
+    try:
+        cursor = client.incr(STORAGE_REAPER_CURSOR_KEY)
+    except RedisError as exc:
+        raise RuntimeError("storage reaper fairness cursor is unavailable") from exc
+    finally:
+        client.close()
+    if type(cursor) is not int or cursor < 1:
+        raise RuntimeError("storage reaper fairness cursor is non-canonical")
+    return (cursor - 1) % tenant_count
+
+
+def _rotated_tenant_ids(
+    organization_ids: tuple[str, ...],
+    start_index: int,
+) -> tuple[str, ...]:
+    if not organization_ids:
+        return ()
+    if type(start_index) is not int or not 0 <= start_index < len(organization_ids):
+        raise RuntimeError("storage reaper fairness cursor is outside the tenant registry")
+    return organization_ids[start_index:] + organization_ids[:start_index]
 
 
 @contextmanager
@@ -319,8 +512,6 @@ def _dispatch_tenant_outbox_events(
 
 @celery_app.task(name="custombuild.recover_stale_jobs")  # type: ignore[misc]
 def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
-    now = _utcnow()
-    legacy_threshold = now - LEGACY_STALE_LEASE_THRESHOLD
     global_limit = _scheduler_limit(limit)
     handled = 0
     for tenant_id in _organization_ids():
@@ -330,6 +521,8 @@ def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
         tenant_handled = 0
         try:
             with _tenant_transaction(tenant_id) as session:
+                now = _database_time(session)
+                legacy_threshold = now - LEGACY_STALE_LEASE_THRESHOLD
                 jobs = list(
                     session.scalars(
                         select(GenerationJob)
@@ -372,6 +565,55 @@ def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
             continue
         handled += tenant_handled
     return handled
+
+
+@celery_app.task(name="custombuild.reap_abandoned_storage")  # type: ignore[misc]
+def reap_abandoned_storage(limit: int = DEFAULT_STORAGE_REAPER_BATCH_LIMIT) -> dict[str, int]:
+    """Reclaim bounded abandoned objects across tenants and expose retryable drift."""
+
+    global_limit = _scheduler_limit(limit)
+    client = _s3_client()
+    counts = {status.value: 0 for status in StorageReapStatus}
+    processed = 0
+    tenant_failures = 0
+    organization_ids = _organization_ids()
+    start_index = _storage_reaper_start_index(len(organization_ids))
+    for tenant_id in _rotated_tenant_ids(organization_ids, start_index):
+        remaining = global_limit - processed
+        if remaining <= 0:
+            break
+        try:
+            results = reap_storage_batch(
+                SessionFactory,
+                client,
+                WORKER_SETTINGS.s3_bucket,
+                tenant_id,
+                batch_size=min(remaining, STORAGE_REAPER_TENANT_BATCH_LIMIT),
+            )
+        except Exception as exc:
+            tenant_failures += 1
+            logger.error(
+                "Tenant storage reaper failed closed (%s); continuing with other tenants.",
+                type(exc).__name__,
+            )
+            continue
+        processed += len(results)
+        for result in results:
+            counts[result.status.value] += 1
+    counts["processed"] = processed
+    counts["tenant_failures"] = tenant_failures
+    if tenant_failures or any(
+        result_count
+        for name, result_count in counts.items()
+        if name
+        in {
+            StorageReapStatus.provider_error.value,
+            StorageReapStatus.object_still_present.value,
+            StorageReapStatus.identity_mismatch.value,
+        }
+    ):
+        raise RuntimeError("storage reaper retained quota after a retryable failure")
+    return counts
 
 
 def _recover_stale_job(job: GenerationJob, *, now: datetime) -> OutboxEvent | None:
@@ -432,10 +674,32 @@ def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[st
     lease_token = job.lease_token
     if lease_token is None:
         raise RuntimeError("Generation claim did not receive a lease token")
+    lease_guard: _GenerationLeaseGuard | None = None
     try:
-        with _maintain_generation_lease(job_id, organization_id, lease_token):
-            result = _generate(job, version)
-        _complete_job(job_id, organization_id, lease_token, version, result)
+        with _maintain_generation_lease(
+            job_id,
+            organization_id,
+            lease_token,
+        ) as lease_guard:
+            result = _generate(
+                job,
+                version,
+                lease_token=lease_token,
+                lease_guard=lease_guard,
+            )
+            lease_guard.check()
+            completed = _complete_job(
+                job_id,
+                organization_id,
+                lease_token,
+                version,
+                result,
+                require_storage_reservation=True,
+            )
+            if not completed:
+                raise GenerationLeaseOwnershipLost(
+                    "generation completion lost its exact job or storage lease"
+                )
         return result
     except SoftTimeLimitExceeded:
         _record_failure(
@@ -449,12 +713,11 @@ def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[st
     except Exception as exc:
         failure_at = _utcnow()
         terminal = (
-            _deadline_is_expired(job, now=failure_at)
-            or job.attempts >= MAX_GENERATION_ATTEMPTS
+            job.attempts >= MAX_GENERATION_ATTEMPTS
             or self.request.retries >= self.max_retries
             or isinstance(exc, IMMEDIATE_TERMINAL_GENERATION_ERRORS)
         )
-        _record_failure(
+        recorded_status = _record_failure(
             job_id,
             organization_id,
             lease_token,
@@ -462,9 +725,15 @@ def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[st
             terminal=terminal,
             recorded_at=failure_at,
         )
-        if terminal:
+        if recorded_status is not JobStatus.queued:
             raise
-        raise self.retry(exc=exc) from exc
+        if isinstance(exc, GenerationStorageReservationBusy):
+            retry_delay = exc.retry_after_seconds
+        elif lease_guard is not None and bool(lease_guard.storage_claims()):
+            retry_delay = int(GENERATION_LEASE_TTL.total_seconds()) + 5
+        else:
+            retry_delay = 5
+        raise self.retry(exc=exc, countdown=retry_delay) from exc
 
 
 def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, DesignVersion] | None:
@@ -483,7 +752,7 @@ def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, Design
         # to queued. Duplicate broker deliveries must never steal live work.
         if job.status != JobStatus.queued:
             return None
-        now = _utcnow()
+        now = _database_time(session)
         if _deadline_is_expired(job, now=now):
             _terminalize_deadline(job, now=now)
             return None
@@ -521,7 +790,6 @@ def _renew_job_lease(
 ) -> bool:
     """Extend a live lease only when the same tenant worker still owns it."""
 
-    renewed_at = now or _utcnow()
     with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
@@ -534,6 +802,9 @@ def _renew_job_lease(
             .with_for_update()
         )
         if job is None:
+            return False
+        renewed_at = _database_time(session, now)
+        if not _lease_is_live(job, now=renewed_at):
             return False
         if _deadline_is_expired(job, now=renewed_at):
             return False
@@ -548,21 +819,38 @@ def _maintain_generation_lease(
     lease_token: str,
     *,
     interval_seconds: float = GENERATION_HEARTBEAT_INTERVAL_SECONDS,
-) -> Iterator[None]:
+) -> Iterator[_GenerationLeaseGuard]:
     """Renew a generation lease in the background for the duration of work."""
 
     stopped = Event()
+    guard = _GenerationLeaseGuard(organization_id, lease_token)
 
     def heartbeat() -> None:
         while not stopped.wait(interval_seconds):
             try:
                 if not _renew_job_lease(job_id, organization_id, lease_token):
+                    guard.fail(
+                        GenerationLeaseOwnershipLost(
+                            "generation job lease is no longer owned by this worker"
+                        )
+                    )
                     return
-            except Exception as exc:  # A later heartbeat can heal transient DB outages.
-                logger.warning(
-                    "Generation lease heartbeat failed (%s); retrying while the lease is valid.",
+                claims = guard.storage_claims()
+                if claims:
+                    renew_storage_batch_lease(
+                        SessionFactory,
+                        organization_id,
+                        claims,
+                        lease_token=lease_token,
+                        lease_duration=GENERATION_LEASE_TTL,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Generation lease heartbeat failed closed (%s).",
                     type(exc).__name__,
                 )
+                guard.fail(exc)
+                return
 
     thread = Thread(
         target=heartbeat,
@@ -571,10 +859,16 @@ def _maintain_generation_lease(
     )
     thread.start()
     try:
-        yield
+        yield guard
     finally:
         stopped.set()
         thread.join(timeout=5.0)
+        if thread.is_alive():
+            guard.fail(
+                GenerationLeaseOwnershipLost(
+                    "generation lease heartbeat did not stop within its deadline"
+                )
+            )
 
 
 def _stock_id(
@@ -593,7 +887,144 @@ def _stock_id(
     )
 
 
-def _generate(job: GenerationJob, version: DesignVersion) -> dict[str, Any]:
+def _generation_attempt_id(job_id: str, lease_token: str) -> str:
+    """Derive the immutable physical incarnation for one claimed job attempt."""
+
+    try:
+        job_uuid = UUID(job_id)
+        canonical_job_id = str(job_uuid)
+        canonical_lease_token = str(UUID(lease_token))
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ProductionBlockedError("generation storage attempt identity is invalid") from exc
+    if canonical_job_id != job_id or canonical_lease_token != lease_token:
+        raise ProductionBlockedError("generation storage attempt identity is not canonical")
+    return str(uuid5(job_uuid, f"storage-attempt:{canonical_lease_token}"))
+
+
+def _generation_artifact_id(attempt_id: str, kind: str) -> str:
+    """Derive one physical artifact row/object identity inside an attempt."""
+
+    if type(kind) is not str or not kind or kind != kind.strip():
+        raise ProductionBlockedError("generation artifact kind is not canonical")
+    try:
+        attempt_uuid = UUID(attempt_id)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ProductionBlockedError("generation storage attempt identity is invalid") from exc
+    if str(attempt_uuid) != attempt_id:
+        raise ProductionBlockedError("generation storage attempt identity is not canonical")
+    return str(uuid5(attempt_uuid, kind))
+
+
+def _generation_storage_claims(
+    job: GenerationJob,
+    version: DesignVersion,
+    result: Mapping[str, Any],
+    lease_token: str,
+) -> tuple[StorageObjectClaim, ...]:
+    if job.lease_token != lease_token:
+        raise ProductionBlockedError(
+            "generation storage lease token does not match the claimed job"
+        )
+    raw_evidence = result.get("evidence_artifacts")
+    if not isinstance(raw_evidence, list):
+        raise ProductionBlockedError("generation storage inventory is invalid")
+
+    def storage_record(
+        kind: object,
+        object_key: object,
+        digest: object,
+        size_bytes: object,
+        media_type: object,
+    ) -> tuple[str, str, str, int, str]:
+        if type(size_bytes) is not int:
+            raise ProductionBlockedError("generation storage inventory is invalid")
+        return (
+            str(kind),
+            str(object_key),
+            str(digest),
+            size_bytes,
+            str(media_type),
+        )
+
+    records: list[tuple[str, str, str, int, str]] = [
+        storage_record(
+            "production_bundle",
+            result.get("bundle_object_key", ""),
+            result.get("bundle_sha256", ""),
+            result.get("bundle_size_bytes"),
+            "application/zip",
+        ),
+        storage_record(
+            "manifest",
+            result.get("manifest_object_key", ""),
+            result.get("manifest_sha256", ""),
+            result.get("manifest_size_bytes"),
+            "application/json",
+        ),
+    ]
+    for item in raw_evidence:
+        if not isinstance(item, Mapping):
+            raise ProductionBlockedError("generation storage inventory is invalid")
+        records.append(
+            storage_record(
+                item.get("kind", ""),
+                item.get("object_key", ""),
+                item.get("sha256", ""),
+                item.get("size_bytes"),
+                item.get("content_type", ""),
+            )
+        )
+    attempt_id = _generation_attempt_id(job.id, lease_token)
+    expected_prefix = (
+        f"{organization_id_safe(job.organization_id)}/{version.design_hash}/"
+        f"{job.production_context_hash}/attempts/{attempt_id}/artifacts/"
+    )
+    try:
+        claims: list[StorageObjectClaim] = []
+        for kind, object_key, digest, size_bytes, media_type in records:
+            artifact_id = _generation_artifact_id(attempt_id, kind)
+            if (
+                not object_key.startswith(f"{expected_prefix}{artifact_id}/")
+                or object_key.count("/attempts/") != 1
+                or object_key.count("/artifacts/") != 1
+            ):
+                raise ProductionBlockedError(
+                    "generation object key does not match its exact storage attempt"
+                )
+            claims.append(
+                StorageObjectClaim(
+                    project_id=version.project_id,
+                    object_key=object_key,
+                    sha256=digest,
+                    size_bytes=size_bytes,
+                    media_type=media_type,
+                    owner_type="generation_job",
+                    owner_id=job.id,
+                    idempotency_key=f"generation:{job.id}:{kind}:{artifact_id}",
+                )
+            )
+        return tuple(claims)
+    except (TypeError, ValueError) as exc:
+        raise ProductionBlockedError("generation storage inventory is invalid") from exc
+
+
+def _generate(
+    job: GenerationJob,
+    version: DesignVersion,
+    *,
+    lease_token: str,
+    lease_guard: _GenerationLeaseGuard,
+) -> dict[str, Any]:
+    if (
+        not isinstance(lease_guard, _GenerationLeaseGuard)
+        or lease_guard.organization_id != job.organization_id
+        or lease_guard.lease_token != lease_token
+    ):
+        raise ValueError("generation storage requires its exact lease guard")
+    if job.lease_token != lease_token:
+        raise ValueError("generation storage lease token does not match the claimed job")
+    lease_guard.check()
+    attempt_id = _generation_attempt_id(job.id, lease_token)
     resolved = _resolve_current_job_context(job, version)
     try:
         capability = require_template_for_revision(
@@ -777,83 +1208,128 @@ def _generate(job: GenerationJob, version: DesignVersion) -> dict[str, Any]:
         canonical_json_bytes(resolved.context.as_dict())
     ):
         raise ProductionBlockedError("manifest production engine context drifted")
-    bundle_sha = sha256_hex(bundle.zip_bytes)
+    if type(bundle.zip_bytes) is not bytes or not valid_artifact_size(
+        "production_bundle", len(bundle.zip_bytes)
+    ):
+        raise ProductionBlockedError(
+            "generated production bundle is empty or exceeds its canonical size limit"
+        )
     manifest_bytes = canonical_json_bytes(bundle.manifest)
+    if not valid_artifact_size("manifest", len(manifest_bytes)):
+        raise ProductionBlockedError(
+            "generated manifest is empty or exceeds its canonical size limit"
+        )
+    bundle_sha = sha256_hex(bundle.zip_bytes)
     manifest_sha = sha256_hex(manifest_bytes)
+    for artifact in bundle.artifacts:
+        if not isinstance(artifact, ArtifactFile):
+            raise ProductionBlockedError("generated artifact inventory is invalid")
+        path = artifact.path
+        if type(path) is not str or not path:
+            raise ProductionBlockedError("generated artifact path is invalid")
+        if path.startswith("cam/setups/") and _SETUP_EVIDENCE_PATH.fullmatch(path) is None:
+            raise ProductionBlockedError("generated setup evidence path is invalid")
     evidence_candidates = [
         artifact
         for artifact in bundle.artifacts
-        if artifact.path
-        in {
-            "validation/dfm-report.json",
-            DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
-            "validation/stock-selection.json",
-            "validation/generation-plan.json",
-            "cam/operations.json",
-            "cam/validation-backplot.svg",
-            "model/design.glb",
-            "model/design.fcstd",
-            "validation/cad-interchange-status.json",
-            "validation/source-provenance.json",
-            "validation/workshop-readiness.json",
-            "assembly/assembly-readiness.json",
-        }
-        or artifact.path.startswith("cam/setups/")
+        if artifact.path in _EVIDENCE_ARTIFACT_CONTRACTS or artifact.path.startswith("cam/setups/")
     ]
-    evidence_artifacts: list[dict[str, Any]] = []
+    if len(evidence_candidates) > MAX_EVIDENCE_ARTIFACTS:
+        raise ProductionBlockedError("generated evidence inventory exceeds its file-count limit")
+    prepared_evidence: list[tuple[ArtifactFile, str, str, str]] = []
+    evidence_kinds: set[str] = set()
+    evidence_keys: set[str] = set()
+    retained_paths: set[str] = set()
+    evidence_total_bytes = 0
     setup_index = 0
     for artifact in sorted(evidence_candidates, key=lambda item: item.path):
-        kind = {
-            "validation/dfm-report.json": "dfm_report",
-            DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH: "design_review_package_status",
-            "validation/stock-selection.json": "stock_selection",
-            "validation/generation-plan.json": "generation_plan",
-            "cam/operations.json": "operations",
-            "cam/validation-backplot.svg": "validation_backplot",
-            "model/design.glb": "design_glb",
-            "model/design.fcstd": "design_fcstd",
-            "validation/cad-interchange-status.json": "cad_interchange_status",
-            "validation/source-provenance.json": "source_provenance",
-            "validation/workshop-readiness.json": "workshop_readiness",
-            "assembly/assembly-readiness.json": "assembly_readiness",
-        }.get(artifact.path)
-        if kind is None:
+        contract = _EVIDENCE_ARTIFACT_CONTRACTS.get(artifact.path)
+        if contract is None:
             setup_index += 1
             kind = f"setup_sheet_{setup_index:03d}"
+            expected_media_type = "image/svg+xml"
+            expected_role = "SETUP_SHEET"
+        else:
+            kind, expected_media_type, expected_role = contract
+        if artifact.media_type != expected_media_type:
+            raise ProductionBlockedError(
+                "generated evidence media type does not match its canonical path"
+            )
+        if artifact.role != expected_role:
+            raise ProductionBlockedError(
+                "generated evidence role does not match its canonical path"
+            )
+        if not valid_artifact_size(kind, len(artifact.data)):
+            raise ProductionBlockedError(
+                f"generated {kind} artifact is empty or exceeds its canonical size limit"
+            )
+        evidence_total_bytes += len(artifact.data)
+        if evidence_total_bytes > MAX_EVIDENCE_TOTAL_BYTES:
+            raise ProductionBlockedError(
+                "generated evidence inventory exceeds its total size limit"
+            )
         digest = sha256_hex(artifact.data)
+        artifact_id = _generation_artifact_id(attempt_id, kind)
         evidence_key = (
             f"{organization_id_safe(job.organization_id)}/{version.design_hash}/"
-            f"{job.production_context_hash}/{digest}/evidence/"
+            f"{job.production_context_hash}/attempts/{attempt_id}/"
+            f"artifacts/{artifact_id}/{digest}/evidence/"
             f"{artifact.path.replace('/', '__')}"
         )
-        _put_object(evidence_key, artifact.data, artifact.media_type)
-        evidence_artifacts.append(
-            {
-                "kind": kind,
-                "object_key": evidence_key,
-                "sha256": digest,
-                "size_bytes": len(artifact.data),
-                "content_type": artifact.media_type,
-            }
-        )
+        if type(evidence_key) is not str or not evidence_key:
+            raise ProductionBlockedError("generated evidence object key is invalid")
+        if (
+            kind in evidence_kinds
+            or evidence_key in evidence_keys
+            or artifact.path in retained_paths
+        ):
+            raise ProductionBlockedError(
+                "generated evidence inventory contains duplicate identities"
+            )
+        evidence_kinds.add(kind)
+        evidence_keys.add(evidence_key)
+        retained_paths.add(artifact.path)
+        prepared_evidence.append((artifact, kind, digest, evidence_key))
+
+    bundle_artifact_id = _generation_artifact_id(attempt_id, "production_bundle")
+    manifest_artifact_id = _generation_artifact_id(attempt_id, "manifest")
     bundle_key = (
         f"{organization_id_safe(job.organization_id)}/{version.design_hash}/"
-        f"{job.production_context_hash}/linked-v1/{manifest_sha}/"
+        f"{job.production_context_hash}/attempts/{attempt_id}/"
+        f"artifacts/{bundle_artifact_id}/linked-v1/{manifest_sha}/"
         f"{bundle_sha}/production.zip"
     )
     manifest_key = (
         f"{organization_id_safe(job.organization_id)}/{version.design_hash}/"
-        f"{job.production_context_hash}/{manifest_sha}/manifest.json"
+        f"{job.production_context_hash}/attempts/{attempt_id}/"
+        f"artifacts/{manifest_artifact_id}/{manifest_sha}/manifest.json"
     )
-    _put_object(
-        bundle_key,
-        bundle.zip_bytes,
-        "application/zip",
-        metadata={"manifest-sha256": manifest_sha},
-    )
-    _put_object(manifest_key, manifest_bytes, "application/json")
+    if (
+        type(bundle_key) is not str
+        or not bundle_key
+        or type(manifest_key) is not str
+        or not manifest_key
+        or bundle_key == manifest_key
+        or bundle_key in evidence_keys
+        or manifest_key in evidence_keys
+    ):
+        raise ProductionBlockedError("generated object-key inventory is invalid")
+
+    # No object-store mutation is allowed until every generated object and the
+    # complete evidence inventory have passed their canonical limits and
+    # identity checks.
+    evidence_artifacts: list[dict[str, Any]] = [
+        {
+            "kind": kind,
+            "object_key": evidence_key,
+            "sha256": digest,
+            "size_bytes": len(artifact.data),
+            "content_type": artifact.media_type,
+        }
+        for artifact, kind, digest, evidence_key in prepared_evidence
+    ]
     cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED
-    return {
+    result = {
         "bundle_sha256": bundle_sha,
         "bundle_size_bytes": len(bundle.zip_bytes),
         "manifest_sha256": manifest_sha,
@@ -895,6 +1371,49 @@ def _generate(job: GenerationJob, version: DesignVersion) -> dict[str, Any]:
         "production_machine_program": False,
         "workshop_readiness": bundle.workshop_readiness.as_dict(),
     }
+    lease_guard.check()
+    frozen_result = MappingProxyType(result)
+    claims = _generation_storage_claims(
+        job,
+        version,
+        frozen_result,
+        lease_token,
+    )
+    try:
+        reserve_storage_batch(
+            SessionFactory,
+            job.organization_id,
+            claims,
+            lease_token=lease_token,
+            lease_duration=GENERATION_LEASE_TTL,
+            capacity_settings=WORKER_SETTINGS,
+        )
+    except StorageReservationBusy as exc:
+        raise GenerationStorageReservationBusy(
+            "a previous generation attempt still owns the immutable storage batch",
+            retry_after_seconds=exc.retry_after_seconds,
+        ) from exc
+    except (StorageClaimConflict, StorageQuotaExceeded, StorageQuotaInvariantError) as exc:
+        raise ProductionBlockedError(
+            "generation storage quota could not reserve the complete immutable batch"
+        ) from exc
+    lease_guard.bind_storage_claims(claims)
+    lease_guard.check()
+
+    for artifact, _kind, _digest, evidence_key in prepared_evidence:
+        lease_guard.check()
+        _put_object(evidence_key, artifact.data, artifact.media_type)
+    lease_guard.check()
+    _put_object(
+        bundle_key,
+        bundle.zip_bytes,
+        "application/zip",
+        metadata={"manifest-sha256": manifest_sha},
+    )
+    lease_guard.check()
+    _put_object(manifest_key, manifest_bytes, "application/json")
+    lease_guard.check()
+    return result
 
 
 def _load_frozen_design_spec(
@@ -976,6 +1495,8 @@ def _complete_job(
     lease_token: str,
     version: DesignVersion,
     result: dict[str, Any],
+    *,
+    require_storage_reservation: bool = False,
 ) -> bool:
     with _tenant_transaction(organization_id) as session:
         job = session.scalar(
@@ -990,9 +1511,11 @@ def _complete_job(
         )
         if job is None:
             return False
-        completed_at = _utcnow()
+        completed_at = _database_time(session)
         if _deadline_is_expired(job, now=completed_at):
             _terminalize_deadline(job, now=completed_at)
+            return False
+        if not _lease_is_live(job, now=completed_at):
             return False
         if job.attempts > MAX_GENERATION_ATTEMPTS:
             _terminalize_attempt_budget(job, now=completed_at)
@@ -1004,8 +1527,7 @@ def _complete_job(
             raise ProductionBlockedError(
                 "generation result is not bound to the persisted production engine context"
             )
-        job.result_json = result
-        artifact_records = [
+        artifact_records: list[tuple[str, str, str, str, int]] = [
             (
                 "production_bundle",
                 result["bundle_object_key"],
@@ -1021,17 +1543,74 @@ def _complete_job(
                 result["manifest_size_bytes"],
             ),
         ]
-        artifact_records.extend(
-            (
-                str(item["kind"]),
-                str(item["object_key"]),
-                str(item["sha256"]),
-                str(item["content_type"]),
-                int(item["size_bytes"]),
+        if any(
+            type(kind) is not str
+            or not kind
+            or type(key) is not str
+            or not key
+            or type(digest) is not str
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+            or type(media_type) is not str
+            or not media_type
+            or not valid_artifact_size(kind, size_bytes)
+            for kind, key, digest, media_type, size_bytes in artifact_records
+        ):
+            raise ProductionBlockedError("generation result artifact inventory is invalid")
+        raw_evidence = result.get("evidence_artifacts")
+        if not isinstance(raw_evidence, list):
+            raise ProductionBlockedError("generation result evidence inventory is invalid")
+        if len(raw_evidence) > MAX_EVIDENCE_ARTIFACTS:
+            raise ProductionBlockedError("generation result evidence inventory is invalid")
+        evidence_kinds = {record[0] for record in artifact_records}
+        evidence_keys = {record[1] for record in artifact_records}
+        if len(evidence_kinds) != len(artifact_records) or len(evidence_keys) != len(
+            artifact_records
+        ):
+            raise ProductionBlockedError("generation result artifact inventory is invalid")
+        evidence_total_bytes = 0
+        for item in raw_evidence:
+            if not isinstance(item, Mapping):
+                raise ProductionBlockedError("generation result evidence inventory is invalid")
+            values = (
+                item.get("kind"),
+                item.get("object_key"),
+                item.get("sha256"),
+                item.get("content_type"),
+                item.get("size_bytes"),
             )
-            for item in result.get("evidence_artifacts", [])
+            kind, key, digest, media_type, size_bytes = values
+            if (
+                type(kind) is not str
+                or not kind
+                or type(key) is not str
+                or not key
+                or type(digest) is not str
+                or len(digest) != 64
+                or any(character not in "0123456789abcdef" for character in digest)
+                or type(media_type) is not str
+                or not media_type
+                or not valid_artifact_size(kind, size_bytes)
+            ):
+                raise ProductionBlockedError("generation result evidence inventory is invalid")
+            assert type(size_bytes) is int
+            if kind in evidence_kinds or key in evidence_keys:
+                raise ProductionBlockedError("generation result evidence inventory is invalid")
+            evidence_total_bytes += size_bytes
+            if evidence_total_bytes > MAX_EVIDENCE_TOTAL_BYTES:
+                raise ProductionBlockedError("generation result evidence inventory is invalid")
+            evidence_kinds.add(kind)
+            evidence_keys.add(key)
+            artifact_records.append((kind, key, digest, media_type, size_bytes))
+        attempt_id = _generation_attempt_id(job.id, lease_token)
+        storage_claims = (
+            _generation_storage_claims(job, version, result, lease_token)
+            if require_storage_reservation
+            else ()
         )
+        job.result_json = result
         for kind, key, digest, media_type, size_bytes in artifact_records:
+            artifact_id = _generation_artifact_id(attempt_id, kind)
             existing = session.scalar(
                 select(Artifact).where(
                     Artifact.generation_job_id == job.id,
@@ -1042,6 +1621,7 @@ def _complete_job(
             if existing is None:
                 session.add(
                     Artifact(
+                        id=artifact_id,
                         organization_id=organization_id,
                         generation_job_id=job.id,
                         kind=kind,
@@ -1051,10 +1631,30 @@ def _complete_job(
                         content_type=media_type,
                     )
                 )
-            elif existing.sha256 != digest or existing.object_key != key:
+            elif (
+                existing.id != artifact_id
+                or existing.sha256 != digest
+                or existing.object_key != key
+            ):
                 raise RuntimeError(
                     f"non-deterministic {kind} artifact detected for generation job {job.id}"
                 )
+        if require_storage_reservation:
+            try:
+                commit_storage_batch_in_transaction(
+                    session,
+                    organization_id,
+                    storage_claims,
+                    lease_token=lease_token,
+                )
+            except (
+                StorageClaimConflict,
+                StorageQuotaExceeded,
+                StorageQuotaInvariantError,
+            ) as exc:
+                raise ProductionBlockedError(
+                    "generation storage reservation could not be committed exactly"
+                ) from exc
         session.flush()
         _validate_completion_evidence(session, organization_id, job)
         # Success is the final state transition.  The exact API download gate
@@ -1094,14 +1694,21 @@ def _validate_completion_evidence(
     from fastapi import HTTPException
 
     try:
-        _require_review_evidence(
-            session,
-            organization_id,
-            job,
-            stream_hash=False,
-            require_cam=False,
-            bind_review_documents=True,
-        )
+        client = _s3_client()
+        with storage_runtime(client=client, bucket=WORKER_SETTINGS.s3_bucket):
+            _require_review_evidence(
+                session,
+                organization_id,
+                job,
+                stream_hash=False,
+                require_cam=False,
+                bind_review_documents=True,
+                build_identity=WORKER_SETTINGS.build_identity,
+            )
+    except (BotoCoreError, ClientError, OSError) as exc:
+        raise ArtifactStorageUnavailableError(
+            "completion evidence storage is temporarily unavailable"
+        ) from exc
     except HTTPException as exc:
         if exc.status_code == 503:
             raise ArtifactStorageUnavailableError(
@@ -1120,7 +1727,7 @@ def _record_failure(
     *,
     terminal: bool,
     recorded_at: datetime | None = None,
-) -> bool:
+) -> JobStatus | None:
     with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
@@ -1133,11 +1740,11 @@ def _record_failure(
             .with_for_update()
         )
         if job is None:
-            return False
-        failed_at = recorded_at or _utcnow()
+            return None
+        failed_at = _database_time(session, recorded_at)
         if _deadline_is_expired(job, now=failed_at):
             _terminalize_deadline(job, now=failed_at)
-            return True
+            return job.status
         job.status = (
             JobStatus.failed
             if (
@@ -1152,7 +1759,7 @@ def _record_failure(
         job.error = f"{type(exc).__name__}: {exc}"[:4000]
         job.finished_at = failed_at if job.status == JobStatus.failed else None
         job.started_at = None if job.status == JobStatus.queued else job.started_at
-        return True
+        return job.status
 
 
 def _put_object(
@@ -1171,18 +1778,10 @@ def _put_object(
     bucket = WORKER_SETTINGS.s3_bucket
     try:
         client.head_bucket(Bucket=bucket)
-    except ClientError as exc:
-        status_code = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-        if status_code != 404:
-            raise ArtifactStorageUnavailableError(
-                "artifact storage is temporarily unavailable; verify the object store and retry"
-            ) from None
-        try:
-            client.create_bucket(Bucket=bucket)
-        except (BotoCoreError, ClientError, OSError) as create_error:
-            raise ArtifactStorageUnavailableError(
-                "artifact storage is temporarily unavailable; verify the object store and retry"
-            ) from create_error
+    except ClientError:
+        raise ArtifactStorageUnavailableError(
+            "artifact storage is temporarily unavailable; verify the object store and retry"
+        ) from None
     except (BotoCoreError, OSError) as exc:
         raise ArtifactStorageUnavailableError(
             "artifact storage is temporarily unavailable; verify the object store and retry"

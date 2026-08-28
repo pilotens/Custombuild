@@ -134,6 +134,25 @@ def test_current_repository_manifest_contains_release_workflows() -> None:
     assert ".github/workflows/ci.yml" in paths
     assert ".github/workflows/prod-ci.yml" in paths
     assert ".github/workflows/supply-chain.yml" in paths
+    for relative in (
+        ".github/workflows/cd.yml",
+        "compose.yml",
+        "compose.external-production.yml",
+        "compose.registry.yml",
+        "scripts/compose_backup.py",
+        "scripts/storage_capacity_development.py",
+        "scripts/storage_capacity_preflight.py",
+        "scripts/storage_capacity_refresh.py",
+        "scripts/storage_recovery.py",
+        "services/api/alembic/versions/0012_storage_quota_ledger.py",
+        "services/api/alembic/versions/0013_storage_quota_security_functions.py",
+        "services/api/alembic/versions/0014_release_generation_binding.py",
+        "services/api/app/artifact_operations.py",
+        "services/api/app/storage_capacity.py",
+        "services/api/app/storage_quota.py",
+        "services/api/app/storage_reaper.py",
+    ):
+        assert relative in paths
     # These remain bound by VCS_REF plus the final clean-tree gate, not by the
     # narrower image/workflow source manifest.
     assert "README.md" not in paths

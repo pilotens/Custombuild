@@ -11,7 +11,12 @@ from urllib.parse import quote
 import pytest
 
 from scripts import release_evidence_gate
-from scripts.compose_backup import MANIFEST_SCHEMA, SEAWEEDFS_IMAGE, build_manifest
+from scripts.compose_backup import (
+    MANIFEST_SCHEMA,
+    SEAWEEDFS_IMAGE,
+    TOMBSTONE_HISTORY_SCHEMA,
+    build_manifest,
+)
 from scripts.release_evidence_gate import EvidenceError, build_final_report
 
 REVISION = "1" * 40
@@ -69,7 +74,16 @@ def _evidence(
         "captured_at": "2026-08-26T10:00:00+00:00",
         "wal_lsn": "0/16B6C50",
         "alembic_heads": ["0010_tenant_fk"],
-        "row_counts": {"alembic_version": 1, "projects": 2},
+        "row_counts": {
+            "alembic_version": 1,
+            "projects": 2,
+            "storage_object_tombstones": 0,
+        },
+        "tombstone_history": {
+            "schema_version": TOMBSTONE_HISTORY_SCHEMA,
+            "count": 0,
+            "sha256": hashlib.sha256(b"[]").hexdigest(),
+        },
     }
     manifest = build_manifest(
         backup,
@@ -104,7 +118,7 @@ def _evidence(
     _write(
         restore,
         {
-            "schema_version": "custombuild.restore-drill.v3",
+            "schema_version": "custombuild.restore-drill.v4",
             "status": "PASS",
             "git_revision": REVISION,
             "source_manifest_sha256": SOURCE,
@@ -113,11 +127,18 @@ def _evidence(
             "database_alembic_heads": database_snapshot["alembic_heads"],
             "database_project_rows": database_snapshot["row_counts"]["projects"],
             "database_exact_row_counts_verified": True,
+            "database_tombstone_history": database_snapshot["tombstone_history"],
+            "database_tombstone_history_verified": True,
             "database_runtime_roles": {
                 "roles": {
                     "migrator_safe": True,
                     "api_safe": True,
                     "worker_safe": True,
+                    "attestor_safe": True,
+                    "api_tombstone_privileges_absent": True,
+                    "worker_tombstone_privileges_absent": True,
+                    "attestor_tombstone_select_only": True,
+                    "tombstone_column_grants_absent": True,
                     "memberships_absent": True,
                     "public_object_grants_absent": True,
                     "all_public_objects_owned_by_migrator": True,
@@ -808,6 +829,13 @@ def test_final_gate_parses_and_rejects_invalid_runtime_scans(
         "wrong_scan_input",
         "wrong_manifest_digest",
         "restore_flag",
+        "tombstone_flag",
+        "tombstone_digest_mismatch",
+        "unsafe_attestor_role",
+        "api_tombstone_acl",
+        "worker_tombstone_acl",
+        "attestor_tombstone_acl",
+        "tombstone_column_acl",
         "pretraffic_acceptance_not_required",
         "unsafe_runtime_role",
         "missing_public_grant_proof",
@@ -874,6 +902,28 @@ def test_final_gate_rejects_cross_source_or_incomplete_evidence(
         payloads["runtime"]["images"][0]["manifest_digest"] = "sha256:" + "f" * 64
     elif case == "restore_flag":
         payloads["restore"]["tenant_rls_verified"] = False
+    elif case == "tombstone_flag":
+        payloads["restore"]["database_tombstone_history_verified"] = False
+    elif case == "tombstone_digest_mismatch":
+        payloads["restore"]["database_tombstone_history"]["sha256"] = "f" * 64
+    elif case == "unsafe_attestor_role":
+        payloads["restore"]["database_runtime_roles"]["roles"]["attestor_safe"] = False
+    elif case == "api_tombstone_acl":
+        payloads["restore"]["database_runtime_roles"]["roles"][
+            "api_tombstone_privileges_absent"
+        ] = False
+    elif case == "worker_tombstone_acl":
+        payloads["restore"]["database_runtime_roles"]["roles"][
+            "worker_tombstone_privileges_absent"
+        ] = False
+    elif case == "attestor_tombstone_acl":
+        payloads["restore"]["database_runtime_roles"]["roles"]["attestor_tombstone_select_only"] = (
+            False
+        )
+    elif case == "tombstone_column_acl":
+        payloads["restore"]["database_runtime_roles"]["roles"]["tombstone_column_grants_absent"] = (
+            False
+        )
     elif case == "pretraffic_acceptance_not_required":
         payloads["restore"]["tenant_acceptance_required_before_traffic"] = False
     elif case == "unsafe_runtime_role":
@@ -1182,6 +1232,14 @@ def test_workflow_keeps_generated_evidence_outside_the_clean_source_tree() -> No
     assert workflow.count("uses: anchore/sbom-action@") == len(
         release_evidence_gate.REQUIRED_IMAGES
     )
+    assert workflow.count("uses: anchore/scan-action@") == len(
+        release_evidence_gate.REQUIRED_IMAGES
+    )
+    assert workflow.count(
+        "uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
+    ) == len(release_evidence_gate.REQUIRED_IMAGES)
+    assert workflow.count("grype-version: v0.110.0") == len(release_evidence_gate.REQUIRED_IMAGES)
+    assert "e1165082ffb1fe366ebaf02d8526e7c4989ea9d2" not in workflow
     assert workflow.count("output-file: artifacts/release-evidence/sbom-") == len(
         release_evidence_gate.REQUIRED_IMAGES
     )

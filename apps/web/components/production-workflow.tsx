@@ -58,6 +58,7 @@ export type ProductionApi = Pick<
   | "generateVersion"
   | "getJob"
   | "listArtifacts"
+  | "downloadArtifact"
 > & Partial<Pick<CustombuildApiClient, "listVersions">>;
 
 export interface ProductionSummary {
@@ -845,7 +846,16 @@ export function ProductionWorkflow({
   const nextActionHeadingRef = useRef<HTMLHeadingElement>(null);
   const previousActiveStepRef = useRef<number | undefined>(undefined);
   const stepFocusInitializedRef = useRef(false);
+  const pendingDownloadUrlsRef = useRef(new Map<string, number | undefined>());
   const storageKey = productionSessionKey(principal, projectId, spec.design_id);
+
+  useEffect(() => () => {
+    for (const [objectUrl, timer] of pendingDownloadUrlsRef.current) {
+      if (timer !== undefined) window.clearTimeout(timer);
+      URL.revokeObjectURL(objectUrl);
+    }
+    pendingDownloadUrlsRef.current.clear();
+  }, []);
 
   useEffect(() => {
     clearLegacyProductionStorage(window.localStorage);
@@ -1388,7 +1398,7 @@ export function ProductionWorkflow({
 
   function downloadPackage() {
     void perform("download", "Förbereder hämtningen…", async () => {
-      if (!job || !designReviewReady) {
+      if (!job || !version || !designReviewReady) {
         throw new ApiError("Det finns inget verifierat granskningspaket att hämta.");
       }
       const currentArtifacts = await api.listArtifacts(job.id);
@@ -1404,13 +1414,26 @@ export function ProductionWorkflow({
       }
       const artifact = currentArtifacts.find((candidate) => candidate.kind === "production_bundle");
       if (!artifact) throw new ApiError("Granskningspaketet saknas eller är inte längre tillgängligt.");
+      const verifiedArtifact = await api.downloadArtifact(artifact);
+      const objectUrl = URL.createObjectURL(verifiedArtifact);
+      pendingDownloadUrlsRef.current.set(objectUrl, undefined);
       const link = document.createElement("a");
-      link.href = artifact.download_url;
-      link.download = "designgranskningspaket.zip";
+      link.href = objectUrl;
+      link.download = `custombuild-design-review-rev-${version.revision}.zip`;
       link.rel = "noopener noreferrer";
-      document.body.append(link);
-      link.click();
-      link.remove();
+      try {
+        document.body.append(link);
+        link.click();
+      } finally {
+        link.remove();
+        if (pendingDownloadUrlsRef.current.has(objectUrl)) {
+          const timer = window.setTimeout(() => {
+            if (!pendingDownloadUrlsRef.current.delete(objectUrl)) return;
+            URL.revokeObjectURL(objectUrl);
+          }, 250);
+          pendingDownloadUrlsRef.current.set(objectUrl, timer);
+        }
+      }
       return "Granskningspaketet har hämtats.";
     });
   }

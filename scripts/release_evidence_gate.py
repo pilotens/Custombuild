@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # Direct ``python scripts/release_evidence_gate.py`
     )
 
 STATIC_SCHEMA = "custombuild.release-readiness-static.v3"
-RESTORE_SCHEMA = "custombuild.restore-drill.v3"
+RESTORE_SCHEMA = "custombuild.restore-drill.v4"
 RUNTIME_SCHEMA = "custombuild.runtime-release-evidence.v3"
 FINAL_SCHEMA = "custombuild.release-readiness-evidence.v2"
 REQUIRED_IMAGES = frozenset(
@@ -596,6 +596,7 @@ def build_final_report(
         raise EvidenceError("restore evidence differs from the coordinated backup identity")
     for key in (
         "database_exact_row_counts_verified",
+        "database_tombstone_history_verified",
         "object_store_hashes_verified",
         "object_store_metadata_verified",
         "tenant_rls_verified",
@@ -608,6 +609,12 @@ def build_final_report(
     row_counts = database_snapshot.get("row_counts")
     if not isinstance(row_counts, dict):
         raise EvidenceError("coordinated backup has no exact database row counts")
+    tombstone_history = database_snapshot.get("tombstone_history")
+    if (
+        not isinstance(tombstone_history, dict)
+        or restore.get("database_tombstone_history") != tombstone_history
+    ):
+        raise EvidenceError("restore evidence did not reproduce the tombstone history")
     if restore.get("database_alembic_heads") != database_snapshot.get(
         "alembic_heads"
     ) or restore.get("database_project_rows") != row_counts.get("projects"):
@@ -623,6 +630,11 @@ def build_final_report(
         "migrator_safe": True,
         "api_safe": True,
         "worker_safe": True,
+        "attestor_safe": True,
+        "api_tombstone_privileges_absent": True,
+        "worker_tombstone_privileges_absent": True,
+        "attestor_tombstone_select_only": True,
+        "tombstone_column_grants_absent": True,
         "memberships_absent": True,
         "public_object_grants_absent": True,
         "all_public_objects_owned_by_migrator": True,

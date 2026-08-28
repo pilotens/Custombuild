@@ -1,6 +1,8 @@
 from pathlib import Path
 
 PROD_CI = Path(".github/workflows/prod-ci.yml")
+REVIEWED_GRYPE_SCAN_ACTION = "anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
+REVIEWED_GRYPE_VERSION = "v0.110.0"
 
 
 def _workflow() -> str:
@@ -60,6 +62,15 @@ def test_prod_ci_sboms_prove_native_interpreter_package_versions() -> None:
         "python-3.14",
     ):
         assert required in workflow
+
+
+def test_prod_ci_pins_every_scan_to_the_reviewed_grype_toolchain() -> None:
+    workflow = _workflow()
+
+    assert workflow.count("uses: anchore/scan-action@") == 7
+    assert workflow.count(f"uses: {REVIEWED_GRYPE_SCAN_ACTION}") == 7
+    assert workflow.count(f"grype-version: {REVIEWED_GRYPE_VERSION}") == 7
+    assert "e1165082ffb1fe366ebaf02d8526e7c4989ea9d2" not in workflow
 
 
 def test_prod_ci_worker_sbom_proves_the_exact_native_cad_runtime() -> None:

@@ -20,6 +20,25 @@ except ModuleNotFoundError:  # Direct `python scripts/check_external_production.
     from source_manifest import build_source_manifest  # type: ignore[import-not-found,no-redef]
 
 INSECURE_MARKERS = ("change-me", "development", "demo-")
+INSECURE_S3_ACCESS_KEYS = frozenset({"custombuild", "minioadmin"})
+RAW_CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+S3_ACCESS_KEY_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+S3_BUCKET_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+SHA256_PATTERN = re.compile(r"[a-f0-9]{64}\Z")
+VOLUME_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{2,254}\Z")
+MAX_DATABASE_INTEGER = 2**63 - 1
+CAPACITY_ENVIRONMENT_KEYS = (
+    "STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256",
+    "STORAGE_CAPACITY_VOLUME_IDENTITY",
+    "STORAGE_CAPACITY_PROVISIONED_BYTES",
+    "STORAGE_CAPACITY_METADATA_OVERHEAD_BYTES",
+    "STORAGE_CAPACITY_EMERGENCY_RESERVE_BYTES",
+    "STORAGE_CAPACITY_HEADROOM_BYTES",
+    "STORAGE_CAPACITY_BYTE_LIMIT",
+    "STORAGE_CAPACITY_OBJECT_LIMIT",
+    "STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256",
+    "STORAGE_CAPACITY_MAX_AGE_SECONDS",
+)
 PRIVATE_PROXY_NETWORKS = tuple(
     ipaddress.ip_network(value)
     for value in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7")
@@ -42,6 +61,17 @@ def _environment(service: dict[str, Any]) -> dict[str, str]:
                 pairs[key] = value
         return pairs
     return {}
+
+
+def _compose_tcp_port(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 1 <= value <= 65_535 else None
+    if not isinstance(value, str) or re.fullmatch(r"[1-9][0-9]{0,4}", value) is None:
+        return None
+    port = int(value)
+    return port if port <= 65_535 else None
 
 
 def _https(value: str) -> bool:
@@ -91,7 +121,35 @@ def _insecure(value: str) -> bool:
 
 
 def _insecure_secret(value: str, *, minimum_length: int = 24) -> bool:
-    return _insecure(value) or len(value) < minimum_length or value != value.strip()
+    return (
+        _insecure(value)
+        or len(value) < minimum_length
+        or value != value.strip()
+        or RAW_CONTROL_PATTERN.search(value) is not None
+    )
+
+
+def _canonical_s3_access_key(value: str) -> bool:
+    return (
+        value == value.strip()
+        and RAW_CONTROL_PATTERN.search(value) is None
+        and S3_ACCESS_KEY_PATTERN.fullmatch(value) is not None
+        and value.lower() not in INSECURE_S3_ACCESS_KEYS
+    )
+
+
+def _canonical_s3_bucket(value: str) -> bool:
+    try:
+        ipv4_literal = ipaddress.ip_address(value).version == 4
+    except ValueError:
+        ipv4_literal = False
+    return (
+        value == value.strip()
+        and RAW_CONTROL_PATTERN.search(value) is None
+        and S3_BUCKET_PATTERN.fullmatch(value) is not None
+        and ".." not in value
+        and not ipv4_literal
+    )
 
 
 def _database_identity(value: str) -> tuple[str, str] | None:
@@ -102,6 +160,45 @@ def _database_identity(value: str) -> tuple[str, str] | None:
     if parsed.scheme != "postgresql" or not parsed.hostname:
         return None
     return parsed.username or "", parsed.password or ""
+
+
+def _capacity_integer(value: str) -> int | None:
+    if re.fullmatch(r"[1-9][0-9]{0,18}", value) is None:
+        return None
+    parsed = int(value)
+    return parsed if parsed <= MAX_DATABASE_INTEGER else None
+
+
+def _mount_at(service: dict[str, Any], target: str) -> dict[str, Any] | None:
+    for mount in service.get("volumes", []) or []:
+        if isinstance(mount, dict) and mount.get("target") == target:
+            return mount
+        if isinstance(mount, str):
+            parts = mount.split(":")
+            if len(parts) >= 2 and parts[1] == target:
+                return {
+                    "source": parts[0],
+                    "target": parts[1],
+                    "read_only": len(parts) >= 3 and parts[2] == "ro",
+                    "type": "volume" if not parts[0].startswith(("/", ".")) else "bind",
+                }
+    return None
+
+
+def _dependency_condition(service: dict[str, Any], dependency: str) -> str:
+    value = _mapping(service.get("depends_on")).get(dependency)
+    if not isinstance(value, dict) or value.get("required", True) is False:
+        return ""
+    return str(value.get("condition", ""))
+
+
+def _dependency_restarts(service: dict[str, Any], dependency: str) -> bool:
+    value = _mapping(service.get("depends_on")).get(dependency)
+    return (
+        isinstance(value, dict)
+        and value.get("required", True) is not False
+        and value.get("restart") is True
+    )
 
 
 def external_production_issues(
@@ -120,6 +217,8 @@ def external_production_issues(
         "redis",
         "object-storage",
         "migrate",
+        "storage-recovery",
+        "storage-capacity-attestor",
         "api",
         "worker",
         "scheduler",
@@ -130,23 +229,324 @@ def external_production_issues(
         issues.append(f"required services are missing: {', '.join(missing)}")
         return issues
 
-    for name in ("postgres", "migrate", "api", "worker", "scheduler", "web"):
+    for name in (
+        "postgres",
+        "migrate",
+        "storage-recovery",
+        "storage-capacity-attestor",
+        "api",
+        "worker",
+        "scheduler",
+        "web",
+    ):
         if _environment(_mapping(services[name])).get("APP_ENV") != "production":
             issues.append(f"{name} does not run with APP_ENV=production")
 
     api_env = _environment(_mapping(services["api"]))
-    for name in ("migrate", "api", "worker", "scheduler"):
-        if (
-            _environment(_mapping(services[name])).get("PRODUCTION_FOUR_EYES_REQUIRED")
-            != "true"
-        ):
+    for name in ("migrate", "storage-recovery", "api", "worker", "scheduler"):
+        if _environment(_mapping(services[name])).get("PRODUCTION_FOUR_EYES_REQUIRED") != "true":
             issues.append(f"{name} does not require four-eyes production approval")
     if api_env.get("AUTH_MODE") != "oidc":
         issues.append("api does not require OIDC authentication")
-    for key in ("OIDC_ISSUER", "CORS_ORIGINS", "S3_PUBLIC_ENDPOINT"):
+    for key in ("OIDC_ISSUER", "CORS_ORIGINS"):
         values = [part.strip() for part in api_env.get(key, "").split(",") if part.strip()]
         if not values or any(not _https(value) for value in values):
             issues.append(f"api {key} must contain only HTTPS origins")
+    storage_env = _environment(_mapping(services["object-storage"]))
+    backup_endpoint = storage_env.get("S3_BACKUP_ENDPOINT", "")
+    backup_binding: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, int] | None = None
+    try:
+        parsed_backup = urlsplit(backup_endpoint)
+        backup_host = ipaddress.ip_address(parsed_backup.hostname or "")
+        backup_endpoint_valid = (
+            backup_endpoint == backup_endpoint.strip()
+            and re.search(r"[\\\x00-\x20\x7f]", backup_endpoint) is None
+            and parsed_backup.scheme == "http"
+            and backup_host.is_loopback
+            and parsed_backup.username is None
+            and parsed_backup.password is None
+            and parsed_backup.port is not None
+            and 1 <= parsed_backup.port <= 65_535
+            and parsed_backup.path in {"", "/"}
+            and not parsed_backup.query
+            and not parsed_backup.fragment
+        )
+        if backup_endpoint_valid and parsed_backup.port is not None:
+            backup_binding = (backup_host, parsed_backup.port)
+    except ValueError:
+        backup_endpoint_valid = False
+    if not backup_endpoint_valid:
+        issues.append("object-storage S3_BACKUP_ENDPOINT must be an explicit loopback URL")
+    elif backup_binding is not None:
+        port_matches = False
+        for published in _mapping(services["object-storage"]).get("ports", []) or []:
+            if not isinstance(published, dict):
+                continue
+            raw_published = published.get("published")
+            raw_target = published.get("target")
+            published_port = _compose_tcp_port(raw_published)
+            target_port = _compose_tcp_port(raw_target)
+            if published_port is None or target_port is None:
+                continue
+            try:
+                published_host = ipaddress.ip_address(str(published.get("host_ip", "")))
+            except ValueError:
+                continue
+            if (
+                (published_host, published_port) == backup_binding
+                and target_port == 8333
+                and str(published.get("protocol", "tcp")).lower() == "tcp"
+            ):
+                port_matches = True
+                break
+        if not port_matches:
+            issues.append("object-storage S3_BACKUP_ENDPOINT does not match its loopback S3 port")
+    canonical_s3_endpoint = "http://object-storage:8333"
+    storage_s3_identity = {
+        "S3_ACCESS_KEY": storage_env.get("AWS_ACCESS_KEY_ID", ""),
+        "S3_SECRET_KEY": storage_env.get("AWS_SECRET_ACCESS_KEY", ""),
+        "S3_BUCKET": storage_env.get("S3_BUCKET", ""),
+    }
+    if not _canonical_s3_access_key(storage_s3_identity["S3_ACCESS_KEY"]):
+        issues.append("object-storage.AWS_ACCESS_KEY_ID must be a canonical header-safe access key")
+    if not _canonical_s3_bucket(storage_s3_identity["S3_BUCKET"]):
+        issues.append("object-storage.S3_BUCKET must be a canonical S3 DNS name")
+    for name in (
+        "storage-recovery",
+        "storage-capacity-attestor",
+        "api",
+        "worker",
+        "scheduler",
+    ):
+        service_env = _environment(_mapping(services[name]))
+        if service_env.get("S3_ENDPOINT") != canonical_s3_endpoint:
+            issues.append(f"{name} S3_ENDPOINT must be exactly {canonical_s3_endpoint}")
+        for key, expected_value in storage_s3_identity.items():
+            if not expected_value or service_env.get(key) != expected_value:
+                issues.append(f"{name} {key} does not match object-storage")
+
+    postgres = _mapping(services["postgres"])
+    postgres_env = _environment(postgres)
+    migrate = _mapping(services["migrate"])
+    migrate_env = _environment(migrate)
+    if str(postgres.get("restart", "")) != "no":
+        issues.append("postgres automatic restart can bypass the storage-recovery barrier")
+    if _dependency_condition(migrate, "postgres") != "service_healthy":
+        issues.append("migrate does not wait for healthy PostgreSQL")
+    if not _dependency_restarts(migrate, "postgres"):
+        issues.append("migrate does not restart after a Compose-managed PostgreSQL update")
+    api_image = str(_mapping(services["api"]).get("image", ""))
+    recovery = _mapping(services["storage-recovery"])
+    recovery_env = _environment(recovery)
+    recovery_command = recovery.get("command")
+    if (
+        not isinstance(recovery_command, list)
+        or len(recovery_command) < 3
+        or recovery_command[:3] != ["python", "-m", "scripts.storage_recovery"]
+        or recovery.get("entrypoint")
+    ):
+        issues.append("storage-recovery does not run the fixed one-shot command")
+    recovery_image = str(recovery.get("image", ""))
+    if re.fullmatch(r"[^@\s]+@sha256:[a-f0-9]{64}", recovery_image) is None:
+        issues.append("storage-recovery image is not digest pinned")
+    if api_image and recovery_image != api_image:
+        issues.append("storage-recovery does not use the exact API image")
+    if str(recovery.get("user", "")) != "65532:65532":
+        issues.append("storage-recovery must run as the fixed non-root user")
+    if recovery.get("read_only") is not True:
+        issues.append("storage-recovery root filesystem is not read-only")
+    if "ALL" not in (recovery.get("cap_drop") or []):
+        issues.append("storage-recovery does not drop all Linux capabilities")
+    if recovery.get("cap_add"):
+        issues.append("storage-recovery adds Linux capabilities")
+    if recovery.get("privileged") is True:
+        issues.append("storage-recovery is privileged")
+    if "no-new-privileges:true" not in (recovery.get("security_opt") or []):
+        issues.append("storage-recovery does not enforce no-new-privileges")
+    recovery_pids_limit = recovery.get("pids_limit")
+    if (
+        isinstance(recovery_pids_limit, bool)
+        or not isinstance(recovery_pids_limit, int)
+        or recovery_pids_limit < 1
+    ):
+        issues.append("storage-recovery has no positive PID limit")
+    recovery_networks = recovery.get("networks") or {}
+    recovery_network_names = (
+        set(recovery_networks) if isinstance(recovery_networks, dict | list) else set()
+    )
+    if recovery_network_names != {"backend"}:
+        issues.append("storage-recovery must attach only to the backend network")
+    if str(recovery.get("restart", "")) != "no":
+        issues.append("storage-recovery is not an explicit one-shot service")
+    if recovery.get("volumes"):
+        issues.append("storage-recovery must not mount storage volumes")
+    if recovery.get("ports"):
+        issues.append("storage-recovery must not publish host ports")
+    if _dependency_condition(recovery, "migrate") != "service_completed_successfully":
+        issues.append("storage-recovery does not wait for completed migrations")
+    if not _dependency_restarts(recovery, "migrate"):
+        issues.append("storage-recovery does not restart after a Compose-managed migration")
+    if _dependency_condition(recovery, "object-storage") != "service_healthy":
+        issues.append("storage-recovery does not wait for healthy object storage")
+    recovery_database_url = recovery_env.get("DATABASE_URL", "")
+    recovery_database_identity = _database_identity(recovery_database_url)
+    if (
+        recovery_database_identity is None
+        or recovery_database_identity[0] != "custombuild_migrator"
+    ):
+        issues.append("storage-recovery.DATABASE_URL must use the fixed custombuild_migrator role")
+    elif _insecure_secret(recovery_database_identity[1]):
+        issues.append("storage-recovery.DATABASE_URL password is missing, too short, or insecure")
+    elif recovery_database_identity[1] != postgres_env.get("MIGRATOR_DATABASE_PASSWORD", ""):
+        issues.append(
+            "storage-recovery.DATABASE_URL password does not match the provisioned migrator secret"
+        )
+    if recovery_database_url != migrate_env.get("DATABASE_URL", ""):
+        issues.append("storage-recovery.DATABASE_URL does not exactly match migrate")
+
+    attestor = _mapping(services["storage-capacity-attestor"])
+    attestor_env = _environment(attestor)
+    attestor_command = attestor.get("command")
+    if (
+        not isinstance(attestor_command, list)
+        or len(attestor_command) < 3
+        or attestor_command[:3] != ["python", "-m", "scripts.storage_capacity_preflight"]
+        or "scripts.storage_capacity_development" in attestor_command
+    ):
+        issues.append("storage-capacity-attestor does not run the strict preflight")
+    attestor_image = str(attestor.get("image", ""))
+    if re.fullmatch(r"[^@\s]+@sha256:[a-f0-9]{64}", attestor_image) is None:
+        issues.append("storage-capacity-attestor image is not digest pinned")
+    if api_image and attestor_image != api_image:
+        issues.append("storage-capacity-attestor does not use the exact API image")
+    if str(attestor.get("user", "")) in {"", "0", "0:0", "root"}:
+        issues.append("storage-capacity-attestor must run as an explicit non-root user")
+    if attestor.get("read_only") is not True:
+        issues.append("storage-capacity-attestor root filesystem is not read-only")
+    if "ALL" not in (attestor.get("cap_drop") or []):
+        issues.append("storage-capacity-attestor does not drop all Linux capabilities")
+    if "no-new-privileges:true" not in (attestor.get("security_opt") or []):
+        issues.append("storage-capacity-attestor does not enforce no-new-privileges")
+    pids_limit = attestor.get("pids_limit")
+    if isinstance(pids_limit, bool) or not isinstance(pids_limit, int) or pids_limit < 1:
+        issues.append("storage-capacity-attestor has no positive PID limit")
+    raw_networks = attestor.get("networks") or {}
+    network_names = set(raw_networks) if isinstance(raw_networks, dict | list) else set()
+    if network_names != {"backend"}:
+        issues.append("storage-capacity-attestor must attach only to the backend network")
+    healthcheck = _mapping(attestor.get("healthcheck"))
+    if "capacity-heartbeat.json" not in " ".join(
+        str(value) for value in healthcheck.get("test", []) or []
+    ):
+        issues.append("storage-capacity-attestor health does not verify its heartbeat")
+    if _dependency_condition(attestor, "storage-recovery") != "service_completed_successfully":
+        issues.append("storage-capacity-attestor does not wait for completed storage recovery")
+    if not _dependency_restarts(attestor, "storage-recovery"):
+        issues.append(
+            "storage-capacity-attestor does not restart after Compose-managed storage recovery"
+        )
+    if _dependency_condition(attestor, "object-storage") != "service_healthy":
+        issues.append("storage-capacity-attestor does not wait for healthy object storage")
+    storage_mount = _mount_at(attestor, "/storage-volume")
+    if (
+        storage_mount is None
+        or storage_mount.get("type") != "volume"
+        or storage_mount.get("source") != "object-storage-data"
+        or storage_mount.get("read_only") is not True
+    ):
+        issues.append("storage-capacity-attestor does not read the exact storage volume")
+    evidence_mount = _mount_at(attestor, "/evidence")
+    if evidence_mount is None or evidence_mount.get("type") != "bind":
+        issues.append("storage-capacity-attestor evidence is not durably bind-mounted")
+
+    attestor_database_identity = _database_identity(attestor_env.get("DATABASE_URL", ""))
+    if (
+        attestor_database_identity is None
+        or attestor_database_identity[0] != "custombuild_storage_attestor"
+    ):
+        issues.append(
+            "storage-capacity-attestor.DATABASE_URL must use the fixed "
+            "custombuild_storage_attestor role"
+        )
+    elif _insecure_secret(attestor_database_identity[1]):
+        issues.append(
+            "storage-capacity-attestor.DATABASE_URL password is missing, too short, or insecure"
+        )
+    elif attestor_database_identity[1] != postgres_env.get(
+        "CAPACITY_ATTESTOR_DATABASE_PASSWORD", ""
+    ):
+        issues.append(
+            "storage-capacity-attestor.DATABASE_URL password does not match the "
+            "provisioned storage-attestor secret"
+        )
+
+    capacity_environments = {
+        name: _environment(_mapping(services[name]))
+        for name in ("storage-capacity-attestor", "api", "worker", "scheduler")
+    }
+    for key in CAPACITY_ENVIRONMENT_KEYS:
+        capacity_values = {
+            environment.get(key, "") for environment in capacity_environments.values()
+        }
+        if len(capacity_values) != 1:
+            issues.append(f"storage capacity field {key} differs between writers and attestor")
+    if (
+        SHA256_PATTERN.fullmatch(attestor_env.get("STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256", ""))
+        is None
+    ):
+        issues.append("storage capacity operator-config SHA-256 is invalid")
+    if (
+        SHA256_PATTERN.fullmatch(attestor_env.get("STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256", ""))
+        is None
+    ):
+        issues.append("storage capacity deploy-descriptor SHA-256 is invalid")
+    volume_identity = attestor_env.get("STORAGE_CAPACITY_VOLUME_IDENTITY", "")
+    if VOLUME_IDENTITY_PATTERN.fullmatch(volume_identity) is None:
+        issues.append("storage capacity volume identity is invalid")
+    if attestor_env.get("OBJECT_STORAGE_VOLUME_NAME") != volume_identity:
+        issues.append("storage capacity volume identity does not match the mounted volume")
+    volume_definition = _mapping(_mapping(config.get("volumes")).get("object-storage-data"))
+    if (
+        volume_definition.get("external") is not True
+        or volume_definition.get("name") != volume_identity
+    ):
+        issues.append("object storage is not bound to the exact external volume identity")
+    if attestor_env.get("STORAGE_CAPACITY_MAX_AGE_SECONDS") != "600":
+        issues.append("storage capacity maximum age must be exactly 600 seconds")
+    capacity_numbers = {
+        key: _capacity_integer(attestor_env.get(key, ""))
+        for key in (
+            "STORAGE_CAPACITY_PROVISIONED_BYTES",
+            "STORAGE_CAPACITY_METADATA_OVERHEAD_BYTES",
+            "STORAGE_CAPACITY_EMERGENCY_RESERVE_BYTES",
+            "STORAGE_CAPACITY_HEADROOM_BYTES",
+            "STORAGE_CAPACITY_BYTE_LIMIT",
+            "STORAGE_CAPACITY_OBJECT_LIMIT",
+        )
+    }
+    if any(value is None for value in capacity_numbers.values()):
+        issues.append("storage capacity limits must be positive database integers")
+    else:
+        provisioned = capacity_numbers["STORAGE_CAPACITY_PROVISIONED_BYTES"]
+        metadata = capacity_numbers["STORAGE_CAPACITY_METADATA_OVERHEAD_BYTES"]
+        emergency = capacity_numbers["STORAGE_CAPACITY_EMERGENCY_RESERVE_BYTES"]
+        headroom = capacity_numbers["STORAGE_CAPACITY_HEADROOM_BYTES"]
+        byte_limit = capacity_numbers["STORAGE_CAPACITY_BYTE_LIMIT"]
+        assert provisioned is not None
+        assert metadata is not None
+        assert emergency is not None
+        assert headroom is not None
+        assert byte_limit is not None
+        if headroom != metadata + emergency:
+            issues.append("storage capacity headroom does not equal its reserved components")
+        if headroom >= provisioned or byte_limit > provisioned - headroom:
+            issues.append("storage capacity logical limit exceeds physical usable capacity")
+    for name in ("api", "worker", "scheduler"):
+        service = _mapping(services[name])
+        if _dependency_condition(service, "storage-capacity-attestor") != "service_healthy":
+            issues.append(f"{name} does not wait for healthy storage capacity evidence")
+        if not _dependency_restarts(service, "storage-capacity-attestor"):
+            issues.append(f"{name} does not restart after Compose-managed capacity attestation")
     trusted_proxy_values = [
         value.strip()
         for value in api_env.get("TRUSTED_PROXY_CIDRS", "").split(",")
@@ -173,23 +573,21 @@ def external_production_issues(
         "postgres.POSTGRES_PASSWORD": _environment(_mapping(services["postgres"])).get(
             "POSTGRES_PASSWORD", ""
         ),
-        "redis.REDIS_PASSWORD": _environment(_mapping(services["redis"])).get(
-            "REDIS_PASSWORD", ""
-        ),
+        "redis.REDIS_PASSWORD": _environment(_mapping(services["redis"])).get("REDIS_PASSWORD", ""),
         "object-storage.AWS_SECRET_ACCESS_KEY": _environment(
             _mapping(services["object-storage"])
         ).get("AWS_SECRET_ACCESS_KEY", ""),
         "api.ARTIFACT_SIGNING_SECRET": api_env.get("ARTIFACT_SIGNING_SECRET", ""),
     }
-    postgres_env = _environment(_mapping(services["postgres"]))
     secrets.update(
         {
             "postgres.MIGRATOR_DATABASE_PASSWORD": postgres_env.get(
                 "MIGRATOR_DATABASE_PASSWORD", ""
             ),
             "postgres.API_DATABASE_PASSWORD": postgres_env.get("API_DATABASE_PASSWORD", ""),
-            "postgres.WORKER_DATABASE_PASSWORD": postgres_env.get(
-                "WORKER_DATABASE_PASSWORD", ""
+            "postgres.WORKER_DATABASE_PASSWORD": postgres_env.get("WORKER_DATABASE_PASSWORD", ""),
+            "postgres.CAPACITY_ATTESTOR_DATABASE_PASSWORD": postgres_env.get(
+                "CAPACITY_ATTESTOR_DATABASE_PASSWORD", ""
             ),
         }
     )
@@ -197,10 +595,22 @@ def external_production_issues(
         minimum_length = 32 if label == "api.ARTIFACT_SIGNING_SECRET" else 24
         if _insecure_secret(value, minimum_length=minimum_length):
             issues.append(f"{label} is missing, too short, or uses an insecure default")
+    attestor_password = postgres_env.get("CAPACITY_ATTESTOR_DATABASE_PASSWORD", "")
+    if attestor_password and attestor_password in {
+        postgres_env.get("POSTGRES_PASSWORD", ""),
+        postgres_env.get("MIGRATOR_DATABASE_PASSWORD", ""),
+        postgres_env.get("API_DATABASE_PASSWORD", ""),
+        postgres_env.get("WORKER_DATABASE_PASSWORD", ""),
+    }:
+        issues.append(
+            "postgres.CAPACITY_ATTESTOR_DATABASE_PASSWORD must be unique to the "
+            "storage-attestor role"
+        )
 
     expected_postgres_roles = {
         "POSTGRES_USER": "custombuild_bootstrap",
         "MIGRATOR_DATABASE_USER": "custombuild_migrator",
+        "CAPACITY_ATTESTOR_DATABASE_USER": "custombuild_storage_attestor",
     }
     for key, expected in expected_postgres_roles.items():
         if postgres_env.get(key) != expected:
@@ -208,6 +618,7 @@ def external_production_issues(
 
     expected_database_roles = {
         "migrate": "custombuild_migrator",
+        "storage-recovery": "custombuild_migrator",
         "api": "custombuild_api",
         "worker": "custombuild_worker",
         "scheduler": "custombuild_worker",
@@ -300,7 +711,14 @@ def external_production_issues(
 
     release_identities: dict[str, tuple[str, str, str, str, str]] = {}
     build_arguments: dict[str, dict[str, Any]] = {}
-    for name in ("migrate", "api", "worker", "scheduler", "web"):
+    for name in (
+        "migrate",
+        "storage-recovery",
+        "api",
+        "worker",
+        "scheduler",
+        "web",
+    ):
         build = _mapping(_mapping(services[name]).get("build"))
         arguments = _mapping(build.get("args"))
         build_arguments[name] = arguments
@@ -343,7 +761,7 @@ def external_production_issues(
             and source_manifest_sha256 != expected_source_manifest_sha256
         ):
             issues.append(f"{name} source manifest does not match the checked build/control set")
-    for name in ("migrate", "api", "worker", "scheduler"):
+    for name in ("migrate", "storage-recovery", "api", "worker", "scheduler"):
         lock_sha256 = str(build_arguments[name].get("DEPENDENCY_LOCK_SHA256", ""))
         if not re.fullmatch(r"[a-f0-9]{64}", lock_sha256):
             issues.append(f"{name} has no exact uv.lock SHA-256")
@@ -365,18 +783,14 @@ def external_production_issues(
     if len(set(release_identities.values())) != 1:
         issues.append("application services do not share one exact release identity")
 
-    for name in ("postgres", "redis"):
+    for name in ("postgres", "redis", "storage-recovery"):
         if _mapping(services[name]).get("ports"):
             issues.append(f"{name} must not publish host ports")
     for name in ("api", "web", "object-storage"):
         for published in _mapping(services[name]).get("ports", []) or []:
             if (
-                isinstance(published, dict)
-                and published.get("host_ip") not in ("127.0.0.1", "::1")
-            ) or (
-                isinstance(published, str)
-                and not published.startswith("127.0.0.1:")
-            ):
+                isinstance(published, dict) and published.get("host_ip") not in ("127.0.0.1", "::1")
+            ) or (isinstance(published, str) and not published.startswith("127.0.0.1:")):
                 issues.append(f"{name} publishes a non-loopback host port")
     return issues
 

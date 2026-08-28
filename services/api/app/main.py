@@ -15,8 +15,14 @@ from .db import Base, get_engine, session_scope
 from .design_service import assert_rule_engine_available
 from .observability import RequestContextMiddleware, request_id_context
 from .readiness import probe_dependencies
-from .security import RateLimitMiddleware, SecurityHeadersMiddleware
+from .security import (
+    CORSResponseHeadersMiddleware,
+    RateLimitMiddleware,
+    RequestBodyLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from .seed import seed_development
+from .storage_quota import initialize_development_storage_quota
 
 
 class JsonFormatter(logging.Formatter):
@@ -50,6 +56,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         Base.metadata.create_all(get_engine())
         if settings.auth_mode == "development":
             for session in session_scope():
+                initialize_development_storage_quota(session)
                 seed_development(session)
     logger.info("api_started env=%s auth_mode=%s", settings.app_env, settings.auth_mode)
     yield
@@ -65,15 +72,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 settings = get_settings()
+# Starlette wraps user middleware in reverse registration order.  Keep the
+# request-intercepting CORS layer inside both abuse guards; the response-only
+# CORS layer below restores browser-readable headers on guard failures.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
-    expose_headers=["X-Request-ID"],
+    expose_headers=["Content-Disposition", "Digest", "ETag", "X-Request-ID"],
 )
-app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    idle_timeout_seconds=settings.request_body_idle_timeout_seconds,
+    total_timeout_seconds=settings.request_body_total_timeout_seconds,
+)
 app.add_middleware(
     RateLimitMiddleware,
     requests=settings.rate_limit_requests,
@@ -82,6 +96,13 @@ app.add_middleware(
     distributed_required=settings.app_env == "production",
     trusted_proxy_cidrs=settings.trusted_proxy_networks,
 )
+app.add_middleware(
+    CORSResponseHeadersMiddleware,
+    allow_origins=settings.allowed_origins,
+    allow_credentials=False,
+    expose_headers=["Content-Disposition", "Digest", "ETag", "X-Request-ID"],
+)
+app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestContextMiddleware)
 app.include_router(router)
 

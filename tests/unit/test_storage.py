@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import socket
 from dataclasses import replace
 from io import BytesIO
+from threading import Event
+from time import monotonic
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,15 +13,7 @@ import boto3
 import pytest
 from app import storage
 from botocore.exceptions import ClientError, ReadTimeoutError
-
-
-class RecordingS3Client:
-    def __init__(self) -> None:
-        self.calls: list[dict[str, Any]] = []
-
-    def generate_presigned_url(self, operation: str, **kwargs: Any) -> str:
-        self.calls.append({"operation": operation, **kwargs})
-        return "https://artifacts.example.test/signed"
+from fastapi import HTTPException
 
 
 class RecordingBody(BytesIO):
@@ -47,6 +42,17 @@ class RecordingSpool(BytesIO):
     def close(self) -> None:
         self.close_calls += 1
         super().close()
+
+
+class FailingReadSpool(RecordingSpool):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_reads = False
+
+    def read(self, size: int | None = -1) -> bytes:
+        if self.fail_reads:
+            raise OSError("private temporary-file details")
+        return super().read(size)
 
 
 class VerifyingS3Client:
@@ -137,35 +143,114 @@ def _install_spool_recorder(
     return spools, calls
 
 
-def test_s3_client_uses_v4_path_style_signatures(
+def _install_artifact_signing_settings(
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    ttl_seconds: int = 300,
 ) -> None:
-    calls: list[dict[str, Any]] = []
-    sentinel = object()
-
-    def record_client(service: str, **kwargs: Any) -> object:
-        calls.append({"service": service, **kwargs})
-        return sentinel
-
-    monkeypatch.setattr(boto3, "client", record_client)
     monkeypatch.setattr(
         storage,
         "get_settings",
         lambda: SimpleNamespace(
-            s3_public_endpoint="http://localhost:9000",
-            s3_access_key="test-access",
-            s3_secret_key="test-secret",  # noqa: S106 - inert unit-test credential
+            artifact_signing_secret="unit-test-artifact-signing-secret",  # noqa: S106
+            artifact_url_ttl_seconds=ttl_seconds,
         ),
     )
-    storage.s3_client.cache_clear()
-    try:
-        assert storage.s3_client() is sentinel
-    finally:
-        storage.s3_client.cache_clear()
 
-    assert calls[0]["service"] == "s3"
-    assert calls[0]["config"].signature_version == "s3v4"
-    assert calls[0]["config"].s3 == {"addressing_style": "path"}
+
+def test_artifact_access_accepts_the_exact_configured_ttl_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 2_000_000_000
+    ttl_seconds = 300
+    _install_artifact_signing_settings(monkeypatch, ttl_seconds=ttl_seconds)
+    monkeypatch.setattr(storage.time, "time", lambda: float(now))
+    expires_at = now + ttl_seconds
+    signature = storage.sign_artifact_access("artifact", "organization", expires_at)
+
+    storage.verify_artifact_access("artifact", "organization", expires_at, signature)
+
+
+@pytest.mark.parametrize("expires_at", (2_000_000_000, 1_999_999_999))
+def test_artifact_access_rejects_expired_or_current_second_links(
+    monkeypatch: pytest.MonkeyPatch,
+    expires_at: int,
+) -> None:
+    now = 2_000_000_000
+    _install_artifact_signing_settings(monkeypatch)
+    monkeypatch.setattr(storage.time, "time", lambda: float(now))
+    signature = storage.sign_artifact_access("artifact", "organization", expires_at)
+
+    with pytest.raises(HTTPException) as exc_info:
+        storage.verify_artifact_access("artifact", "organization", expires_at, signature)
+
+    assert exc_info.value.status_code == 410
+    assert exc_info.value.detail == "Artifact link expired"
+
+
+def test_artifact_access_rejects_a_valid_signature_beyond_the_configured_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 2_000_000_000
+    ttl_seconds = 300
+    _install_artifact_signing_settings(monkeypatch, ttl_seconds=ttl_seconds)
+    monkeypatch.setattr(storage.time, "time", lambda: float(now))
+    expires_at = now + ttl_seconds + 1
+    signature = storage.sign_artifact_access("artifact", "organization", expires_at)
+
+    with pytest.raises(HTTPException) as exc_info:
+        storage.verify_artifact_access("artifact", "organization", expires_at, signature)
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Invalid artifact expiry"
+
+
+@pytest.mark.parametrize(
+    "signature",
+    ("é" * 64, "A" * 64, "a" * 63, "a" * 65, "a" * 63 + "g", None, True),
+)
+def test_artifact_access_rejects_noncanonical_signature_without_type_error(
+    monkeypatch: pytest.MonkeyPatch,
+    signature: object,
+) -> None:
+    now = 2_000_000_000
+    _install_artifact_signing_settings(monkeypatch)
+    monkeypatch.setattr(storage.time, "time", lambda: float(now))
+
+    with pytest.raises(HTTPException) as exc_info:
+        storage.verify_artifact_access(  # type: ignore[arg-type]
+            "artifact",
+            "organization",
+            now + 1,
+            signature,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Invalid artifact signature"
+
+
+@pytest.mark.parametrize("expires_at", (True, False, 2_000_000_001.0, "2000000001", None))
+def test_artifact_access_rejects_non_integer_expiry_before_signing(
+    monkeypatch: pytest.MonkeyPatch,
+    expires_at: object,
+) -> None:
+    _install_artifact_signing_settings(monkeypatch)
+    monkeypatch.setattr(storage.time, "time", lambda: 2_000_000_000.0)
+
+    def must_not_sign(*_args: object) -> str:
+        raise AssertionError("invalid expiry reached artifact signing")
+
+    monkeypatch.setattr(storage, "sign_artifact_access", must_not_sign)
+    with pytest.raises(HTTPException) as exc_info:
+        storage.verify_artifact_access(  # type: ignore[arg-type]
+            "artifact",
+            "organization",
+            expires_at,
+            "a" * 64,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "Invalid artifact expiry"
 
 
 def test_internal_s3_client_uses_private_endpoint_and_bounded_timeouts(
@@ -211,6 +296,27 @@ def test_lightweight_verification_trusts_matching_worker_checksum_metadata(
     _install_verification_client(monkeypatch, client)
 
     storage.verify_stored_object(expectation, stream_hash=False)
+
+    assert client.head_calls == 1
+    assert client.get_calls == 0
+
+
+def test_service_owned_storage_runtime_bypasses_unrelated_api_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b'{"worker":"verified"}'
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(
+        payload,
+        metadata={"sha256": expectation.sha256},
+    )
+
+    def must_not_load_api_settings() -> None:
+        raise AssertionError("worker verification loaded API-only settings")
+
+    monkeypatch.setattr(storage, "get_settings", must_not_load_api_settings)
+    with storage.storage_runtime(client=client, bucket="production-artifacts"):
+        storage.verify_stored_object(expectation, stream_hash=False)
 
     assert client.head_calls == 1
     assert client.get_calls == 0
@@ -307,6 +413,21 @@ def test_strict_verification_streams_and_rejects_corrupt_body(
     assert client.get_calls == 1
 
 
+def test_stream_verification_stops_after_one_byte_beyond_the_recorded_size() -> None:
+    body = RecordingBody(b"oversize-provider-body")
+
+    with pytest.raises(storage.ArtifactIntegrityError, match="recorded size"):
+        storage._stream_sha256(
+            body,
+            expected_size=3,
+            deadline=float("inf"),
+        )
+
+    assert body.read_sizes == [4]
+    assert body.closed
+    assert body.close_calls == 1
+
+
 def test_bounded_verified_read_uses_one_get_and_closes_the_body(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -357,6 +478,44 @@ def test_bounded_verified_read_rejects_corrupt_bytes_and_closes_body(
     assert client.head_calls == 0
     assert client.get_calls == 1
     assert client.last_body is not None and client.last_body.closed
+
+
+def test_bounded_verified_read_closes_body_when_get_headers_are_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"header-bound bytes"
+    client = VerifyingS3Client(payload, content_type="text/plain")
+    _install_verification_client(monkeypatch, client)
+
+    with pytest.raises(storage.ArtifactIntegrityError, match="content type"):
+        storage.read_verified_stored_object(
+            _expectation(payload),
+            max_bytes=64 * 1024,
+        )
+
+    assert client.last_body is not None and client.last_body.closed
+    assert client.last_body.close_calls == 1
+
+
+def test_stream_verification_closes_body_when_get_headers_are_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"legacy header-bound bytes"
+
+    class InvalidGetHeadersClient(VerifyingS3Client):
+        def get_object(self, **kwargs: Any) -> dict[str, Any]:
+            response = super().get_object(**kwargs)
+            response["ContentType"] = "text/plain"
+            return response
+
+    client = InvalidGetHeadersClient(payload)
+    _install_verification_client(monkeypatch, client)
+
+    with pytest.raises(storage.ArtifactIntegrityError, match="content type"):
+        storage.verify_stored_object(_expectation(payload), stream_hash=True)
+
+    assert client.last_body is not None and client.last_body.closed
+    assert client.last_body.close_calls == 1
 
 
 @pytest.mark.parametrize(
@@ -440,8 +599,13 @@ def test_open_verified_object_uses_one_get_and_returns_a_sealed_bounded_stream(
     assert client.get_calls == 1
     assert client.last_body is not None
     assert client.last_body.close_calls == 1
-    assert client.last_body.read_sizes
-    assert set(client.last_body.read_sizes) == {1024 * 1024}
+    assert client.last_body.read_sizes == [
+        1024 * 1024,
+        1024 * 1024,
+        20,
+        1,
+    ]
+    assert all(size <= 1024 * 1024 for size in client.last_body.read_sizes)
     assert spool_calls == [(8 * 1024 * 1024, "w+b")]
     assert verified.sha256 == digest
     assert verified.size_bytes == len(payload)
@@ -453,6 +617,58 @@ def test_open_verified_object_uses_one_get_and_returns_a_sealed_bounded_stream(
     assert spools[0].close_calls == 1
     verified.close()
     assert spools[0].close_calls == 1
+
+
+def test_verified_spool_budget_rejects_overcommit_before_provider_access_and_releases(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"123456"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    budget = storage._TransientByteBudget(10)
+    monkeypatch.setattr(storage, "_TRANSIENT_BYTE_BUDGET", budget)
+
+    first = storage.open_verified_stored_object(expectation, max_bytes=len(payload))
+    assert budget.reserved_bytes == len(payload)
+    assert client.get_calls == 1
+
+    with pytest.raises(
+        storage.ArtifactStorageUnavailableError,
+        match="capacity is temporarily exhausted",
+    ):
+        storage.open_verified_stored_object(expectation, max_bytes=len(payload))
+    assert client.get_calls == 1
+    assert budget.reserved_bytes == len(payload)
+
+    first.close()
+    assert budget.reserved_bytes == 0
+    second = storage.open_verified_stored_object(expectation, max_bytes=len(payload))
+    assert client.get_calls == 2
+    assert budget.reserved_bytes == len(payload)
+    second.close()
+    second.close()
+    assert budget.reserved_bytes == 0
+
+
+def test_verified_spool_budget_is_released_when_integrity_verification_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected = b"expected"
+    expectation = _expectation(expected)
+    client = VerifyingS3Client(
+        b"tamperED",
+        metadata={"sha256": expectation.sha256},
+    )
+    _install_verification_client(monkeypatch, client)
+    budget = storage._TransientByteBudget(len(expected))
+    monkeypatch.setattr(storage, "_TRANSIENT_BYTE_BUDGET", budget)
+
+    with pytest.raises(storage.ArtifactIntegrityError, match="checksum"):
+        storage.open_verified_stored_object(expectation, max_bytes=len(expected))
+
+    assert budget.reserved_bytes == 0
+    assert client.get_calls == 1
 
 
 @pytest.mark.parametrize("invalid_max_bytes", (False, 0, -1))
@@ -583,6 +799,155 @@ def test_verified_stream_closes_exactly_once_on_disconnect_and_background_cleanu
         next(iter(verified))
 
 
+def test_verified_iterator_close_before_first_next_closes_the_token_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"never yielded"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    spools, _calls = _install_spool_recorder(monkeypatch)
+    verified = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+
+    iterator = verified.iter_bytes()
+    iterator.close()
+
+    assert verified.closed
+    assert spools[0].close_calls == 1
+    iterator.close()
+    verified.close()
+    assert spools[0].close_calls == 1
+    with pytest.raises(StopIteration):
+        next(iterator)
+    with pytest.raises(RuntimeError, match="closed"):
+        verified.iter_bytes()
+
+
+def test_verified_iterator_io_failure_closes_the_token_exactly_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"stream read failure"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    spool = FailingReadSpool()
+    monkeypatch.setattr(storage, "SpooledTemporaryFile", lambda **_kwargs: spool)
+    verified = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+    spool.fail_reads = True
+
+    iterator = verified.iter_bytes()
+    with pytest.raises(storage.ArtifactStorageUnavailableError, match="could not be read"):
+        next(iterator)
+
+    assert verified.closed
+    assert spool.close_calls == 1
+    iterator.close()
+    assert spool.close_calls == 1
+
+
+def test_validation_bytes_rewinds_the_private_spool_for_normal_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"validate once, stream without another provider request"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    spools, _calls = _install_spool_recorder(monkeypatch)
+    verified = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+
+    assert verified.validation_bytes(max_bytes=len(payload)) == payload
+    assert not verified.closed
+    assert spools[0].tell() == 0
+    assert client.get_calls == 1
+
+    assert b"".join(verified) == payload
+    assert client.get_calls == 1
+    assert verified.closed
+    assert spools[0].close_calls == 1
+
+
+@pytest.mark.parametrize("invalid_max_bytes", (False, 0, -1))
+def test_validation_bytes_strictly_rejects_invalid_limits_without_consuming_token(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_max_bytes: int,
+) -> None:
+    payload = b"still streamable"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    verified = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+
+    with pytest.raises(ValueError, match="positive integer"):
+        verified.validation_bytes(max_bytes=invalid_max_bytes)
+
+    assert b"".join(verified) == payload
+
+
+def test_validation_bytes_rejects_oversize_without_consuming_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"bounded validation bytes"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    verified = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+
+    with pytest.raises(storage.ArtifactIntegrityError, match="validation size limit"):
+        verified.validation_bytes(max_bytes=len(payload) - 1)
+
+    assert not verified.closed
+    assert b"".join(verified) == payload
+
+
+def test_validation_bytes_rejects_closed_or_started_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"one-shot validation"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    closed = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+    started = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+
+    closed.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        closed.validation_bytes(max_bytes=len(payload))
+
+    iterator = started.iter_bytes()
+    assert next(iterator) == payload
+    with pytest.raises(RuntimeError, match="iteration has started"):
+        started.validation_bytes(max_bytes=len(payload))
+    iterator.close()
+
+
+def test_validation_io_failure_invalidates_and_closes_the_token_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"temporary spool failure"
+    expectation = _expectation(payload)
+    client = VerifyingS3Client(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    spool = FailingReadSpool()
+    monkeypatch.setattr(
+        storage,
+        "SpooledTemporaryFile",
+        lambda **_kwargs: spool,
+    )
+    verified = storage.open_verified_stored_object(expectation, max_bytes=64 * 1024)
+    spool.fail_reads = True
+
+    with pytest.raises(storage.ArtifactStorageUnavailableError) as error:
+        verified.validation_bytes(max_bytes=len(payload))
+
+    assert str(error.value) == "verified artifact spool could not be read"
+    assert verified.closed
+    assert spool.close_calls == 1
+    verified.close()
+    assert spool.close_calls == 1
+    with pytest.raises(RuntimeError, match="closed"):
+        verified.validation_bytes(max_bytes=len(payload))
+
+
 def test_immutable_store_uses_conditional_create_and_verifies_persisted_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -677,6 +1042,182 @@ def test_create_once_bundle_rejects_preexisting_object_with_wrong_manifest_bindi
 
     assert len(client.put_calls) == 1
     assert client.get_calls == 0
+
+
+def test_open_verified_object_total_deadline_releases_body_spool_and_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"slow-drip"
+    expectation = _expectation(payload)
+    clock = [0.0]
+
+    class SlowDripBody(RecordingBody):
+        def read(self, size: int | None = -1) -> bytes:
+            clock[0] += 11.0
+            bounded_size = 1 if size is None or size < 0 else min(size, 1)
+            return super().read(bounded_size)
+
+    class SlowDripClient(VerifyingS3Client):
+        def get_object(self, **_kwargs: Any) -> dict[str, Any]:
+            self.get_calls += 1
+            self.last_body = SlowDripBody(self.payload)
+            return {
+                "ContentLength": len(self.payload),
+                "ContentType": self.content_type,
+                "Metadata": self.metadata,
+                "Body": self.last_body,
+            }
+
+    client = SlowDripClient(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    spools, _calls = _install_spool_recorder(monkeypatch)
+    budget = storage._TransientByteBudget(64)
+    monkeypatch.setattr(storage, "_TRANSIENT_BYTE_BUDGET", budget)
+    monkeypatch.setattr(storage.time, "monotonic", lambda: clock[0])
+
+    with pytest.raises(storage.ArtifactStorageUnavailableError, match="deadline"):
+        storage.open_verified_stored_object(expectation, max_bytes=64)
+
+    assert client.last_body is not None
+    assert client.last_body.closed
+    assert client.last_body.close_calls == 1
+    assert len(spools) == 1 and spools[0].close_calls == 1
+    assert budget.reserved_bytes == 0
+
+
+def test_provider_body_watchdog_aborts_one_blocked_read_and_releases_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"blocked-provider-read"
+    expectation = _expectation(payload)
+    released = Event()
+
+    class BlockingBody(RecordingBody):
+        def read(self, size: int | None = -1) -> bytes:
+            self.read_sizes.append(-1 if size is None else size)
+            released.wait(timeout=2.0)
+            return b"" if self.closed else BytesIO.read(self, size)
+
+        def close(self) -> None:
+            super().close()
+            released.set()
+
+    class BlockingClient(VerifyingS3Client):
+        def get_object(self, **_kwargs: Any) -> dict[str, Any]:
+            self.get_calls += 1
+            self.last_body = BlockingBody(self.payload)
+            return {
+                "ContentLength": len(self.payload),
+                "ContentType": self.content_type,
+                "Metadata": self.metadata,
+                "Body": self.last_body,
+            }
+
+    client = BlockingClient(payload, metadata={"sha256": expectation.sha256})
+    _install_verification_client(monkeypatch, client)
+    spools, _calls = _install_spool_recorder(monkeypatch)
+    budget = storage._TransientByteBudget(64)
+    monkeypatch.setattr(storage, "_TRANSIENT_BYTE_BUDGET", budget)
+    monkeypatch.setattr(storage, "_OBJECT_STORAGE_TOTAL_READ_SECONDS", 0.02)
+
+    started = monotonic()
+    with pytest.raises(storage.ArtifactStorageUnavailableError, match="deadline"):
+        storage.open_verified_stored_object(expectation, max_bytes=64)
+
+    assert monotonic() - started < 1.0
+    assert client.last_body is not None
+    assert client.last_body.close_calls == 1
+    assert len(spools) == 1 and spools[0].close_calls == 1
+    assert budget.reserved_bytes == 0
+
+
+def test_provider_watchdog_shuts_down_raw_socket_before_buffered_body_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b"socket-blocked-provider-read"
+    expectation = _expectation(payload)
+
+    class SocketRawStream:
+        def __init__(self) -> None:
+            self.reader_socket, self.writer_socket = socket.socketpair()
+            self.file = self.reader_socket.makefile("rb")
+            self.shutdown_calls = 0
+            self.close_calls = 0
+
+        def read(self, size: int) -> bytes:
+            return self.file.read(size)
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+            self.reader_socket.shutdown(socket.SHUT_RD)
+
+        def close(self) -> None:
+            self.close_calls += 1
+            self.file.close()
+            self.reader_socket.close()
+            self.writer_socket.close()
+
+    class SocketBody:
+        def __init__(self) -> None:
+            self._raw_stream = SocketRawStream()
+            self.close_calls = 0
+
+        def read(self, size: int) -> bytes:
+            return self._raw_stream.read(size)
+
+        def close(self) -> None:
+            self.close_calls += 1
+            self._raw_stream.close()
+
+    class SocketClient(VerifyingS3Client):
+        def __init__(self) -> None:
+            super().__init__(payload, metadata={"sha256": expectation.sha256})
+            self.socket_body: SocketBody | None = None
+
+        def get_object(self, **_kwargs: Any) -> dict[str, Any]:
+            self.get_calls += 1
+            self.socket_body = SocketBody()
+            return {
+                "ContentLength": len(self.payload),
+                "ContentType": self.content_type,
+                "Metadata": self.metadata,
+                "Body": self.socket_body,
+            }
+
+    client = SocketClient()
+    _install_verification_client(monkeypatch, client)
+    spools, _calls = _install_spool_recorder(monkeypatch)
+    budget = storage._TransientByteBudget(64)
+    monkeypatch.setattr(storage, "_TRANSIENT_BYTE_BUDGET", budget)
+    monkeypatch.setattr(storage, "_OBJECT_STORAGE_TOTAL_READ_SECONDS", 0.02)
+
+    started = monotonic()
+    with pytest.raises(storage.ArtifactStorageUnavailableError, match="deadline"):
+        storage.open_verified_stored_object(expectation, max_bytes=64)
+
+    assert monotonic() - started < 1.0
+    assert client.socket_body is not None
+    assert client.socket_body._raw_stream.shutdown_calls == 1
+    assert client.socket_body.close_calls == 1
+    assert client.socket_body._raw_stream.close_calls == 1
+    assert len(spools) == 1 and spools[0].close_calls == 1
+    assert budget.reserved_bytes == 0
+
+
+def test_nested_storage_deadlines_keep_the_earliest_absolute_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [100.0]
+    monkeypatch.setattr(storage.time, "monotonic", lambda: clock[0])
+
+    with storage.storage_read_deadline(5.0):
+        assert storage._storage_read_deadline() == 105.0
+        clock[0] = 101.0
+        with storage.storage_read_deadline(10.0):
+            assert storage._storage_read_deadline() == 105.0
+        assert storage._storage_read_deadline() == 105.0
+
+    assert storage._storage_read_deadline() == 131.0
 
 
 @pytest.mark.parametrize("status_code", (409, 412))
@@ -882,37 +1423,3 @@ def test_transient_or_authorization_failure_is_generic_and_not_repairable(
     assert message == "artifact storage is temporarily unavailable"
     assert "minio" not in message
     assert "credentials" not in message
-
-
-def test_presigned_download_sets_a_safe_content_disposition(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    client = RecordingS3Client()
-    monkeypatch.setattr(storage, "s3_client", lambda: client)
-
-    result = storage.presigned_get(
-        "org/job/bundle.zip",
-        filename="custombuild-rev-7.zip",
-    )
-
-    assert result == "https://artifacts.example.test/signed"
-    assert client.calls[0]["Params"]["ResponseContentDisposition"] == (
-        'attachment; filename="custombuild-rev-7.zip"'
-    )
-
-
-@pytest.mark.parametrize(
-    "filename",
-    ("../bundle.zip", "bundle name.zip", "bundle\r\nX-Test: injected", "åäö.zip"),
-)
-def test_presigned_download_rejects_unsafe_filenames(
-    monkeypatch: pytest.MonkeyPatch,
-    filename: str,
-) -> None:
-    client = RecordingS3Client()
-    monkeypatch.setattr(storage, "s3_client", lambda: client)
-
-    with pytest.raises(ValueError, match="unsafe"):
-        storage.presigned_get("org/job/bundle.zip", filename=filename)
-
-    assert client.calls == []

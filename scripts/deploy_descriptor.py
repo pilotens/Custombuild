@@ -58,6 +58,8 @@ ALL_COMPONENTS = (*APPLICATION_COMPONENTS, *PINNED_RUNTIME_IMAGES)
 ROLE_COMPONENTS = {
     "api": "api",
     "migrate": "api",
+    "storage-recovery": "api",
+    "storage-capacity-attestor": "api",
     "worker": "worker",
     "scheduler": "worker",
     "web": "web",
@@ -85,6 +87,10 @@ EXPECTED_REGISTRY_OVERLAY = (
     "  object-storage:\n"
     "    image: ${CUSTOMBUILD_DEPLOY_SEAWEEDFS_IMAGE:?Set from a verified deploy descriptor}\n"
     "  migrate:\n"
+    "    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}\n"
+    "  storage-recovery:\n"
+    "    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}\n"
+    "  storage-capacity-attestor:\n"
     "    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}\n"
     "  api:\n"
     "    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}\n"

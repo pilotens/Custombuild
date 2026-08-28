@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import stat
@@ -7,11 +8,13 @@ from typing import Any, cast
 
 import pytest
 import yaml
+from app.config_guards import validate_production_s3_bucket
 
 from scripts import compose_backup
 from scripts.compose_backup import (
     POSTGRES_IMAGE,
     SEAWEEDFS_IMAGE,
+    TOMBSTONE_HISTORY_SCHEMA,
     VOLUME_INIT_IMAGE,
     BackupError,
     build_manifest,
@@ -30,6 +33,7 @@ OBJECT_ENTRY = {
 IMAGE_ID = "sha256:" + "1" * 64
 SOURCE_MANIFEST_SHA256 = "2" * 64
 GIT_REVISION = "3" * 40
+EMPTY_TOMBSTONE_DIGEST = hashlib.sha256(b"[]").hexdigest()
 
 
 def test_backup_runtime_images_match_the_compose_volume_contract() -> None:
@@ -56,7 +60,16 @@ def backup_metadata() -> dict[str, object]:
             "captured_at": "2026-08-11T10:00:00+00:00",
             "wal_lsn": "0/16B6C50",
             "alembic_heads": ["0004_design_source_provenance"],
-            "row_counts": {"alembic_version": 1, "projects": 1},
+            "row_counts": {
+                "alembic_version": 1,
+                "projects": 1,
+                "storage_object_tombstones": 0,
+            },
+            "tombstone_history": {
+                "schema_version": TOMBSTONE_HISTORY_SCHEMA,
+                "count": 0,
+                "sha256": EMPTY_TOMBSTONE_DIGEST,
+            },
         },
         "git_revision": GIT_REVISION,
         "source_manifest_sha256": SOURCE_MANIFEST_SHA256,
@@ -81,20 +94,182 @@ def compose_fixture() -> dict[str, object]:
                     "POSTGRES_USER": "custombuild_bootstrap",
                 }
             },
-            "api": {
-                "environment": {
-                    "S3_PUBLIC_ENDPOINT": "http://localhost:9200",
-                    "S3_ACCESS_KEY": "test-key",
-                    "S3_SECRET_KEY": "test-secret",
-                    "S3_BUCKET": "custombuild-artifacts",
-                }
-            },
+            "api": {"environment": {}},
             "worker": {},
             "scheduler": {},
-            "object-storage": {"image": SEAWEEDFS_IMAGE},
+            "storage-recovery": {},
+            "storage-capacity-attestor": {},
+            "object-storage": {
+                "image": SEAWEEDFS_IMAGE,
+                "environment": {
+                    "S3_BACKUP_ENDPOINT": "http://127.0.0.1:9200",
+                    "AWS_ACCESS_KEY_ID": "test-key",
+                    "AWS_SECRET_ACCESS_KEY": "test-secret",
+                    "S3_BUCKET": "custombuild-artifacts",
+                },
+                "ports": [{"host_ip": "127.0.0.1", "published": "9200", "target": 8333}],
+            },
         },
         "volumes": {"object-storage-data": {"name": "custombuild-test_object-storage-data"}},
     }
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "ports"),
+    (
+        (
+            "http://127.0.0.1:9999",
+            [{"host_ip": "127.0.0.1", "published": "9200", "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": "9200", "target": 9001}],
+        ),
+        (
+            "https://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": "9200", "target": 8333}],
+        ),
+        (
+            "\x00http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": "9200", "target": 8333}],
+        ),
+        (
+            "\nhttp://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": "9200", "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:\t9200",
+            [{"host_ip": "127.0.0.1", "published": "9200", "target": 8333}],
+        ),
+        (
+            "http:\\//127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": "9200", "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:0",
+            [{"host_ip": "127.0.0.1", "published": 0, "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:65536",
+            [{"host_ip": "127.0.0.1", "published": 65_536, "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": 0, "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": 65_536, "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": True, "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": "-1", "target": 8333}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": 9200, "target": 0}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": 9200, "target": 65_536}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": 9200, "target": True}],
+        ),
+        (
+            "http://127.0.0.1:9200",
+            [{"host_ip": "127.0.0.1", "published": 9200, "target": "-1"}],
+        ),
+    ),
+)
+def test_storage_resolution_rejects_endpoint_and_published_socket_drift(
+    endpoint: str,
+    ports: list[dict[str, object]],
+) -> None:
+    config = compose_fixture()
+    storage_service = cast(
+        dict[str, Any],
+        cast(dict[str, Any], config["services"])["object-storage"],
+    )
+    cast(dict[str, str], storage_service["environment"])["S3_BACKUP_ENDPOINT"] = endpoint
+    storage_service["ports"] = ports
+
+    with pytest.raises(BackupError, match="must match its loopback S3 port"):
+        compose_backup._resolved_storage(cast(dict[str, Any], config))
+
+
+@pytest.mark.parametrize(
+    ("bucket", "valid"),
+    (
+        pytest.param("abc", True, id="minimum-length"),
+        pytest.param("a.b-c", True, id="interior-dot-and-hyphen"),
+        pytest.param("a" * 63, True, id="maximum-length"),
+        pytest.param(".", False, id="single-dot"),
+        pytest.param("..", False, id="double-dot"),
+        pytest.param("a..b", False, id="consecutive-dots"),
+        pytest.param("Production-artifacts", False, id="uppercase"),
+        pytest.param("production_artifacts", False, id="underscore"),
+        pytest.param("192.0.2.1", False, id="ipv4-literal"),
+        pytest.param("ab", False, id="below-minimum-length"),
+        pytest.param("a" * 64, False, id="above-maximum-length"),
+    ),
+)
+def test_storage_resolution_matches_the_production_bucket_guard(
+    bucket: str,
+    valid: bool,
+) -> None:
+    config = compose_fixture()
+    storage_service = cast(
+        dict[str, Any],
+        cast(dict[str, Any], config["services"])["object-storage"],
+    )
+    cast(dict[str, str], storage_service["environment"])["S3_BUCKET"] = bucket
+
+    if valid:
+        validate_production_s3_bucket(bucket)
+        assert compose_backup._resolved_storage(cast(dict[str, Any], config))[-1] == bucket
+        return
+
+    with pytest.raises(ValueError, match="canonical S3 DNS name"):
+        validate_production_s3_bucket(bucket)
+    with pytest.raises(BackupError, match="canonical S3 DNS name"):
+        compose_backup._resolved_storage(cast(dict[str, Any], config))
+
+
+def test_backup_rejects_noncanonical_bucket_before_writer_or_provider_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = compose_fixture()
+    storage_service = cast(
+        dict[str, Any],
+        cast(dict[str, Any], config["services"])["object-storage"],
+    )
+    cast(dict[str, str], storage_service["environment"])["S3_BUCKET"] = "192.0.2.1"
+    io_calls: list[str] = []
+
+    def must_not_run(*_args: object, **_kwargs: object) -> None:
+        io_calls.append("writer")
+        raise AssertionError("writers changed before bucket validation")
+
+    def must_not_open_provider(*_args: object, **_kwargs: object) -> None:
+        io_calls.append("provider")
+        raise AssertionError("provider opened before bucket validation")
+
+    monkeypatch.setattr(compose_backup, "compose_config", lambda *_args: config)
+    monkeypatch.setattr(compose_backup, "run", must_not_run)
+    monkeypatch.setattr(compose_backup, "inventory_s3", must_not_open_provider)
+    monkeypatch.setattr(compose_backup, "_s3_client", must_not_open_provider)
+
+    with pytest.raises(BackupError, match="canonical S3 DNS name"):
+        create_backup(tmp_path, tmp_path / "compose.yml", tmp_path / "backup")
+
+    assert io_calls == []
 
 
 def backup_fixture(directory: Path) -> None:
@@ -337,6 +512,87 @@ def test_manifest_rejects_incorrect_object_inventory_totals(tmp_path: Path) -> N
         verify_manifest(tmp_path)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ("missing", "wrong_count", "wrong_digest", "extra_field", "bool_count"),
+)
+def test_manifest_requires_exact_tombstone_history(
+    mutation: str,
+    tmp_path: Path,
+) -> None:
+    backup_fixture(tmp_path)
+    path = tmp_path / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    snapshot = manifest["database_snapshot"]
+    history = snapshot["tombstone_history"]
+    if mutation == "missing":
+        del snapshot["tombstone_history"]
+    elif mutation == "wrong_count":
+        history["count"] = 1
+    elif mutation == "wrong_digest":
+        history["sha256"] = "not-a-digest"
+    elif mutation == "extra_field":
+        history["rows"] = []
+    elif mutation == "bool_count":
+        history["count"] = False
+    else:  # pragma: no cover - parameter list is exhaustive.
+        raise AssertionError(mutation)
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(BackupError, match="tombstone"):
+        verify_manifest(tmp_path)
+
+
+def test_database_snapshot_hashes_every_tombstone_identity_column(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_sql = ""
+
+    def fake_capture(
+        command: list[str],
+        *,
+        cwd: Path,
+        timeout_seconds: int,
+        operation: str,
+    ) -> str:
+        nonlocal captured_sql
+        del cwd, timeout_seconds, operation
+        captured_sql = command[-1]
+        return json.dumps(backup_metadata()["database_snapshot"])
+
+    monkeypatch.setattr(compose_backup, "run_capture", fake_capture)
+
+    snapshot = compose_backup.database_snapshot(
+        ["docker", "compose"], tmp_path, "custombuild", "custombuild_migrator"
+    )
+
+    assert (
+        snapshot["tombstone_history"] == backup_metadata()["database_snapshot"]["tombstone_history"]
+    )
+    for column in (
+        "capacity_bucket",
+        "object_key",
+        "organization_id",
+        "project_id",
+        "sha256",
+        "size_bytes",
+        "media_type",
+        "owner_type",
+        "owner_id",
+        "idempotency_key",
+        "accounting_state",
+        "claim_token",
+        "retired_at",
+    ):
+        assert f"tombstone.{column}" in captured_sql
+    assert 'ORDER BY tombstone.capacity_bucket COLLATE "C"' in captured_sql
+    assert 'tombstone.object_key COLLATE "C"' in captured_sql
+    assert TOMBSTONE_HISTORY_SCHEMA in captured_sql
+    assert "sha256(" in captured_sql
+    assert "convert_to(" in captured_sql
+
+
 def test_manifest_requires_approved_seaweedfs_image(tmp_path: Path) -> None:
     backup_fixture(tmp_path)
     path = tmp_path / "manifest.json"
@@ -357,6 +613,143 @@ def test_manifest_rejects_ambiguous_length_seaweedfs_revision(tmp_path: Path) ->
 
     with pytest.raises(BackupError, match="approved SeaweedFS"):
         verify_manifest(tmp_path)
+
+
+def test_active_reservations_drain_before_recovery_and_exact_capture_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    def fake_run(
+        _command: list[str],
+        *,
+        cwd: Path,
+        stdout: object | None = None,
+        timeout_seconds: int,
+        operation: str,
+    ) -> None:
+        del cwd, timeout_seconds
+        events.append(operation)
+        if stdout is not None:
+            stdout.write(b"payload")  # type: ignore[attr-defined]
+
+    def fake_inventory(*_args: object) -> list[dict[str, object]]:
+        events.append("S3 inventory")
+        return [OBJECT_ENTRY]
+
+    def fake_snapshot(*_args: object) -> object:
+        events.append("PostgreSQL recovery point")
+        return backup_metadata()["database_snapshot"]
+
+    monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
+    monkeypatch.setattr(compose_backup, "executable", lambda name: name)
+    monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
+    monkeypatch.setattr(
+        compose_backup, "source_manifest_digest", lambda _repo: SOURCE_MANIFEST_SHA256
+    )
+    monkeypatch.setattr(compose_backup, "inventory_s3", fake_inventory)
+    monkeypatch.setattr(compose_backup, "database_snapshot", fake_snapshot)
+    monkeypatch.setattr(
+        compose_backup,
+        "wait_for_s3_readiness",
+        lambda *_args, **_kwargs: events.append("S3 ready"),
+    )
+
+    create_backup(tmp_path, tmp_path / "compose.yml", tmp_path / "backup")
+
+    worker_drain = events.index("Drain and stop worker")
+    storage_recovery = events.index("Storage recovery gate")
+    prepare_refresh = events.index("Record storage capacity refresh baseline")
+    request_refresh = events.index("Request fresh storage capacity evidence")
+    wait_refresh = events.index("Wait for fresh storage capacity evidence")
+    pause_attestor = events.index("Pause storage capacity attestor")
+    first_inventory = events.index("S3 inventory")
+    assert worker_drain < storage_recovery
+    assert storage_recovery < prepare_refresh < request_refresh < wait_refresh
+    assert wait_refresh < pause_attestor < first_inventory
+
+    refresh_waits = [
+        index
+        for index, event in enumerate(events)
+        if event == "Wait for fresh storage capacity evidence"
+    ]
+    worker_start = events.index("Start worker")
+    scheduler_unpause = events.index("Unpause scheduler")
+    api_unpause = events.index("Unpause api")
+    assert len(refresh_waits) == 2
+    assert refresh_waits[-1] < worker_start < scheduler_unpause < api_unpause
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        BackupError("storage recovery exited unsuccessfully"),
+        BackupError("Storage recovery gate timed out after 1260 seconds"),
+    ),
+)
+def test_failed_or_unknown_storage_recovery_prevents_capture_and_writer_restart(
+    failure: BackupError,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], int, str]] = []
+    inventories = 0
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        stdout: object | None = None,
+        timeout_seconds: int,
+        operation: str,
+    ) -> None:
+        del cwd, stdout
+        calls.append((command, timeout_seconds, operation))
+        if operation == "Storage recovery gate":
+            raise failure
+
+    def forbidden_inventory(*_args: object) -> list[dict[str, object]]:
+        nonlocal inventories
+        inventories += 1
+        return [OBJECT_ENTRY]
+
+    monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
+    monkeypatch.setattr(compose_backup, "executable", lambda name: name)
+    monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "inventory_s3", forbidden_inventory)
+
+    with pytest.raises(
+        BackupError,
+        match="writers remain stopped or paused because storage recovery did not complete",
+    ):
+        create_backup(tmp_path, tmp_path / "compose.yml", tmp_path / "backup")
+
+    gate = next(item for item in calls if item[2] == "Storage recovery gate")
+    assert gate[0][-6:] == [
+        "run",
+        "--rm",
+        "--no-deps",
+        "-e",
+        "STORAGE_RECOVERY_TIMEOUT_SECONDS=1200",
+        "storage-recovery",
+    ]
+    assert gate[1] == compose_backup.STORAGE_RECOVERY_COMMAND_TIMEOUT_SECONDS
+    assert inventories == 0
+    assert not any(
+        item[2]
+        in {
+            "Record storage capacity refresh baseline",
+            "Request fresh storage capacity evidence",
+            "Wait for fresh storage capacity evidence",
+            "Pause storage capacity attestor",
+            "Start worker",
+            "Unpause scheduler",
+            "Unpause api",
+        }
+        for item in calls
+    )
 
 
 def test_backup_quiesces_storage_and_restores_writers(
@@ -414,11 +807,37 @@ def test_backup_quiesces_storage_and_restores_writers(
     restart_index = next(
         index for index, command in enumerate(commands) if command.endswith("start object-storage")
     )
-    unpause_index = next(
-        index for index, command in enumerate(commands) if command.endswith("unpause worker")
+    worker_start_index = next(
+        index for index, command in enumerate(commands) if command.endswith("start worker")
     )
-    assert archive_index < restart_index < unpause_index
+    scheduler_unpause_index = next(
+        index for index, command in enumerate(commands) if command.endswith("unpause scheduler")
+    )
+    api_unpause_index = next(
+        index for index, command in enumerate(commands) if command.endswith("unpause api")
+    )
+    assert archive_index < restart_index < worker_start_index
+    assert worker_start_index < scheduler_unpause_index < api_unpause_index
     assert any(command.endswith("unpause scheduler") for command in commands)
+
+    worker_stop = next(item for item in call_metadata if item[2] == "Drain and stop worker")
+    assert worker_stop[0][-4:] == [
+        "stop",
+        "--timeout",
+        str(compose_backup.WORKER_DRAIN_GRACE_SECONDS),
+        "worker",
+    ]
+    assert worker_stop[1] == compose_backup.WORKER_DRAIN_COMMAND_TIMEOUT_SECONDS
+    storage_recovery = next(item for item in call_metadata if item[2] == "Storage recovery gate")
+    assert storage_recovery[0][-6:] == [
+        "run",
+        "--rm",
+        "--no-deps",
+        "-e",
+        "STORAGE_RECOVERY_TIMEOUT_SECONDS=1200",
+        "storage-recovery",
+    ]
+    assert storage_recovery[1] == compose_backup.STORAGE_RECOVERY_COMMAND_TIMEOUT_SECONDS
 
     pause_budgets = [
         timeout
@@ -437,7 +856,7 @@ def test_backup_quiesces_storage_and_restores_writers(
     ]
     assert pause_budgets == [compose_backup.SHORT_COMMAND_TIMEOUT_SECONDS] * 3
     assert payload_budgets == [compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS] * 2
-    assert recovery_budgets == [compose_backup.RECOVERY_TIMEOUT_SECONDS] * 4
+    assert recovery_budgets == [compose_backup.RECOVERY_TIMEOUT_SECONDS] * 5
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission contract")
@@ -524,11 +943,175 @@ def test_backup_bounds_dump_hang_after_pause_and_attempts_every_unpause(
         "PostgreSQL dump",
     )
     unpaused = [item for item in calls if "unpause" in item[0]]
-    assert [item[0][-1] for item in unpaused] == ["scheduler", "worker", "api"]
+    assert [item[0][-1] for item in unpaused] == [
+        "storage-capacity-attestor",
+        "scheduler",
+        "api",
+    ]
     assert all(item[1] == compose_backup.RECOVERY_TIMEOUT_SECONDS for item in unpaused)
+    worker_start_index = next(
+        index for index, item in enumerate(calls) if item[2] == "Start worker"
+    )
+    scheduler_unpause_index = next(
+        index for index, item in enumerate(calls) if item[2] == "Unpause scheduler"
+    )
+    assert worker_start_index < scheduler_unpause_index
 
 
-def test_pause_timeout_still_attempts_bounded_unpause_for_that_service(
+def test_capacity_refresh_failure_keeps_application_writers_paused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[tuple[list[str], int, str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        stdout: object | None = None,
+        timeout_seconds: int,
+        operation: str,
+    ) -> None:
+        del cwd, stdout
+        calls.append((command, timeout_seconds, operation))
+        if operation == "PostgreSQL dump":
+            raise BackupError("dump failed")
+        if operation == "Wait for fresh storage capacity evidence":
+            raise BackupError("capacity refresh failed")
+
+    monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
+    monkeypatch.setattr(compose_backup, "executable", lambda name: name)
+    monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "inventory_s3", lambda *_: [OBJECT_ENTRY])
+    monkeypatch.setattr(
+        compose_backup,
+        "database_snapshot",
+        lambda *_: backup_metadata()["database_snapshot"],
+    )
+
+    with pytest.raises(
+        BackupError,
+        match="writers remain stopped or paused because the pre-capture storage gate failed",
+    ):
+        create_backup(tmp_path, tmp_path / "compose.yml", tmp_path / "backup")
+
+    assert any(
+        operation == "Wait for fresh storage capacity evidence"
+        for _command, _timeout, operation in calls
+    )
+    assert not any(
+        command[-2:] in (["unpause", "api"], ["unpause", "worker"], ["unpause", "scheduler"])
+        for command, _timeout, _operation in calls
+    )
+
+
+def test_post_capture_capacity_failure_prevents_every_writer_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], int, str]] = []
+    refresh_waits = 0
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        stdout: object | None = None,
+        timeout_seconds: int,
+        operation: str,
+    ) -> None:
+        nonlocal refresh_waits
+        del cwd
+        calls.append((command, timeout_seconds, operation))
+        if stdout is not None:
+            stdout.write(b"payload")  # type: ignore[attr-defined]
+        if operation == "Wait for fresh storage capacity evidence":
+            refresh_waits += 1
+            if refresh_waits == 2:
+                raise BackupError("post-capture capacity refresh failed")
+
+    monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
+    monkeypatch.setattr(compose_backup, "executable", lambda name: name)
+    monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
+    monkeypatch.setattr(
+        compose_backup, "source_manifest_digest", lambda _repo: SOURCE_MANIFEST_SHA256
+    )
+    monkeypatch.setattr(compose_backup, "inventory_s3", lambda *_: [OBJECT_ENTRY])
+    monkeypatch.setattr(compose_backup, "wait_for_s3_readiness", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        compose_backup,
+        "database_snapshot",
+        lambda *_: backup_metadata()["database_snapshot"],
+    )
+
+    with pytest.raises(
+        BackupError,
+        match="storage capacity refresh failed.*writers remain stopped or paused",
+    ):
+        create_backup(tmp_path, tmp_path / "compose.yml", tmp_path / "backup")
+
+    assert refresh_waits == 2
+    assert any(item[2] == "PostgreSQL dump" for item in calls)
+    assert not any(
+        item[2] in {"Start worker", "Unpause scheduler", "Unpause api"} for item in calls
+    )
+
+
+def test_writer_restart_failure_rolls_back_scheduler_api_and_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], int, str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path,
+        stdout: object | None = None,
+        timeout_seconds: int,
+        operation: str,
+    ) -> None:
+        del cwd
+        calls.append((command, timeout_seconds, operation))
+        if stdout is not None:
+            stdout.write(b"payload")  # type: ignore[attr-defined]
+        if operation == "Unpause api":
+            raise BackupError("Docker client timed out with unknown API pause state")
+
+    monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
+    monkeypatch.setattr(compose_backup, "executable", lambda name: name)
+    monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
+    monkeypatch.setattr(
+        compose_backup, "source_manifest_digest", lambda _repo: SOURCE_MANIFEST_SHA256
+    )
+    monkeypatch.setattr(compose_backup, "inventory_s3", lambda *_: [OBJECT_ENTRY])
+    monkeypatch.setattr(compose_backup, "wait_for_s3_readiness", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        compose_backup,
+        "database_snapshot",
+        lambda *_: backup_metadata()["database_snapshot"],
+    )
+
+    with pytest.raises(
+        BackupError,
+        match="writer restart failed.*returned to a stopped or paused state",
+    ):
+        create_backup(tmp_path, tmp_path / "compose.yml", tmp_path / "backup")
+
+    operations = [operation for _command, _timeout, operation in calls]
+    assert operations.index("Start worker") < operations.index("Unpause scheduler")
+    assert operations.index("Unpause scheduler") < operations.index("Unpause api")
+    assert operations.index("Unpause api") < operations.index("Re-pause api after recovery failure")
+    assert operations.index("Re-pause api after recovery failure") < operations.index(
+        "Re-pause scheduler after recovery failure"
+    )
+    assert operations.index("Re-pause scheduler after recovery failure") < operations.index(
+        "Fail-closed stop worker after recovery failure"
+    )
+
+
+def test_pause_timeout_stops_every_writer_and_never_opens_the_recovery_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[tuple[list[str], int, str]] = []
@@ -557,9 +1140,22 @@ def test_pause_timeout_still_attempts_bounded_unpause_for_that_service(
 
     assert calls[0][0][-2:] == ["pause", "api"]
     assert calls[0][1:] == (compose_backup.SHORT_COMMAND_TIMEOUT_SECONDS, "Pause api")
-    assert calls[1][0][-2:] == ["unpause", "api"]
-    assert calls[1][1:] == (compose_backup.RECOVERY_TIMEOUT_SECONDS, "Unpause api")
-    assert len(calls) == 2
+    assert calls[1][0][-4:] == [
+        "stop",
+        "--timeout",
+        str(compose_backup.FAIL_CLOSED_STOP_GRACE_SECONDS),
+        "api",
+    ]
+    assert calls[1][1:] == (
+        compose_backup.RECOVERY_TIMEOUT_SECONDS,
+        "Fail-closed stop api",
+    )
+    assert any(item[2] == "Pause scheduler" for item in calls)
+    assert any(item[2] == "Drain and stop worker" for item in calls)
+    assert not any(item[2] == "Storage recovery gate" for item in calls)
+    assert not any(
+        "start" in command or "unpause" in command for command, _timeout, _operation in calls
+    )
 
 
 def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
@@ -615,10 +1211,10 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     restart_index = next(
         index for index, command in enumerate(commands) if command.endswith("start object-storage")
     )
-    unpause_index = next(
-        index for index, command in enumerate(commands) if command.endswith("unpause worker")
+    worker_start_index = next(
+        index for index, command in enumerate(commands) if command.endswith("start worker")
     )
-    assert restart_index < unpause_index
+    assert restart_index < worker_start_index
     archive = next(item for item in calls if VOLUME_INIT_IMAGE in item[0])
     assert archive[1:] == (
         compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS,
@@ -627,9 +1223,13 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     recovery_commands = [item for item in calls if "start" in item[0] or "unpause" in item[0]]
     assert all(item[1] == compose_backup.RECOVERY_TIMEOUT_SECONDS for item in recovery_commands)
     assert [item[0][-1] for item in recovery_commands if "unpause" in item[0]] == [
+        "storage-capacity-attestor",
         "scheduler",
-        "worker",
         "api",
+    ]
+    assert [item[0][-1] for item in recovery_commands if "start" in item[0]] == [
+        "object-storage",
+        "worker",
     ]
     assert full_inventory_calls == 1
     assert recovery_readiness_budgets == [compose_backup.RECOVERY_TIMEOUT_SECONDS]

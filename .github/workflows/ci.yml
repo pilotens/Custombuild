@@ -29,6 +29,7 @@ jobs:
       MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
       RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
       WORKER_RLS_DATABASE_URL: postgresql+psycopg://custombuild_worker:strong-worker-database-test-password@localhost:5432/custombuild
+      CAPACITY_ATTESTOR_DATABASE_URL: postgresql+psycopg://custombuild_storage_attestor:strong-capacity-attestor-test-password@localhost:5432/custombuild
       TENANT_GRAPH_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
       UV_CACHE_DIR: /tmp/custombuild-uv-cache
     steps:
@@ -51,7 +52,8 @@ jobs:
           CREATE ROLE custombuild_migrator LOGIN PASSWORD 'strong-migrator-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           CREATE ROLE custombuild_api LOGIN PASSWORD 'strong-api-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           CREATE ROLE custombuild_worker LOGIN PASSWORD 'strong-worker-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker;
+          CREATE ROLE custombuild_storage_attestor LOGIN PASSWORD 'strong-capacity-attestor-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker, custombuild_storage_attestor;
           GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
           SQL
       - name: Migrate
@@ -67,7 +69,12 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Typecheck
-        run: uv run mypy packages services
+        run: |
+          uv run mypy packages services
+          uv run mypy scripts/storage_capacity_development.py
+          uv run mypy scripts/storage_capacity_preflight.py
+          uv run mypy scripts/storage_capacity_refresh.py
+          uv run mypy scripts/storage_recovery.py
       - name: Test and total coverage gate
         run: |
           uv run coverage erase
@@ -244,7 +251,7 @@ jobs:
 
   compose-acceptance:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       COMPOSE_PROJECT_NAME: custombuild-acceptance
     steps:
@@ -271,8 +278,8 @@ jobs:
           node-version: 24.19.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Install live-browser Chromium
-        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Install live-browser matrix
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
       - name: Validate fail-closed external production overlay
         env:
           COMPOSE_PROJECT_NAME: custombuild-external-ci
@@ -283,6 +290,8 @@ jobs:
           MIGRATOR_DATABASE_PASSWORD: strong-postgres-migrator-ci-secret
           API_DATABASE_PASSWORD: strong-postgres-api-database-ci-secret
           WORKER_DATABASE_PASSWORD: strong-postgres-worker-database-ci-secret
+          CAPACITY_ATTESTOR_DATABASE_USER: custombuild_storage_attestor
+          CAPACITY_ATTESTOR_DATABASE_PASSWORD: strong-postgres-capacity-attestor-ci-secret
           REDIS_PASSWORD: strong-production-redis-ci-secret
           S3_ACCESS_KEY: custombuild-ci
           S3_SECRET_KEY: strong-production-s3-ci-secret
@@ -295,11 +304,29 @@ jobs:
           TRUSTED_PROXY_CIDRS: 172.16.0.0/12
           CORS_ORIGINS: https://app.ci.invalid
           ARTIFACT_SIGNING_SECRET: strong-signing-ci-secret-at-least-32-bytes # gitleaks:allow -- fixed CI-only test value
-          S3_PUBLIC_ENDPOINT: https://files.ci.invalid
+          S3_BACKUP_ENDPOINT: http://127.0.0.1:9000
           CUSTOMBUILD_WEB_API_URL: https://api.ci.invalid
           CUSTOMBUILD_WEB_OIDC_CLIENT_ID: custombuild-web
           CUSTOMBUILD_WEB_OIDC_REDIRECT_URI: https://app.ci.invalid/
+          CUSTOMBUILD_DEPLOY_API_IMAGE: ghcr.io/pilotens/custombuild-api@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          OBJECT_STORAGE_VOLUME_NAME: custombuild-external-ci-storage
+          CAPACITY_ATTESTOR_DATABASE_URL: postgresql+psycopg://custombuild_storage_attestor:strong-postgres-capacity-attestor-ci-secret@postgres:5432/custombuild
+          STORAGE_CAPACITY_OPERATOR_CONFIG_PATH: /tmp/custombuild-storage-capacity-operator.json
+          STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+          STORAGE_CAPACITY_VOLUME_IDENTITY: custombuild-external-ci-storage
+          STORAGE_CAPACITY_PROVISIONED_BYTES: "107374182400"
+          STORAGE_CAPACITY_METADATA_OVERHEAD_BYTES: "1073741824"
+          STORAGE_CAPACITY_EMERGENCY_RESERVE_BYTES: "4294967296"
+          STORAGE_CAPACITY_HEADROOM_BYTES: "5368709120"
+          STORAGE_CAPACITY_BYTE_LIMIT: "102005473280"
+          STORAGE_CAPACITY_OBJECT_LIMIT: "1000000"
+          STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+          DEPLOY_DESCRIPTOR_PATH: /tmp/custombuild-deploy-descriptor.json
+          STORAGE_CAPACITY_EVIDENCE_DIRECTORY: /tmp/custombuild-capacity-evidence
         run: |
+          touch /tmp/custombuild-storage-capacity-operator.json
+          touch /tmp/custombuild-deploy-descriptor.json
+          mkdir -p /tmp/custombuild-capacity-evidence
           python3 scripts/check_external_production.py --repo .
       - name: Verify source freeze before Compose build
         run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
@@ -307,6 +334,95 @@ jobs:
         run: >-
           docker compose --file compose.yml up --build --detach
           --wait --wait-timeout 900
+      - name: Prove PostgreSQL replacement reruns the recovery barrier
+        run: |
+          set -euo pipefail
+          compose=(docker compose --file compose.yml)
+          container_id() {
+            "${compose[@]}" ps --all --quiet "$1"
+          }
+          started_at() {
+            docker container inspect "$(container_id "$1")" --format '{{.State.StartedAt}}'
+          }
+          recovery_state() {
+            "${compose[@]}" exec -T postgres psql \
+              --username custombuild_bootstrap \
+              --dbname custombuild \
+              --tuples-only \
+              --no-align \
+              --field-separator '|' \
+              --set ON_ERROR_STOP=on \
+              --command "SELECT maintenance_epoch,
+                                recovery_database_started_at = pg_postmaster_start_time(),
+                                recovery_completed_at
+                         FROM storage_global_quotas WHERE id = 1"
+          }
+          healthy() {
+            test "$(docker container inspect "$(container_id "$1")" \
+              --format '{{.State.Health.Status}}')" = "healthy"
+          }
+          recovery_completed() {
+            test "$(docker container inspect "$(container_id storage-recovery)" \
+              --format '{{.State.Status}}|{{.State.ExitCode}}')" = "exited|0"
+          }
+
+          before_state="$(recovery_state)"
+          IFS='|' read -r before_epoch before_boot_bound before_completed_at <<< "$before_state"
+          test "$before_boot_bound" = "t"
+          test -n "$before_completed_at"
+          before_postgres_id="$(container_id postgres)"
+          before_migrate_started="$(started_at migrate)"
+          before_recovery_started="$(started_at storage-recovery)"
+          before_attestor_started="$(started_at storage-capacity-attestor)"
+          before_api_started="$(started_at api)"
+          before_worker_started="$(started_at worker)"
+          before_scheduler_started="$(started_at scheduler)"
+
+          "${compose[@]}" up --detach --force-recreate postgres
+
+          restart_proved=false
+          for _ in $(seq 1 900); do
+            if current_state="$(recovery_state 2>/dev/null)"; then
+              IFS='|' read -r current_epoch current_boot_bound current_completed_at \
+                <<< "$current_state"
+              if [[ "$current_epoch" =~ ^[0-9]+$ ]] \
+                && (( current_epoch > before_epoch )) \
+                && test "$current_boot_bound" = "t" \
+                && test -n "$current_completed_at" \
+                && test "$(container_id postgres)" != "$before_postgres_id" \
+                && test "$(started_at migrate)" != "$before_migrate_started" \
+                && test "$(started_at storage-recovery)" != "$before_recovery_started" \
+                && test "$(started_at storage-capacity-attestor)" != "$before_attestor_started" \
+                && test "$(started_at api)" != "$before_api_started" \
+                && test "$(started_at worker)" != "$before_worker_started" \
+                && test "$(started_at scheduler)" != "$before_scheduler_started" \
+                && recovery_completed \
+                && healthy storage-capacity-attestor \
+                && healthy api \
+                && healthy worker \
+                && healthy scheduler; then
+                restart_proved=true
+                break
+              fi
+            fi
+            sleep 1
+          done
+          test "$restart_proved" = "true"
+
+          python3 - \
+            "$current_completed_at" \
+            "$(started_at storage-capacity-attestor)" \
+            "$(started_at api)" \
+            "$(started_at worker)" \
+            "$(started_at scheduler)" <<'PY'
+          import datetime
+          import sys
+
+          completed = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
+          for started_value in sys.argv[2:]:
+              started = datetime.datetime.fromisoformat(started_value.replace("Z", "+00:00"))
+              assert started >= completed, (started, completed)
+          PY
       - name: Live design-review and blocked CAM/release acceptance
         run: >-
           python3 scripts/live_acceptance.py
@@ -321,7 +437,10 @@ jobs:
           PLAYWRIGHT_ENVIRONMENT: test
           PLAYWRIGHT_REAL_API: "1"
           PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
-        run: pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+        run: |
+          pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+          pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
+            --project=firefox-desktop --project=webkit-desktop
       - name: Collect Compose diagnostics
         if: failure()
         run: |

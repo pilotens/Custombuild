@@ -131,11 +131,15 @@ available only when the API is running in development authentication mode.
 
 Generation uses a transactional outbox. The idempotency key covers the design
 hash plus the complete production context. Jobs claim work atomically, retry in
-a bounded manner and use content-addressed object keys, preventing duplicates
-after worker restarts. A vanished worker lease is requeued before the fourth
-attempt and terminalized as failed when the bounded attempt budget is exhausted.
+a bounded manner and give every claimed lease a distinct physical incarnation.
+The attempt ID is UUIDv5 over the job UUID and canonical lease token; each
+artifact ID is UUIDv5 over that attempt and its canonical kind. Generated keys
+therefore contain `/attempts/{attempt_id}/artifacts/{artifact_id}/` before their
+content digests. A retry cannot address an earlier attempt's bytes. A vanished
+worker lease is requeued before the fourth attempt and terminalized as failed
+when the bounded attempt budget is exhausted.
 
-Every content-addressed worker artifact, imported source and external evidence
+Every immutable worker artifact, imported source and external evidence
 object is written with an S3 conditional create (`If-None-Match: *`). A 409/412
 race is accepted only after a fresh HEAD and streamed SHA-256 prove that digest,
 size and content type are exact; a mismatch blocks as non-deterministic and no
@@ -143,6 +147,41 @@ code path overwrites the object. This is WORM-like application behavior, not an
 object-store retention guarantee. Production still requires provider Object
 Lock/versioning, retention policy and exact OCI-image digest verification at
 promotion/runtime when regulatory or adversarial deletion protection is needed.
+
+## Storage identity and retirement
+
+PostgreSQL is the authority for every S3 object's complete immutable identity and
+quota state. A whole upload or generation batch moves from `reserved` with a
+bounded UUID lease to `committed`; only an exact committed identity may be
+referenced by an imported asset, external-evidence row or generated artifact.
+Deletion candidates move through `delete_pending` or an expired reservation into
+token-bound `reaping`. Provider `HEAD`, delete and confirmed absence are all bound
+to the attested bucket, exact key, checksum and byte size. An expired reaper claim
+may receive a new claim token, but the row never moves back from `reaping` to a
+writer-owned state.
+
+Finalization is one database transaction: append the complete physical identity
+to `storage_object_tombstones`, debit its original reserved/committed counter and
+delete the live `stored_objects` row. The tombstone has no tenant/project foreign
+key or cascade because deleting business data must not erase retired-key history.
+Its bucket/key primary key, bucket/idempotency uniqueness, append-only trigger and
+reserve-time overlap checks permanently burn both identities. API and worker have
+no direct tombstone table grant; only fixed-search-path security-definer functions
+can consult it, while the dedicated capacity attestor has SELECT only.
+
+Reference imports use a UUIDv4 asset ID as the physical incarnation suffix and
+`imported:{asset_id}` as the idempotency identity. Live duplicate bytes in one
+project may return the already verified import identity, but a concurrent losing
+upload keeps its different UUID reservation for recovery. Once any import or
+generation key is retired, later identical bytes require a new UUID incarnation;
+reaping is never a path for rebinding an old physical key.
+
+The anti-ABA history is part of the system of record. Coordinated backup v5 hashes
+the full ordered tombstone identity set in the same recovery point as the database
+dump and exact S3 inventory. Restore evidence v4 requires the restored count and
+history hash to match before storage recovery, capacity attestation or writers can
+run. PostgreSQL and S3 are therefore restored only as that paired snapshot, and
+tombstones are never trimmed.
 
 ## Version boundaries
 

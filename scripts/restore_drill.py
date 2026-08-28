@@ -18,6 +18,7 @@ from alembic.script import ScriptDirectory
 try:
     from scripts.compose_backup import (
         POSTGRES_IMAGE,
+        TOMBSTONE_HISTORY_SQL,
         VOLUME_INIT_IMAGE,
         BackupError,
         inventory_s3,
@@ -27,6 +28,7 @@ try:
 except ModuleNotFoundError:
     from compose_backup import (  # type: ignore[import-not-found,no-redef]  # noqa: I001
         POSTGRES_IMAGE,
+        TOMBSTONE_HISTORY_SQL,
         VOLUME_INIT_IMAGE,
         BackupError,
         inventory_s3,
@@ -41,6 +43,8 @@ RESTORE_SECRET_KEY = "restore-drill-only-object-secret"  # noqa: S105 - disposab
 RESTORE_MIGRATOR_PASSWORD = "restore-drill-only-migrator-secret"  # noqa: S105
 RESTORE_API_PASSWORD = "restore-drill-only-api-secret"  # noqa: S105
 RESTORE_WORKER_PASSWORD = "restore-drill-only-worker-secret"  # noqa: S105
+RESTORE_ATTESTOR_PASSWORD = "restore-drill-only-capacity-attestor-secret"  # noqa: S105
+RESTORE_SCHEMA = "custombuild.restore-drill.v4"
 POSTGRES_INIT_COMPLETE_MARKER = "PostgreSQL init process complete"
 DOCKER_COMMAND_TIMEOUT_SECONDS = 120
 DOCKER_PAYLOAD_TIMEOUT_SECONDS = 2 * 60 * 60
@@ -236,14 +240,15 @@ def _published_s3_endpoint(container: str) -> str:
 
 def _restored_database_probe(container: str) -> dict[str, Any]:
     query = (
-        "SELECT json_build_object("
+        "SELECT json_build_object("  # noqa: S608 - fixed shared SQL constant only.
         "'alembic_heads', COALESCE((SELECT json_agg(version_num ORDER BY version_num) "
         "FROM alembic_version), '[]'::json), "
         "'row_counts', COALESCE((SELECT json_object_agg(tablename, row_count ORDER BY tablename) "
         "FROM (SELECT tablename, (((xpath('/row/count/text()', query_to_xml("
         "format('SELECT count(*) AS count FROM %I.%I', schemaname, tablename), "
         "false, true, ''))))[1]::text)::bigint AS row_count "
-        "FROM pg_tables WHERE schemaname = 'public') AS counts), '{}'::json))::text;"
+        "FROM pg_tables WHERE schemaname = 'public') AS counts), '{}'::json), "
+        f"'tombstone_history', {TOMBSTONE_HISTORY_SQL})::text;"
     )
     raw = docker(
         "exec",
@@ -268,6 +273,17 @@ def _restored_database_probe(container: str) -> dict[str, Any]:
     return {str(key): value for key, value in result.items()}
 
 
+def _verified_restored_tombstone_history(
+    expected_snapshot: dict[str, Any],
+    restored_probe: dict[str, Any],
+) -> dict[str, Any]:
+    expected = expected_snapshot.get("tombstone_history")
+    restored = restored_probe.get("tombstone_history")
+    if not isinstance(expected, dict) or not isinstance(restored, dict) or restored != expected:
+        raise BackupError("Restored tombstone history does not match the backup")
+    return {str(key): value for key, value in restored.items()}
+
+
 def _restore_runtime_privileges(container: str) -> None:
     role_hardening_sql = """
 ALTER ROLE custombuild_migrator WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
@@ -276,11 +292,19 @@ ALTER ROLE custombuild_api WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOINHERIT NOREPLICATION NOBYPASSRLS;
 ALTER ROLE custombuild_worker WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
   NOINHERIT NOREPLICATION NOBYPASSRLS;
-REVOKE custombuild_api, custombuild_worker FROM custombuild_migrator;
-REVOKE custombuild_migrator, custombuild_worker FROM custombuild_api;
-REVOKE custombuild_migrator, custombuild_api FROM custombuild_worker;
+ALTER ROLE custombuild_storage_attestor WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE
+  NOINHERIT NOREPLICATION NOBYPASSRLS;
+REVOKE custombuild_api, custombuild_worker, custombuild_storage_attestor
+  FROM custombuild_migrator;
+REVOKE custombuild_migrator, custombuild_worker, custombuild_storage_attestor
+  FROM custombuild_api;
+REVOKE custombuild_migrator, custombuild_api, custombuild_storage_attestor
+  FROM custombuild_worker;
+REVOKE custombuild_migrator, custombuild_api, custombuild_worker
+  FROM custombuild_storage_attestor;
 GRANT CONNECT ON DATABASE custombuild
-  TO custombuild_migrator, custombuild_api, custombuild_worker;
+  TO custombuild_migrator, custombuild_api, custombuild_worker,
+     custombuild_storage_attestor;
 GRANT CREATE ON DATABASE custombuild TO custombuild_migrator;
 GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
 """
@@ -312,10 +336,75 @@ SELECT json_build_object(
   'worker_safe', (SELECT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
     AND NOT rolcreaterole AND NOT rolinherit AND NOT rolreplication AND NOT rolbypassrls
     FROM pg_roles WHERE rolname = 'custombuild_worker'),
+  'attestor_safe', (SELECT rolcanlogin AND NOT rolsuper AND NOT rolcreatedb
+    AND NOT rolcreaterole AND NOT rolinherit AND NOT rolreplication AND NOT rolbypassrls
+    FROM pg_roles WHERE rolname = 'custombuild_storage_attestor'),
+  'api_tombstone_privileges_absent', NOT (
+    has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'SELECT')
+    OR has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'INSERT')
+    OR has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'UPDATE')
+    OR has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'DELETE')
+    OR has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'TRUNCATE')
+    OR has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'REFERENCES')
+    OR has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'TRIGGER')
+    OR has_table_privilege('custombuild_api', 'public.storage_object_tombstones', 'MAINTAIN')),
+  'worker_tombstone_privileges_absent', NOT (
+    has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'SELECT')
+    OR has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'INSERT')
+    OR has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'UPDATE')
+    OR has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'DELETE')
+    OR has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'TRUNCATE')
+    OR has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'REFERENCES')
+    OR has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'TRIGGER')
+    OR has_table_privilege('custombuild_worker', 'public.storage_object_tombstones', 'MAINTAIN')),
+  'attestor_tombstone_select_only',
+    has_table_privilege(
+      'custombuild_storage_attestor', 'public.storage_object_tombstones', 'SELECT'
+    ) AND NOT (
+      has_table_privilege(
+        'custombuild_storage_attestor', 'public.storage_object_tombstones', 'INSERT'
+      )
+      OR has_table_privilege(
+        'custombuild_storage_attestor', 'public.storage_object_tombstones', 'UPDATE'
+      )
+      OR has_table_privilege(
+        'custombuild_storage_attestor', 'public.storage_object_tombstones', 'DELETE'
+      )
+      OR has_table_privilege(
+        'custombuild_storage_attestor', 'public.storage_object_tombstones', 'TRUNCATE'
+      )
+      OR has_table_privilege(
+        'custombuild_storage_attestor', 'public.storage_object_tombstones', 'REFERENCES'
+      )
+      OR has_table_privilege(
+        'custombuild_storage_attestor', 'public.storage_object_tombstones', 'TRIGGER'
+      )
+      OR has_table_privilege(
+        'custombuild_storage_attestor', 'public.storage_object_tombstones', 'MAINTAIN'
+      )),
+  'tombstone_column_grants_absent', NOT EXISTS (
+    SELECT 1
+    FROM pg_attribute attribute
+    JOIN pg_class object ON object.oid = attribute.attrelid
+    JOIN pg_namespace namespace ON namespace.oid = object.relnamespace
+    CROSS JOIN LATERAL aclexplode(attribute.attacl) privilege
+    LEFT JOIN pg_roles grantee ON grantee.oid = privilege.grantee
+    WHERE namespace.nspname = 'public'
+      AND object.relname = 'storage_object_tombstones'
+      AND attribute.attnum > 0
+      AND NOT attribute.attisdropped
+      AND (
+        privilege.grantee = 0
+        OR grantee.rolname IN (
+          'custombuild_api', 'custombuild_worker', 'custombuild_storage_attestor'
+        ))),
   'memberships_absent', NOT EXISTS (
     SELECT 1 FROM pg_auth_members membership
     JOIN pg_roles member_role ON member_role.oid = membership.member
-    WHERE member_role.rolname IN ('custombuild_api', 'custombuild_worker')),
+    JOIN pg_roles granted_role ON granted_role.oid = membership.roleid
+    WHERE member_role.rolname IN (
+      'custombuild_api', 'custombuild_worker', 'custombuild_storage_attestor'
+    ) OR granted_role.rolname = 'custombuild_storage_attestor'),
   'public_object_grants_absent', NOT EXISTS (
     SELECT 1 FROM pg_class object
     JOIN pg_namespace namespace ON namespace.oid = object.relnamespace
@@ -354,6 +443,11 @@ SELECT json_build_object(
         "migrator_safe": True,
         "api_safe": True,
         "worker_safe": True,
+        "attestor_safe": True,
+        "api_tombstone_privileges_absent": True,
+        "worker_tombstone_privileges_absent": True,
+        "attestor_tombstone_select_only": True,
+        "tombstone_column_grants_absent": True,
         "memberships_absent": True,
         "public_object_grants_absent": True,
         "all_public_objects_owned_by_migrator": True,
@@ -573,6 +667,8 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
     expected_row_counts = database_snapshot.get("row_counts")
     if not isinstance(expected_row_counts, dict):
         raise BackupError("Backup manifest has no exact PostgreSQL row counts")
+    if not isinstance(database_snapshot.get("tombstone_history"), dict):
+        raise BackupError("Backup manifest has no exact tombstone history")
     repository_heads = current_alembic_heads(repo)
 
     cleanup_errors: list[str] = []
@@ -612,7 +708,11 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
                 "CREATE ROLE custombuild_worker LOGIN PASSWORD '"
                 + RESTORE_WORKER_PASSWORD
                 + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; "
-                "GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator; "
+                "CREATE ROLE custombuild_storage_attestor LOGIN PASSWORD '"
+                + RESTORE_ATTESTOR_PASSWORD
+                + "' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; "
+                "GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, "
+                "custombuild_storage_attestor; "
                 "ALTER SCHEMA public OWNER TO custombuild_migrator; "
                 "GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;"
             ),
@@ -642,6 +742,10 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
         database_probe = _restored_database_probe(postgres_container)
         restored_heads = sorted(str(value) for value in database_probe.get("alembic_heads", []))
         restored_row_counts = database_probe.get("row_counts")
+        restored_tombstone_history = _verified_restored_tombstone_history(
+            database_snapshot,
+            database_probe,
+        )
         if restored_heads != expected_heads:
             raise BackupError(
                 f"Restored Alembic heads {restored_heads} do not match backup {expected_heads}"
@@ -712,7 +816,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             raise BackupError("Restored S3 inventory does not match the backup manifest")
 
         result = {
-            "schema_version": "custombuild.restore-drill.v3",
+            "schema_version": RESTORE_SCHEMA,
             "backup_created_at": manifest["created_at"],
             "git_revision": manifest["git_revision"],
             "source_manifest_sha256": manifest["source_manifest_sha256"],
@@ -720,6 +824,8 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             "database_alembic_heads": restored_heads,
             "database_project_rows": project_rows,
             "database_exact_row_counts_verified": True,
+            "database_tombstone_history": restored_tombstone_history,
+            "database_tombstone_history_verified": True,
             "database_runtime_roles": runtime_role_evidence,
             "object_store_image": object_image,
             "object_store_image_id": expected_object_image_id,
