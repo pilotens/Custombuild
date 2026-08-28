@@ -19,12 +19,12 @@ jobs:
       github.event.workflow_run.head_branch == 'main' &&
       github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       actions: read
+      attestations: read
       contents: read
       packages: read
-      attestations: read
     env:
       SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
       SOURCE_RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
@@ -48,8 +48,7 @@ jobs:
             -H 'X-GitHub-Api-Version: 2022-11-28' \
             "/repos/${GITHUB_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}/jobs?per_page=100" \
             --jq '.jobs[]' | jq -s '{jobs:.}' > "$jobs_json"
-
-          jq -e --arg sha "$SOURCE_SHA" '
+          jq -e '
             (.jobs | length) >= 10 and
             ([.jobs[] | select(.name == "test-release-bundle" and .conclusion == "success")] | length) == 1 and
             ([.jobs[] | select(.name == "deployment-descriptor" and .conclusion == "skipped")] | length) == 1 and
@@ -63,7 +62,6 @@ jobs:
             ) and
             ([.jobs[] | select(.conclusion == "failure" and (.name | startswith("publish-images (") | not))] | length) == 0
           ' "$jobs_json" >/dev/null
-
           source_run_json=artifacts/recovery/source-run.json
           gh api \
             -H 'Accept: application/vnd.github+json' \
@@ -77,21 +75,14 @@ jobs:
             .run_attempt == $attempt
           ' "$source_run_json" >/dev/null
 
-      - name: Require a modern GitHub attestation verifier
+      - name: Require exact attestation-verifier capabilities
         shell: bash
         run: |
           set -euo pipefail
-          version="$(gh --version | awk 'NR==1 {print $3}')"
-          python3 - "$version" <<'PY'
-          import sys
-          raw = sys.argv[1].split('-')[0]
-          parts = tuple(int(item) for item in raw.split('.')[:3])
-          if parts < (2, 97, 0):
-              raise SystemExit(f"GitHub CLI {raw} is too old; require >= 2.97.0")
-          PY
           gh attestation verify --help | grep -F -- '--bundle-from-oci' >/dev/null
           gh attestation verify --help | grep -F -- '--signer-workflow' >/dev/null
           gh attestation verify --help | grep -F -- '--source-digest' >/dev/null
+          gh attestation verify --help | grep -F -- '--deny-self-hosted-runners' >/dev/null
 
       - name: Download exact accepted source-run image evidence
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
@@ -112,6 +103,11 @@ jobs:
 
       - uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
       - name: Authenticate read-only to GHCR
         uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
         with:
@@ -119,7 +115,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Re-verify published signatures and attestations without rebuilding
+      - name: Re-verify published identities without rebuilding
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -132,11 +128,9 @@ jobs:
           test "$(jq -er '.software_release_ready' "$evidence")" = true
           test "$(jq -er '.commercial_release_ready' "$evidence")" = false
           test "$(jq -er '.physical_machine_release_ready' "$evidence")" = false
-
-          registry_repository="$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REPOSITORY")"
           expected_source_manifest="$(jq -er '.source_manifest_sha256' "$evidence")"
-          current_source_manifest="$(python3 scripts/source_manifest.py --repo .)"
-          test "$current_source_manifest" = "$expected_source_manifest"
+          test "$(python3 scripts/source_manifest.py --repo .)" = "$expected_source_manifest"
+          registry_repository="$(tr '[:upper:]' '[:lower:]' <<< "$GITHUB_REPOSITORY")"
 
           for component in api worker web seaweedfs; do
             metadata="artifacts/release-images/image-${component}.json"
@@ -156,7 +150,6 @@ jobs:
             registry_digest="$(docker buildx imagetools inspect "$tagged_reference" | awk '$1 == "Digest:" {print $2; exit}')"
             [[ "$registry_digest" =~ ^sha256:[a-f0-9]{64}$ ]]
             exact_reference="${subject_name}@${registry_digest}"
-
             raw_manifest="artifacts/recovery/registry-${component}.json"
             docker buildx imagetools inspect "$exact_reference" --raw > "$raw_manifest"
             registry_config_digest="$(jq -er '.config.digest | select(test("^sha256:[a-f0-9]{64}$"))' "$raw_manifest")"
@@ -165,21 +158,14 @@ jobs:
             test "$expected_config_digest" = "$(jq -er --arg component "$component" '.runtime_image_config_digests[$component]' "$evidence")"
 
             cosign_output="artifacts/published/cosign-${component}.json"
-            verified=false
-            for attempt in $(seq 1 12); do
-              if cosign verify \
-                --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/cd.yml@refs/heads/main" \
-                --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-                "$exact_reference" > "$cosign_output"; then
-                verified=true
-                break
-              fi
-              sleep 15
-            done
-            test "$verified" = true
+            cosign verify \
+              --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/cd.yml@refs/heads/main" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$exact_reference" > "$cosign_output"
             test -s "$cosign_output"
 
             attestation_output="artifacts/published/github-attestation-${component}.txt"
+            attestation_error="artifacts/recovery/github-attestation-${component}.stderr"
             verified=false
             for attempt in $(seq 1 12); do
               if gh attestation verify "oci://${exact_reference}" \
@@ -190,7 +176,7 @@ jobs:
                 --source-ref refs/heads/main \
                 --source-digest "$SOURCE_SHA" \
                 --deny-self-hosted-runners \
-                > "$attestation_output" 2> "artifacts/recovery/github-attestation-${component}.stderr"; then
+                > "$attestation_output" 2> "$attestation_error"; then
                 verified=true
                 break
               fi
@@ -213,7 +199,7 @@ jobs:
               --sha256-output "artifacts/published/image-${component}.sha256"
           done
 
-      - name: Render and verify original-run deployment descriptor
+      - name: Render and independently verify original-run descriptor
         shell: bash
         run: |
           set -euo pipefail
@@ -266,7 +252,7 @@ jobs:
           test "$(jq -r '.images[]' artifacts/promotion/deploy-descriptor.json | grep -c '@sha256:')" -eq 7
           test "$(grep -c '@sha256:' artifacts/promotion/resolved-images.txt)" -eq 7
 
-      - name: Upload recovered verified promotion input
+      - name: Upload recovered verifier evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
