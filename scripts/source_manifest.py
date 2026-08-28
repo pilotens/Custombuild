@@ -825,7 +825,10 @@ def verify_production_semantic_root(repo: Path) -> RepositoryContentRoot:
         raise SourceManifestError("production semantic root control is not valid JSON") from exc
     expected = production_semantic_root_payload(identity)
     if not isinstance(parsed, dict) or parsed != expected:
-        raise SourceManifestError("production semantic root control is stale or malformed")
+        raise SourceManifestError(
+            "production semantic root control is stale or malformed; "
+            f"computed repository_content_root_sha256={identity.digest}"
+        )
     if raw != _canonical_control_bytes(expected):
         raise SourceManifestError("production semantic root control is not canonical JSON")
     return identity

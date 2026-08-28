@@ -807,9 +807,21 @@ def test_backup_quiesces_storage_and_restores_writers(
     restart_index = next(
         index for index, command in enumerate(commands) if command.endswith("start object-storage")
     )
-    worker_start_index = next(
-        index for index, command in enumerate(commands) if command.endswith("start worker")
-    )
+    worker_start = next(item for item in call_metadata if item[2] == "Start worker")
+    worker_start_index = call_metadata.index(worker_start)
+    assert worker_start[0][-9:] == [
+        "up",
+        "--detach",
+        "--no-deps",
+        "--no-build",
+        "--no-recreate",
+        "--wait",
+        "--wait-timeout",
+        str(compose_backup.RECOVERY_TIMEOUT_SECONDS),
+        "worker",
+    ]
+    assert worker_start[1] == compose_backup.RECOVERY_TIMEOUT_SECONDS
+    assert not any(command[-2:] == ["start", "worker"] for command in calls)
     scheduler_unpause_index = next(
         index for index, command in enumerate(commands) if command.endswith("unpause scheduler")
     )
@@ -852,7 +864,7 @@ def test_backup_quiesces_storage_and_restores_writers(
     recovery_budgets = [
         timeout
         for command, timeout, _operation in call_metadata
-        if "start" in command or "unpause" in command
+        if "start" in command or "unpause" in command or operation == "Start worker"
     ]
     assert pause_budgets == [compose_backup.SHORT_COMMAND_TIMEOUT_SECONDS] * 3
     assert payload_budgets == [compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS] * 2
@@ -1212,7 +1224,7 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
         index for index, command in enumerate(commands) if command.endswith("start object-storage")
     )
     worker_start_index = next(
-        index for index, command in enumerate(commands) if command.endswith("start worker")
+        index for index, item in enumerate(calls) if item[2] == "Start worker"
     )
     assert restart_index < worker_start_index
     archive = next(item for item in calls if VOLUME_INIT_IMAGE in item[0])
@@ -1220,14 +1232,22 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
         compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS,
         "Object-storage archive",
     )
-    recovery_commands = [item for item in calls if "start" in item[0] or "unpause" in item[0]]
+    recovery_commands = [
+        item
+        for item in calls
+        if "start" in item[0] or "unpause" in item[0] or item[2] == "Start worker"
+    ]
     assert all(item[1] == compose_backup.RECOVERY_TIMEOUT_SECONDS for item in recovery_commands)
     assert [item[0][-1] for item in recovery_commands if "unpause" in item[0]] == [
         "storage-capacity-attestor",
         "scheduler",
         "api",
     ]
-    assert [item[0][-1] for item in recovery_commands if "start" in item[0]] == [
+    assert [
+        item[0][-1]
+        for item in recovery_commands
+        if "start" in item[0] or item[2] == "Start worker"
+    ] == [
         "object-storage",
         "worker",
     ]

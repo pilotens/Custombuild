@@ -1107,7 +1107,18 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
                 worker_start_attempted = worker_stop_attempted
                 if worker_stop_attempted:
                     run(
-                        [*compose_prefix, "start", "worker"],
+                        [
+                            *compose_prefix,
+                            "up",
+                            "--detach",
+                            "--no-deps",
+                            "--no-build",
+                            "--no-recreate",
+                            "--wait",
+                            "--wait-timeout",
+                            str(RECOVERY_TIMEOUT_SECONDS),
+                            "worker",
+                        ],
                         cwd=repo,
                         timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
                         operation="Start worker",
