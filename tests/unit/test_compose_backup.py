@@ -33,6 +33,7 @@ OBJECT_ENTRY = {
 IMAGE_ID = "sha256:" + "1" * 64
 SOURCE_MANIFEST_SHA256 = "2" * 64
 GIT_REVISION = "3" * 40
+WORKER_CONTAINER_ID = "4" * 64
 EMPTY_TOMBSTONE_DIGEST = hashlib.sha256(b"[]").hexdigest()
 
 
@@ -50,6 +51,10 @@ def test_backup_runtime_images_match_the_compose_volume_contract() -> None:
 
 
 def identity_capture(command: list[str], **_kwargs: object) -> str:
+    if command[-1:] == ["worker"] and "ps" in command:
+        return WORKER_CONTAINER_ID
+    if "{{json .State}}" in command:
+        return json.dumps({"Health": {"Status": "healthy"}, "Status": "running"})
     return IMAGE_ID if "inspect" in command else GIT_REVISION
 
 
@@ -718,6 +723,7 @@ def test_failed_or_unknown_storage_recovery_prevents_capture_and_writer_restart(
     monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
     monkeypatch.setattr(compose_backup, "executable", lambda name: name)
     monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
     monkeypatch.setattr(compose_backup, "inventory_s3", forbidden_inventory)
 
     with pytest.raises(
@@ -809,19 +815,17 @@ def test_backup_quiesces_storage_and_restores_writers(
     )
     worker_start = next(item for item in call_metadata if item[2] == "Start worker")
     worker_start_index = call_metadata.index(worker_start)
-    assert worker_start[0][-9:] == [
-        "up",
-        "--detach",
-        "--no-deps",
-        "--no-build",
-        "--no-recreate",
-        "--wait",
-        "--wait-timeout",
-        str(compose_backup.RECOVERY_TIMEOUT_SECONDS),
-        "worker",
+    assert worker_start[0] == [
+        "docker",
+        "container",
+        "start",
+        WORKER_CONTAINER_ID,
     ]
     assert worker_start[1] == compose_backup.RECOVERY_TIMEOUT_SECONDS
-    assert not any(command[-2:] == ["start", "worker"] for command in calls)
+    assert not any(
+        "compose" in command and "up" in command and command[-1:] == ["worker"]
+        for command in calls
+    )
     scheduler_unpause_index = next(
         index for index, command in enumerate(commands) if command.endswith("unpause scheduler")
     )
@@ -864,7 +868,7 @@ def test_backup_quiesces_storage_and_restores_writers(
     recovery_budgets = [
         timeout
         for command, timeout, _operation in call_metadata
-        if "start" in command or "unpause" in command or _operation == "Start worker"
+        if "start" in command or "unpause" in command
     ]
     assert pause_budgets == [compose_backup.SHORT_COMMAND_TIMEOUT_SECONDS] * 3
     assert payload_budgets == [compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS] * 2
@@ -939,6 +943,7 @@ def test_backup_bounds_dump_hang_after_pause_and_attempts_every_unpause(
     monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
     monkeypatch.setattr(compose_backup, "executable", lambda name: name)
     monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
     monkeypatch.setattr(compose_backup, "inventory_s3", lambda *_: inventory)
     monkeypatch.setattr(
         compose_backup,
@@ -993,6 +998,7 @@ def test_capacity_refresh_failure_keeps_application_writers_paused(
     monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
     monkeypatch.setattr(compose_backup, "executable", lambda name: name)
     monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
     monkeypatch.setattr(compose_backup, "inventory_s3", lambda *_: [OBJECT_ENTRY])
     monkeypatch.setattr(
         compose_backup,
@@ -1146,6 +1152,7 @@ def test_pause_timeout_stops_every_writer_and_never_opens_the_recovery_gate(
     monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
     monkeypatch.setattr(compose_backup, "executable", lambda name: name)
     monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
 
     with pytest.raises(BackupError, match="Pause api timed out"):
         create_backup(tmp_path, tmp_path / "compose.yml", tmp_path / "backup")
@@ -1208,6 +1215,7 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     monkeypatch.setattr(compose_backup, "compose_config", lambda *_: compose_fixture())
     monkeypatch.setattr(compose_backup, "executable", lambda name: name)
     monkeypatch.setattr(compose_backup, "run", fake_run)
+    monkeypatch.setattr(compose_backup, "run_capture", identity_capture)
     monkeypatch.setattr(compose_backup, "inventory_s3", full_inventory)
     monkeypatch.setattr(compose_backup, "wait_for_s3_readiness", recovered_readiness)
     monkeypatch.setattr(
@@ -1235,7 +1243,7 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     recovery_commands = [
         item
         for item in calls
-        if "start" in item[0] or "unpause" in item[0] or item[2] == "Start worker"
+        if "start" in item[0] or "unpause" in item[0]
     ]
     assert all(item[1] == compose_backup.RECOVERY_TIMEOUT_SECONDS for item in recovery_commands)
     assert [item[0][-1] for item in recovery_commands if "unpause" in item[0]] == [
@@ -1246,10 +1254,101 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     assert [
         item[0][-1]
         for item in recovery_commands
-        if "start" in item[0] or item[2] == "Start worker"
+        if "start" in item[0]
     ] == [
         "object-storage",
-        "worker",
+        WORKER_CONTAINER_ID,
     ]
     assert full_inventory_calls == 1
     assert recovery_readiness_budgets == [compose_backup.RECOVERY_TIMEOUT_SECONDS]
+
+@pytest.mark.parametrize(
+    "raw_container_id",
+    (
+        "",
+        "a" * 63,
+        "sha256:" + "a" * 64,
+        "a" * 64 + "\n" + "b" * 64,
+    ),
+)
+def test_worker_container_identity_fails_closed_on_ambiguous_or_invalid_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raw_container_id: str,
+) -> None:
+    monkeypatch.setattr(
+        compose_backup,
+        "run_capture",
+        lambda *_args, **_kwargs: raw_container_id,
+    )
+
+    with pytest.raises(
+        BackupError,
+        match="worker container identity is missing or ambiguous",
+    ):
+        compose_backup._worker_container_id(["docker", "compose"], tmp_path)
+
+
+def test_exact_worker_restart_rejects_container_identity_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starts: list[list[str]] = []
+    monkeypatch.setattr(
+        compose_backup,
+        "_worker_container_id",
+        lambda *_args: "5" * 64,
+    )
+    monkeypatch.setattr(
+        compose_backup,
+        "run",
+        lambda command, **_kwargs: starts.append(command),
+    )
+
+    with pytest.raises(BackupError, match="identity changed"):
+        compose_backup._start_exact_worker(
+            "docker",
+            ["docker", "compose"],
+            tmp_path,
+            WORKER_CONTAINER_ID,
+        )
+
+    assert starts == []
+
+
+def test_worker_health_wait_has_one_bounded_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    inspect_budgets: list[int] = []
+    monkeypatch.setattr(compose_backup.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        compose_backup.time,
+        "sleep",
+        lambda seconds: now.__setitem__(0, now[0] + seconds),
+    )
+
+    def starting_state(
+        _docker: str,
+        _repo: Path,
+        _container_id: str,
+        *,
+        timeout_seconds: int,
+    ) -> tuple[str, str]:
+        inspect_budgets.append(timeout_seconds)
+        return "running", "starting"
+
+    monkeypatch.setattr(compose_backup, "_worker_runtime_state", starting_state)
+
+    with pytest.raises(BackupError, match="did not become healthy"):
+        compose_backup._wait_for_worker_health(
+            "docker",
+            tmp_path,
+            WORKER_CONTAINER_ID,
+            timeout_seconds=2,
+        )
+
+    assert inspect_budgets == [2, 1]
+    assert now == [2.0]
+

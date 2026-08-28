@@ -47,6 +47,7 @@ SEAWEEDFS_IMAGE_PATTERN = re.compile(
 MANIFEST_SCHEMA = "custombuild.compose-backup.v5"
 TOMBSTONE_HISTORY_SCHEMA = "custombuild.storage-tombstone-history.v1"
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+WORKER_CONTAINER_ID_PATTERN = re.compile(r"[a-f0-9]{64}")
 WAL_LSN_PATTERN = re.compile(r"^[0-9A-F]+/[0-9A-F]+$")
 S3_BUCKET_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 
@@ -114,6 +115,8 @@ WORKER_DRAIN_COMMAND_TIMEOUT_SECONDS = WORKER_DRAIN_GRACE_SECONDS + 60
 FAIL_CLOSED_STOP_GRACE_SECONDS = 30
 S3_READINESS_IO_TIMEOUT_SECONDS = 5.0
 S3_READINESS_RETRY_INTERVAL_SECONDS = 1.0
+WORKER_HEALTH_INSPECT_TIMEOUT_SECONDS = 5
+WORKER_HEALTH_RETRY_INTERVAL_SECONDS = 1.0
 CAPACITY_HEARTBEAT_PATH = "/run/custombuild-state/capacity-heartbeat.json"
 CAPACITY_REFRESH_REQUEST_PATH = "/run/custombuild-state/capacity-refresh-request.json"
 
@@ -866,6 +869,133 @@ def _stop_worker(compose_prefix: list[str], repo: Path, *, operation: str) -> No
     )
 
 
+def _worker_container_id(
+    compose_prefix: list[str],
+    repo: Path,
+) -> str:
+    """Resolve one exact existing worker container without starting dependencies."""
+
+    container_id = run_capture(
+        [
+            *compose_prefix,
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "worker",
+        ],
+        cwd=repo,
+        timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
+        operation="Worker container identity lookup",
+    )
+    if WORKER_CONTAINER_ID_PATTERN.fullmatch(container_id) is None:
+        raise BackupError("Compose worker container identity is missing or ambiguous")
+    return container_id
+
+
+def _worker_runtime_state(
+    docker: str,
+    repo: Path,
+    container_id: str,
+    *,
+    timeout_seconds: int,
+) -> tuple[str, str]:
+    raw = run_capture(
+        [
+            docker,
+            "container",
+            "inspect",
+            "--format",
+            "{{json .State}}",
+            container_id,
+        ],
+        cwd=repo,
+        timeout_seconds=timeout_seconds,
+        operation="Worker runtime-state inspection",
+    )
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BackupError("Worker runtime state is not valid JSON") from exc
+    status = state.get("Status") if isinstance(state, dict) else None
+    health = state.get("Health") if isinstance(state, dict) else None
+    health_status = health.get("Status") if isinstance(health, dict) else None
+    if not isinstance(status, str) or health_status not in {
+        "starting",
+        "healthy",
+        "unhealthy",
+    }:
+        raise BackupError("Worker runtime state is incomplete or invalid")
+    return status, health_status
+
+
+def _wait_for_worker_health(
+    docker: str,
+    repo: Path,
+    container_id: str,
+    *,
+    timeout_seconds: int,
+) -> None:
+    if timeout_seconds <= 0:
+        raise BackupError("Worker health wait requires a positive timeout")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if remaining < 1:
+            time.sleep(remaining)
+            continue
+        status, health = _worker_runtime_state(
+            docker,
+            repo,
+            container_id,
+            timeout_seconds=min(
+                WORKER_HEALTH_INSPECT_TIMEOUT_SECONDS,
+                int(remaining),
+            ),
+        )
+        if status == "running" and health == "healthy":
+            return
+        if status != "running" or health == "unhealthy":
+            raise BackupError(
+                "Exact worker container stopped or became unhealthy during restart"
+            )
+        time.sleep(
+            min(
+                WORKER_HEALTH_RETRY_INTERVAL_SECONDS,
+                max(0.0, deadline - time.monotonic()),
+            )
+        )
+    raise BackupError(
+        "Exact worker container did not become healthy before the recovery deadline"
+    )
+
+
+def _start_exact_worker(
+    docker: str,
+    compose_prefix: list[str],
+    repo: Path,
+    expected_container_id: str,
+) -> None:
+    if _worker_container_id(compose_prefix, repo) != expected_container_id:
+        raise BackupError(
+            "Compose worker container identity changed while writers were quiesced"
+        )
+    run(
+        [docker, "container", "start", expected_container_id],
+        cwd=repo,
+        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+        operation="Start worker",
+    )
+    _wait_for_worker_health(
+        docker,
+        repo,
+        expected_container_id,
+        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+    )
+
+
 def _fail_closed_service(
     compose_prefix: list[str],
     repo: Path,
@@ -922,6 +1052,7 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
     # to resume and an attempted resume is rolled back on any later failure.
     pause_attempted_services: list[str] = []
     worker_stop_attempted = False
+    worker_container_id: str | None = None
     attestor_pause_attempted = False
     storage_recovery_completed = False
     pre_capture_capacity_verified = False
@@ -949,6 +1080,10 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
                 except BackupError as stop_exc:
                     quiescence_errors.append(f"{service} fail-closed stop failed: {stop_exc}")
         worker_stop_attempted = True
+        try:
+            worker_container_id = _worker_container_id(compose_prefix, repo)
+        except BackupError as exc:
+            quiescence_errors.append(f"worker identity capture failed: {exc}")
         try:
             _stop_worker(compose_prefix, repo, operation="Drain and stop worker")
         except BackupError as exc:
@@ -1106,22 +1241,15 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
             try:
                 worker_start_attempted = worker_stop_attempted
                 if worker_stop_attempted:
-                    run(
-                        [
-                            *compose_prefix,
-                            "up",
-                            "--detach",
-                            "--no-deps",
-                            "--no-build",
-                            "--no-recreate",
-                            "--wait",
-                            "--wait-timeout",
-                            str(RECOVERY_TIMEOUT_SECONDS),
-                            "worker",
-                        ],
-                        cwd=repo,
-                        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
-                        operation="Start worker",
+                    if worker_container_id is None:
+                        raise BackupError(
+                            "Worker container identity was not captured before quiescence"
+                        )
+                    _start_exact_worker(
+                        docker,
+                        compose_prefix,
+                        repo,
+                        worker_container_id,
                     )
                 for service in ("scheduler", "api"):
                     if service not in pause_attempted_services:
