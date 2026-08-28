@@ -1,9 +1,9 @@
 """Fail-closed physical release evidence contracts.
 
 The deterministic manufacturing engine may prove geometry and software-level
-consistency, but it cannot infer facts about a real workshop.  This module
+consistency, but it cannot infer facts about a real workshop. This module
 provides the canonical boundary for the external evidence that must exist before
-physical machining can ever be authorised.
+physical machining can ever be considered for authorization.
 """
 
 from __future__ import annotations
@@ -18,17 +18,30 @@ PHYSICAL_RELEASE_EVIDENCE_SCHEMA_VERSION = "custombuild.physical-release-evidenc
 
 
 class PhysicalEvidenceKind(StrEnum):
-    MACHINE = "machine"
-    TOOLING = "tooling"
+    """Externally proven facts required by the workshop-readiness boundary.
+
+    Values deliberately mirror the readiness concepts instead of inventing a
+    second vocabulary. LOAD_TEST is kept as an additional explicit prototype
+    gate because a completed furniture prototype without a recorded load test
+    must not be enough for a physical-release decision.
+    """
+
+    WALL_ANCHOR = "wall_anchor"
+    CABINET_HARDWARE = "cabinet_hardware"
+    MATERIAL_GRAIN = "material_grain"
+    MACHINE_CALIBRATION = "machine_calibration"
+    WCS_CONVENTION = "wcs_convention"
+    MEASURED_TOOLING = "measured_tooling"
     MATERIAL_BATCH = "material_batch"
-    FIXTURING = "fixturing"
-    JOINT_COUPON = "joint_coupon"
-    AIR_CUT = "air_cut"
+    JOINT_COUPONS = "joint_coupons"
+    MATERIAL_REMOVAL_COMPARISON = "material_removal_comparison"
+    SUPERVISED_AIR_CUT = "supervised_air_cut"
     REFERENCE_PART = "reference_part"
-    PROTOTYPE = "prototype"
+    PROTOTYPE_BUILD = "prototype_build"
     LOAD_TEST = "load_test"
-    OPERATOR_APPROVAL = "operator_approval"
-    CONSTRUCTOR_APPROVAL = "constructor_approval"
+    CNC_OPERATOR_APPROVAL = "cnc_operator_approval"
+    FURNITURE_CONSTRUCTOR_APPROVAL = "furniture_constructor_approval"
+    EDGE_BAND_SYSTEM = "edge_band_system"
 
 
 REQUIRED_PHYSICAL_EVIDENCE_KINDS = tuple(PhysicalEvidenceKind)
