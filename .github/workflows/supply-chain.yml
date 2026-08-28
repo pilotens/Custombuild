@@ -30,6 +30,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - name: Build candidate image
         shell: bash
         run: |
@@ -152,6 +154,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - name: Pull reviewed runtime digest
         run: docker pull "${{ matrix.image }}"
       - name: Generate runtime SPDX SBOM
@@ -178,6 +182,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - name: Build checksum-bound SeaweedFS runtime
         run: >-
           docker build

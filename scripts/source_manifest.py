@@ -16,8 +16,11 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import stat
+import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -54,10 +57,24 @@ APPLICATION_DOCKERFILES = (
 )
 RELEASE_CONTROL_INPUTS = (".github/workflows",)
 LEGACY_SOURCE_ROOT = "prod"
+PRODUCTION_SEMANTIC_ROOT_PATH = "security/production-semantic-root.json"
+PRODUCTION_SEMANTIC_ROOT_SCHEMA = "custombuild.production-semantic-root.v1"
+_CONTENT_LEAF_DOMAIN = b"custombuild.repository-content-leaf.v1\0"
+_CONTENT_NODE_DOMAIN = b"custombuild.repository-content-node.v1\0"
+_CONTENT_ROOT_DOMAIN = b"custombuild.repository-content-root.v1\0"
 
 
 class SourceManifestError(RuntimeError):
     """The source tree cannot be represented safely and deterministically."""
+
+
+@dataclass(frozen=True, slots=True)
+class RepositoryContentRoot:
+    """Exact identity of the safe, stage-0 tracked repository contents."""
+
+    digest: str
+    git_object_format: str
+    tracked_entry_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,9 +134,11 @@ class DockerIgnore:
                     path_index < len(path) and matches(path_index + 1, pattern_index)
                 )
             else:
-                result = path_index < len(path) and fnmatch.fnmatchcase(
-                    path[path_index], pattern[pattern_index]
-                ) and matches(path_index + 1, pattern_index + 1)
+                result = (
+                    path_index < len(path)
+                    and fnmatch.fnmatchcase(path[path_index], pattern[pattern_index])
+                    and matches(path_index + 1, pattern_index + 1)
+                )
             cache[key] = result
             return result
 
@@ -386,6 +405,375 @@ def build_source_manifest(repo: Path) -> tuple[dict[str, Any], bytes, str]:
     return manifest, canonical_bytes, hashlib.sha256(canonical_bytes).hexdigest()
 
 
+def _git_bytes(repo: Path, *arguments: str) -> bytes:
+    git = shutil.which("git")
+    if git is None:
+        raise SourceManifestError("git is required for repository content identity")
+    try:
+        completed = subprocess.run(  # noqa: S603 - resolved trusted executable
+            [git, "-c", "core.quotepath=false", *arguments],
+            cwd=repo,
+            check=False,
+            capture_output=True,
+        )
+    except OSError as exc:
+        raise SourceManifestError("git is required for repository content identity") from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise SourceManifestError(
+            f"git {' '.join(arguments)} failed" + (f": {detail}" if detail else "")
+        )
+    return completed.stdout
+
+
+def _safe_git_path(raw_path: bytes) -> str:
+    if not raw_path or raw_path.startswith(b"/") or b"\\" in raw_path:
+        raise SourceManifestError("tracked repository contains an unsafe path")
+    try:
+        path = raw_path.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise SourceManifestError("tracked repository paths must be valid UTF-8") from exc
+    if unicodedata.normalize("NFC", path) != path:
+        raise SourceManifestError(f"tracked repository path is not NFC-normalised: {path!r}")
+    if any(ord(character) < 0x20 or ord(character) == 0x7F for character in path):
+        raise SourceManifestError(f"tracked repository path contains control bytes: {path!r}")
+    parts = path.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        raise SourceManifestError(f"tracked repository path is not canonical: {path!r}")
+    return path
+
+
+def _parse_stage_zero_inventory(payload: bytes) -> list[tuple[bytes, str, str]]:
+    entries: list[tuple[bytes, str, str]] = []
+    seen: set[bytes] = set()
+    for record in payload.split(b"\0"):
+        if not record:
+            continue
+        try:
+            header, raw_path = record.split(b"\t", 1)
+            mode_bytes, object_id_bytes, stage_bytes = header.split(b" ")
+            mode = mode_bytes.decode("ascii")
+            object_id = object_id_bytes.decode("ascii")
+            stage = stage_bytes.decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise SourceManifestError("Git index contains a malformed stage entry") from exc
+        _safe_git_path(raw_path)
+        if stage != "0":
+            raise SourceManifestError("Git index contains unresolved non-stage-0 entries")
+        if raw_path in seen:
+            raise SourceManifestError("Git index contains a duplicate tracked path")
+        seen.add(raw_path)
+        entries.append((raw_path, mode, object_id))
+    entries.sort(key=lambda item: item[0])
+    return entries
+
+
+def _index_snapshot(repo: Path) -> tuple[tuple[int, int, int, int, int, int], str]:
+    raw_index_path = _git_bytes(repo, "rev-parse", "--git-path", "index").strip()
+    try:
+        index_path_text = raw_index_path.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise SourceManifestError("Git index path must be valid UTF-8") from exc
+    index_path = Path(index_path_text)
+    if not index_path.is_absolute():
+        index_path = repo / index_path
+    try:
+        before = index_path.stat()
+        payload = index_path.read_bytes()
+        after = index_path.stat()
+    except OSError as exc:
+        raise SourceManifestError("cannot read the Git index atomically") from exc
+    before_state = (
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+        before.st_dev,
+        before.st_ino,
+    )
+    after_state = (
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        after.st_dev,
+        after.st_ino,
+    )
+    if before_state != after_state or len(payload) != after.st_size:
+        raise SourceManifestError("Git index changed while it was read")
+    return after_state, hashlib.sha256(payload).hexdigest()
+
+
+def _untracked_inventory(repo: Path) -> bytes:
+    return _git_bytes(
+        repo,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "--full-name",
+        "-z",
+    )
+
+
+def _assert_no_untracked_inputs(payload: bytes) -> None:
+    allowed = PRODUCTION_SEMANTIC_ROOT_PATH.encode("utf-8")
+    unexpected: list[str] = []
+    for raw_path in payload.split(b"\0"):
+        if not raw_path:
+            continue
+        path = _safe_git_path(raw_path)
+        if raw_path != allowed:
+            unexpected.append(path)
+    if unexpected:
+        preview = ", ".join(repr(path) for path in unexpected[:5])
+        suffix = " ..." if len(unexpected) > 5 else ""
+        raise SourceManifestError(
+            f"repository contains non-ignored untracked paths: {preview}{suffix}"
+        )
+
+
+def _read_index_bound_regular_file(
+    repo: Path,
+    raw_path: bytes,
+    *,
+    git_mode: str,
+    object_id: str,
+    object_format: str,
+) -> bytes:
+    path_text = _safe_git_path(raw_path)
+    if git_mode == "120000":
+        raise SourceManifestError(f"tracked symlinks are forbidden: {path_text}")
+    if git_mode == "160000":
+        raise SourceManifestError(f"tracked submodules are forbidden: {path_text}")
+    if git_mode not in {"100644", "100755"}:
+        raise SourceManifestError(f"unsupported Git mode {git_mode} for {path_text}")
+    path = repo.joinpath(*path_text.split("/"))
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise SourceManifestError(f"tracked repository file is missing: {path_text}") from exc
+    except OSError as exc:
+        raise SourceManifestError(f"cannot safely open tracked file: {path_text}") from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise SourceManifestError(f"tracked path is not a regular file: {path_text}")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    state_before = (
+        before.st_mode,
+        before.st_size,
+        before.st_mtime_ns,
+        before.st_ctime_ns,
+        before.st_dev,
+        before.st_ino,
+    )
+    state_after = (
+        after.st_mode,
+        after.st_size,
+        after.st_mtime_ns,
+        after.st_ctime_ns,
+        after.st_dev,
+        after.st_ino,
+    )
+    payload = b"".join(chunks)
+    if state_before != state_after or len(payload) != after.st_size:
+        raise SourceManifestError(f"tracked file changed while being read: {path_text}")
+    try:
+        path_after = path.lstat()
+    except OSError as exc:
+        raise SourceManifestError(
+            f"tracked file disappeared while being read: {path_text}"
+        ) from exc
+    path_state = (
+        path_after.st_mode,
+        path_after.st_size,
+        path_after.st_mtime_ns,
+        path_after.st_ctime_ns,
+        path_after.st_dev,
+        path_after.st_ino,
+    )
+    if path_state != state_after:
+        raise SourceManifestError(f"tracked path changed while being read: {path_text}")
+    executable = bool(after.st_mode & 0o111)
+    if executable != (git_mode == "100755"):
+        raise SourceManifestError(f"working-tree mode differs from the Git index: {path_text}")
+    object_hash = hashlib.new(object_format)
+    object_hash.update(f"blob {len(payload)}\0".encode("ascii"))
+    object_hash.update(payload)
+    if object_hash.hexdigest() != object_id:
+        raise SourceManifestError(f"working-tree bytes differ from the Git index: {path_text}")
+    return payload
+
+
+def _merkle_root(leaves: list[bytes], *, object_format: str) -> str:
+    if not leaves:
+        tree = hashlib.sha256(_CONTENT_NODE_DOMAIN + b"empty").digest()
+    else:
+        level = leaves
+        while len(level) > 1:
+            next_level: list[bytes] = []
+            for index in range(0, len(level), 2):
+                left = level[index]
+                right = level[index + 1] if index + 1 < len(level) else left
+                next_level.append(hashlib.sha256(_CONTENT_NODE_DOMAIN + left + right).digest())
+            level = next_level
+        tree = level[0]
+    root = hashlib.sha256()
+    root.update(_CONTENT_ROOT_DOMAIN)
+    root.update(object_format.encode("ascii") + b"\0")
+    root.update(len(leaves).to_bytes(8, "big"))
+    root.update(tree)
+    return root.hexdigest()
+
+
+def build_repository_content_root(repo: Path) -> RepositoryContentRoot:
+    """Hash every safe tracked stage-0 file and prove index/worktree agreement.
+
+    Non-ignored untracked paths fail closed. Ignored untracked files remain outside
+    this diagnostic by design. The checked control file excludes itself to avoid a
+    recursive identity; its exact payload is verified separately.
+    """
+
+    root = repo.resolve()
+    try:
+        top_level = (
+            _git_bytes(root, "rev-parse", "--show-toplevel")
+            .strip()
+            .decode("utf-8", errors="strict")
+        )
+    except UnicodeDecodeError as exc:
+        raise SourceManifestError("Git top-level path must be valid UTF-8") from exc
+    if Path(top_level).resolve() != root:
+        raise SourceManifestError("repository content root must run at the Git top level")
+    object_format = (
+        _git_bytes(root, "rev-parse", "--show-object-format")
+        .strip()
+        .decode("ascii", errors="strict")
+    )
+    if object_format not in {"sha1", "sha256"}:
+        raise SourceManifestError(f"unsupported Git object format: {object_format!r}")
+
+    index_before = _index_snapshot(root)
+    inventory_before = _git_bytes(
+        root,
+        "ls-files",
+        "--stage",
+        "--full-name",
+        "-z",
+    )
+    untracked_before = _untracked_inventory(root)
+    if _index_snapshot(root) != index_before:
+        raise SourceManifestError("Git index changed while inventory was collected")
+    _assert_no_untracked_inputs(untracked_before)
+
+    lock_path = PRODUCTION_SEMANTIC_ROOT_PATH.encode("utf-8")
+    entries = _parse_stage_zero_inventory(inventory_before)
+    leaves: list[bytes] = []
+    for raw_path, git_mode, object_id in entries:
+        if raw_path == lock_path:
+            continue
+        payload = _read_index_bound_regular_file(
+            root,
+            raw_path,
+            git_mode=git_mode,
+            object_id=object_id,
+            object_format=object_format,
+        )
+        leaf = hashlib.sha256()
+        leaf.update(_CONTENT_LEAF_DOMAIN)
+        leaf.update(len(raw_path).to_bytes(8, "big"))
+        leaf.update(raw_path)
+        leaf.update(git_mode.encode("ascii"))
+        leaf.update(len(payload).to_bytes(8, "big"))
+        leaf.update(payload)
+        leaf.update(object_format.encode("ascii") + b"\0")
+        leaf.update(bytes.fromhex(object_id))
+        leaves.append(leaf.digest())
+
+    inventory_after = _git_bytes(
+        root,
+        "ls-files",
+        "--stage",
+        "--full-name",
+        "-z",
+    )
+    untracked_after = _untracked_inventory(root)
+    if (
+        inventory_after != inventory_before
+        or untracked_after != untracked_before
+        or _index_snapshot(root) != index_before
+    ):
+        raise SourceManifestError("repository inventory changed while content was hashed")
+    return RepositoryContentRoot(
+        digest=_merkle_root(leaves, object_format=object_format),
+        git_object_format=object_format,
+        tracked_entry_count=len(leaves),
+    )
+
+
+def production_semantic_root_payload(identity: RepositoryContentRoot) -> dict[str, Any]:
+    return {
+        "authorization": False,
+        "external_semantic_approval_required": True,
+        "git_object_format": identity.git_object_format,
+        "repository_content_root_sha256": identity.digest,
+        "schema_version": PRODUCTION_SEMANTIC_ROOT_SCHEMA,
+        "tracked_entry_count": identity.tracked_entry_count,
+    }
+
+
+def _canonical_control_bytes(payload: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def verify_production_semantic_root(repo: Path) -> RepositoryContentRoot:
+    identity = build_repository_content_root(repo)
+    path = repo.resolve() / PRODUCTION_SEMANTIC_ROOT_PATH
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise SourceManifestError(f"missing production semantic root control: {path}") from exc
+    if len(raw) > 4096:
+        raise SourceManifestError("production semantic root control exceeds its size limit")
+
+    def reject_duplicate(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise SourceManifestError(f"production semantic root control repeats key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(raw, object_pairs_hook=reject_duplicate)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SourceManifestError("production semantic root control is not valid JSON") from exc
+    expected = production_semantic_root_payload(identity)
+    if not isinstance(parsed, dict) or parsed != expected:
+        raise SourceManifestError("production semantic root control is stale or malformed")
+    if raw != _canonical_control_bytes(expected):
+        raise SourceManifestError("production semantic root control is not canonical JSON")
+    return identity
+
+
+def update_production_semantic_root(repo: Path) -> RepositoryContentRoot:
+    identity = build_repository_content_root(repo)
+    path = repo.resolve() / PRODUCTION_SEMANTIC_ROOT_PATH
+    _atomic_write(path, _canonical_control_bytes(production_semantic_root_payload(identity)))
+    return identity
+
+
 def _ensure_output_is_not_a_build_input(
     *,
     repo: Path,
@@ -397,9 +785,9 @@ def _ensure_output_is_not_a_build_input(
         relative = resolved.relative_to(repo.resolve()).as_posix()
     except ValueError:
         return resolved
-    if not dockerignore.is_ignored(
-        relative, is_dir=False
-    ) or _is_release_control_path_or_ancestor(relative):
+    if not dockerignore.is_ignored(relative, is_dir=False) or _is_release_control_path_or_ancestor(
+        relative
+    ):
         raise SourceManifestError(
             f"manifest output would change the build/control source set: {relative}; "
             "write it outside the repository or under an ignored path such as artifacts/"
@@ -420,10 +808,34 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--sha256-output", type=Path)
     parser.add_argument("--expect-sha256")
+    semantic_root = parser.add_mutually_exclusive_group()
+    semantic_root.add_argument("--check-production-semantic-root", action="store_true")
+    semantic_root.add_argument("--update-production-semantic-root", action="store_true")
     arguments = parser.parse_args(argv)
 
     try:
         repo = arguments.repo.resolve()
+        if (
+            arguments.check_production_semantic_root or arguments.update_production_semantic_root
+        ) and any(
+            value is not None
+            for value in (
+                arguments.output,
+                arguments.sha256_output,
+                arguments.expect_sha256,
+            )
+        ):
+            raise SourceManifestError(
+                "production semantic-root mode cannot emit or compare the build manifest"
+            )
+        if arguments.check_production_semantic_root:
+            identity = verify_production_semantic_root(repo)
+            print(identity.digest)
+            return 0
+        if arguments.update_production_semantic_root:
+            identity = update_production_semantic_root(repo)
+            print(identity.digest)
+            return 0
         dockerignore = DockerIgnore((repo / ".dockerignore").read_text(encoding="utf-8"))
         _, canonical, digest = build_source_manifest(repo)
         if arguments.expect_sha256 is not None and digest != arguments.expect_sha256:
@@ -444,9 +856,7 @@ def main(argv: list[str] | None = None) -> int:
                 dockerignore=dockerignore,
             )
             label = (
-                arguments.output.name
-                if arguments.output is not None
-                else "source-manifest.json"
+                arguments.output.name if arguments.output is not None else "source-manifest.json"
             )
             _atomic_write(sha_output, f"{digest}  {label}\n".encode("ascii"))
     except (OSError, SourceManifestError) as exc:

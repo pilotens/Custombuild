@@ -3,18 +3,26 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import scripts.source_manifest as source_manifest
 from scripts.source_manifest import (
+    PRODUCTION_SEMANTIC_ROOT_PATH,
     SCHEMA_VERSION,
     DockerIgnore,
     SourceManifestError,
     _dockerfile_local_copy_sources,
+    _safe_git_path,
     _validate_dockerfile_copy_contract,
+    build_repository_content_root,
     build_source_manifest,
     main,
+    update_production_semantic_root,
+    verify_production_semantic_root,
 )
 
 
@@ -70,9 +78,7 @@ def test_manifest_identity_includes_docker_relevant_executable_mode(tmp_path: Pa
         entry for entry in regular_manifest["entries"] if entry["path"] == "scripts/startup.sh"
     )
     executable = next(
-        entry
-        for entry in executable_manifest["entries"]
-        if entry["path"] == "scripts/startup.sh"
+        entry for entry in executable_manifest["entries"] if entry["path"] == "scripts/startup.sh"
     )
     assert regular["mode"] == 0o644
     assert executable["mode"] == 0o755
@@ -118,9 +124,7 @@ def test_release_workflow_is_hashed_even_when_dockerignore_excludes_github(
     assert ".github/workflows/release.yml" in {
         entry["path"] for entry in before_manifest["entries"]
     }
-    assert ".github/workflows/release.yml" in {
-        entry["path"] for entry in after_manifest["entries"]
-    }
+    assert ".github/workflows/release.yml" in {entry["path"] for entry in after_manifest["entries"]}
     assert after_digest != before_digest
 
 
@@ -223,8 +227,7 @@ def test_release_runtime_inputs_change_source_identity(
 def test_copy_parser_ignores_prior_build_stages(tmp_path: Path) -> None:
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(
-        "COPY --from=builder --chown=1001:1001 /workspace/output /app\n"
-        "COPY scripts /app/scripts\n",
+        "COPY --from=builder --chown=1001:1001 /workspace/output /app\nCOPY scripts /app/scripts\n",
         encoding="utf-8",
     )
 
@@ -314,16 +317,19 @@ def test_cli_writes_exact_manifest_and_digest_only_to_ignored_output(
     output = repo / "artifacts" / "source-manifest.json"
     sha_output = repo / "artifacts" / "source-manifest.sha256"
 
-    assert main(
-        [
-            "--repo",
-            str(repo),
-            "--output",
-            str(output),
-            "--sha256-output",
-            str(sha_output),
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "--repo",
+                str(repo),
+                "--output",
+                str(output),
+                "--sha256-output",
+                str(sha_output),
+            ]
+        )
+        == 0
+    )
     digest = capsys.readouterr().out.strip()
     assert hashlib.sha256(output.read_bytes()).hexdigest() == digest
     assert sha_output.read_text(encoding="ascii") == f"{digest}  source-manifest.json\n"
@@ -344,3 +350,212 @@ def test_cli_writes_exact_manifest_and_digest_only_to_ignored_output(
             output=repo / ".github" / "workflows" / "manifest.json",
             dockerignore=DockerIgnore(".github\nartifacts\n"),
         )
+
+
+def _git(repo: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    git = shutil.which("git")
+    assert git is not None
+    return subprocess.run(  # noqa: S603 - resolved trusted executable
+        [git, *arguments],
+        cwd=repo,
+        check=check,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _content_repo(tmp_path: Path, *, object_format: str = "sha1") -> Path:
+    repo = tmp_path / f"repo-{object_format}"
+    repo.mkdir()
+    result = _git(repo, "init", "-q", f"--object-format={object_format}", check=False)
+    if result.returncode != 0:
+        pytest.skip(f"installed Git does not support {object_format} repositories")
+    (repo / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    source = repo / "scripts" / "source.bin"
+    source.parent.mkdir()
+    source.write_bytes(b"raw\x00content\n")
+    _git(repo, "add", ".gitignore", "scripts/source.bin")
+    return repo
+
+
+def test_repository_content_root_is_index_bound_stable_and_self_excluding(
+    tmp_path: Path,
+) -> None:
+    repo = _content_repo(tmp_path)
+
+    before = build_repository_content_root(repo)
+    assert before == build_repository_content_root(repo)
+    updated = update_production_semantic_root(repo)
+    assert updated == before
+    control = json.loads((repo / PRODUCTION_SEMANTIC_ROOT_PATH).read_bytes())
+    assert control == {
+        "authorization": False,
+        "external_semantic_approval_required": True,
+        "git_object_format": "sha1",
+        "repository_content_root_sha256": before.digest,
+        "schema_version": "custombuild.production-semantic-root.v1",
+        "tracked_entry_count": 2,
+    }
+
+    _git(repo, "add", PRODUCTION_SEMANTIC_ROOT_PATH)
+    assert verify_production_semantic_root(repo) == before
+    assert build_repository_content_root(repo) == before
+
+    (repo / "scripts/source.bin").write_bytes(b"unstaged replacement")
+    with pytest.raises(SourceManifestError, match="differ.*Git index"):
+        build_repository_content_root(repo)
+
+
+def test_repository_content_root_changes_for_staged_path_mode_and_bytes(
+    tmp_path: Path,
+) -> None:
+    if os.name == "nt":
+        pytest.skip("Git executable-bit identity is POSIX-specific")
+    repo = _content_repo(tmp_path)
+    original = build_repository_content_root(repo).digest
+    source = repo / "scripts/source.bin"
+    source.write_bytes(b"second\x00payload")
+    _git(repo, "add", "scripts/source.bin")
+    changed_bytes = build_repository_content_root(repo).digest
+    assert changed_bytes != original
+
+    source.chmod(0o755)
+    _git(repo, "add", "scripts/source.bin")
+    changed_mode = build_repository_content_root(repo).digest
+    assert changed_mode not in {original, changed_bytes}
+
+    source.rename(repo / "scripts/renamed.bin")
+    _git(repo, "add", "-A")
+    assert build_repository_content_root(repo).digest not in {
+        original,
+        changed_bytes,
+        changed_mode,
+    }
+
+
+def test_repository_content_root_rejects_untracked_missing_and_unsafe_types(
+    tmp_path: Path,
+) -> None:
+    repo = _content_repo(tmp_path)
+    ignored = repo / "ignored/cache.bin"
+    ignored.parent.mkdir()
+    ignored.write_bytes(b"outside the diagnostic by design")
+    assert build_repository_content_root(repo).tracked_entry_count == 2
+
+    untracked = repo / "notes.txt"
+    untracked.write_text("not ignored", encoding="utf-8")
+    with pytest.raises(SourceManifestError, match="non-ignored untracked"):
+        build_repository_content_root(repo)
+    untracked.unlink()
+
+    source = repo / "scripts/source.bin"
+    source.unlink()
+    with pytest.raises(SourceManifestError, match="is missing"):
+        build_repository_content_root(repo)
+
+    if os.name != "nt":
+        source.symlink_to("target.bin")
+        _git(repo, "add", "scripts/source.bin")
+        with pytest.raises(SourceManifestError, match="symlinks are forbidden"):
+            build_repository_content_root(repo)
+
+
+@pytest.mark.parametrize(
+    "raw_path",
+    (b"../escape", b"/absolute", b"double//segment", b"back\\slash", b"line\nfeed"),
+)
+def test_repository_content_root_rejects_unsafe_raw_git_paths(raw_path: bytes) -> None:
+    with pytest.raises(SourceManifestError, match="path"):
+        _safe_git_path(raw_path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda payload: b"{not-json}\n",
+        lambda payload: payload.replace(b'"authorization":false', b'"authorization":true'),
+        lambda payload: payload.replace(
+            b'"repository_content_root_sha256":"',
+            b'"repository_content_root_sha256":"f',
+        ),
+        lambda payload: payload.replace(b'"external_semantic_approval_required":true,', b""),
+    ),
+)
+def test_semantic_root_control_fails_closed_on_malformed_or_unsafe_payload(
+    tmp_path: Path,
+    mutation: object,
+) -> None:
+    repo = _content_repo(tmp_path)
+    update_production_semantic_root(repo)
+    _git(repo, "add", PRODUCTION_SEMANTIC_ROOT_PATH)
+    path = repo / PRODUCTION_SEMANTIC_ROOT_PATH
+    assert callable(mutation)
+    path.write_bytes(mutation(path.read_bytes()))
+
+    with pytest.raises(SourceManifestError):
+        verify_production_semantic_root(repo)
+
+
+def test_repository_content_root_supports_sha256_git_object_ids(tmp_path: Path) -> None:
+    repo = _content_repo(tmp_path, object_format="sha256")
+
+    identity = build_repository_content_root(repo)
+
+    assert identity.git_object_format == "sha256"
+    assert len(identity.digest) == 64
+
+
+def test_repository_content_root_detects_index_inventory_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = _content_repo(tmp_path)
+    real_snapshot = source_manifest._index_snapshot
+    first = real_snapshot(repo)
+    calls = 0
+
+    def racing_snapshot(candidate: Path) -> tuple[tuple[int, int, int, int, int, int], str]:
+        nonlocal calls
+        calls += 1
+        state, digest = real_snapshot(candidate)
+        if calls > 1:
+            return state, ("f" * 64 if digest != "f" * 64 else "e" * 64)
+        return state, digest
+
+    monkeypatch.setattr(source_manifest, "_index_snapshot", racing_snapshot)
+
+    with pytest.raises(SourceManifestError, match="index changed"):
+        build_repository_content_root(repo)
+    assert first[1] != ""
+
+
+def test_semantic_root_cli_updates_and_checks_exact_control(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = _content_repo(tmp_path)
+    assert main(["--repo", str(repo), "--update-production-semantic-root"]) == 0
+    digest = capsys.readouterr().out.strip()
+    _git(repo, "add", PRODUCTION_SEMANTIC_ROOT_PATH)
+    assert main(["--repo", str(repo), "--check-production-semantic-root"]) == 0
+    assert capsys.readouterr().out.strip() == digest
+
+
+def test_every_release_checkout_immediately_checks_repository_content_root() -> None:
+    command = "python3 scripts/source_manifest.py --repo . --check-production-semantic-root"
+    expected_checkouts = {
+        ".github/workflows/ci.yml": 3,
+        ".github/workflows/prod-ci.yml": 2,
+        ".github/workflows/cd.yml": 5,
+        ".github/workflows/supply-chain.yml": 3,
+    }
+    for relative, count in expected_checkouts.items():
+        lines = Path(relative).read_text(encoding="utf-8").splitlines()
+        checkout_lines = [
+            index for index, line in enumerate(lines) if "uses: actions/checkout@" in line
+        ]
+        check_lines = [index for index, line in enumerate(lines) if command in line]
+        assert len(checkout_lines) == len(check_lines) == count
+        for checkout, check in zip(checkout_lines, check_lines, strict=True):
+            assert 0 < check - checkout <= 5
+            assert not any("uses:" in line for line in lines[checkout + 1 : check])
