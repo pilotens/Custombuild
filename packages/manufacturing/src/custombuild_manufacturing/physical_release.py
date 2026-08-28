@@ -114,12 +114,13 @@ class PhysicalReleaseEvidence:
         }
 
 
-def physical_release_authorized(evidence: PhysicalReleaseEvidence | None) -> bool:
-    """Return true only for a structurally complete, checksum-bound evidence set.
+def physical_release_evidence_complete(evidence: PhysicalReleaseEvidence | None) -> bool:
+    """Return true only for a structurally complete checksum-bound evidence set.
 
-    This function deliberately does not create or infer evidence.  Authenticity,
-    calibration, measurements and human competence remain external facts and the
-    caller must verify the referenced documents before invoking physical release.
+    Completeness is intentionally weaker than physical release authorization.
+    This function does not authenticate issuers, prove measurements, calibrate a
+    machine or approve a cut. Those independent checks must occur at the actual
+    workshop boundary before any physical release decision is made.
     """
 
     if evidence is None:
