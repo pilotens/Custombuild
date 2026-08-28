@@ -10,13 +10,14 @@ def workflow_text() -> str:
     return WORKFLOW.read_text(encoding="utf-8")
 
 
-def test_recovery_only_runs_after_exact_main_cd_failure() -> None:
+def test_recovery_is_direct_main_push_only() -> None:
     text = workflow_text()
-    assert 'workflows: ["Build-once release evidence"]' in text
-    assert "github.event.workflow_run.event == 'push'" in text
-    assert "github.event.workflow_run.head_branch == 'main'" in text
-    assert "github.event.workflow_run.conclusion == 'failure'" in text
-    assert 'ref: ${{ github.event.workflow_run.head_sha }}' in text
+    assert "push:" in text
+    assert "branches: [main]" in text
+    assert "workflow_run:" not in text
+    assert "github.ref == 'refs/heads/main'" in text
+    assert "ref: ${{ github.sha }}" in text
+    assert "actions/workflows/cd.yml/runs?event=push&head_sha=${GITHUB_SHA}" in text
 
 
 def test_recovery_requires_original_acceptance_signing_and_attestation_success() -> None:
