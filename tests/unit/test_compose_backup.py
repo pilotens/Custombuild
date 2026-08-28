@@ -864,7 +864,7 @@ def test_backup_quiesces_storage_and_restores_writers(
     recovery_budgets = [
         timeout
         for command, timeout, _operation in call_metadata
-        if "start" in command or "unpause" in command or operation == "Start worker"
+        if "start" in command or "unpause" in command or _operation == "Start worker"
     ]
     assert pause_budgets == [compose_backup.SHORT_COMMAND_TIMEOUT_SECONDS] * 3
     assert payload_budgets == [compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS] * 2
