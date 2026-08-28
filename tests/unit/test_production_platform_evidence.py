@@ -34,6 +34,15 @@ def evidence_payload() -> dict[str, object]:
     }
 
 
+def run_cli(path: Path, *extra: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed interpreter/script; no shell execution
+        [sys.executable, "scripts/verify_production_platform_evidence.py", str(path), *extra],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_complete_platform_evidence_passes_deterministically() -> None:
     first = validate(evidence_payload())
     second = validate(evidence_payload())
@@ -46,7 +55,9 @@ def test_complete_platform_evidence_passes_deterministically() -> None:
 
 def test_missing_platform_control_blocks() -> None:
     payload = evidence_payload()
-    payload["controls"] = payload["controls"][:-1]  # type: ignore[index]
+    controls = payload["controls"]
+    assert isinstance(controls, list)
+    payload["controls"] = controls[:-1]
     try:
         validate(payload)
     except ValueError as exc:
@@ -57,9 +68,13 @@ def test_missing_platform_control_blocks() -> None:
 
 def test_duplicate_evidence_id_blocks() -> None:
     payload = evidence_payload()
-    controls = payload["controls"]  # type: ignore[assignment]
+    controls = payload["controls"]
     assert isinstance(controls, list)
-    controls[1]["evidence_id"] = controls[0]["evidence_id"]
+    first = controls[0]
+    second = controls[1]
+    assert isinstance(first, dict)
+    assert isinstance(second, dict)
+    second["evidence_id"] = first["evidence_id"]
     try:
         validate(payload)
     except ValueError as exc:
@@ -71,19 +86,12 @@ def test_duplicate_evidence_id_blocks() -> None:
 def test_cli_binds_evidence_to_exact_release(tmp_path: Path) -> None:
     path = tmp_path / "platform.json"
     path.write_text(json.dumps(evidence_payload()), encoding="utf-8")
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "scripts/verify_production_platform_evidence.py",
-            str(path),
-            "--expect-git-revision",
-            digest("a"),
-            "--expect-deploy-descriptor-sha256",
-            digest("b"),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
+    completed = run_cli(
+        path,
+        "--expect-git-revision",
+        digest("a"),
+        "--expect-deploy-descriptor-sha256",
+        digest("b"),
     )
     assert completed.returncode == 0
     assert json.loads(completed.stdout)["status"] == "PASS"
@@ -92,18 +100,7 @@ def test_cli_binds_evidence_to_exact_release(tmp_path: Path) -> None:
 def test_cli_blocks_other_release_binding(tmp_path: Path) -> None:
     path = tmp_path / "platform.json"
     path.write_text(json.dumps(evidence_payload()), encoding="utf-8")
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "scripts/verify_production_platform_evidence.py",
-            str(path),
-            "--expect-git-revision",
-            digest("f"),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    completed = run_cli(path, "--expect-git-revision", digest("f"))
     assert completed.returncode == 1
     result = json.loads(completed.stdout)
     assert result["status"] == "BLOCK"
