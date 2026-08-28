@@ -51,6 +51,7 @@ def evidence_payload() -> dict[str, object]:
         "material_version": "1.0.0",
         "tested_thickness_um": 18_000,
         "test_report_id": "retention-test-2026-001",
+        "issuer": "independent-furniture-test-lab",
         "issued_at": "2026-08-28T08:00:00Z",
         "load_cases": [
             {
@@ -147,6 +148,14 @@ def test_unknown_fields_and_adhesive_methods_cannot_cross_boundary() -> None:
     catalog["method"] = "adhesive"
     with pytest.raises(JointRetentionEvidenceError, match="unsupported joint-retention catalogue enum"):
         resolve(catalog=catalog)
+
+
+def test_unattributed_test_evidence_fails_closed() -> None:
+    for field in ("test_report_id", "issuer", "issued_at"):
+        payload = evidence_payload()
+        payload[field] = ""
+        with pytest.raises(JointRetentionEvidenceError, match=field):
+            resolve(payload=payload)
 
 
 def test_capacity_below_safety_factor_is_rejected_by_domain_contract() -> None:
