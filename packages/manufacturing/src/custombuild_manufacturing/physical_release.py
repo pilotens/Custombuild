@@ -18,13 +18,7 @@ PHYSICAL_RELEASE_EVIDENCE_SCHEMA_VERSION = "custombuild.physical-release-evidenc
 
 
 class PhysicalEvidenceKind(StrEnum):
-    """Externally proven facts required by the workshop-readiness boundary.
-
-    Values deliberately mirror the readiness concepts instead of inventing a
-    second vocabulary. JOINT_RETENTION_SYSTEM and LOAD_TEST are additional
-    explicit gates: a geometrically valid DADO/joint coupon and a completed
-    prototype are not evidence of permanent retention or load-test success.
-    """
+    """Externally proven facts required by the workshop-readiness boundary."""
 
     WALL_ANCHOR = "wall_anchor"
     CABINET_HARDWARE = "cabinet_hardware"
@@ -45,7 +39,44 @@ class PhysicalEvidenceKind(StrEnum):
     EDGE_BAND_SYSTEM = "edge_band_system"
 
 
+_BASE_REQUIRED_PHYSICAL_EVIDENCE_KINDS = tuple(
+    kind for kind in PhysicalEvidenceKind if kind is not PhysicalEvidenceKind.EDGE_BAND_SYSTEM
+)
 REQUIRED_PHYSICAL_EVIDENCE_KINDS = tuple(PhysicalEvidenceKind)
+
+_DESIGN_BOUND_KINDS = frozenset(
+    {
+        PhysicalEvidenceKind.WALL_ANCHOR,
+        PhysicalEvidenceKind.CABINET_HARDWARE,
+        PhysicalEvidenceKind.JOINT_RETENTION_SYSTEM,
+        PhysicalEvidenceKind.PROTOTYPE_BUILD,
+        PhysicalEvidenceKind.LOAD_TEST,
+        PhysicalEvidenceKind.CNC_OPERATOR_APPROVAL,
+        PhysicalEvidenceKind.FURNITURE_CONSTRUCTOR_APPROVAL,
+    }
+)
+_GENERATION_BOUND_KINDS = frozenset(
+    {
+        PhysicalEvidenceKind.JOINT_COUPONS,
+        PhysicalEvidenceKind.MATERIAL_REMOVAL_COMPARISON,
+        PhysicalEvidenceKind.SUPERVISED_AIR_CUT,
+        PhysicalEvidenceKind.REFERENCE_PART,
+    }
+)
+_MACHINE_BOUND_KINDS = frozenset(
+    {
+        PhysicalEvidenceKind.MACHINE_CALIBRATION,
+        PhysicalEvidenceKind.WCS_CONVENTION,
+        PhysicalEvidenceKind.MEASURED_TOOLING,
+    }
+)
+_MATERIAL_BOUND_KINDS = frozenset(
+    {
+        PhysicalEvidenceKind.MATERIAL_GRAIN,
+        PhysicalEvidenceKind.MATERIAL_BATCH,
+        PhysicalEvidenceKind.EDGE_BAND_SYSTEM,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,11 +108,25 @@ class PhysicalReleaseEvidence:
     machine_profile_sha256: str
     material_catalog_sha256: str
     records: tuple[PhysicalEvidenceRecord, ...]
+    edge_band_selection_required: bool = False
     schema_version: str = PHYSICAL_RELEASE_EVIDENCE_SCHEMA_VERSION
+
+    def _expected_subject(self, kind: PhysicalEvidenceKind) -> str:
+        if kind in _DESIGN_BOUND_KINDS:
+            return self.design_sha256
+        if kind in _GENERATION_BOUND_KINDS:
+            return self.generation_context_sha256
+        if kind in _MACHINE_BOUND_KINDS:
+            return self.machine_profile_sha256
+        if kind in _MATERIAL_BOUND_KINDS:
+            return self.material_catalog_sha256
+        raise ValueError(f"no physical evidence subject policy exists for {kind.value}")
 
     def validate(self) -> None:
         if self.schema_version != PHYSICAL_RELEASE_EVIDENCE_SCHEMA_VERSION:
             raise ValueError("unsupported physical release evidence schema")
+        if type(self.edge_band_selection_required) is not bool:
+            raise ValueError("edge_band_selection_required must be a boolean")
         for field_name in (
             "design_sha256",
             "generation_context_sha256",
@@ -101,12 +146,24 @@ class PhysicalReleaseEvidence:
                 raise ValueError("duplicate physical evidence id")
             if record.kind in kinds:
                 raise ValueError("duplicate physical evidence kind")
+            if record.subject_sha256 != self._expected_subject(record.kind):
+                raise ValueError(
+                    f"{record.kind.value} evidence is bound to the wrong release subject"
+                )
             ids.add(record.evidence_id)
             kinds.add(record.kind)
-        missing = set(REQUIRED_PHYSICAL_EVIDENCE_KINDS) - kinds
+        required = set(_BASE_REQUIRED_PHYSICAL_EVIDENCE_KINDS)
+        if self.edge_band_selection_required:
+            required.add(PhysicalEvidenceKind.EDGE_BAND_SYSTEM)
+        missing = required - kinds
         if missing:
             names = ", ".join(sorted(kind.value for kind in missing))
             raise ValueError(f"missing physical evidence kinds: {names}")
+        if (
+            not self.edge_band_selection_required
+            and PhysicalEvidenceKind.EDGE_BAND_SYSTEM in kinds
+        ):
+            raise ValueError("edge_band_system evidence is present but not required by this design")
 
     def fingerprint(self) -> str:
         self.validate()
@@ -124,6 +181,7 @@ class PhysicalReleaseEvidence:
             "generation_context_sha256": self.generation_context_sha256,
             "machine_profile_sha256": self.machine_profile_sha256,
             "material_catalog_sha256": self.material_catalog_sha256,
+            "edge_band_selection_required": self.edge_band_selection_required,
             "records": records,
         }
 
