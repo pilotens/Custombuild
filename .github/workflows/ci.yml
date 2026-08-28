@@ -344,6 +344,9 @@ jobs:
           started_at() {
             docker container inspect "$(container_id "$1")" --format '{{.State.StartedAt}}'
           }
+          finished_at() {
+            docker container inspect "$(container_id "$1")" --format '{{.State.FinishedAt}}'
+          }
           recovery_state() {
             "${compose[@]}" exec -T postgres psql \
               --username custombuild_bootstrap \
@@ -371,6 +374,10 @@ jobs:
           test "$before_boot_bound" = "t"
           test -n "$before_completed_at"
           before_postgres_id="$(container_id postgres)"
+          before_attestor_id="$(container_id storage-capacity-attestor)"
+          before_api_id="$(container_id api)"
+          before_worker_id="$(container_id worker)"
+          before_scheduler_id="$(container_id scheduler)"
           before_migrate_started="$(started_at migrate)"
           before_recovery_started="$(started_at storage-recovery)"
           before_attestor_started="$(started_at storage-capacity-attestor)"
@@ -378,7 +385,32 @@ jobs:
           before_worker_started="$(started_at worker)"
           before_scheduler_started="$(started_at scheduler)"
 
-          "${compose[@]}" up --detach --force-recreate postgres
+          database_clients=(
+            api
+            worker
+            scheduler
+            storage-capacity-attestor
+          )
+          "${compose[@]}" stop --timeout 60 "${database_clients[@]}"
+          for service in "${database_clients[@]}"; do
+            test "$(docker container inspect "$(container_id "$service")" \
+              --format '{{.State.Status}}')" = "exited"
+          done
+          before_api_finished="$(finished_at api)"
+          before_worker_finished="$(finished_at worker)"
+          before_scheduler_finished="$(finished_at scheduler)"
+          before_attestor_finished="$(finished_at storage-capacity-attestor)"
+
+          replacement_services=(
+            postgres
+            migrate
+            storage-recovery
+            storage-capacity-attestor
+            api
+            worker
+            scheduler
+          )
+          "${compose[@]}" up --detach --force-recreate "${replacement_services[@]}"
 
           restart_proved=false
           for _ in $(seq 1 900); do
@@ -390,6 +422,10 @@ jobs:
                 && test "$current_boot_bound" = "t" \
                 && test -n "$current_completed_at" \
                 && test "$(container_id postgres)" != "$before_postgres_id" \
+                && test "$(container_id storage-capacity-attestor)" != "$before_attestor_id" \
+                && test "$(container_id api)" != "$before_api_id" \
+                && test "$(container_id worker)" != "$before_worker_id" \
+                && test "$(container_id scheduler)" != "$before_scheduler_id" \
                 && test "$(started_at migrate)" != "$before_migrate_started" \
                 && test "$(started_at storage-recovery)" != "$before_recovery_started" \
                 && test "$(started_at storage-capacity-attestor)" != "$before_attestor_started" \
@@ -410,6 +446,11 @@ jobs:
           test "$restart_proved" = "true"
 
           python3 - \
+            "$before_api_finished" \
+            "$before_worker_finished" \
+            "$before_scheduler_finished" \
+            "$before_attestor_finished" \
+            "$(started_at postgres)" \
             "$current_completed_at" \
             "$(started_at storage-capacity-attestor)" \
             "$(started_at api)" \
@@ -418,9 +459,17 @@ jobs:
           import datetime
           import sys
 
-          completed = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00"))
-          for started_value in sys.argv[2:]:
-              started = datetime.datetime.fromisoformat(started_value.replace("Z", "+00:00"))
+          def timestamp(value: str) -> datetime.datetime:
+              return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+          old_finished = [timestamp(value) for value in sys.argv[1:5]]
+          postgres_started = timestamp(sys.argv[5])
+          completed = timestamp(sys.argv[6])
+          for finished in old_finished:
+              assert finished <= postgres_started, (finished, postgres_started)
+          assert postgres_started <= completed, (postgres_started, completed)
+          for started_value in sys.argv[7:]:
+              started = timestamp(started_value)
               assert started >= completed, (started, completed)
           PY
       - name: Live design-review and blocked CAM/release acceptance

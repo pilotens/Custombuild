@@ -200,14 +200,41 @@ long-running attestor always retains its separate least-privilege URL.
 PostgreSQL deliberately uses `restart: "no"`: a container-runtime restart after
 a database crash would otherwise revive a new database boot behind an already
 completed recovery barrier. Never use `docker start` on the PostgreSQL container.
-Recover or replace it through Compose and then wait for the complete graph, for
-example `docker compose --file compose.yml up --detach --force-recreate postgres`
-followed by `docker compose --file compose.yml up --detach --wait
---wait-timeout 900`. Long-form `depends_on.restart: true` propagates that
-Compose-managed update once through migration, recovery, attestation and all
-writers. If recovery fails permanently it remains exited without a restart loop
-and the writers remain unavailable; diagnose and correct the cause before
-repeating the full Compose operation.
+Recover or replace it only during explicit downtime. First quiesce every process
+with a database credential, then select the complete recovery/writer graph.
+Compose evaluates the `depends_on` completion and health conditions within the
+selected graph; a command that targets `postgres` alone does not select or
+restart its dependants. Production recovery must reuse the exact verified image
+environment, external-production controls, registry overlay and secret-manager
+environment of the running deployment. For the digest-only deployment described
+below, create and independently review a new canonical capacity operator config
+at a new protected path immediately before recovery. Preserve every volume,
+capacity, bucket and deploy-descriptor value, change only `requested_at` to the
+current whole-second UTC time, then export the new
+`STORAGE_CAPACITY_OPERATOR_CONFIG_PATH` and
+`STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256`. Do not rewrite or reuse the running
+deployment's stale request: every new production attestor requires this fresh,
+hash-bound operator authorization. With that environment in place, the complete
+operation is:
+
+```bash
+production_compose=(
+  docker compose
+  --env-file artifacts/deploy-images.env
+  --file compose.yml
+  --file compose.external-production.yml
+  --file compose.registry.yml
+)
+"${production_compose[@]}" stop --timeout 60 api worker scheduler storage-capacity-attestor
+"${production_compose[@]}" up --no-build --detach --force-recreate \
+  postgres migrate storage-recovery storage-capacity-attestor api worker scheduler
+"${production_compose[@]}" up --no-build --detach --wait --wait-timeout 900
+```
+
+If recovery fails permanently it remains exited without a restart loop and the
+writers remain unavailable; diagnose and correct the cause before repeating
+the complete operation. Never omit a listed database client, recovery service,
+writer, Compose file, verified image environment or `--no-build`.
 
 The deploy descriptor must map both `storage-recovery` and
 `storage-capacity-attestor` to the descriptor's exact digest-pinned API image;
@@ -223,7 +250,8 @@ without a trailing newline using SHA-256 and set
 `STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256` to that lowercase digest. All mirrored
 environment values must match byte-for-byte. The request expires after ten
 minutes (with at most 30 seconds of future clock skew), so regenerate and review
-it immediately before each deployment or explicit capacity change.
+it immediately before each deployment, database recovery/replacement or explicit
+capacity change.
 
 The API exposes `/health` for liveness and `/ready` for bounded PostgreSQL,
 authenticated Redis and configured S3-bucket checks. Every response includes a

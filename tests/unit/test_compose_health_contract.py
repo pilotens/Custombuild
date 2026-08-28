@@ -34,9 +34,56 @@ def test_compose_acceptance_waits_for_every_healthcheck() -> None:
 
 def test_ci_replaces_postgres_and_proves_recovery_before_writers() -> None:
     workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+    operations = Path("docs/OPERATIONS.md").read_text(encoding="utf-8")
 
     assert "Prove PostgreSQL replacement reruns the recovery barrier" in workflow
-    assert 'up --detach --force-recreate postgres' in workflow
+    assert 'stop --timeout 60 "${database_clients[@]}"' in workflow
+    assert 'up --detach --force-recreate "${replacement_services[@]}"' in workflow
+    database_client_block = workflow.split("database_clients=(", 1)[1].split(")", 1)[0]
+    expected_clients = ("api", "worker", "scheduler", "storage-capacity-attestor")
+    actual_clients = tuple(database_client_block.split())
+    assert actual_clients == expected_clients
+    assert workflow.index('stop --timeout 60 "${database_clients[@]}"') < workflow.index(
+        'up --detach --force-recreate "${replacement_services[@]}"'
+    )
+    replacement_block = workflow.split("replacement_services=(", 1)[1].split(")", 1)[0]
+    expected_services = (
+        "postgres",
+        "migrate",
+        "storage-recovery",
+        "storage-capacity-attestor",
+        "api",
+        "worker",
+        "scheduler",
+    )
+    actual_services = tuple(replacement_block.split())
+    assert actual_services == expected_services
+    documented_services = tuple(
+        operations.split("--force-recreate", 1)[1].split("\n", 2)[1].split()
+    )
+    assert documented_services == expected_services
+    recovery_section = operations.split("PostgreSQL deliberately uses", 1)[1].split(
+        "The deploy descriptor", 1
+    )[0]
+    documented_clients = tuple(
+        recovery_section.split("stop --timeout 60", 1)[1].splitlines()[0].split()
+    )
+    assert documented_clients == expected_clients
+    assert "--env-file artifacts/deploy-images.env" in recovery_section
+    assert "--file compose.external-production.yml" in recovery_section
+    assert "--file compose.registry.yml" in recovery_section
+    assert recovery_section.count('"${production_compose[@]}" up --no-build') == 2
+    assert "or `--no-build`" in recovery_section
+    assert "new canonical capacity operator config" in recovery_section
+    assert "new protected path" in recovery_section
+    assert "change only `requested_at`" in recovery_section
+    assert "STORAGE_CAPACITY_OPERATOR_CONFIG_PATH" in recovery_section
+    assert "STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256" in recovery_section
+    assert "Do not rewrite or reuse" in recovery_section
+    assert "targets `postgres` alone" in operations
+    assert ".State.FinishedAt" in workflow
+    assert "finished <= postgres_started" in workflow
+    assert "postgres_started <= completed" in workflow
     assert "maintenance_epoch" in workflow
     assert "recovery_database_started_at = pg_postmaster_start_time()" in workflow
     assert "current_epoch > before_epoch" in workflow

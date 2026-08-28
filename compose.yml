@@ -36,7 +36,8 @@ services:
       retries: 20
       start_period: 5s
     # PostgreSQL must never restart behind the completed one-shot recovery gate.
-    # A Compose-managed restart propagates through the ordered chain below.
+    # A replacement operation must first quiesce every database client, then
+    # explicitly select the complete recovery/writer graph and its barriers.
     restart: "no"
     pids_limit: 256
     mem_limit: 1g
