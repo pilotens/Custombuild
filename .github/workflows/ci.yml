@@ -487,7 +487,7 @@ jobs:
           PLAYWRIGHT_REAL_API: "1"
           PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+          pnpm --dir apps/web exec playwright test --project=chromium-desktop
           pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
             --project=firefox-desktop --project=webkit-desktop
       - name: Collect Compose diagnostics
