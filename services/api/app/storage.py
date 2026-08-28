@@ -4,10 +4,12 @@ import hashlib
 import hmac
 import re
 import time
-from collections.abc import Mapping
+from collections.abc import Generator, Iterator, Mapping
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Never
+from tempfile import SpooledTemporaryFile
+from threading import Lock
+from typing import IO, Any, Never
 
 import boto3
 from botocore.config import Config
@@ -17,6 +19,8 @@ from fastapi import HTTPException
 from .config import get_settings
 
 _OBJECT_STREAM_CHUNK_BYTES = 1024 * 1024
+_VERIFIED_OBJECT_SPOOL_BYTES = 8 * 1024 * 1024
+_VERIFIED_STORED_OBJECT_SEAL = object()
 
 
 class ArtifactIntegrityError(Exception):
@@ -34,6 +38,115 @@ class StoredObjectExpectation:
     size_bytes: int
     content_type: str
     required_metadata: tuple[tuple[str, str], ...] = ()
+
+
+class VerifiedStoredObject:
+    """One-shot access to an object whose persisted bytes were fully verified.
+
+    Instances are created only by :func:`open_verified_stored_object`.  The
+    underlying spool is deliberately private so callers cannot replace it with
+    bytes that did not pass the storage-owned verification path.
+    """
+
+    __slots__ = (
+        "_closed",
+        "_content_type",
+        "_iteration_started",
+        "_lock",
+        "_sha256",
+        "_size_bytes",
+        "_stream",
+    )
+
+    def __init__(
+        self,
+        stream: IO[bytes],
+        expectation: StoredObjectExpectation,
+        *,
+        _seal: object,
+    ) -> None:
+        if _seal is not _VERIFIED_STORED_OBJECT_SEAL:
+            raise TypeError("VerifiedStoredObject instances are storage-owned")
+        self._stream: IO[bytes] | None = stream
+        self._sha256 = expectation.sha256
+        self._size_bytes = expectation.size_bytes
+        self._content_type = expectation.content_type
+        self._lock = Lock()
+        self._closed = False
+        self._iteration_started = False
+
+    def __init_subclass__(cls, **_kwargs: Any) -> Never:
+        raise TypeError("VerifiedStoredObject cannot be subclassed")
+
+    @property
+    def sha256(self) -> str:
+        return self._sha256
+
+    @property
+    def size_bytes(self) -> int:
+        return self._size_bytes
+
+    @property
+    def content_type(self) -> str:
+        return self._content_type
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
+
+    def __iter__(self) -> Iterator[bytes]:
+        return self.iter_bytes()
+
+    def iter_bytes(self) -> Generator[bytes]:
+        """Yield verified bytes once and close the spool on every exit path."""
+
+        with self._lock:
+            if self._closed:
+                raise RuntimeError("verified stored object is closed")
+            if self._iteration_started:
+                raise RuntimeError("verified stored object is one-shot")
+            self._iteration_started = True
+        try:
+            while True:
+                with self._lock:
+                    stream = self._stream
+                if stream is None:
+                    return
+                chunk = stream.read(_OBJECT_STREAM_CHUNK_BYTES)
+                if not chunk:
+                    return
+                yield chunk
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """Close the private spool exactly once, including repeated callbacks."""
+
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            stream = self._stream
+            self._stream = None
+        if stream is not None:
+            try:
+                stream.close()
+            except OSError as exc:
+                raise ArtifactStorageUnavailableError(
+                    "verified artifact spool could not be closed"
+                ) from exc
+
+    def __enter__(self) -> VerifiedStoredObject:
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: object,
+        _exc_value: object,
+        _traceback: object,
+    ) -> None:
+        self.close()
 
 
 def sign_artifact_access(artifact_id: str, organization_id: str, expires_at: int) -> str:
@@ -209,6 +322,175 @@ def read_verified_stored_object(
         expectation=expectation,
         max_bytes=max_bytes,
     )
+
+
+def open_verified_stored_object(
+    expectation: StoredObjectExpectation,
+    *,
+    max_bytes: int,
+) -> VerifiedStoredObject:
+    """Fetch, bound and fully verify an object before making it streamable.
+
+    Exactly one ``GetObject`` request is used.  Persisted response headers,
+    binding metadata, byte count and SHA-256 are all checked before the sealed
+    one-shot object is returned to a response layer.
+    """
+
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("max_bytes must be a positive integer")
+    if (
+        type(expectation.object_key) is not str
+        or not expectation.object_key
+        or type(expectation.sha256) is not str
+        or not _valid_sha256(expectation.sha256)
+        or type(expectation.size_bytes) is not int
+        or expectation.size_bytes <= 0
+        or expectation.size_bytes > max_bytes
+        or type(expectation.content_type) is not str
+        or not expectation.content_type.strip()
+    ):
+        raise ArtifactIntegrityError("artifact record is invalid or exceeds its download limit")
+    settings = get_settings()
+    if type(settings.s3_bucket) is not str or not settings.s3_bucket:
+        raise ArtifactIntegrityError("artifact bucket is invalid")
+    try:
+        client = internal_s3_client()
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+    return _open_verified_object_with_client(
+        client,
+        bucket=settings.s3_bucket,
+        expectation=expectation,
+        max_bytes=max_bytes,
+    )
+
+
+def _close_download_body(body: Any) -> None:
+    close = getattr(body, "close", None)
+    if not callable(close):
+        raise ArtifactStorageUnavailableError("artifact storage returned an invalid body")
+    try:
+        close()
+    except (BotoCoreError, ClientError, OSError) as exc:
+        _raise_storage_error(exc)
+
+
+def _close_failed_spool(stream: IO[bytes]) -> None:
+    try:
+        stream.close()
+    except OSError:
+        # Preserve the verification/provider failure that made this spool unusable.
+        return
+
+
+def _require_download_headers(
+    response: dict[str, Any],
+    expectation: StoredObjectExpectation,
+) -> None:
+    if type(response.get("ContentLength")) is not int:
+        raise ArtifactIntegrityError("artifact object metadata is incomplete")
+    _require_object_headers(response, expectation)
+    raw_metadata = response.get("Metadata")
+    if not isinstance(raw_metadata, Mapping):
+        raise ArtifactIntegrityError("artifact object checksum metadata is missing")
+    metadata = {
+        str(key).strip().lower(): str(value).strip().lower()
+        for key, value in raw_metadata.items()
+    }
+    stored_digest = metadata.get("sha256", "")
+    if not _valid_sha256(stored_digest) or not hmac.compare_digest(
+        stored_digest, expectation.sha256
+    ):
+        raise ArtifactIntegrityError("artifact object checksum metadata does not match its record")
+
+
+def _open_verified_object_with_client(
+    client: Any,
+    *,
+    bucket: str,
+    expectation: StoredObjectExpectation,
+    max_bytes: int,
+) -> VerifiedStoredObject:
+    response = _call_s3(
+        client.get_object,
+        Bucket=bucket,
+        Key=expectation.object_key,
+    )
+    body = response.get("Body")
+    if body is None:
+        raise ArtifactStorageUnavailableError("artifact storage returned no body")
+
+    spool: IO[bytes] | None = None
+    verified: VerifiedStoredObject | None = None
+    try:
+        try:
+            _require_download_headers(response, expectation)
+            try:
+                candidate = SpooledTemporaryFile(  # noqa: SIM115 - ownership is transferred
+                    max_size=_VERIFIED_OBJECT_SPOOL_BYTES,
+                    mode="w+b",
+                )
+            except OSError as exc:
+                raise ArtifactStorageUnavailableError(
+                    "verified artifact spool could not be created"
+                ) from exc
+            spool = candidate
+
+            digest = hashlib.sha256()
+            size_bytes = 0
+            while True:
+                try:
+                    chunk = body.read(_OBJECT_STREAM_CHUNK_BYTES)
+                except (BotoCoreError, ClientError, OSError) as exc:
+                    _raise_storage_error(exc)
+                if not chunk:
+                    break
+                if not isinstance(chunk, bytes):
+                    raise ArtifactStorageUnavailableError(
+                        "artifact storage returned an invalid body"
+                    )
+                size_bytes += len(chunk)
+                if size_bytes > expectation.size_bytes or size_bytes > max_bytes:
+                    raise ArtifactIntegrityError("artifact object exceeds its download limit")
+                try:
+                    written = candidate.write(chunk)
+                except OSError as exc:
+                    raise ArtifactStorageUnavailableError(
+                        "verified artifact spool could not be written"
+                    ) from exc
+                if written != len(chunk):
+                    raise ArtifactStorageUnavailableError(
+                        "verified artifact spool could not be written"
+                    )
+                digest.update(chunk)
+
+            if size_bytes != expectation.size_bytes or not hmac.compare_digest(
+                digest.hexdigest(), expectation.sha256
+            ):
+                raise ArtifactIntegrityError(
+                    "artifact object checksum does not match its record"
+                )
+            try:
+                candidate.seek(0)
+            except OSError as exc:
+                raise ArtifactStorageUnavailableError(
+                    "verified artifact spool could not be rewound"
+                ) from exc
+            verified = VerifiedStoredObject(
+                candidate,
+                expectation,
+                _seal=_VERIFIED_STORED_OBJECT_SEAL,
+            )
+        finally:
+            _close_download_body(body)
+    except BaseException:
+        if spool is not None:
+            _close_failed_spool(spool)
+        raise
+
+    if verified is None:
+        raise ArtifactStorageUnavailableError("artifact verification did not complete")
+    return verified
 
 
 def _read_verified_object_with_client(
