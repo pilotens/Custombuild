@@ -7,7 +7,7 @@ from custombuild_manufacturing.physical_release import (
     PhysicalEvidenceKind,
     PhysicalEvidenceRecord,
     PhysicalReleaseEvidence,
-    physical_release_authorized,
+    physical_release_evidence_complete,
 )
 
 
@@ -37,9 +37,9 @@ def complete_evidence() -> PhysicalReleaseEvidence:
     )
 
 
-def test_complete_physical_evidence_is_deterministic_and_authorizable() -> None:
+def test_complete_physical_evidence_is_deterministic_and_complete() -> None:
     evidence = complete_evidence()
-    assert physical_release_authorized(evidence) is True
+    assert physical_release_evidence_complete(evidence) is True
     assert evidence.fingerprint() == evidence.fingerprint()
     assert [item["kind"] for item in evidence.as_dict()["records"]] == sorted(
         kind.value for kind in REQUIRED_PHYSICAL_EVIDENCE_KINDS
@@ -57,7 +57,7 @@ def test_missing_physical_evidence_fails_closed() -> None:
             record for record in evidence.records if record.kind is not PhysicalEvidenceKind.LOAD_TEST
         ),
     )
-    assert physical_release_authorized(incomplete) is False
+    assert physical_release_evidence_complete(incomplete) is False
     with pytest.raises(ValueError, match="load_test"):
         incomplete.validate()
 
@@ -81,8 +81,8 @@ def test_duplicate_kind_and_bad_hash_are_rejected() -> None:
         material_catalog_sha256=evidence.material_catalog_sha256,
         records=evidence.records,
     )
-    assert physical_release_authorized(bad) is False
+    assert physical_release_evidence_complete(bad) is False
 
 
-def test_none_never_authorizes_physical_release() -> None:
-    assert physical_release_authorized(None) is False
+def test_none_never_counts_as_complete_physical_evidence() -> None:
+    assert physical_release_evidence_complete(None) is False
