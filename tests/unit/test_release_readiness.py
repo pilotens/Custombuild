@@ -106,13 +106,46 @@ def build_workshop_readiness_report():
     )
 """,
     PRODUCTION_SEMANTIC_SOURCE_PATHS[2]: """
+def _generation_attempt_id(job_id, lease_token):
+    job_uuid = UUID(job_id)
+    canonical_lease_token = str(UUID(lease_token))
+    return str(uuid5(job_uuid, f"storage-attempt:{canonical_lease_token}"))
+
+def _generation_artifact_id(attempt_id, kind):
+    attempt_uuid = UUID(attempt_id)
+    return str(uuid5(attempt_uuid, kind))
+
 def _stock_id(*, role, material_id, material_version, thickness_um, width_um, height_um):
     return (
         f"stock-{role}-{material_id}-{material_version}-{thickness_um}um-"
         f"{width_um}x{height_um}um"
     )
 
-def _generate():
+def _generation_storage_claims(job, version, result, lease_token):
+    attempt_id = _generation_attempt_id(job.id, lease_token)
+    expected_prefix = (
+        f"{job.organization_id}/{version.design_hash}/{job.production_context_hash}/"
+        f"attempts/{attempt_id}/artifacts/"
+    )
+    claims = []
+    for kind, object_key in (
+        ("production_bundle", result["bundle_object_key"]),
+        ("manifest", result["manifest_object_key"]),
+    ):
+        artifact_id = _generation_artifact_id(attempt_id, kind)
+        if not object_key.startswith(f"{expected_prefix}{artifact_id}/"):
+            raise RuntimeError("attempt mismatch")
+        claims.append(StorageObjectClaim(
+            object_key=object_key,
+            owner_id=job.id,
+            idempotency_key=f"generation:{job.id}:{kind}:{artifact_id}",
+        ))
+    return tuple(claims)
+
+def _generate(job, version, *, lease_token, lease_guard):
+    if job.lease_token != lease_token:
+        raise RuntimeError("lease mismatch")
+    attempt_id = _generation_attempt_id(job.id, lease_token)
     carcass_stock = StockSheet(
         stock_id=_stock_id(
             role="carcass",
@@ -148,17 +181,52 @@ def _generate():
             "validation/stock-selection.json": "stock_selection",
             "validation/generation-plan.json": "generation_plan",
         }.get(artifact.path)
-        evidence_artifacts.append({"kind": kind})
+        digest = "evidence-digest"
+        artifact_id = _generation_artifact_id(attempt_id, kind)
+        evidence_key = (
+            f"{job.organization_id}/{version.design_hash}/{job.production_context_hash}/"
+            f"attempts/{attempt_id}/artifacts/{artifact_id}/{digest}/evidence/{artifact.path}"
+        )
+        evidence_artifacts.append({"kind": kind, "object_key": evidence_key})
+    bundle_artifact_id = _generation_artifact_id(attempt_id, "production_bundle")
+    manifest_artifact_id = _generation_artifact_id(attempt_id, "manifest")
+    bundle_key = (
+        f"{job.organization_id}/{version.design_hash}/{job.production_context_hash}/"
+        f"attempts/{attempt_id}/artifacts/{bundle_artifact_id}/bundle/production.zip"
+    )
+    manifest_key = (
+        f"{job.organization_id}/{version.design_hash}/{job.production_context_hash}/"
+        f"attempts/{attempt_id}/artifacts/{manifest_artifact_id}/manifest.json"
+    )
     cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED
-    return {
+    result = {
         "bundle_sha256": "bundle",
         "manifest_sha256": "manifest",
+        "bundle_object_key": bundle_key,
+        "manifest_object_key": manifest_key,
         "evidence_artifacts": evidence_artifacts,
         "generation_context_hash": "context",
         "design_review_package_status": bundle.review_status.as_dict(),
         "machine_program_mode": "CAM_BLOCKED" if cam_blocked else "VALIDATION_DRY_RUN",
         "production_machine_program": False,
     }
+    frozen_result = MappingProxyType(result)
+    claims = _generation_storage_claims(job, version, frozen_result, lease_token)
+    reserve_storage_batch(claims, lease_token=lease_token)
+    lease_guard.bind_storage_claims(claims)
+    return result
+
+def _complete_job(job, version, lease_token, result):
+    attempt_id = _generation_attempt_id(job.id, lease_token)
+    storage_claims = _generation_storage_claims(job, version, result, lease_token)
+    for kind, key in (("production_bundle", result["bundle_object_key"]),):
+        artifact_id = _generation_artifact_id(attempt_id, kind)
+        session.add(Artifact(id=artifact_id, kind=kind, object_key=key))
+    commit_storage_batch_in_transaction(
+        session,
+        storage_claims,
+        lease_token=lease_token,
+    )
 """,
     PRODUCTION_SEMANTIC_SOURCE_PATHS[3]: """
 def _generation_result_claims_are_safe(result_json):
@@ -174,6 +242,24 @@ def release_version(job):
         raise RuntimeError("unsafe geometry")
     if not _generation_result_claims_are_safe(job.result_json):
         raise RuntimeError("unsafe result")
+
+def _resolve_release_archive(stored, job, artifact):
+    if stored.idempotency_key != f"generation:{job.id}:{artifact.kind}:{artifact.id}":
+        raise _release_archive_error()
+
+async def inspect_import(principal, project, digest):
+    asset_id = str(uuid4())
+    object_key = (
+        f"{principal.organization_id}/projects/{project.id}/reference-imports/"
+        f"sha256/{digest}/{asset_id}"
+    )
+    claim = StorageObjectClaim(
+        object_key=object_key,
+        owner_id=asset_id,
+        idempotency_key=f"imported:{asset_id}",
+    )
+    asset = ImportedAsset(id=asset_id, object_key=object_key)
+    return claim, asset
 """,
     PRODUCTION_SEMANTIC_SOURCE_PATHS[4]: """
 CONTEXT_HASH_FIELDS = ("generation_context_hash",)
@@ -383,6 +469,67 @@ def test_production_semantic_contract_requires_every_source(tmp_path: Path, rela
             "checksum-bound generation plan",
         ),
         (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            'f"storage-attempt:{canonical_lease_token}"',
+            'f"storage-attempt:{job_id}"',
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            "uuid5(attempt_uuid, kind)",
+            'uuid5(attempt_uuid, "shared")',
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            'f"attempts/{attempt_id}/artifacts/{artifact_id}/{digest}/evidence/{artifact.path}"',
+            'f"attempts/{attempt_id}/artifacts/shared/{digest}/evidence/{artifact.path}"',
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            'idempotency_key=f"generation:{job.id}:{kind}:{artifact_id}"',
+            'idempotency_key=f"generation:{job.id}:{kind}"',
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            "def _generate(job, version, *, lease_token, lease_guard):",
+            "def _generate(job, version, *, lease_token=None, lease_guard):",
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            "_generation_storage_claims(job, version, frozen_result, lease_token)",
+            '_generation_storage_claims(job, version, frozen_result, "unbound")',
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            "reserve_storage_batch(claims, lease_token=lease_token)",
+            "reserve_storage_batch(claims)",
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            "Artifact(id=artifact_id, kind=kind, object_key=key)",
+            "Artifact(kind=kind, object_key=key)",
+            "explicit lease-derived attempt",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[2],
+            """commit_storage_batch_in_transaction(
+        session,
+        storage_claims,
+        lease_token=lease_token,
+    )""",
+            """commit_storage_batch_in_transaction(
+        session,
+        storage_claims,
+    )""",
+            "explicit lease-derived attempt",
+        ),
+        (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[3],
             "and isinstance(dfm_status, str)",
             "and True",
@@ -405,6 +552,30 @@ def test_production_semantic_contract_requires_every_source(tmp_path: Path, rela
             "if not _generation_result_claims_are_safe(job.result_json):",
             "if not _generation_result_claims_are_safe(job.result_json) and False:",
             "release path does not fail closed",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[3],
+            'f"generation:{job.id}:{artifact.kind}:{artifact.id}"',
+            'f"generation:{job.id}:{artifact.kind}"',
+            "stored generation idempotency to Artifact.id",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[3],
+            "asset_id = str(uuid4())",
+            "asset_id = str(uuid5(NAMESPACE_URL, digest))",
+            "UUID key incarnation",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[3],
+            'f"sha256/{digest}/{asset_id}"',
+            'f"sha256/{digest}"',
+            "UUID key incarnation",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[3],
+            'idempotency_key=f"imported:{asset_id}"',
+            'idempotency_key=f"imported:{digest}"',
+            "UUID key incarnation",
         ),
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[4],
@@ -465,6 +636,31 @@ def test_production_semantic_contract_rejects_stale_or_unsafe_mutations(
     issues = production_semantic_contract_issues(tmp_path)
 
     assert any(relative in issue and expected_issue in issue for issue in issues)
+
+
+def test_api_artifact_id_contract_rejects_a_dead_safe_decoy(tmp_path: Path) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[3]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    source = sources[relative].replace(
+        'f"generation:{job.id}:{artifact.kind}:{artifact.id}"',
+        'f"generation:{job.id}:{artifact.kind}"',
+        1,
+    )
+    sources[relative] = source.replace(
+        "def _resolve_release_archive(stored, job, artifact):\n",
+        """def _resolve_release_archive(stored, job, artifact):
+    if False:
+        if stored.idempotency_key != f"generation:{job.id}:{artifact.kind}:{artifact.id}":
+            raise _release_archive_error()
+""",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "stored generation idempotency to Artifact.id" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
 
 
 @pytest.mark.parametrize(
@@ -571,6 +767,42 @@ def _generate():
     alias = result
     return alias
 """
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "unique immutable _generate result" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def test_worker_semantic_contract_accepts_immutable_quota_flow(tmp_path: Path) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = sources[relative].replace(
+        "    lease_guard.bind_storage_claims(claims)\n    return result",
+        "    lease_guard.bind_storage_claims(claims)\n"
+        "    lease_guard.check()\n"
+        "    persist_generated_objects()\n"
+        "    return result",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert production_semantic_contract_issues(tmp_path) == []
+
+
+def test_worker_semantic_contract_rejects_passing_mutable_result_to_unknown_call(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    source = sources[relative].replace(
+        '    return {\n        "bundle_sha256": "bundle",',
+        '    result = {\n        "bundle_sha256": "bundle",',
+        1,
+    )
+    prefix, suffix = source.rsplit("    }\n", 1)
+    sources[relative] = prefix + "    }\n    unknown_sink(result)\n    return result\n" + suffix
     write_production_semantic_fixture(tmp_path, sources=sources)
 
     assert any(
@@ -740,6 +972,11 @@ def test_build_report_blocks_software_release_on_semantic_drift(
         "build_source_manifest",
         lambda _repo: ([], b"", "b" * 64),
     )
+    monkeypatch.setattr(
+        release_readiness,
+        "verify_production_semantic_root",
+        lambda _repo: SimpleNamespace(digest="c" * 64),
+    )
     monkeypatch.setattr(release_readiness, "resolved_compose", lambda _repo: {})
     monkeypatch.setattr(release_readiness, "compose_hardening_issues", lambda _config: [])
     monkeypatch.setattr(release_readiness, "supply_chain_issues", lambda _repo: [])
@@ -758,6 +995,21 @@ def test_build_report_blocks_software_release_on_semantic_drift(
     assert "worker result can claim production cutting" in semantic_check["detail"]
     assert report["static_controls_ready"] is False
     assert report["software_release_ready"] is False
+    assert report["repository_content_root_sha256"] == "c" * 64
+    assert report["external_semantic_approval_required"] is True
+    assert report["schema_version"] == "custombuild.release-readiness-static.v3"
+
+    def stale_root(_repo: Path) -> object:
+        raise release_readiness.SourceManifestError("semantic root is stale")
+
+    monkeypatch.setattr(release_readiness, "verify_production_semantic_root", stale_root)
+    stale_report = build_report(Path.cwd(), require_clean=True)
+    root_check = next(
+        check for check in stale_report["checks"] if check["code"] == "REPOSITORY_CONTENT_ROOT"
+    )
+    assert root_check["status"] == "BLOCK"
+    assert stale_report["repository_content_root_sha256"] is None
+    assert stale_report["static_controls_ready"] is False
 
 
 def write_empty_vulnerability_policy(root: Path) -> None:
@@ -837,7 +1089,7 @@ def hardened_service(*, networks: list[str]) -> dict[str, object]:
     }
 
 
-def test_hardened_compose_contract_passes() -> None:
+def hardened_compose_config() -> dict[str, object]:
     api = hardened_service(networks=["edge", "backend"]) | {
         "healthcheck": {"test": ["CMD", "probe"]},
         "environment": {
@@ -845,11 +1097,23 @@ def test_hardened_compose_contract_passes() -> None:
             "RATE_LIMIT_REQUESTS": "180",
             "RATE_LIMIT_WINDOW_SECONDS": "60",
         },
-        "depends_on": {"redis": {"condition": "service_healthy"}},
+        "depends_on": {
+            "redis": {"condition": "service_healthy"},
+            "storage-capacity-attestor": {
+                "condition": "service_healthy",
+                "restart": True,
+            },
+        },
     }
     worker = hardened_service(networks=["backend"]) | {
         "healthcheck": {"test": ["CMD", "worker-probe"]},
         "environment": {"REDIS_URL": "redis://:strong-secret@redis:6379/0"},
+        "depends_on": {
+            "storage-capacity-attestor": {
+                "condition": "service_healthy",
+                "restart": True,
+            }
+        },
     }
     web = hardened_service(networks=["edge"]) | {
         "depends_on": {"api": {"condition": "service_healthy"}}
@@ -863,20 +1127,80 @@ def test_hardened_compose_contract_passes() -> None:
         "restart": "unless-stopped",
         "pids_limit": 128,
         "networks": ["backend", "artifact-ingress"],
+        "volumes": [
+            {
+                "type": "volume",
+                "source": "custombuild-prod_object-storage-data",
+                "target": "/data",
+                "read_only": False,
+            }
+        ],
     }
     redis = datastore | {
         "environment": {"REDIS_PASSWORD": "strong-secret"},
         "command": ["redis-server", "--requirepass", "strong-secret"],
     }
-    config = {
+    attestor = hardened_service(networks=["backend"]) | {
+        "healthcheck": {
+            "test": [
+                "CMD",
+                "check /run/custombuild-state/capacity-heartbeat.json",
+            ]
+        },
+        "depends_on": {
+            "storage-recovery": {
+                "condition": "service_completed_successfully",
+                "restart": True,
+            },
+            "object-storage": {"condition": "service_healthy"},
+        },
+        "volumes": [
+            {
+                "type": "volume",
+                "source": "custombuild-prod_object-storage-data",
+                "target": "/storage-volume",
+                "read_only": True,
+            }
+        ],
+    }
+    recovery = hardened_service(networks=["backend"]) | {
+        "restart": "no",
+        "user": "65532:65532",
+        "command": ["python", "-m", "scripts.storage_recovery"],
+        "depends_on": {
+            "migrate": {
+                "condition": "service_completed_successfully",
+                "restart": True,
+            },
+            "object-storage": {"condition": "service_healthy"},
+        },
+    }
+    migrate = {
+        "pids_limit": 64,
+        "depends_on": {
+            "postgres": {"condition": "service_healthy", "restart": True},
+        },
+    }
+    return {
         "services": {
             "api": api,
             "worker": worker,
-            "scheduler": hardened_service(networks=["backend"]),
+            "scheduler": hardened_service(networks=["backend"])
+            | {
+                "depends_on": {
+                    "storage-capacity-attestor": {
+                        "condition": "service_healthy",
+                        "restart": True,
+                    }
+                }
+            },
             "web": web,
-            "postgres": datastore,
+            "postgres": datastore | {"restart": "no"},
             "redis": redis,
             "object-storage": object_storage,
+            "migrate": migrate,
+            "storage-recovery": recovery,
+            "storage-capacity-attestor": attestor,
         },
         "networks": {
             "edge": {},
@@ -885,7 +1209,145 @@ def test_hardened_compose_contract_passes() -> None:
         },
     }
 
+
+def test_hardened_compose_contract_passes() -> None:
+    config = hardened_compose_config()
+
     assert compose_hardening_issues(config) == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_issue"),
+    [
+        (
+            lambda config: config["services"]["postgres"].update(
+                {"restart": "unless-stopped"}
+            ),
+            "postgres automatic restart can bypass the storage-recovery barrier",
+        ),
+        (
+            lambda config: config["services"]["migrate"]["depends_on"]["postgres"].update(
+                {"restart": False}
+            ),
+            "migrate does not restart after a Compose-managed PostgreSQL update",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"]["depends_on"][
+                "migrate"
+            ].update({"restart": False}),
+            "storage-recovery does not restart after a Compose-managed migration",
+        ),
+        (
+            lambda config: config["services"]["storage-capacity-attestor"]["depends_on"][
+                "storage-recovery"
+            ].update({"restart": False}),
+            "storage-capacity-attestor does not restart after Compose-managed storage recovery",
+        ),
+        (
+            lambda config: config["services"]["api"]["depends_on"][
+                "storage-capacity-attestor"
+            ].update({"restart": False}),
+            "api does not restart after Compose-managed capacity attestation",
+        ),
+        (
+            lambda config: config["services"]["storage-capacity-attestor"].pop("healthcheck"),
+            "storage-capacity-attestor health does not verify its heartbeat",
+        ),
+        (
+            lambda config: config["services"]["storage-capacity-attestor"].update(
+                {"networks": ["backend", "edge"]}
+            ),
+            "storage-capacity-attestor is not isolated to the backend network",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"]["depends_on"].pop("migrate"),
+            "storage-recovery does not wait for completed migrations",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"]["depends_on"].pop(
+                "object-storage"
+            ),
+            "storage-recovery does not wait for healthy object storage",
+        ),
+        (
+            lambda config: config["services"]["storage-capacity-attestor"]["depends_on"].pop(
+                "storage-recovery"
+            ),
+            "storage-capacity-attestor does not wait for completed storage recovery",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"].update(
+                {"command": ["python", "-m", "scripts.not_recovery"]}
+            ),
+            "storage-recovery does not run the exact recovery entrypoint",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"].update(
+                {"restart": "unless-stopped"}
+            ),
+            "storage-recovery is not an exact one-shot service",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"].update(
+                {"networks": ["backend", "edge"]}
+            ),
+            "storage-recovery is not isolated to the backend network",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"].update({"user": "0:0"}),
+            "storage-recovery does not run as the fixed non-root user",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"].update(
+                {"ports": ["127.0.0.1:9999:9999"]}
+            ),
+            "storage-recovery publishes a network port",
+        ),
+        (
+            lambda config: config["services"]["storage-recovery"].update(
+                {"volumes": ["untrusted:/data"]}
+            ),
+            "storage-recovery mounts a host or named volume",
+        ),
+        (
+            lambda config: config["services"]["storage-capacity-attestor"]["depends_on"].pop(
+                "object-storage"
+            ),
+            "storage-capacity-attestor does not wait for healthy object storage",
+        ),
+        (
+            lambda config: config["services"]["worker"]["depends_on"].pop(
+                "storage-capacity-attestor"
+            ),
+            "worker does not wait for healthy storage capacity evidence",
+        ),
+        (
+            lambda config: config["services"]["api"]["depends_on"].pop("storage-capacity-attestor"),
+            "api does not wait for healthy storage capacity evidence",
+        ),
+        (
+            lambda config: config["services"]["scheduler"]["depends_on"].pop(
+                "storage-capacity-attestor"
+            ),
+            "scheduler does not wait for healthy storage capacity evidence",
+        ),
+        (
+            lambda config: config["services"]["storage-capacity-attestor"]["volumes"][0].update(
+                {"source": "unrelated-volume"}
+            ),
+            "storage-capacity-attestor does not read the object-storage volume",
+        ),
+    ],
+)
+def test_hardening_requires_capacity_attestor_topology(
+    mutation: object,
+    expected_issue: str,
+) -> None:
+    config = hardened_compose_config()
+    assert callable(mutation)
+    mutation(config)
+
+    assert expected_issue in compose_hardening_issues(config)
 
 
 def test_hardening_reports_each_missing_boundary() -> None:
@@ -911,7 +1373,9 @@ def test_supply_chain_gate_accepts_immutable_actions_and_evidence(tmp_path: Path
     (workflows / "ci.yml").write_text(f"steps:\n  - uses: actions/checkout@{sha}\n")
     (workflows / "supply-chain.yml").write_text(
         f"steps:\n  - uses: anchore/sbom-action@{sha}\n"
-        f"  - uses: anchore/scan-action@{sha}\n    config: .grype.yaml\n"
+        f"  - uses: {release_readiness.REVIEWED_GRYPE_SCAN_ACTION}\n"
+        f"    grype-version: {release_readiness.REVIEWED_GRYPE_VERSION}\n"
+        "    config: .grype.yaml\n"
         "    fail-build: true\n    severity-cutoff: high\n"
         f"  - uses: actions/upload-artifact@{sha}\n    path: image.release.json\n"
     )
@@ -955,6 +1419,47 @@ def test_supply_chain_gate_accepts_immutable_actions_and_evidence(tmp_path: Path
         )
 
     assert supply_chain_issues(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("scan_action", "grype_version", "expected_issue"),
+    (
+        (
+            release_readiness.REVIEWED_GRYPE_SCAN_ACTION,
+            None,
+            "supply-chain workflow does not pin every scan to reviewed Grype v0.110.0",
+        ),
+        (
+            release_readiness.REVIEWED_GRYPE_SCAN_ACTION,
+            "v0.109.0",
+            "supply-chain workflow does not pin every scan to reviewed Grype v0.110.0",
+        ),
+        (
+            f"anchore/scan-action@{'b' * 40}",
+            release_readiness.REVIEWED_GRYPE_VERSION,
+            "supply-chain workflow does not use the reviewed Grype scan action",
+        ),
+    ),
+)
+def test_supply_chain_gate_rejects_unreviewed_grype_toolchain(
+    tmp_path: Path,
+    scan_action: str,
+    grype_version: str | None,
+    expected_issue: str,
+) -> None:
+    workflows = tmp_path / ".github/workflows"
+    workflows.mkdir(parents=True)
+    version_input = f"    grype-version: {grype_version}\n" if grype_version else ""
+    (workflows / "supply-chain.yml").write_text(
+        f"steps:\n  - uses: {scan_action}\n"
+        f"{version_input}"
+        "    config: .grype.yaml\n"
+        "    fail-build: true\n"
+        "    severity-cutoff: high\n"
+    )
+    write_empty_vulnerability_policy(tmp_path)
+
+    assert expected_issue in supply_chain_issues(tmp_path)
 
 
 def test_supply_chain_gate_reports_floating_actions_and_missing_scan(tmp_path: Path) -> None:

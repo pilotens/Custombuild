@@ -159,7 +159,8 @@
             "type": "string"
           },
           "size_bytes": {
-            "minimum": 0.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 33554432.0,
             "title": "Size Bytes",
             "type": "integer"
           }
@@ -698,6 +699,7 @@
           },
           "size_bytes": {
             "exclusiveMinimum": 0.0,
+            "maximum": 20971520.0,
             "title": "Size Bytes",
             "type": "integer"
           }
@@ -860,6 +862,8 @@
             "type": "string"
           },
           "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 20971520.0,
             "title": "Size Bytes",
             "type": "integer"
           },
@@ -1408,6 +1412,71 @@
           "verified_model_fingerprint"
         ],
         "title": "ReferenceImageSourceProvenance",
+        "type": "object"
+      },
+      "ReleaseArtifactRead": {
+        "description": "One immutable artifact resolved through its historical release.",
+        "properties": {
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "download_path": {
+            "title": "Download Path",
+            "type": "string"
+          },
+          "download_url": {
+            "title": "Download Url",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "release_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "release_number": {
+            "pattern": "^[A-Z0-9][A-Z0-9._-]{0,39}$",
+            "title": "Release Number",
+            "type": "string"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 33554432.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "sha256",
+          "size_bytes",
+          "content_type",
+          "download_url",
+          "download_path",
+          "release_id",
+          "release_number",
+          "revision"
+        ],
+        "title": "ReleaseArtifactRead",
         "type": "object"
       },
       "ReleaseCreate": {
@@ -2064,11 +2133,14 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "Fully verified artifact bytes"
           },
           "422": {
             "content": {
@@ -3186,6 +3258,128 @@
           }
         ],
         "summary": "Validate Version"
+      }
+    },
+    "/v1/releases/{release_id}/artifacts": {
+      "get": {
+        "description": "List the exact package inventory frozen by a historical release.",
+        "operationId": "list_release_artifacts_v1_releases__release_id__artifacts_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "release_id",
+            "required": true,
+            "schema": {
+              "title": "Release Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReleaseArtifactRead"
+                  },
+                  "title": "Response List Release Artifacts V1 Releases  Release Id  Artifacts Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Release Artifacts"
+      }
+    },
+    "/v1/releases/{release_id}/artifacts/{artifact_id}/download": {
+      "get": {
+        "description": "Stream an archived release without requiring it to be the current revision.",
+        "operationId": "download_release_artifact_v1_releases__release_id__artifacts__artifact_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "release_id",
+            "required": true,
+            "schema": {
+              "title": "Release Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "artifact_id",
+            "required": true,
+            "schema": {
+              "title": "Artifact Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expires",
+            "required": true,
+            "schema": {
+              "title": "Expires",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "signature",
+            "required": true,
+            "schema": {
+              "title": "Signature",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Fully verified immutable release artifact bytes"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Release Artifact"
       }
     }
   }

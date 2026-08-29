@@ -1,10 +1,13 @@
+import hashlib
+import json
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from scripts import restore_drill
-from scripts.compose_backup import BackupError
+from scripts.compose_backup import TOMBSTONE_HISTORY_SCHEMA, BackupError
 from scripts.postgres_runtime_privileges import runtime_privileges_sql
 from scripts.restore_drill import current_alembic_heads, validate_temporary_name
 
@@ -32,7 +35,7 @@ def test_broad_or_unsafe_restore_names_are_rejected(name: str) -> None:
 
 
 def test_restore_drill_resolves_current_repository_alembic_head() -> None:
-    assert current_alembic_heads(Path.cwd()) == ["0011_runtime_role_privileges"]
+    assert current_alembic_heads(Path.cwd()) == ["0014_release_generation_binding"]
 
 
 def test_restore_prepares_schema_ownership_and_restores_as_migrator() -> None:
@@ -65,11 +68,106 @@ def test_restore_rebuilds_the_canonical_runtime_allowlist(
     assert "GRANT USAGE, SELECT ON SEQUENCES" not in sql
 
 
+def test_restore_probe_recomputes_the_canonical_full_tombstone_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_sql = ""
+    history = {
+        "schema_version": TOMBSTONE_HISTORY_SCHEMA,
+        "count": 0,
+        "sha256": hashlib.sha256(b"[]").hexdigest(),
+    }
+
+    def fake_docker(*arguments: str, **_kwargs: object) -> str:
+        nonlocal captured_sql
+        captured_sql = arguments[-1]
+        return json.dumps(
+            {
+                "alembic_heads": ["0014_release_generation_binding"],
+                "row_counts": {"storage_object_tombstones": 0},
+                "tombstone_history": history,
+            }
+        )
+
+    monkeypatch.setattr(restore_drill, "docker", fake_docker)
+
+    probe = restore_drill._restored_database_probe("custombuild-restore-deadbeef-postgres")
+
+    assert probe["tombstone_history"] == history
+    for column in (
+        "capacity_bucket",
+        "object_key",
+        "organization_id",
+        "project_id",
+        "sha256",
+        "size_bytes",
+        "media_type",
+        "owner_type",
+        "owner_id",
+        "idempotency_key",
+        "accounting_state",
+        "claim_token",
+        "retired_at",
+    ):
+        assert f"tombstone.{column}" in captured_sql
+    assert 'ORDER BY tombstone.capacity_bucket COLLATE "C"' in captured_sql
+    assert 'tombstone.object_key COLLATE "C"' in captured_sql
+    assert TOMBSTONE_HISTORY_SCHEMA in captured_sql
+
+
+def test_restore_rejects_count_preserving_tombstone_identity_substitution() -> None:
+    expected = {
+        "tombstone_history": {
+            "schema_version": TOMBSTONE_HISTORY_SCHEMA,
+            "count": 1,
+            "sha256": "a" * 64,
+        }
+    }
+    restored = {
+        "tombstone_history": {
+            "schema_version": TOMBSTONE_HISTORY_SCHEMA,
+            "count": 1,
+            "sha256": "b" * 64,
+        }
+    }
+
+    with pytest.raises(BackupError, match="tombstone history"):
+        restore_drill._verified_restored_tombstone_history(expected, restored)
+
+
+def test_restore_proves_exact_tombstone_acl_and_v4_evidence() -> None:
+    source = Path("scripts/restore_drill.py").read_text(encoding="utf-8")
+
+    assert 'RESTORE_SCHEMA = "custombuild.restore-drill.v4"' in source
+    for role in ("custombuild_api", "custombuild_worker", "custombuild_storage_attestor"):
+        for privilege in (
+            "SELECT",
+            "INSERT",
+            "UPDATE",
+            "DELETE",
+            "TRUNCATE",
+            "REFERENCES",
+            "TRIGGER",
+            "MAINTAIN",
+        ):
+            pattern = (
+                r"has_table_privilege\(\s*'"
+                + role
+                + r"',\s*'public\.storage_object_tombstones',\s*'"
+                + privilege
+                + r"'\s*\)"
+            )
+            assert re.search(pattern, source) is not None
+    assert "CROSS JOIN LATERAL aclexplode(attribute.attacl)" in source
+    assert '"tombstone_column_grants_absent": True' in source
+    assert '"database_tombstone_history_verified": True' in source
+
+
 def test_restore_worker_probe_uses_only_a_worker_allowlisted_table() -> None:
     source = Path("scripts/restore_drill.py").read_text(encoding="utf-8")
-    worker_probe = source.split("worker_query =", maxsplit=1)[1].split(
-        "worker_raw =", maxsplit=1
-    )[0]
+    worker_probe = source.split("worker_query =", maxsplit=1)[1].split("worker_raw =", maxsplit=1)[
+        0
+    ]
 
     assert "FROM outbox_events" in worker_probe
     assert "FROM projects" not in worker_probe

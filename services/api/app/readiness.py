@@ -12,8 +12,16 @@ from sqlalchemy import text
 
 from .config import Settings
 from .db import get_readiness_engine
+from .storage_capacity import validate_storage_capacity_evidence
 
-DependencyName = Literal["database", "redis", "object_storage", "rule_engine"]
+DependencyName = Literal[
+    "database",
+    "storage_capacity",
+    "redis",
+    "object_storage",
+    "rule_engine",
+]
+REQUIRED_DATABASE_REVISION = "0014_release_generation_binding"
 
 
 @dataclass(frozen=True)
@@ -29,7 +37,41 @@ def check_database(settings: Settings) -> None:
                 text("SELECT set_config('statement_timeout', :timeout, true)"),
                 {"timeout": f"{settings.readiness_timeout_seconds}s"},
             )
+            revisions = tuple(
+                str(value)
+                for value in connection.execute(
+                    text("SELECT version_num FROM alembic_version ORDER BY version_num")
+                ).scalars()
+            )
+            if revisions != (REQUIRED_DATABASE_REVISION,):
+                raise RuntimeError("database schema revision does not match this runtime")
         connection.execute(text("SELECT 1"))
+
+
+def check_storage_capacity(settings: Settings) -> None:
+    """Bind production readiness to one fresh, exact physical-capacity attest."""
+
+    if settings.app_env != "production":
+        return
+    with get_readiness_engine().connect() as connection:
+        if connection.dialect.name != "postgresql":
+            raise RuntimeError("production storage capacity requires PostgreSQL")
+        connection.execute(
+            text("SELECT set_config('statement_timeout', :timeout, true)"),
+            {"timeout": f"{settings.readiness_timeout_seconds}s"},
+        )
+        row = (
+            connection.execute(
+                text(
+                    "SELECT *, clock_timestamp() AS database_now, "
+                    "pg_postmaster_start_time() AS database_started_at "
+                    "FROM storage_global_quotas WHERE id = 1"
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    validate_storage_capacity_evidence(settings, row)
 
 
 def check_redis(settings: Settings) -> None:
@@ -79,6 +121,7 @@ def check_rule_engine(_settings: Settings) -> None:
 def probe_dependencies(settings: Settings) -> tuple[dict[str, str], list[DependencyFailure]]:
     checks: tuple[tuple[DependencyName, Callable[[Settings], None]], ...] = (
         ("database", check_database),
+        ("storage_capacity", check_storage_capacity),
         ("redis", check_redis),
         ("object_storage", check_object_storage),
         ("rule_engine", check_rule_engine),

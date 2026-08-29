@@ -30,11 +30,14 @@ jobs:
       MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
       RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
       WORKER_RLS_DATABASE_URL: postgresql+psycopg://custombuild_worker:strong-worker-database-test-password@localhost:5432/custombuild
+      CAPACITY_ATTESTOR_DATABASE_URL: postgresql+psycopg://custombuild_storage_attestor:strong-capacity-attestor-test-password@localhost:5432/custombuild
       TENANT_GRAPH_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
       UV_CACHE_DIR: /tmp/custombuild-prod-uv-cache
       RELEASE_EVIDENCE_DIR: artifacts/release-evidence
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.0"
@@ -61,7 +64,8 @@ jobs:
           CREATE ROLE custombuild_migrator LOGIN PASSWORD 'strong-migrator-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           CREATE ROLE custombuild_api LOGIN PASSWORD 'strong-api-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
           CREATE ROLE custombuild_worker LOGIN PASSWORD 'strong-worker-database-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
-          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker;
+          CREATE ROLE custombuild_storage_attestor LOGIN PASSWORD 'strong-capacity-attestor-test-password' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS;
+          GRANT CONNECT ON DATABASE custombuild TO custombuild_migrator, custombuild_api, custombuild_worker, custombuild_storage_attestor;
           GRANT USAGE, CREATE ON SCHEMA public TO custombuild_migrator;
           SQL
       - name: Migrate prod schema
@@ -94,7 +98,7 @@ jobs:
         env:
           PLAYWRIGHT_REAL_API: "0"
           PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-wcag
-        run: pnpm --dir apps/web test:e2e:a11y -- --output=wcag-test-results
+        run: pnpm --dir apps/web exec playwright test e2e/accessibility.spec.ts --project=chromium-desktop --output=wcag-test-results
       - name: Same-SHA Chromium Firefox and WebKit production workspace acceptance
         env:
           PLAYWRIGHT_REAL_API: "0"
@@ -122,6 +126,8 @@ jobs:
       RELEASE_EVIDENCE_DIR: artifacts/release-evidence
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.0"
@@ -155,8 +161,8 @@ jobs:
         with:
           name: static-release-readiness-${{ github.sha }}
           path: artifacts/release-evidence
-      - name: Install Chromium
-        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+      - name: Install live-browser matrix
+        run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
       - name: Verify source freeze before prod build
         run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
       - name: Build and start prod stack
@@ -235,7 +241,10 @@ jobs:
           PLAYWRIGHT_ENVIRONMENT: prod
           PLAYWRIGHT_REAL_API: "1"
           PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
-        run: pnpm --dir apps/web test:e2e -- --project=chromium-desktop
+        run: |
+          pnpm --dir apps/web exec playwright test --project=chromium-desktop
+          pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
+            --project=firefox-desktop --project=webkit-desktop
       - name: Create and verify coordinated backup
         run: >-
           uv run python scripts/compose_backup.py --compose compose.yml
@@ -360,63 +369,70 @@ jobs:
           mesa-glx 26.2.1-r0
           PACKAGES
       - name: Scan exact API runtime image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-api:${{ github.sha }}
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
           output-format: json
           output-file: artifacts/release-evidence/scan-api.json
       - name: Scan exact worker runtime image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-worker:${{ github.sha }}
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
           output-format: json
           output-file: artifacts/release-evidence/scan-worker.json
       - name: Scan exact web runtime image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-web:${{ github.sha }}
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
           output-format: json
           output-file: artifacts/release-evidence/scan-web.json
       - name: Scan exact SeaweedFS runtime image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-seaweedfs:${{ github.sha }}
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
           output-format: json
           output-file: artifacts/release-evidence/scan-seaweedfs.json
       - name: Scan exact PostgreSQL runtime image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
           output-format: json
           output-file: artifacts/release-evidence/scan-postgres.json
       - name: Scan exact Redis runtime image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
           output-format: json
           output-file: artifacts/release-evidence/scan-redis.json
       - name: Scan exact volume-init runtime image
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
@@ -464,6 +480,8 @@ jobs:
           volume_init_id="$(image_id "$volume_init_ref")"
           test "$api_id" = "$(runtime_id api)"
           test "$api_id" = "$(runtime_id migrate)"
+          test "$api_id" = "$(runtime_id storage-recovery)"
+          test "$api_id" = "$(runtime_id storage-capacity-attestor)"
           test "$worker_id" = "$(runtime_id worker)"
           test "$worker_id" = "$(runtime_id scheduler)"
           test "$web_id" = "$(runtime_id web)"

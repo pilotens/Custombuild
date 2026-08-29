@@ -30,6 +30,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - name: Build candidate image
         shell: bash
         run: |
@@ -127,9 +129,10 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all high and critical vulnerabilities
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-${{ matrix.component }}:supply-chain-${{ github.sha }}
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
@@ -152,6 +155,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - name: Pull reviewed runtime digest
         run: docker pull "${{ matrix.image }}"
       - name: Generate runtime SPDX SBOM
@@ -163,9 +168,10 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all high and critical vulnerabilities
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: ${{ matrix.image }}
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
@@ -178,6 +184,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
       - name: Build checksum-bound SeaweedFS runtime
         run: >-
           docker build
@@ -222,9 +230,10 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all SeaweedFS high and critical vulnerabilities
-        uses: anchore/scan-action@e1165082ffb1fe366ebaf02d8526e7c4989ea9d2 # v7.4.0
+        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-seaweedfs:${{ github.sha }}
+          grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high

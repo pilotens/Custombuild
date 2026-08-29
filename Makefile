@@ -27,6 +27,10 @@ lint:
 
 typecheck:
 	uv run mypy packages services
+	uv run mypy scripts/storage_capacity_development.py
+	uv run mypy scripts/storage_capacity_preflight.py
+	uv run mypy scripts/storage_capacity_refresh.py
+	uv run mypy scripts/storage_recovery.py
 	pnpm --dir apps/web typecheck
 
 build:

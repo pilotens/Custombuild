@@ -110,9 +110,7 @@ def test_web_image_binds_the_verified_frontend_lock() -> None:
 def test_web_public_configuration_is_runtime_only() -> None:
     dockerfile = Path("apps/web/Dockerfile").read_text(encoding="utf-8")
     compose = yaml.safe_load(Path("compose.yml").read_text(encoding="utf-8"))
-    external = yaml.safe_load(
-        Path("compose.external-production.yml").read_text(encoding="utf-8")
-    )
+    external = yaml.safe_load(Path("compose.external-production.yml").read_text(encoding="utf-8"))
     runtime_keys = {
         "CUSTOMBUILD_WEB_API_URL",
         "CUSTOMBUILD_WEB_DEMO_TOKEN",
@@ -171,9 +169,9 @@ def test_compose_sets_resource_limits_and_passes_release_identity() -> None:
     assert "DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:-unknown}" in compose
     assert "SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:-unknown}" in compose
     assert "FRONTEND_LOCK_SHA256: ${FRONTEND_LOCK_SHA256:-unknown}" in compose
-    assert compose.count("mem_limit:") == 9
-    assert compose.count("cpus:") == 9
-    assert compose.count("*python-release-build-args") == 4
+    assert compose.count("mem_limit:") == 11
+    assert compose.count("cpus:") == 11
+    assert compose.count("*python-release-build-args") == 6
     assert compose.count("*release-build-args") == 2
 
 
@@ -418,6 +416,16 @@ def test_ci_uses_the_same_node_release_as_the_web_image() -> None:
         source = Path(workflow).read_text(encoding="utf-8")
         assert "node-version: 24.18.1" not in source
         assert f"node-version: {expected}" in source
+
+
+def test_supply_chain_scans_pin_the_reviewed_grype_toolchain() -> None:
+    workflow = Path(".github/workflows/supply-chain.yml").read_text(encoding="utf-8")
+    reviewed_action = "anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
+
+    assert workflow.count("uses: anchore/scan-action@") == 3
+    assert workflow.count(f"uses: {reviewed_action}") == 3
+    assert workflow.count("grype-version: v0.110.0") == 3
+    assert "e1165082ffb1fe366ebaf02d8526e7c4989ea9d2" not in workflow
 
 
 def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:

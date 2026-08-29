@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "purpose": "Reproducible frontend regression baseline; not a workstation FPS claim or a server latency SLO.",
   "fixtures": {
     "normal_5x5": {
@@ -35,19 +35,19 @@
   "budgets": {
     "local_resolve_design": {
       "normal_5x5": {
-        "median_ms": 5,
-        "p95_ms": 15
+        "wall_median_ms": 5,
+        "wall_p95_ms": 15
       },
       "maximum_supported": {
-        "median_ms": 50,
-        "p95_ms": 125
+        "wall_median_ms": 50,
+        "wall_p95_ms": 125
       },
-      "maximum_to_normal_p95_ratio": 80
+      "maximum_to_normal_thread_cpu_p95_ratio": 80
     },
     "local_numeric_edit_5mm": {
       "normal_5x5": {
-        "median_ms": 5,
-        "p95_ms": 15
+        "wall_median_ms": 5,
+        "wall_p95_ms": 15
       }
     },
     "chromium_interaction": {

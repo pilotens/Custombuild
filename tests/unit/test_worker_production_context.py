@@ -26,12 +26,21 @@ from custombuild_domain import (
     screening_mdf_6,
     screening_mdf_18,
 )
-from custombuild_manufacturing import ProductionBlockedError
+from custombuild_manufacturing import (
+    MAX_CORE_DOCUMENT_BYTES,
+    MAX_EVIDENCE_ARTIFACTS,
+    MAX_EVIDENCE_TOTAL_BYTES,
+    MAX_PRODUCTION_BUNDLE_BYTES,
+    ArtifactFile,
+    ProductionBlockedError,
+)
 from custombuild_manufacturing.production_context import (
     generation_context_hash,
     resolve_production_components,
 )
 from custombuild_rules import RULES_VERSION
+
+TEST_STORAGE_LEASE = "77777777-7777-4777-8777-777777777777"
 
 
 def _job_and_version() -> tuple[GenerationJob, DesignVersion]:
@@ -103,8 +112,25 @@ def _job_and_version() -> tuple[GenerationJob, DesignVersion]:
         production_engine_context_json=resolved.context.as_dict(),
         request_json=request,
         attempts=0,
+        lease_token=TEST_STORAGE_LEASE,
     )
     return job, version
+
+
+def _generate_with_storage_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    job: GenerationJob,
+    version: DesignVersion,
+) -> dict[str, Any]:
+    lease_token = job.lease_token
+    assert lease_token is not None
+    monkeypatch.setattr(worker_tasks, "reserve_storage_batch", lambda *_args, **_kwargs: None)
+    return worker_tasks._generate(
+        job,
+        version,
+        lease_token=lease_token,
+        lease_guard=worker_tasks._GenerationLeaseGuard(job.organization_id, lease_token),
+    )
 
 
 def _frozen_spec_json(**parameter_changes: object) -> dict[str, Any]:
@@ -136,6 +162,148 @@ def _directional_frozen_spec_json(**parameter_changes: object) -> dict[str, Any]
         back_material=back_material,
     )
     return spec.model_dump(mode="json")
+
+
+def _generation_ready_job_and_version() -> tuple[GenerationJob, DesignVersion]:
+    job, version = _job_and_version()
+    version.spec_json = _frozen_spec_json(
+        width_um=mm(700),
+        height_um=mm(1_000),
+        shelf_count=2,
+        shelf_load_n=98,
+    )
+    design = build_bookcase(BookcaseDesignSpec.model_validate(version.spec_json))
+    version.design_hash = design.design_hash
+    job.request_json = {
+        **job.request_json,
+        "include_step": True,
+        "include_validation_program": True,
+        "approved_warning_overrides": [],
+    }
+    resolved = resolve_production_components(
+        machine_profile_id=job.request_json["machine_profile_id"],
+        postprocessor_id=job.request_json["postprocessor_id"],
+        **worker_tasks.WORKER_SETTINGS.build_identity,
+    )
+    job.production_engine_context_json = resolved.context.as_dict()
+    job.production_context_hash = generation_context_hash(
+        design_context_hash=version.context_hash,
+        design_version_id=version.id,
+        revision=version.revision,
+        request=job.request_json,
+        production_engine_context=resolved.context,
+    )
+    return job, version
+
+
+_EVIDENCE_IDENTITY_CASES = (
+    (
+        "validation/dfm-report.json",
+        "dfm_report",
+        "application/json",
+        "DFM_VALIDATION_REPORT",
+    ),
+    (
+        "validation/design-review-package-status.json",
+        "design_review_package_status",
+        "application/json",
+        "DESIGN_REVIEW_PACKAGE_STATUS",
+    ),
+    (
+        "validation/stock-selection.json",
+        "stock_selection",
+        "application/json",
+        "STOCK_SELECTION_SNAPSHOT",
+    ),
+    (
+        "validation/generation-plan.json",
+        "generation_plan",
+        "application/json",
+        "GENERATION_PLAN",
+    ),
+    (
+        "cam/operations.json",
+        "operations",
+        "application/json",
+        "MACHINE_NEUTRAL_OPERATIONS",
+    ),
+    (
+        "cam/validation-backplot.svg",
+        "validation_backplot",
+        "image/svg+xml",
+        "VALIDATION_BACKPLOT",
+    ),
+    ("model/design.glb", "design_glb", "model/gltf-binary", "WEB_PREVIEW_GLB"),
+    (
+        "model/design.fcstd",
+        "design_fcstd",
+        "application/vnd.freecad",
+        "NON_AUTHORITATIVE_FREECAD_PROJECT",
+    ),
+    (
+        "validation/cad-interchange-status.json",
+        "cad_interchange_status",
+        "application/json",
+        "CAD_INTERCHANGE_STATUS",
+    ),
+    (
+        "validation/source-provenance.json",
+        "source_provenance",
+        "application/json",
+        "SOURCE_PROVENANCE",
+    ),
+    (
+        "validation/workshop-readiness.json",
+        "workshop_readiness",
+        "application/json",
+        "WORKSHOP_READINESS_REPORT",
+    ),
+    (
+        "assembly/assembly-readiness.json",
+        "assembly_readiness",
+        "application/json",
+        "ASSEMBLY_READINESS",
+    ),
+    (
+        "cam/setups/setup-001.svg",
+        "setup_sheet_001",
+        "image/svg+xml",
+        "SETUP_SHEET",
+    ),
+)
+
+
+def _stub_evidence_bundle(
+    job: GenerationJob,
+    artifacts: tuple[ArtifactFile, ...],
+    context: Any,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        zip_bytes=b"valid-bundle",
+        manifest={
+            "generation_context_hash": job.production_context_hash,
+            "production_engine_context": context.production_engine_context,
+        },
+        artifacts=artifacts,
+        review_status=SimpleNamespace(
+            cam_status=worker_tasks.CAMStageStatus.BLOCKED,
+            as_dict=lambda: {"cam_status": "BLOCKED"},
+        ),
+        dfm_report=SimpleNamespace(status=SimpleNamespace(value="BLOCKED")),
+        layouts=(),
+        workshop_readiness=SimpleNamespace(as_dict=lambda: {}),
+    )
+
+
+def _install_evidence_bundle(
+    monkeypatch: pytest.MonkeyPatch,
+    job: GenerationJob,
+    artifacts: tuple[ArtifactFile, ...],
+) -> None:
+    def build_bundle(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        return _stub_evidence_bundle(job, artifacts, kwargs["context"])
+
+    monkeypatch.setattr(worker_tasks, "build_production_bundle", build_bundle)
 
 
 def test_worker_accepts_only_the_exact_frozen_context() -> None:
@@ -223,7 +391,7 @@ def test_worker_returns_review_package_when_two_sided_cam_registration_is_missin
 
     monkeypatch.setattr(worker_tasks, "_put_object", record_write)
 
-    result = worker_tasks._generate(job, version)
+    result = _generate_with_storage_lease(monkeypatch, job, version)
 
     assert result["design_review_package_status"]["package_status"] == ("READY_FOR_DESIGN_REVIEW")
     assert result["design_review_package_status"]["cam_status"] == "BLOCKED"
@@ -255,6 +423,288 @@ def test_worker_returns_review_package_when_two_sided_cam_registration_is_missin
     assert legacy_unbound_key in preexisting_legacy_objects
     assert bundle_write[0] != legacy_unbound_key
     assert bundle_write[1] == {"manifest-sha256": result["manifest_sha256"]}
+
+
+@pytest.mark.parametrize("oversize_object", ("bundle", "manifest"))
+def test_worker_rejects_oversize_bundle_or_manifest_before_any_object_write(
+    oversize_object: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    writes: list[str] = []
+
+    def build_invalid_bundle(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        context = kwargs["context"]
+        manifest = {
+            "generation_context_hash": job.production_context_hash,
+            "production_engine_context": context.production_engine_context,
+        }
+        if oversize_object == "manifest":
+            manifest["padding"] = "x" * MAX_CORE_DOCUMENT_BYTES
+        zip_bytes = (
+            b"x" * (MAX_PRODUCTION_BUNDLE_BYTES + 1)
+            if oversize_object == "bundle"
+            else b"valid-bundle"
+        )
+        return SimpleNamespace(zip_bytes=zip_bytes, manifest=manifest, artifacts=())
+
+    monkeypatch.setattr(worker_tasks, "build_production_bundle", build_invalid_bundle)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_put_object",
+        lambda key, _payload, _content_type, **_kwargs: writes.append(key),
+    )
+
+    with pytest.raises(ProductionBlockedError, match="canonical size limit"):
+        _generate_with_storage_lease(monkeypatch, job, version)
+
+    assert writes == []
+
+
+def test_worker_rejects_late_oversize_evidence_before_any_object_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    writes: list[str] = []
+
+    def build_invalid_bundle(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        context = kwargs["context"]
+        return SimpleNamespace(
+            zip_bytes=b"valid-bundle",
+            manifest={
+                "generation_context_hash": job.production_context_hash,
+                "production_engine_context": context.production_engine_context,
+            },
+            artifacts=(
+                ArtifactFile(
+                    "validation/dfm-report.json",
+                    b"{}",
+                    "application/json",
+                    "DFM_VALIDATION_REPORT",
+                ),
+                ArtifactFile(
+                    "validation/source-provenance.json",
+                    b"x" * (MAX_CORE_DOCUMENT_BYTES + 1),
+                    "application/json",
+                    "SOURCE_PROVENANCE",
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(worker_tasks, "build_production_bundle", build_invalid_bundle)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_put_object",
+        lambda key, _payload, _content_type, **_kwargs: writes.append(key),
+    )
+
+    with pytest.raises(ProductionBlockedError, match="source_provenance artifact"):
+        _generate_with_storage_lease(monkeypatch, job, version)
+
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    "invalid_inventory",
+    ("count", "total", "duplicate-path", "media-type"),
+)
+def test_worker_rejects_invalid_evidence_inventory_before_any_object_write(
+    invalid_inventory: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    writes: list[str] = []
+    if invalid_inventory == "count":
+        artifacts = tuple(
+            ArtifactFile(
+                f"cam/setups/setup-{index:03d}.svg",
+                b"x",
+                "image/svg+xml",
+                "SETUP_SHEET",
+            )
+            for index in range(MAX_EVIDENCE_ARTIFACTS + 1)
+        )
+        message = "file-count limit"
+    elif invalid_inventory == "total":
+        shared_payload = b"x" * MAX_CORE_DOCUMENT_BYTES
+        artifacts = tuple(
+            ArtifactFile(
+                f"cam/setups/setup-{index:03d}.svg",
+                shared_payload,
+                "image/svg+xml",
+                "SETUP_SHEET",
+            )
+            for index in range(MAX_EVIDENCE_TOTAL_BYTES // len(shared_payload) + 1)
+        )
+        message = "total size limit"
+    elif invalid_inventory == "duplicate-path":
+        artifacts = (
+            ArtifactFile(
+                "cam/setups/setup-001.svg",
+                b"first",
+                "image/svg+xml",
+                "SETUP_SHEET",
+            ),
+            ArtifactFile(
+                "cam/setups/setup-001.svg",
+                b"second",
+                "image/svg+xml",
+                "SETUP_SHEET",
+            ),
+        )
+        message = "duplicate identities"
+    else:
+        artifacts = (
+            ArtifactFile(
+                "validation/dfm-report.json",
+                b"{}",
+                "",
+                "DFM_VALIDATION_REPORT",
+            ),
+        )
+        message = "media type"
+
+    def build_invalid_bundle(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        context = kwargs["context"]
+        return SimpleNamespace(
+            zip_bytes=b"valid-bundle",
+            manifest={
+                "generation_context_hash": job.production_context_hash,
+                "production_engine_context": context.production_engine_context,
+            },
+            artifacts=artifacts,
+        )
+
+    monkeypatch.setattr(worker_tasks, "build_production_bundle", build_invalid_bundle)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_put_object",
+        lambda key, _payload, _content_type, **_kwargs: writes.append(key),
+    )
+
+    with pytest.raises(ProductionBlockedError, match=message):
+        _generate_with_storage_lease(monkeypatch, job, version)
+
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    ("path", "_kind", "_expected_media_type", "role"),
+    _EVIDENCE_IDENTITY_CASES,
+)
+def test_worker_rejects_valid_but_wrong_evidence_media_before_any_object_write(
+    path: str,
+    _kind: str,
+    _expected_media_type: str,
+    role: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    writes: list[str] = []
+    artifacts = (ArtifactFile(path, b"{}", "application/pdf", role),)
+    _install_evidence_bundle(monkeypatch, job, artifacts)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_put_object",
+        lambda key, _payload, _content_type, **_kwargs: writes.append(key),
+    )
+
+    with pytest.raises(ProductionBlockedError, match="canonical path"):
+        _generate_with_storage_lease(monkeypatch, job, version)
+
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    ("path", "_kind", "media_type", "_expected_role"),
+    _EVIDENCE_IDENTITY_CASES,
+)
+def test_worker_rejects_wrong_evidence_role_before_any_object_write(
+    path: str,
+    _kind: str,
+    media_type: str,
+    _expected_role: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    writes: list[str] = []
+    artifacts = (ArtifactFile(path, b"{}", media_type, "ATTACKER_ROLE"),)
+    _install_evidence_bundle(monkeypatch, job, artifacts)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_put_object",
+        lambda key, _payload, _content_type, **_kwargs: writes.append(key),
+    )
+
+    with pytest.raises(ProductionBlockedError, match="canonical path"):
+        _generate_with_storage_lease(monkeypatch, job, version)
+
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        "cam/setups/setup-001.json",
+        "cam/setups/nested/setup-001.svg",
+        "cam/setups/setup-001.svg.tmp",
+    ),
+)
+def test_worker_rejects_noncanonical_setup_evidence_path_before_any_object_write(
+    path: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    writes: list[str] = []
+    artifacts = (ArtifactFile(path, b"<svg/>", "image/svg+xml", "SETUP_SHEET"),)
+    _install_evidence_bundle(monkeypatch, job, artifacts)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_put_object",
+        lambda key, _payload, _content_type, **_kwargs: writes.append(key),
+    )
+
+    with pytest.raises(ProductionBlockedError, match="setup evidence path"):
+        _generate_with_storage_lease(monkeypatch, job, version)
+
+    assert writes == []
+
+
+def test_worker_accepts_only_the_canonical_evidence_path_identity_contracts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    writes: list[tuple[str, str]] = []
+    artifacts = tuple(
+        ArtifactFile(path, b"{}", media_type, role)
+        for path, _kind, media_type, role in _EVIDENCE_IDENTITY_CASES
+    )
+    _install_evidence_bundle(monkeypatch, job, artifacts)
+
+    def record_write(
+        key: str,
+        _payload: bytes,
+        content_type: str,
+        **_kwargs: object,
+    ) -> None:
+        writes.append((key, content_type))
+
+    monkeypatch.setattr(worker_tasks, "_put_object", record_write)
+
+    result = _generate_with_storage_lease(monkeypatch, job, version)
+
+    expected = {
+        kind: (path, media_type) for path, kind, media_type, _role in _EVIDENCE_IDENTITY_CASES
+    }
+    observed = {
+        item["kind"]: (
+            item["object_key"].rsplit("/", maxsplit=1)[-1].replace("__", "/"),
+            item["content_type"],
+        )
+        for item in result["evidence_artifacts"]
+    }
+    assert observed == expected
+    assert len(writes) == len(_EVIDENCE_IDENTITY_CASES) + 2
 
 
 def test_worker_returns_stockless_review_package_when_stock_profile_is_missing(
@@ -319,7 +769,7 @@ def test_worker_returns_stockless_review_package_when_stock_profile_is_missing(
 
     monkeypatch.setattr(worker_tasks, "_put_object", record_write)
 
-    result = worker_tasks._generate(job, version)
+    result = _generate_with_storage_lease(monkeypatch, job, version)
 
     status = result["design_review_package_status"]
     assert status["package_status"] == "READY_FOR_DESIGN_REVIEW"
@@ -414,7 +864,7 @@ def test_worker_keeps_directional_stock_unbound_despite_opaque_grain_evidence(
     monkeypatch.setattr(worker_tasks, "build_production_bundle", capture_bundle)
     monkeypatch.setattr(worker_tasks, "_put_object", record_write)
 
-    result = worker_tasks._generate(job, version)
+    result = _generate_with_storage_lease(monkeypatch, job, version)
 
     assert captured_stock
     assert {stock.grain_direction for stock in captured_stock} == {"UNBOUND"}
@@ -509,7 +959,7 @@ def test_worker_blocks_outlier_frozen_spec_before_build_or_object_write(
     )
 
     with pytest.raises(ProductionBlockedError, match="published design envelope"):
-        worker_tasks._generate(job, version)
+        _generate_with_storage_lease(monkeypatch, job, version)
 
     assert calls == []
     assert version.spec_json == frozen_before
@@ -635,7 +1085,7 @@ def test_worker_blocks_library_drift_before_build_or_object_writes(
 
     monkeypatch.setattr(worker_tasks, "_put_object", record_write)
     with pytest.raises(ProductionBlockedError, match="production engine context drift"):
-        worker_tasks._generate(job, version)
+        _generate_with_storage_lease(monkeypatch, job, version)
 
     assert writes == []
 

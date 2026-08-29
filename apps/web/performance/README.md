@@ -6,14 +6,24 @@ This baseline is a regression guard for the deterministic local design path and 
 
 | Path | Fixture | Samples | Gate |
 | --- | --- | ---: | --- |
-| `resolveDesign` | 2,400 × 2,400 × 340 mm, 5 bays × 5 shelf rows, 5 base cabinets | 31 after warmup | median and p95 |
-| `resolveDesign` | Full B1 pure-engine ceiling: 6,000 × 4,000 × 1,200 mm, 16 dividers/17 bays × 40 shelf rows, 17 base cabinets; 768 generated parts | 31 after warmup | median, p95, max/normal p95 ratio, exact part count, and terminal shelf ID |
-| 5 mm numeric part edit + `resolveDesign` | normal 5 × 5 fixture | 31 after warmup | median and p95 |
+| `resolveDesign` | 2,400 × 2,400 × 340 mm, 5 bays × 5 shelf rows, 5 base cabinets | 31 after warmup | wall-clock median and p95 |
+| `resolveDesign` | Full B1 pure-engine ceiling: 6,000 × 4,000 × 1,200 mm, 16 dividers/17 bays × 40 shelf rows, 17 base cabinets; 768 generated parts | 31 after warmup | wall-clock median/p95, thread-CPU max/normal p95 ratio, exact part count, and terminal shelf ID |
+| 5 mm numeric part edit + `resolveDesign` | normal 5 × 5 fixture | 31 after warmup | wall-clock median and p95 |
 | select a physical part | already-rendered normal fixture in Chromium | 7 after one warmup | p95 |
 | Studio → Kontroll mode switch | already-rendered normal fixture in Chromium | 7 after one warmup | p95 |
 | 5 mm divider-centre numeric edit | already-rendered normal fixture in Chromium | 7 after one warmup | p95 |
 
-The unit sampler uses `performance.now()`, warms the code path, batches very fast operations until a sample lasts at least 12 ms, and reports per-operation median and p95. The browser journey warms the rendered UI before collecting samples and does not include initial WebGL shader compilation.
+The unit sampler warms the code path, then calibrates the batch size with
+`process.threadCpuUsage()` until a batch consumes at least 12 ms of thread CPU
+time or reaches the configured cap. It records each of the 31 per-operation
+samples with both `performance.now()` and `process.threadCpuUsage()`. Absolute
+median and p95 gates remain wall-clock latency gates, so a real pause is not
+normalized away. The maximum-to-normal p95 ratio uses thread CPU because it is
+an algorithmic-scaling gate: an operating-system scheduler pause must not affect
+one fixture's two-iteration batch differently from another fixture's larger batch.
+The unit benchmark runs in an isolated Node fork with one worker, after the
+functional Vitest suite has passed. The browser journey warms the rendered UI
+before collecting samples and does not include initial WebGL shader compilation.
 
 The `maximum_supported` unit fixture gates the full B1 contract ceiling through the pure `resolveDesign` engine: 6,000 mm width, 4,000 mm height, 1,200 mm depth, 16 dividers/17 bays, 40 shelves, and 17 base cabinets. This is a deterministic engine checkpoint only; it does not claim that the browser UI, WebGL rendering, interactions, export flow, or the complete end-to-end application support that ceiling.
 
@@ -28,7 +38,7 @@ The server preview has a source-controlled 500 ms debounce. Network latency is r
 Run the focused checks from `apps/web`:
 
 ```text
-pnpm vitest run lib/design-performance-baseline.test.ts
+pnpm run test:performance
 pnpm playwright test e2e/performance-baseline.spec.ts --project=chromium-desktop
 ```
 

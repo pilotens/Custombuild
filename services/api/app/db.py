@@ -26,7 +26,17 @@ def get_engine() -> Engine:
         if url.endswith(":memory:"):
             pool_args["poolclass"] = StaticPool
     elif url.startswith("postgresql"):
-        connect_args["connect_timeout"] = settings.readiness_timeout_seconds
+        connect_args.update(
+            {
+                "connect_timeout": settings.readiness_timeout_seconds,
+                "options": (
+                    "-c statement_timeout="
+                    f"{settings.database_statement_timeout_seconds * 1000} "
+                    "-c lock_timeout="
+                    f"{settings.database_lock_timeout_seconds * 1000}"
+                ),
+            }
+        )
     return create_engine(url, pool_pre_ping=True, connect_args=connect_args, **pool_args)
 
 

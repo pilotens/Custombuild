@@ -8,18 +8,22 @@ Redis and object storage; it never mutates the database or queue directly.
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import hashlib
 import io
 import json
 import os
 import re
+import socket
 import sys
 import time
 import uuid
 import zipfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+from threading import Event, Thread
 from typing import Any, Final, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
@@ -324,8 +328,9 @@ EDGE_BAND_READINESS_REQUIREMENT: Final = (
     "Adhesive-free mechanical edge protection and cut-size compensation",
 )
 MAX_ZIP_FILES: Final = 10_000
-MAX_ZIP_ENTRY_BYTES: Final = 512 * 1024 * 1024
+MAX_ZIP_ENTRY_BYTES: Final = 32 * 1024 * 1024
 MAX_ZIP_UNCOMPRESSED_BYTES: Final = 2 * 1024 * 1024 * 1024
+HTTP_READ_CHUNK_BYTES: Final = 64 * 1024
 _MISSING: Final = object()
 
 
@@ -372,6 +377,8 @@ class HttpClient:
         payload: object = _MISSING,
         expected: tuple[int, ...] = (200,),
         follow_redirects: bool = True,
+        maximum_body_bytes: int | None = None,
+        total_read_seconds: float | None = None,
     ) -> HttpResult:
         target = urljoin(f"{self.base_url}/", path.lstrip("/"))
         headers = {"Accept": "application/json", "User-Agent": "custombuild-live-acceptance/1"}
@@ -386,19 +393,41 @@ class HttpClient:
         )
         opener = self._opener if follow_redirects else self._no_redirect_opener
         try:
-            with opener.open(request, timeout=self.request_timeout) as response:  # noqa: S310
-                result = HttpResult(
-                    response.status,
-                    response.geturl(),
-                    {key.lower(): value for key, value in response.headers.items()},
-                    response.read(),
+            response = opener.open(request, timeout=self.request_timeout)  # noqa: S310
+            status = response.status
+            response_url = response.geturl()
+            response_headers = {key.lower(): value for key, value in response.headers.items()}
+            if maximum_body_bytes is None:
+                with response:
+                    response_body = response.read()
+            else:
+                if total_read_seconds is None:
+                    raise AcceptanceFailure("bounded HTTP read has no deadline")
+                response_body = _read_bounded_http_body(
+                    response,
+                    maximum_body_bytes=maximum_body_bytes,
+                    total_read_seconds=total_read_seconds,
                 )
+            result = HttpResult(status, response_url, response_headers, response_body)
         except HTTPError as exc:
+            if maximum_body_bytes is None:
+                try:
+                    error_body = exc.read()
+                finally:
+                    exc.close()
+            else:
+                if total_read_seconds is None:
+                    raise AcceptanceFailure("bounded HTTP read has no deadline") from exc
+                error_body = _read_bounded_http_body(
+                    exc,
+                    maximum_body_bytes=maximum_body_bytes,
+                    total_read_seconds=total_read_seconds,
+                )
             result = HttpResult(
                 exc.code,
                 exc.geturl(),
                 {key.lower(): value for key, value in exc.headers.items()},
-                exc.read(),
+                error_body,
             )
         except (OSError, TimeoutError, URLError) as exc:
             raise AcceptanceFailure(f"{method} {target} failed: {exc}") from exc
@@ -427,6 +456,76 @@ class HttpClient:
 def require(condition: object, message: str) -> None:
     if not condition:
         raise AcceptanceFailure(message)
+
+
+def _read_bounded_http_body(
+    response: Any,
+    *,
+    maximum_body_bytes: int,
+    total_read_seconds: int | float,
+) -> bytes:
+    """Read one bounded body under a deadline that a slow drip cannot extend."""
+
+    require(
+        type(maximum_body_bytes) is int and maximum_body_bytes > 0,
+        "bounded HTTP read has an invalid size",
+    )
+    require(
+        not isinstance(total_read_seconds, bool)
+        and isinstance(total_read_seconds, int | float)
+        and total_read_seconds > 0,
+        "bounded HTTP read has an invalid deadline",
+    )
+    deadline = time.monotonic() + total_read_seconds
+    finished = Event()
+    chunks: list[bytes] = []
+    failures: list[BaseException] = []
+
+    def read_body() -> None:
+        read_bytes = 0
+        try:
+            while True:
+                remaining = maximum_body_bytes + 1 - read_bytes
+                if remaining <= 0:
+                    raise AcceptanceFailure("HTTP response body exceeds its declared size")
+                chunk = response.read(min(HTTP_READ_CHUNK_BYTES, remaining))
+                if not isinstance(chunk, bytes):
+                    raise AcceptanceFailure("HTTP response returned non-byte data")
+                if not chunk:
+                    break
+                read_bytes += len(chunk)
+                if read_bytes > maximum_body_bytes:
+                    raise AcceptanceFailure("HTTP response body exceeds its declared size")
+                chunks.append(chunk)
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            finished.set()
+
+    Thread(target=read_body, name="acceptance-http-reader", daemon=True).start()
+    completed = finished.wait(max(0.0, deadline - time.monotonic()))
+    if not completed:
+        candidate = response
+        for _ in range(6):
+            response_socket = getattr(candidate, "_sock", None)
+            if isinstance(response_socket, socket.socket):
+                with suppress(OSError):
+                    response_socket.shutdown(socket.SHUT_RDWR)
+                break
+            nested = getattr(candidate, "fp", None)
+            if nested is None:
+                nested = getattr(candidate, "raw", None)
+            if nested is None or nested is candidate:
+                break
+            candidate = nested
+    with suppress(OSError, ValueError):
+        response.close()
+    if not completed:
+        finished.wait(0.25)
+        raise AcceptanceFailure("artifact download exceeded its total read deadline")
+    if failures:
+        raise failures[0]
+    return b"".join(chunks)
 
 
 def mapping(value: Any, label: str) -> dict[str, Any]:
@@ -1533,43 +1632,101 @@ def verify_package(
     return manifest
 
 
-def _validate_artifact_target(base_url: str, target: str) -> None:
-    base = urlparse(base_url)
-    parsed = urlparse(target)
-    require(parsed.scheme in {"http", "https"} and bool(parsed.hostname), "bad artifact URL")
-    require(parsed.username is None and parsed.password is None, "artifact URL contains userinfo")
-    loopback = {"localhost", "127.0.0.1", "::1"}
-    if base.hostname in loopback:
-        require(parsed.hostname in loopback, "artifact redirect left the local Compose host")
-    else:
-        require(parsed.hostname == base.hostname, "artifact redirect changed host")
-
-
-def download_artifact(client: HttpClient, download_path: str) -> HttpResult:
-    redirect = client.request(
+def download_artifact(
+    client: HttpClient,
+    download_path: str,
+    *,
+    artifact_id: str,
+    artifact_kind: str,
+    revision: int,
+    expected_size: int,
+    expected_content_type: str,
+    expected_sha256: str,
+) -> HttpResult:
+    require(
+        download_path == download_path.strip()
+        and re.search(r"[\\\x00-\x20\x7f]", download_path) is None,
+        "artifact endpoint returned an unsafe download path",
+    )
+    parsed = urlparse(download_path)
+    try:
+        canonical_artifact_id = str(uuid.UUID(artifact_id))
+    except (AttributeError, ValueError):
+        canonical_artifact_id = ""
+    query_match = re.fullmatch(
+        r"expires=([1-9][0-9]{0,18})&signature=([0-9a-f]{64})",
+        parsed.query,
+    )
+    expires_at = int(query_match.group(1)) if query_match is not None else 0
+    now = int(time.time())
+    require(
+        canonical_artifact_id == artifact_id
+        and parsed.scheme == ""
+        and parsed.netloc == ""
+        and parsed.path == f"/v1/artifacts/{artifact_id}/download"
+        and parsed.params == ""
+        and parsed.fragment == ""
+        and query_match is not None
+        and now < expires_at <= now + 3_600,
+        "artifact endpoint returned an unsafe download path",
+    )
+    require(
+        type(expected_size) is int and 0 < expected_size <= MAX_ZIP_ENTRY_BYTES,
+        "artifact declared an invalid size",
+    )
+    expected_digest = "sha-256=" + base64.b64encode(
+        bytes.fromhex(require_sha256(expected_sha256, "artifact SHA"))
+    ).decode("ascii")
+    result = client.request(
         "GET",
         download_path,
-        expected=(307,),
+        expected=(200,),
         follow_redirects=False,
+        maximum_body_bytes=expected_size,
+        total_read_seconds=client.request_timeout,
     )
-    location = redirect.headers.get("location")
-    require(location, "artifact endpoint returned no signed object-storage redirect")
-    target = urljoin(redirect.url, location)
-    _validate_artifact_target(client.base_url, target)
-    request = Request(  # noqa: S310 - target is restricted by _validate_artifact_target
-        target, headers={"User-Agent": "custombuild-live-acceptance/1"}
+    require("location" not in result.headers, "artifact endpoint attempted a redirect")
+    require(
+        result.headers.get("content-length") == str(expected_size),
+        "artifact Content-Length mismatch",
     )
-    try:
-        with build_opener().open(request, timeout=client.request_timeout) as response:  # noqa: S310
-            result = HttpResult(
-                response.status,
-                response.geturl(),
-                {key.lower(): value for key, value in response.headers.items()},
-                response.read(),
-            )
-    except (HTTPError, OSError, TimeoutError, URLError) as exc:
-        raise AcceptanceFailure(f"signed object-storage download failed: {exc}") from exc
-    require(result.status == 200, f"object storage returned {result.status}")
+    require(
+        result.headers.get("content-type", "").partition(";")[0].strip().lower()
+        == expected_content_type.lower(),
+        "artifact Content-Type mismatch",
+    )
+    require(result.headers.get("etag") == f'"{expected_sha256}"', "artifact ETag mismatch")
+    require(result.headers.get("digest") == expected_digest, "artifact Digest mismatch")
+    disposition = result.headers.get("content-disposition", "")
+    expected_filename = {
+        "production_bundle": f"custombuild-design-review-rev-{revision}.zip",
+        "manifest": f"custombuild-design-review-rev-{revision}-manifest.json",
+        "stock_selection": f"custombuild-stock-selection-rev-{revision}.json",
+        "generation_plan": f"custombuild-generation-plan-rev-{revision}.json",
+    }.get(artifact_kind)
+    require(
+        type(revision) is int
+        and revision > 0
+        and expected_filename is not None
+        and disposition == f'attachment; filename="{expected_filename}"',
+        "artifact Content-Disposition is unsafe",
+    )
+    cache_directives = {
+        directive.strip().lower()
+        for directive in result.headers.get("cache-control", "").split(",")
+        if directive.strip()
+    }
+    require({"private", "no-store"} <= cache_directives, "artifact may be cached")
+    require(
+        "no-transform" in cache_directives,
+        "artifact representation may be transformed",
+    )
+    require(
+        cache_directives == {"private", "no-store", "no-transform", "max-age=0"},
+        "artifact cache policy contains unexpected directives",
+    )
+    require(len(result.body) == expected_size, "artifact body size mismatch")
+    require(sha256(result.body) == expected_sha256, "artifact body SHA mismatch")
     return result
 
 
@@ -1944,9 +2101,16 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             f"{kind} content type mismatch",
         )
         path = string(artifact.get("download_path"), f"{kind} download path")
-        response = download_artifact(nordic, path)
-        require(len(response.body) == artifact.get("size_bytes"), f"{kind} size mismatch")
-        require(sha256(response.body) == artifact.get("sha256"), f"{kind} SHA mismatch")
+        response = download_artifact(
+            nordic,
+            path,
+            artifact_id=string(artifact.get("id"), f"{kind} artifact id"),
+            artifact_kind=kind,
+            revision=revision,
+            expected_size=integer(artifact.get("size_bytes"), f"{kind} size"),
+            expected_content_type=expected_content_type,
+            expected_sha256=require_sha256(artifact.get("sha256"), f"{kind} SHA"),
+        )
         downloaded[kind] = response.body
     bundle_sha = require_sha256(job_result.get("bundle_sha256"), "job bundle_sha256")
     manifest_sha = require_sha256(job_result.get("manifest_sha256"), "job manifest_sha256")
@@ -2099,7 +2263,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--readiness-timeout", type=float, default=180)
     parser.add_argument("--job-timeout", type=float, default=900)
     parser.add_argument("--poll-interval", type=float, default=2)
-    parser.add_argument("--request-timeout", type=float, default=30)
+    parser.add_argument("--request-timeout", type=float, default=30.0)
     arguments = parser.parse_args()
     for name in ("readiness_timeout", "job_timeout", "poll_interval", "request_timeout"):
         require(getattr(arguments, name) > 0, f"--{name.replace('_', '-')} must be positive")

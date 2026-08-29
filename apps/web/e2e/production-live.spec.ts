@@ -1,4 +1,4 @@
-import { expect, test, type Request } from "@playwright/test";
+import { expect, test, type Page, type Request, type TestInfo } from "@playwright/test";
 import {
   provisionLiveProject,
   selectProjectBeforeNavigation,
@@ -59,22 +59,35 @@ function isVersionGeneration(request: Request): boolean {
     && /^\/v1\/projects\/[^/]+\/versions\/\d+\/generate$/.test(requestPath(request));
 }
 
+async function captureProductionEvidence(
+  page: Page,
+  testInfo: TestInfo,
+  fileName: string,
+): Promise<void> {
+  // Playwright 1.62's WebKit screenshotter injects an un-nonced `body {}`
+  // stylesheet to synchronize animations. The production CSP correctly
+  // rejects that test-only style and WebKit reports it as a console error.
+  // Chromium/Firefox still provide the diagnostic images; keep WebKit focused
+  // on the real cross-browser flow without mutating the page under test.
+  if (testInfo.project.name.startsWith("webkit-")) return;
+  await page.screenshot({ path: testInfo.outputPath(fileName), fullPage: true });
+}
+
 test.skip(
   process.env.PLAYWRIGHT_REAL_API !== "1",
   "Requires the complete Compose API, worker, database, queue and object storage.",
 );
-test.skip(
-  ({ browserName }) => browserName !== "chromium",
-  "The state-mutating manufacturing acceptance runs once in Chromium; offline UX smoke covers all engines.",
-);
-
 test("det verkliga designgranskningsflödet kan skapa och hämta ett granskningspaket", async ({
   page,
   request,
 }, testInfo) => {
   test.setTimeout(6 * 60_000);
   await page.setViewportSize({ width: 966, height: 1197 });
-  const project = await provisionLiveProject(request, testInfo, "production-flow");
+  const project = await provisionLiveProject(
+    request,
+    testInfo,
+    `production-flow-${testInfo.project.name}`,
+  );
   await selectProjectBeforeNavigation(page, project);
   const apiUrl = process.env.PLAYWRIGHT_API_URL?.replace(/\/$/, "");
   expect(apiUrl).toBeTruthy();
@@ -262,6 +275,8 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   ]);
   expect(createResponse.ok(), `Version POST returned HTTP ${createResponse.status()}`).toBe(true);
   expect(validationResponse.ok(), `Validation POST returned HTTP ${validationResponse.status()}`).toBe(true);
+  const createdVersion = await createResponse.json() as { revision?: unknown };
+  expect(createdVersion.revision).toBe(1);
   const createPayload = createResponse.request().postDataJSON() as {
     spec: Record<string, unknown>;
     production_context: Record<string, unknown>;
@@ -311,7 +326,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(warningConfirmation).toBeVisible();
   await expect(warningConfirmation).not.toBeChecked();
-  await page.screenshot({ path: testInfo.outputPath("01-simple-review.png"), fullPage: true });
+  await captureProductionEvidence(page, testInfo, "01-simple-review.png");
   await warningConfirmation.check();
 
   const createPackage = productionDialog.getByRole("button", { name: "Skapa underlag", exact: true });
@@ -409,13 +424,13 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     "workshop_readiness",
   ]));
   expect(artifactKinds.filter(camBlockedArtifactKindIsForbidden)).toEqual([]);
-  await page.screenshot({ path: testInfo.outputPath("02-underlag-ready.png"), fullPage: true });
+  await captureProductionEvidence(page, testInfo, "02-underlag-ready.png");
 
   const downloadPromise = page.waitForEvent("download", { timeout: 60_000 });
   await downloadButton.click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toMatch(
-    /^custombuild-design-review-rev-\d+\.zip$/,
+  expect(download.suggestedFilename()).toBe(
+    `custombuild-design-review-rev-${String(createdVersion.revision)}.zip`,
   );
   expect(await download.failure()).toBeNull();
   const stream = await download.createReadStream();
@@ -509,11 +524,8 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     (failure) =>
       !(
         failure.endsWith(": net::ERR_ABORTED")
-        && (
-          (failure.includes("/custombuild-artifacts/") && failure.includes("/production.zip?"))
-          // The editor intentionally cancels a superseded latest-wins preview request.
-          || failure.includes("/v1/designs/autofix")
-        )
+        // The editor intentionally cancels a superseded latest-wins preview request.
+        && failure.includes("/v1/designs/autofix")
       ),
   );
   expect(unexpectedFailedRequests).toEqual([]);

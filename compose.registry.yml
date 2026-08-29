@@ -16,6 +16,10 @@ services:
     image: ${CUSTOMBUILD_DEPLOY_SEAWEEDFS_IMAGE:?Set from a verified deploy descriptor}
   migrate:
     image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}
+  storage-recovery:
+    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}
+  storage-capacity-attestor:
+    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}
   api:
     image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}
   worker:

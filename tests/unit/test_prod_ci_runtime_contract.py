@@ -1,10 +1,33 @@
 from pathlib import Path
 
 PROD_CI = Path(".github/workflows/prod-ci.yml")
+REVIEWED_GRYPE_SCAN_ACTION = "anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
+REVIEWED_GRYPE_VERSION = "v0.110.0"
 
 
 def _workflow() -> str:
     return PROD_CI.read_text(encoding="utf-8")
+
+
+def test_release_browser_evidence_uses_direct_playwright_cli() -> None:
+    release_workflows = (
+        Path(".github/workflows/cd.yml"),
+        Path(".github/workflows/prod-ci.yml"),
+    )
+    chromium_command = (
+        "pnpm --dir apps/web exec playwright test --project=chromium-desktop"
+    )
+    wcag_command = (
+        "pnpm --dir apps/web exec playwright test e2e/accessibility.spec.ts "
+        "--project=chromium-desktop --output=wcag-test-results"
+    )
+
+    for path in release_workflows:
+        source = path.read_text(encoding="utf-8")
+        assert source.count(chromium_command) == 1
+        assert source.count(wcag_command) == 1
+        assert "test:e2e -- --project" not in source
+        assert "test:e2e:a11y -- --output" not in source
 
 
 def test_prod_ci_probes_the_exact_executed_native_runtimes() -> None:
@@ -60,6 +83,15 @@ def test_prod_ci_sboms_prove_native_interpreter_package_versions() -> None:
         "python-3.14",
     ):
         assert required in workflow
+
+
+def test_prod_ci_pins_every_scan_to_the_reviewed_grype_toolchain() -> None:
+    workflow = _workflow()
+
+    assert workflow.count("uses: anchore/scan-action@") == 7
+    assert workflow.count(f"uses: {REVIEWED_GRYPE_SCAN_ACTION}") == 7
+    assert workflow.count(f"grype-version: {REVIEWED_GRYPE_VERSION}") == 7
+    assert "e1165082ffb1fe366ebaf02d8526e7c4989ea9d2" not in workflow
 
 
 def test_prod_ci_worker_sbom_proves_the_exact_native_cad_runtime() -> None:

@@ -399,6 +399,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/releases/{release_id}/artifacts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Release Artifacts
+         * @description List the exact package inventory frozen by a historical release.
+         */
+        get: operations["list_release_artifacts_v1_releases__release_id__artifacts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/releases/{release_id}/artifacts/{artifact_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Release Artifact
+         * @description Stream an archived release without requiring it to be the current revision.
+         */
+        get: operations["download_release_artifact_v1_releases__release_id__artifacts__artifact_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1009,6 +1049,32 @@ export interface components {
             /** Warnings */
             warnings?: string[];
         };
+        /**
+         * ReleaseArtifactRead
+         * @description One immutable artifact resolved through its historical release.
+         */
+        ReleaseArtifactRead: {
+            /** Content Type */
+            content_type: string;
+            /** Download Path */
+            download_path: string;
+            /** Download Url */
+            download_url: string;
+            /** Id */
+            id: string;
+            /** Kind */
+            kind: string;
+            /** Release Id */
+            release_id: string;
+            /** Release Number */
+            release_number: string;
+            /** Revision */
+            revision: number;
+            /** Sha256 */
+            sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+        };
         /** ReleaseCreate */
         ReleaseCreate: {
             /**
@@ -1281,13 +1347,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful Response */
+            /** @description Fully verified artifact bytes */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/octet-stream": string;
                 };
             };
             /** @description Validation Error */
@@ -2010,6 +2076,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DesignVersionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_release_artifacts_v1_releases__release_id__artifacts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                release_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseArtifactRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_release_artifact_v1_releases__release_id__artifacts__artifact_id__download_get: {
+        parameters: {
+            query: {
+                expires: number;
+                signature: string;
+            };
+            header?: never;
+            path: {
+                release_id: string;
+                artifact_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Fully verified immutable release artifact bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
                 };
             };
             /** @description Validation Error */

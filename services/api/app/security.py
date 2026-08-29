@@ -6,15 +6,249 @@ import ipaddress
 import time
 from collections import defaultdict, deque
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from typing import Protocol
 
+from custombuild_manufacturing import MAX_HTTP_REQUEST_BYTES
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
+from starlette.datastructures import Headers, MutableHeaders
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from .storage import ArtifactStorageUnavailableError, reserve_transient_bytes
+
 RATE_LIMIT_STORE_TIMEOUT_SECONDS = 2.0
+# 4,096 messages still permits a 21 MiB body arriving in roughly 5 KiB chunks,
+# while placing a small, deterministic ceiling on buffered objects and tokens.
+MAX_REQUEST_BODY_FRAGMENTS = 4_096
+
+
+class CORSResponseHeadersMiddleware(CORSMiddleware):
+    """Add simple CORS headers without short-circuiting preflight requests.
+
+    The regular CORS middleware remains inside the request guards so valid
+    preflights receive the complete response.  This outer response-only layer
+    ensures that guard failures remain browser-readable for allowed origins.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_headers = Headers(scope=scope)
+        if "origin" not in request_headers:
+            await self.app(scope, receive, send)
+            return
+        await self.simple_response(scope, receive, send, request_headers=request_headers)
+
+    async def send(
+        self,
+        message: Message,
+        send: Send,
+        request_headers: Headers,
+    ) -> None:
+        if message["type"] == "http.response.start":
+            headers = MutableHeaders(scope=message)
+            if "access-control-allow-origin" in headers:
+                await send(message)
+                return
+        await super().send(message, send=send, request_headers=request_headers)
+
+
+class _RequestBodyLimitExceeded(Exception):
+    pass
+
+
+class _RequestBodyLengthMismatch(Exception):
+    pass
+
+
+class _RequestBodyTimeout(Exception):
+    pass
+
+
+class _RequestBodyCapacityExceeded(Exception):
+    pass
+
+
+class _RequestBodyFragmentLimitExceeded(Exception):
+    pass
+
+
+class RequestBodyLimitMiddleware:
+    """Bound every request body before JSON or multipart parsing allocates it."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_bytes: int = MAX_HTTP_REQUEST_BYTES,
+        idle_timeout_seconds: float = 5.0,
+        total_timeout_seconds: float = 30.0,
+    ) -> None:
+        if type(max_bytes) is not int or max_bytes <= 0:
+            raise ValueError("request body limit must be a positive integer")
+        self.app = app
+        self.max_bytes = max_bytes
+        if (
+            idle_timeout_seconds <= 0
+            or total_timeout_seconds <= 0
+            or idle_timeout_seconds > total_timeout_seconds
+        ):
+            raise ValueError("request body timeouts are invalid")
+        self.idle_timeout_seconds = idle_timeout_seconds
+        self.total_timeout_seconds = total_timeout_seconds
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        raw_headers = list(scope.get("headers", []))
+        content_lengths = [
+            value.strip() for name, value in raw_headers if name.lower() == b"content-length"
+        ]
+        transfer_encodings = [
+            value for name, value in raw_headers if name.lower() == b"transfer-encoding"
+        ]
+        invalid_content_length = bool(content_lengths) and (
+            len(content_lengths) != 1
+            or not content_lengths[0].isdigit()
+            or len(content_lengths[0]) > 20
+            or (content_lengths[0] != b"0" and content_lengths[0].startswith(b"0"))
+        )
+        invalid_transfer_encoding = bool(transfer_encodings) and (
+            len(transfer_encodings) != 1 or transfer_encodings[0].strip().lower() != b"chunked"
+        )
+        if (
+            invalid_content_length
+            or invalid_transfer_encoding
+            or (content_lengths and transfer_encodings)
+        ):
+            await JSONResponse(
+                {"detail": "Request body framing is invalid"},
+                status_code=400,
+            )(scope, receive, send)
+            return
+        method = str(scope.get("method", "")).upper()
+        body_forbidden = method in {"GET", "HEAD", "OPTIONS"}
+        if body_forbidden:
+            has_declared_body = any(value != b"0" for value in content_lengths)
+            if has_declared_body or transfer_encodings:
+                await JSONResponse(
+                    {"detail": "Request bodies are not allowed for this method"},
+                    status_code=400,
+                )(scope, receive, send)
+                return
+            declared_bytes: int | None = 0
+        elif not content_lengths and not transfer_encodings:
+            await JSONResponse(
+                {"detail": "Content-Length is required for request bodies"},
+                status_code=411,
+            )(scope, receive, send)
+            return
+        else:
+            declared_bytes = int(content_lengths[0]) if content_lengths else None
+        if declared_bytes is not None and declared_bytes > self.max_bytes:
+            await JSONResponse(
+                {"detail": "Request body exceeds the 21 MiB limit"},
+                status_code=413,
+            )(scope, receive, send)
+            return
+
+        received_bytes = 0
+        received_fragments = 0
+        started_at = asyncio.get_running_loop().time()
+        buffered_chunks: list[bytes] = []
+
+        try:
+            with ExitStack() as reservations:
+                while True:
+                    loop = asyncio.get_running_loop()
+                    remaining = self.total_timeout_seconds - (loop.time() - started_at)
+                    if remaining <= 0:
+                        raise _RequestBodyTimeout
+                    try:
+                        async with asyncio.timeout(min(self.idle_timeout_seconds, remaining)):
+                            message = await receive()
+                    except TimeoutError as exc:
+                        raise _RequestBodyTimeout from exc
+                    if message["type"] != "http.request":
+                        raise _RequestBodyLengthMismatch
+                    received_fragments += 1
+                    if received_fragments > MAX_REQUEST_BODY_FRAGMENTS:
+                        raise _RequestBodyFragmentLimitExceeded
+                    body = message.get("body", b"")
+                    more_body = message.get("more_body", False)
+                    if not isinstance(body, bytes) or type(more_body) is not bool:
+                        raise _RequestBodyLengthMismatch
+                    received_bytes += len(body)
+                    if received_bytes > self.max_bytes or (
+                        declared_bytes is not None and received_bytes > declared_bytes
+                    ):
+                        raise _RequestBodyLimitExceeded
+                    if body:
+                        try:
+                            reservations.enter_context(reserve_transient_bytes(len(body)))
+                        except ArtifactStorageUnavailableError as exc:
+                            raise _RequestBodyCapacityExceeded from exc
+                        buffered_chunks.append(body)
+                    if not more_body:
+                        break
+                if declared_bytes is not None and received_bytes != declared_bytes:
+                    raise _RequestBodyLengthMismatch
+
+                replay_index = 0
+
+                async def receive_replay() -> Message:
+                    nonlocal replay_index
+                    if not buffered_chunks:
+                        if replay_index == 0:
+                            replay_index = 1
+                            return {
+                                "type": "http.request",
+                                "body": b"",
+                                "more_body": False,
+                            }
+                        return await receive()
+                    if replay_index < len(buffered_chunks):
+                        body = buffered_chunks[replay_index]
+                        replay_index += 1
+                        return {
+                            "type": "http.request",
+                            "body": body,
+                            "more_body": replay_index < len(buffered_chunks),
+                        }
+                    return await receive()
+
+                await self.app(scope, receive_replay, send)
+        except _RequestBodyCapacityExceeded:
+            await JSONResponse(
+                {"detail": "Temporary request capacity is exhausted; retry later"},
+                status_code=503,
+            )(scope, receive, send)
+        except _RequestBodyFragmentLimitExceeded:
+            await JSONResponse(
+                {"detail": "Request body is too fragmented"},
+                status_code=413,
+            )(scope, receive, send)
+        except _RequestBodyLimitExceeded:
+            await JSONResponse(
+                {"detail": "Request body exceeds its declared or allowed size"},
+                status_code=413,
+            )(scope, receive, send)
+        except _RequestBodyLengthMismatch:
+            await JSONResponse(
+                {"detail": "Request body length does not match Content-Length"},
+                status_code=400,
+            )(scope, receive, send)
+        except _RequestBodyTimeout:
+            await JSONResponse(
+                {"detail": "Request body timed out"},
+                status_code=408,
+            )(scope, receive, send)
 
 
 class SecurityHeadersMiddleware:
@@ -28,21 +262,24 @@ class SecurityHeadersMiddleware:
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                headers.extend(
-                    [
-                        (b"x-content-type-options", b"nosniff"),
-                        (b"x-frame-options", b"DENY"),
-                        (b"referrer-policy", b"no-referrer"),
-                        (b"permissions-policy", b"camera=(), microphone=(), geolocation=()"),
-                        (
-                            b"content-security-policy",
-                            b"default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
-                        ),
-                        (b"cache-control", b"no-store"),
-                    ]
+                headers = MutableHeaders(scope=message)
+                headers["x-content-type-options"] = "nosniff"
+                headers["x-frame-options"] = "DENY"
+                headers["referrer-policy"] = "no-referrer"
+                headers["permissions-policy"] = "camera=(), microphone=(), geolocation=()"
+                headers["content-security-policy"] = (
+                    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
                 )
-                message["headers"] = headers
+                cache_control = headers.get("cache-control", "")
+                directives = {
+                    directive.split("=", 1)[0].strip().casefold()
+                    for directive in cache_control.split(",")
+                    if directive.strip()
+                }
+                if "no-store" not in directives:
+                    headers["cache-control"] = (
+                        f"{cache_control}, no-store" if cache_control else "no-store"
+                    )
             await send(message)
 
         await self.app(scope, receive, send_with_headers)

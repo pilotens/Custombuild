@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime
+from ipaddress import ip_address
 from pathlib import Path
 from typing import TypedDict
 from urllib.parse import unquote, urlparse
@@ -15,6 +16,9 @@ INSECURE_SECRET_VALUES = frozenset({"custombuild", "minioadmin", "password", "po
 INSECURE_S3_ACCESS_KEYS = frozenset({"custombuild", "minioadmin"})
 INSECURE_BUILD_IDENTITY_MARKERS = ("dirty", "local", "unknown", "uncommitted")
 MIN_PRODUCTION_SECRET_LENGTH = 24
+RAW_CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
+S3_ACCESS_KEY_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
+S3_BUCKET_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
 
 
 class BuildIdentityValues(TypedDict):
@@ -42,6 +46,8 @@ def is_insecure_secret(value: str) -> bool:
 def _validate_production_secret(value: str, *, label: str) -> None:
     if value != value.strip():
         raise ValueError(f"production {label} must not have surrounding whitespace")
+    if RAW_CONTROL_PATTERN.search(value) is not None:
+        raise ValueError(f"production {label} must not contain control characters")
     if len(value) < MIN_PRODUCTION_SECRET_LENGTH:
         raise ValueError(
             f"production {label} must be at least {MIN_PRODUCTION_SECRET_LENGTH} characters"
@@ -78,13 +84,31 @@ def validate_production_database_url(
 
 
 def validate_production_s3_credentials(access_key: str, secret_key: str) -> None:
+    if access_key != access_key.strip():
+        raise ValueError(
+            "production object-storage access key must not have surrounding whitespace"
+        )
+    if RAW_CONTROL_PATTERN.search(access_key) is not None:
+        raise ValueError("production object-storage access key must not contain control characters")
     if (
-        access_key != access_key.strip()
+        S3_ACCESS_KEY_PATTERN.fullmatch(access_key) is None
         or _normalise_secret(access_key) in INSECURE_S3_ACCESS_KEYS
-        or not access_key
     ):
         raise ValueError("production object-storage access key must be replaced")
     _validate_production_secret(secret_key, label="object-storage secret")
+
+
+def validate_production_s3_bucket(bucket: str) -> None:
+    if bucket != bucket.strip():
+        raise ValueError("production object-storage bucket must not have surrounding whitespace")
+    if RAW_CONTROL_PATTERN.search(bucket) is not None:
+        raise ValueError("production object-storage bucket must not contain control characters")
+    try:
+        ipv4_literal = ip_address(bucket).version == 4
+    except ValueError:
+        ipv4_literal = False
+    if S3_BUCKET_PATTERN.fullmatch(bucket) is None or ".." in bucket or ipv4_literal:
+        raise ValueError("production object-storage bucket must be a canonical S3 DNS name")
 
 
 def validate_production_redis_url(redis_url: str) -> None:
@@ -113,8 +137,10 @@ def validate_production_build_identity(
     """Reject mutable or ambiguous application builds in production."""
 
     normalised_version = app_version.strip().lower()
-    if app_version != app_version.strip() or not normalised_version or any(
-        marker in normalised_version for marker in INSECURE_BUILD_IDENTITY_MARKERS
+    if (
+        app_version != app_version.strip()
+        or not normalised_version
+        or any(marker in normalised_version for marker in INSECURE_BUILD_IDENTITY_MARKERS)
     ):
         raise ValueError("production APP_VERSION must identify an immutable release")
     if re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", vcs_ref) is None:

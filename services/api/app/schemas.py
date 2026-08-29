@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
+from custombuild_manufacturing import MAX_ARTIFACT_BYTES, MAX_CATALOG_SOURCE_BYTES
 from pydantic import (
     BaseModel,
     ConfigDict,
@@ -723,10 +724,20 @@ class ArtifactRead(BaseModel):
     id: str
     kind: str
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    size_bytes: int = Field(ge=0)
+    size_bytes: int = Field(strict=True, gt=0, le=MAX_ARTIFACT_BYTES)
     content_type: str
     download_url: str
     download_path: str
+
+
+class ReleaseArtifactRead(ArtifactRead):
+    """One immutable artifact resolved through its historical release."""
+
+    release_id: str = Field(
+        pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    )
+    release_number: str = Field(pattern=r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
+    revision: int = Field(strict=True, gt=0)
 
 
 class WarningOverrideCreate(BaseModel):
@@ -763,7 +774,7 @@ class ExternalEvidenceRead(BaseModel):
     catalog_version: str
     design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    size_bytes: int = Field(gt=0)
+    size_bytes: int = Field(strict=True, gt=0, le=MAX_CATALOG_SOURCE_BYTES)
     content_type: str
     created_by: str
     expires_at: datetime | None
@@ -830,7 +841,7 @@ class ImportInspection(BaseModel):
     project_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
     image_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     media_type: str
-    size_bytes: int
+    size_bytes: int = Field(strict=True, gt=0, le=MAX_CATALOG_SOURCE_BYTES)
     furniture_type: Literal["bookcase"] | None
     furniture_type_confidence: float
     status: Literal["needs_calibration"]

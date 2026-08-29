@@ -23,6 +23,11 @@ from custombuild_cad import (
 from custombuild_cam import backplot_svg
 from custombuild_postprocessors import LinuxCNCValidationPostprocessor
 
+from .artifact_limits import (
+    MAX_ARTIFACT_BYTES,
+    MAX_PRODUCTION_BUNDLE_BYTES,
+    artifact_size_limit,
+)
 from .dfm import (
     DFM_ENGINE_VERSION,
     STOCK_PROFILE_MISSING_CODE,
@@ -93,7 +98,7 @@ from .review_status import (
 )
 
 MAX_PACKAGE_FILES = 10_000
-MAX_ARTIFACT_SIZE_BYTES = 512 * 1024 * 1024
+MAX_ARTIFACT_SIZE_BYTES = MAX_ARTIFACT_BYTES
 MAX_PACKAGE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 1_000
 PACKAGE_BUILDER_VERSION = "deterministic-package-1.5.0"
@@ -228,6 +233,18 @@ GENERATION_PLAN_ARTIFACT_PATH = "validation/generation-plan.json"
 GENERATION_PLAN_ARTIFACT_ROLE = "GENERATION_PLAN"
 _GENERATION_PLAN_ARTIFACT_PATH = GENERATION_PLAN_ARTIFACT_PATH
 _GENERATION_PLAN_ARTIFACT_ROLE = GENERATION_PLAN_ARTIFACT_ROLE
+_PERSISTED_PACKAGE_ARTIFACT_KINDS = {
+    "manifest.json": "manifest",
+    _WORKSHOP_READINESS_ARTIFACT_PATH: "workshop_readiness",
+    _DFM_REPORT_ARTIFACT_PATH: "dfm_report",
+    DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH: "design_review_package_status",
+    "validation/stock-selection.json": "stock_selection",
+    _GENERATION_PLAN_ARTIFACT_PATH: "generation_plan",
+    "cam/operations.json": "operations",
+    "validation/source-provenance.json": "source_provenance",
+    "validation/cad-interchange-status.json": "cad_interchange_status",
+    "assembly/assembly-readiness.json": "assembly_readiness",
+}
 _DFM_REPORT_KEYS = frozenset({"engine_version", "issues"})
 _DFM_ISSUE_KEYS = frozenset(
     {
@@ -328,18 +345,14 @@ def machine_profile_fingerprint(machine: MachineProfile) -> str:
 def stock_profiles_fingerprint(stocks: Iterable[StockSheet]) -> str:
     """Bind every supplied stock field, including quantity, axis and zones."""
 
-    return sha256_hex(
-        canonical_json_bytes(tuple(sorted(stocks, key=lambda stock: stock.stock_id)))
-    )
+    return sha256_hex(canonical_json_bytes(tuple(sorted(stocks, key=lambda stock: stock.stock_id))))
 
 
 def generation_plan_artifact(
     *,
     machine: MachineProfile,
     stocks: Iterable[StockSheet],
-    two_sided_registration_by_stock: (
-        Mapping[str, Mapping[int, TwoSidedRegistration]] | None
-    ),
+    two_sided_registration_by_stock: (Mapping[str, Mapping[int, TwoSidedRegistration]] | None),
     validation_program_requested: bool,
 ) -> ArtifactFile:
     """Freeze only generation inputs that are not derivable from DesignSpec/stock.
@@ -401,9 +414,7 @@ def generation_plan_artifact(
                 {
                     "sheet_index": sheet_index,
                     "method_id": method_id,
-                    "points": [
-                        {"x_um": x_um, "y_um": y_um} for x_um, y_um in coordinates
-                    ],
+                    "points": [{"x_um": x_um, "y_um": y_um} for x_um, y_um in coordinates],
                 }
             )
         if sheet_rows:
@@ -781,6 +792,9 @@ def build_deterministic_zip(
 def read_and_verify_package(payload: bytes) -> dict[str, Any]:
     """Re-parse a package, reject unsafe paths and verify every manifest hash."""
 
+    if type(payload) is not bytes or not payload or len(payload) > MAX_PRODUCTION_BUNDLE_BYTES:
+        raise ArtifactError("production ZIP is empty or exceeds its canonical size limit")
+
     try:
         archive = zipfile.ZipFile(io.BytesIO(payload), mode="r")
     except zipfile.BadZipFile as exc:
@@ -795,7 +809,13 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
                 raise ArtifactError("production ZIP contains a directory or encrypted entry")
             if info.create_system != 3 or info.external_attr != 0o100644 << 16:
                 raise ArtifactError("production ZIP contains a non-regular or non-canonical entry")
-            if info.file_size > MAX_ARTIFACT_SIZE_BYTES:
+            artifact_kind = _PERSISTED_PACKAGE_ARTIFACT_KINDS.get(info.filename, "")
+            if re.fullmatch(r"cam/setups/[^/]+\.svg", info.filename):
+                artifact_kind = "setup_sheet_001"
+            if info.file_size > min(
+                MAX_ARTIFACT_SIZE_BYTES,
+                artifact_size_limit(artifact_kind),
+            ):
                 raise ArtifactError(f"production ZIP entry is too large: {info.filename}")
             total_size += info.file_size
             if total_size > MAX_PACKAGE_UNCOMPRESSED_BYTES:
@@ -856,10 +876,8 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
         status_entries = [
             entry
             for entry in artifact_entries
-            if entry["path"].casefold()
-            == DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH.casefold()
-            or entry["role"].casefold()
-            == DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE.casefold()
+            if entry["path"].casefold() == DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH.casefold()
+            or entry["role"].casefold() == DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE.casefold()
         ]
         if len(status_entries) != 1:
             raise ArtifactError(
@@ -903,9 +921,7 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
                     readiness,
                     expected_edge_band_selection_required=edge_band_selection_required,
                     external_evidence=manifest["external_evidence"],
-                    expected_material_grain_binding_required=(
-                        material_grain_binding_required
-                    ),
+                    expected_material_grain_binding_required=(material_grain_binding_required),
                 )
             except (TypeError, ValueError) as exc:
                 raise ArtifactError(
@@ -951,10 +967,7 @@ def _canonical_artifact_entry(
         entry
         for entry in entries
         if str(entry["path"]).casefold() == path.casefold()
-        or (
-            role_unique
-            and str(entry["role"]).casefold() == role.casefold()
-        )
+        or (role_unique and str(entry["role"]).casefold() == role.casefold())
     ]
     if len(candidates) != 1:
         raise ArtifactError(f"{role} artifact entry is not unique")
@@ -1017,9 +1030,7 @@ def _validate_review_core_semantics(
         raise ArtifactError("manifest identity does not match the rebuilt frozen DesignSpec")
 
     parts = tuple(adapted.parts)
-    expected_core = {
-        artifact.path: artifact for artifact in design_review_artifacts(parts=parts)
-    }
+    expected_core = {artifact.path: artifact for artifact in design_review_artifacts(parts=parts)}
     semantic_roles = {
         "BOM",
         "GROUPED_BOM",
@@ -1031,8 +1042,7 @@ def _validate_review_core_semantics(
     actual_semantic_paths = {
         str(entry["path"])
         for entry in entry_values
-        if entry["role"] in semantic_roles
-        or str(entry["path"]).startswith(("parts/", "drawings/"))
+        if entry["role"] in semantic_roles or str(entry["path"]).startswith(("parts/", "drawings/"))
     }
     if actual_semantic_paths != set(expected_core):
         raise ArtifactError(
@@ -1272,9 +1282,7 @@ def _stock_selection_truth(
             raise ArtifactError("stock selection stock row is invalid")
         string_fields = ("stock_id", "material_id", "material_version", "grain_direction")
         if any(
-            not isinstance(row[field], str)
-            or not row[field]
-            or row[field] != row[field].strip()
+            not isinstance(row[field], str) or not row[field] or row[field] != row[field].strip()
             for field in string_fields
         ):
             raise ArtifactError("stock selection stock identity is invalid")
@@ -1288,9 +1296,10 @@ def _stock_selection_truth(
             "margin_um",
             "kerf_um",
         )
-        if any(type(row[field]) is not int for field in integer_fields) or type(
-            row["allow_rotation"]
-        ) is not bool:
+        if (
+            any(type(row[field]) is not int for field in integer_fields)
+            or type(row["allow_rotation"]) is not bool
+        ):
             raise ArtifactError("stock selection stock dimensions are invalid")
         try:
             stock = StockSheet(
@@ -1335,9 +1344,7 @@ def _stock_selection_truth(
             or not isinstance(part_ids, list)
             or not part_ids
             or any(
-                not isinstance(part_id, str)
-                or not part_id
-                or part_id != part_id.strip()
+                not isinstance(part_id, str) or not part_id or part_id != part_id.strip()
                 for part_id in part_ids
             )
             or part_ids != sorted(set(part_ids))
@@ -1350,22 +1357,16 @@ def _stock_selection_truth(
             assigned_stock_by_part_id[part_id] = stock_id
     if assignment_stock_ids != sorted(set(assignment_stock_ids)):
         raise ArtifactError("stock selection assignments are not canonically ordered and unique")
-    if (
-        any(
-            not isinstance(part_id, str)
-            or not part_id
-            or part_id != part_id.strip()
-            for part_id in raw_unmatched
-        )
-        or raw_unmatched != sorted(set(raw_unmatched))
-    ):
+    if any(
+        not isinstance(part_id, str) or not part_id or part_id != part_id.strip()
+        for part_id in raw_unmatched
+    ) or raw_unmatched != sorted(set(raw_unmatched)):
         raise ArtifactError("stock selection unmatched part IDs are not canonical")
 
     part_by_id = {part.part_id: part for part in canonical_parts}
     represented_ids = set(assigned_stock_by_part_id) | set(raw_unmatched)
-    if (
-        represented_ids != set(part_by_id)
-        or set(assigned_stock_by_part_id).intersection(raw_unmatched)
+    if represented_ids != set(part_by_id) or set(assigned_stock_by_part_id).intersection(
+        raw_unmatched
     ):
         raise ArtifactError("stock selection does not partition the canonical BOM")
 
@@ -1379,9 +1380,7 @@ def _stock_selection_truth(
             if stock.material_id == part.material_id
             and stock.material_version == part.material_version
             and stock.thickness_um == part.thickness_um
-            and nester.nest(
-                (replace(part, quantity=1, grain_direction="NONE"),), stock
-            ).is_complete
+            and nester.nest((replace(part, quantity=1, grain_direction="NONE"),), stock).is_complete
         ]
         if compatible:
             expected_assignment[part_id] = min(
@@ -1390,9 +1389,8 @@ def _stock_selection_truth(
             ).stock_id
         else:
             expected_unmatched.append(part_id)
-    if (
-        assigned_stock_by_part_id != expected_assignment
-        or tuple(raw_unmatched) != tuple(expected_unmatched)
+    if assigned_stock_by_part_id != expected_assignment or tuple(raw_unmatched) != tuple(
+        expected_unmatched
     ):
         raise ArtifactError("stock selection snapshot does not match deterministic selection")
     return _StockSelectionTruth(
@@ -1767,13 +1765,15 @@ def _validate_design_review_status_inventory(
     )
     if grouped_bom_truth is not None:
         _validate_grain_issues_against_grouped_bom(dfm_report, grouped_bom_truth)
-    if grouped_bom_truth is not None and not grouped_bom_truth.material_grain_binding_required and (
-        status.blocker_codes == (DFM_GRAIN_BLOCKER_CODE,)
-        or any(issue.code == DFM_GRAIN_BLOCKER_CODE for issue in dfm_report.issues)
-    ):
-        raise ArtifactError(
-            "grain DFM issue or status contradicts the non-directional grouped BOM"
+    if (
+        grouped_bom_truth is not None
+        and not grouped_bom_truth.material_grain_binding_required
+        and (
+            status.blocker_codes == (DFM_GRAIN_BLOCKER_CODE,)
+            or any(issue.code == DFM_GRAIN_BLOCKER_CODE for issue in dfm_report.issues)
         )
+    ):
+        raise ArtifactError("grain DFM issue or status contradicts the non-directional grouped BOM")
     if readiness is None:
         raise ArtifactError("design-review package status requires workshop readiness")
     _validate_status_readiness(status, readiness, authoritative_cad_verified=True)
@@ -2003,9 +2003,9 @@ def _validate_stock_and_grain_report_binding(
         )
     )
     if status.blocker_codes == (DFM_GRAIN_BLOCKER_CODE,):
-        if not expected_grain_issues or canonical_json_bytes(
-            report.issues
-        ) != canonical_json_bytes(expected_grain_issues):
+        if not expected_grain_issues or canonical_json_bytes(report.issues) != canonical_json_bytes(
+            expected_grain_issues
+        ):
             raise ArtifactError(
                 "grain-blocked DFM report does not exactly cover canonical unbound stock groups"
             )
@@ -2059,8 +2059,7 @@ def _validate_status_readiness(
         "AUTHORITATIVE_CAD": ("VERIFIED" if authoritative_cad_verified else "MISSING"),
         "DFM_SCREEN": (
             "MISSING"
-            if status.blocker_codes
-            in {("STOCK_PROFILE_MISSING",), (DFM_GRAIN_BLOCKER_CODE,)}
+            if status.blocker_codes in {("STOCK_PROFILE_MISSING",), (DFM_GRAIN_BLOCKER_CODE,)}
             else "VERIFIED"
         ),
         "SEMANTIC_OPERATIONS": ("VERIFIED" if status.operations_included else "MISSING"),
@@ -2163,9 +2162,7 @@ def _design_requirements_from_grouped_bom(
             or not isinstance(part_ids, list)
             or not part_ids
             or any(
-                not isinstance(part_id, str)
-                or not part_id
-                or part_id != part_id.strip()
+                not isinstance(part_id, str) or not part_id or part_id != part_id.strip()
                 for part_id in part_ids
             )
             or part_ids != sorted(set(part_ids))
@@ -2238,10 +2235,7 @@ def _design_requirements_from_grouped_bom(
                     raise ArtifactError("mechanical grouped BOM edge band lacks catalog identity")
             else:
                 raise ArtifactError("grouped BOM edge band is not adhesive-free")
-    if (
-        group_ids != sorted(set(group_ids))
-        or instance_count != payload["part_instance_count"]
-    ):
+    if group_ids != sorted(set(group_ids)) or instance_count != payload["part_instance_count"]:
         raise ArtifactError("grouped BOM ordering or quantity total is invalid")
     return _GroupedBOMTruth(
         edge_band_selection_required=edge_band_selection_required,
@@ -2256,9 +2250,7 @@ def _validate_grain_issues_against_grouped_bom(
     report: DFMReport,
     truth: _GroupedBOMTruth,
 ) -> None:
-    grain_issues = tuple(
-        issue for issue in report.issues if issue.code == DFM_GRAIN_BLOCKER_CODE
-    )
+    grain_issues = tuple(issue for issue in report.issues if issue.code == DFM_GRAIN_BLOCKER_CODE)
     seen_part_ids: set[str] = set()
     for issue in grain_issues:
         try:
@@ -2291,8 +2283,7 @@ def _validate_grain_issues_against_grouped_bom(
             str(issue.inputs["material_version"]),
         )
         if any(
-            truth.part_material_by_id[part_id] != expected_material
-            for part_id in affected_part_ids
+            truth.part_material_by_id[part_id] != expected_material for part_id in affected_part_ids
         ):
             raise ArtifactError("DFM grain issue material does not match grouped BOM")
 

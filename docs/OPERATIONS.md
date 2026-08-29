@@ -16,23 +16,34 @@ uv run python scripts/compose_backup.py \
   --verify-only
 ```
 
-Use a new empty directory for every run. The command pauses API, worker and the
-singleton scheduler, lists and downloads every S3 object to produce a
+Use a new empty directory for every run. The command pauses API and the singleton
+scheduler, then gives the worker its full task budget to drain before stopping it.
+With every writer quiesced it runs the one-shot storage recovery gate, requires a
+new database-bound capacity attestation, and only then pauses the attestor for the
+capture. It lists and downloads every S3 object to produce a
 key/size/SHA-256/media-type/immutable-metadata inventory, records the PostgreSQL
-timestamp, WAL LSN, exact per-table row counts and Alembic head, and makes
-a custom-format database dump. It then stops SeaweedFS cleanly, archives its
+timestamp, WAL LSN, exact per-table row counts and Alembic head, and makes a
+custom-format database dump. It then stops SeaweedFS cleanly, archives its
 quiescent volume using a digest-pinned helper image, restarts SeaweedFS and
-confirms that its complete inventory is unchanged before application writers
-are resumed. Restart and unpause operations run across failure paths and report
-any recovery error explicitly.
+confirms that its complete inventory is unchanged. A second exact attestation is
+required before the worker is started and the scheduler and API are unpaused, in
+that order. Any failed or ambiguous gate leaves application writers stopped or
+paused; a partial restart is rolled back and reported explicitly.
 
-The v4 manifest binds the exact repository-built SeaweedFS tag and image ID,
+The v5 manifest binds the exact repository-built SeaweedFS tag and image ID,
 source-manifest SHA, Git revision, database counts and checksums for both backup
-payloads and every S3 object. Legacy manifests deliberately fail verification
-because they do not contain sufficient recovery evidence.
+payloads and every S3 object. Its
+`database_snapshot.tombstone_history` is
+`custombuild.storage-tombstone-history.v1`: an exact row count plus SHA-256 over
+the complete, C-sorted retired-key history. The hash covers bucket, object key,
+tenant/project, object digest and size, media type, owner identity, idempotency
+identity, accounting origin, reaper claim token and UTC retirement timestamp.
+The count must equal the exact `storage_object_tombstones` table count. Legacy
+manifests deliberately fail verification because they do not contain sufficient
+recovery evidence.
 Existing backup directories and source volumes are never overwritten or
-deleted. Run this during a maintenance window that also prevents use of
-previously issued direct S3 upload URLs. This local mechanism is not a substitute
+deleted. Run this during a maintenance window that also prevents new uploads or
+generation work from reaching an application writer. This local mechanism is not a substitute
 for encrypted, versioned/offline platform backups. On POSIX hosts the command
 forces the backup directory to mode `0700` and every dump, archive and manifest
 to `0600`, even under a permissive `022` umask.
@@ -54,6 +65,16 @@ in `database_snapshot.captured_at`, not the later manifest completion time. Stor
 backups encrypted off-host; the checked-in Compose stack does not provide
 scheduling, encryption, off-site replication or alert delivery.
 
+Treat `database.dump`, `artifacts.tar` and their v5 manifest as one indivisible
+recovery point. Never restore or rewind PostgreSQL independently of its paired S3
+snapshot, or vice versa: an independently rewound database can forget a retired
+key and permit reuse, while an independently rewound bucket can resurrect retired
+bytes or omit bytes still referenced by the database. Keep every
+`storage_object_tombstones` row permanently. UPDATE,
+DELETE, TRUNCATE, retention expiry, partition drop and "tombstone trimming" are
+forbidden maintenance operations; offline copies supplement but never replace
+the live registry. Include its monotonic growth in database capacity planning.
+
 ## Restore
 
 The digest-pinned database runtime is PostgreSQL 18. Never attach it to a
@@ -64,7 +85,7 @@ are rebuilt by the logical restore, then require the complete restore drill and
 tenant acceptance probes before traffic resumes. Keep the old volume read-only
 until the new recovery point has been independently accepted.
 
-1. Stop API and workers.
+1. Stop API, the singleton scheduler and every worker.
 2. Restore PostgreSQL into an isolated environment.
 3. Restore the matching object-store snapshot.
 4. Compare the restored Alembic revision with both the backup and repository
@@ -73,8 +94,17 @@ until the new recovery point has been independently accepted.
 5. Boot the exact manifest-pinned SeaweedFS image against the restored volume,
    then list and download every object and verify key, size, SHA-256, media type
    and immutable metadata against the manifest.
-6. Start one worker, let queued/idempotent jobs settle, then scale workers.
-7. Run tenant-isolation and seeded acceptance probes before reopening traffic.
+6. Require the restored tombstone count and exact history SHA-256 to equal the
+   v5 manifest before any writer starts. Also require the restored ACL proof:
+   API and worker have no tombstone privilege, and the attestor has SELECT only.
+7. Run the exact `storage-recovery` one-shot with the migrator role. Require a
+   successful exit for the restored PostgreSQL boot and object-store snapshot;
+   never bypass or manually clear its maintenance gate.
+8. Start the dedicated storage-capacity attestor and require a fresh heartbeat
+   bound to the restored database evidence and exact bucket inventory.
+9. Start one worker, let queued/idempotent jobs settle, then scale workers.
+10. Run tenant-isolation and seeded acceptance probes before starting the
+   scheduler and reopening API traffic.
 
 The disposable local database/object-volume restore probe is:
 
@@ -84,13 +114,16 @@ uv run python scripts/restore_drill.py \
   --output test-results/backups/2026-08-11T1200/restore-drill.json
 ```
 
-It verifies the v4 manifest and restores as the non-superuser
+It verifies the v5 manifest and restores as the non-superuser
 `custombuild_migrator`, so public tables, sequences and Alembic state retain the
 correct owner. It requires exact per-table row counts, a real schema mutation,
-safe role attributes and tenant RLS through both API and worker logins. It then
-boots the manifest's exact SeaweedFS image ID on a random loopback-only port and
-verifies the full S3 inventory by downloading it. The v3 restore evidence cannot
-report `PASS` before these probes succeed. It removes only narrowly named
+the exact tombstone-history count and SHA-256, safe role/ACL attributes and
+tenant RLS through both API and worker logins. It then boots the manifest's exact
+SeaweedFS image ID on a random loopback-only port and verifies the full S3
+inventory by downloading it. The v4 restore evidence records
+`database_tombstone_history` and cannot set
+`database_tombstone_history_verified=true` or report `PASS` before the restored
+history is byte-for-byte equal to the backup proof. It removes only narrowly named
 `custombuild-restore-<8 hex>` containers and volumes, including on failure. It
 does not reopen traffic; tenant and HTTP acceptance remain mandatory after a
 platform restore. Every Docker invocation, log/readiness probe, large payload
@@ -138,7 +171,87 @@ same tested web digest to be promoted between environments.
 Inject database, OIDC and object-store secrets through the deployment secret
 manager; never commit `.env`. Export structured logs and OpenTelemetry at the
 platform layer. Alert on repeated job failures, RLS violations, artifact hash
-mismatches and attempted release with blocking rules.
+mismatches and attempted release with blocking rules. Also alert on storage
+reservation/reaper lease exhaustion, identity mismatch, a failed tombstone
+finalization, any live-ledger/tombstone overlap, tombstone-history drift and a
+failed startup recovery or capacity attestation. A reaper failure is not a reason
+to edit ledger state manually: leave the key fenced in `reaping`, correct the
+provider/database cause and let the token-bound recovery path reclaim it.
+
+Provision `CAPACITY_ATTESTOR_DATABASE_USER=custombuild_storage_attestor` with a
+separate `CAPACITY_ATTESTOR_DATABASE_PASSWORD`; the attestor URL must use that
+exact login and secret. PostgreSQL init scripts provision and rotate it on a new
+cluster. They do not rerun for an existing data directory, so before applying
+migration `0013_storage_quota_security_functions` to an older cluster, a
+bootstrap administrator must create (or harden and rotate) that fixed role as
+`LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION
+NOBYPASSRLS` and remove every membership to or from it. The migration fails
+closed when the role is absent and then rebuilds its exact table/function ACL;
+never substitute `MIGRATION_DATABASE_URL` for the attestor URL.
+
+Compose deliberately orders storage startup as `migrate` → `storage-recovery`
+→ `storage-capacity-attestor` → writers. `storage-recovery` is a hardened
+one-shot API-image process that reuses `MIGRATION_DATABASE_URL`, connects only
+to the internal object store and exits. A nonzero recovery exit keeps the
+attestor, API, worker and scheduler stopped; do not bypass the
+`service_completed_successfully` dependency or restart it as a daemon. The
+long-running attestor always retains its separate least-privilege URL.
+
+PostgreSQL deliberately uses `restart: "no"`: a container-runtime restart after
+a database crash would otherwise revive a new database boot behind an already
+completed recovery barrier. Never use `docker start` on the PostgreSQL container.
+Recover or replace it only during explicit downtime. First quiesce every process
+with a database credential, then select the complete recovery/writer graph.
+Compose evaluates the `depends_on` completion and health conditions within the
+selected graph; a command that targets `postgres` alone does not select or
+restart its dependants. Production recovery must reuse the exact verified image
+environment, external-production controls, registry overlay and secret-manager
+environment of the running deployment. For the digest-only deployment described
+below, create and independently review a new canonical capacity operator config
+at a new protected path immediately before recovery. Preserve every volume,
+capacity, bucket and deploy-descriptor value, change only `requested_at` to the
+current whole-second UTC time, then export the new
+`STORAGE_CAPACITY_OPERATOR_CONFIG_PATH` and
+`STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256`. Do not rewrite or reuse the running
+deployment's stale request: every new production attestor requires this fresh,
+hash-bound operator authorization. With that environment in place, the complete
+operation is:
+
+```bash
+production_compose=(
+  docker compose
+  --env-file artifacts/deploy-images.env
+  --file compose.yml
+  --file compose.external-production.yml
+  --file compose.registry.yml
+)
+"${production_compose[@]}" stop --timeout 60 api worker scheduler storage-capacity-attestor
+"${production_compose[@]}" up --no-build --detach --force-recreate \
+  postgres migrate storage-recovery storage-capacity-attestor api worker scheduler
+"${production_compose[@]}" up --no-build --detach --wait --wait-timeout 900
+```
+
+If recovery fails permanently it remains exited without a restart loop and the
+writers remain unavailable; diagnose and correct the cause before repeating
+the complete operation. Never omit a listed database client, recovery service,
+writer, Compose file, verified image environment or `--no-build`.
+
+The deploy descriptor must map both `storage-recovery` and
+`storage-capacity-attestor` to the descriptor's exact digest-pinned API image;
+neither role may use a separately rebuilt tag. Before deployment, create
+`STORAGE_CAPACITY_OPERATOR_CONFIG_PATH` as strict UTF-8 canonical JSON with
+sorted keys and compact separators. It must contain exactly
+`schema_version`, `volume_identity`, `provisioned_bytes`,
+`metadata_overhead_bytes`, `emergency_reserve_bytes`, `headroom_bytes`,
+`byte_limit`, `object_limit`, `bucket`, `deploy_descriptor_sha256` and
+`requested_at`; the schema is `custombuild.storage-capacity-operator.v1` and
+`requested_at` is a whole-second UTC `...Z` timestamp. Hash the canonical bytes
+without a trailing newline using SHA-256 and set
+`STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256` to that lowercase digest. All mirrored
+environment values must match byte-for-byte. The request expires after ten
+minutes (with at most 30 seconds of future clock skew), so regenerate and review
+it immediately before each deployment, database recovery/replacement or explicit
+capacity change.
 
 The API exposes `/health` for liveness and `/ready` for bounded PostgreSQL,
 authenticated Redis and configured S3-bucket checks. Every response includes a
@@ -218,7 +331,7 @@ running container digest with the approved manifest before accepting runtime tra
 
 Before promotion, require a clean reviewed commit and the final readiness report
 that binds static controls, Compose design-review acceptance, the exact running
-image IDs and their scans, coordinated backup v4 and restore evidence v3 to the
+image IDs and their scans, coordinated backup v5 and restore evidence v4 to the
 same Git/source-manifest identity. Also retain SBOMs and environment-specific
 configuration approval.
 

@@ -1,15 +1,17 @@
 """Create and verify a coordinated local Compose backup.
 
-The command pauses application writers, inventories every S3 object, records a
-PostgreSQL recovery point, stops SeaweedFS cleanly and archives its quiescent
-volume. It always attempts to restart storage and application writers. Existing
-backups and source volumes are never overwritten or deleted.
+The command quiesces application writers, proves the storage recovery gate,
+inventories every S3 object, records a PostgreSQL recovery point, stops
+SeaweedFS cleanly and archives its quiescent volume. It only restarts writers
+after storage and capacity are proven safe. Existing backups and source volumes
+are never overwritten or deleted.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -20,6 +22,7 @@ from contextlib import closing, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO
+from urllib.parse import urlsplit
 
 import boto3
 from botocore.config import Config
@@ -41,9 +44,58 @@ SEAWEEDFS_IMAGE = "custombuild-seaweedfs:uncommitted"
 SEAWEEDFS_IMAGE_PATTERN = re.compile(
     r"^custombuild-seaweedfs:(?:uncommitted|[a-f0-9]{40}|[a-f0-9]{64})$"
 )
-MANIFEST_SCHEMA = "custombuild.compose-backup.v4"
+MANIFEST_SCHEMA = "custombuild.compose-backup.v5"
+TOMBSTONE_HISTORY_SCHEMA = "custombuild.storage-tombstone-history.v1"
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+WORKER_CONTAINER_ID_PATTERN = re.compile(r"[a-f0-9]{64}")
 WAL_LSN_PATTERN = re.compile(r"^[0-9A-F]+/[0-9A-F]+$")
+S3_BUCKET_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+
+# PostgreSQL 18 provides the core sha256(bytea) function.  Hash a fixed-order
+# JSON array rather than a JSON object so column names, locale and object-key
+# ordering cannot silently change the anti-ABA history identity.  The timestamp
+# is rendered in UTC with six fractional digits and every retired identity
+# column is included.  Both backup and restore import this exact SQL fragment.
+TOMBSTONE_HISTORY_SQL = """(
+SELECT json_build_object(
+  'schema_version', 'custombuild.storage-tombstone-history.v1',
+  'count', count(*),
+  'sha256', encode(
+    sha256(
+      convert_to(
+        COALESCE(
+          jsonb_agg(
+            jsonb_build_array(
+              tombstone.capacity_bucket,
+              tombstone.object_key,
+              tombstone.organization_id,
+              tombstone.project_id,
+              tombstone.sha256,
+              tombstone.size_bytes,
+              tombstone.media_type,
+              tombstone.owner_type,
+              tombstone.owner_id,
+              tombstone.idempotency_key,
+              tombstone.accounting_state,
+              tombstone.claim_token,
+              to_char(
+                tombstone.retired_at AT TIME ZONE 'UTC',
+                'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'
+              )
+            )
+            ORDER BY tombstone.capacity_bucket COLLATE "C",
+                     tombstone.object_key COLLATE "C"
+          )::text,
+          '[]'
+        ),
+        'UTF8'
+      )
+    ),
+    'hex'
+  )
+)
+FROM public.storage_object_tombstones AS tombstone
+)"""
 
 # Every external process has an explicit budget.  The short/configuration paths
 # should fail quickly, while payload creation is allowed to handle large local
@@ -53,8 +105,20 @@ CONFIG_COMMAND_TIMEOUT_SECONDS = 30
 SHORT_COMMAND_TIMEOUT_SECONDS = 120
 LONG_BACKUP_COMMAND_TIMEOUT_SECONDS = 2 * 60 * 60
 RECOVERY_TIMEOUT_SECONDS = 120
+STORAGE_RECOVERY_TIMEOUT_SECONDS = 1200
+STORAGE_RECOVERY_COMMAND_TIMEOUT_SECONDS = STORAGE_RECOVERY_TIMEOUT_SECONDS + 60
+# Generation tasks have a two-hour hard limit. Give Celery a small additional
+# Docker shutdown window so stop remains a warm, draining shutdown rather than
+# killing an active reservation halfway through its commit protocol.
+WORKER_DRAIN_GRACE_SECONDS = 2 * 60 * 60 + 120
+WORKER_DRAIN_COMMAND_TIMEOUT_SECONDS = WORKER_DRAIN_GRACE_SECONDS + 60
+FAIL_CLOSED_STOP_GRACE_SECONDS = 30
 S3_READINESS_IO_TIMEOUT_SECONDS = 5.0
 S3_READINESS_RETRY_INTERVAL_SECONDS = 1.0
+WORKER_HEALTH_INSPECT_TIMEOUT_SECONDS = 5
+WORKER_HEALTH_RETRY_INTERVAL_SECONDS = 1.0
+CAPACITY_HEARTBEAT_PATH = "/run/custombuild-state/capacity-heartbeat.json"
+CAPACITY_REFRESH_REQUEST_PATH = "/run/custombuild-state/capacity-refresh-request.json"
 
 
 class BackupError(RuntimeError):
@@ -376,7 +440,7 @@ def database_snapshot(
     compose_prefix: list[str], repo: Path, database: str, user: str
 ) -> dict[str, Any]:
     query = (
-        "SELECT json_build_object("
+        "SELECT json_build_object("  # noqa: S608 - fixed SQL constants only.
         "'captured_at', clock_timestamp(), "
         "'wal_lsn', pg_current_wal_lsn()::text, "
         "'alembic_heads', COALESCE((SELECT json_agg(version_num ORDER BY version_num) "
@@ -385,7 +449,8 @@ def database_snapshot(
         "FROM (SELECT tablename, (((xpath('/row/count/text()', query_to_xml("
         "format('SELECT count(*) AS count FROM %I.%I', schemaname, tablename), "
         "false, true, ''))))[1]::text)::bigint AS row_count "
-        "FROM pg_tables WHERE schemaname = 'public') AS counts), '{}'::json))::text;"
+        "FROM pg_tables WHERE schemaname = 'public') AS counts), '{}'::json), "
+        f"'tombstone_history', {TOMBSTONE_HISTORY_SQL})::text;"
     )
     raw = run_capture(
         [
@@ -479,6 +544,32 @@ def _verify_database_snapshot(value: Any) -> None:
         )
     ):
         raise BackupError("Backup manifest has invalid exact PostgreSQL row counts")
+    tombstone_count = row_counts.get("storage_object_tombstones")
+    if isinstance(tombstone_count, bool) or not isinstance(tombstone_count, int):
+        raise BackupError("Backup manifest has no exact tombstone table row count")
+    validate_tombstone_history(
+        value.get("tombstone_history"),
+        expected_count=tombstone_count,
+    )
+
+
+def validate_tombstone_history(value: Any, *, expected_count: int) -> None:
+    """Validate the exact, non-secret proof of the append-only retired-key set."""
+
+    if not isinstance(value, dict) or set(value) != {"schema_version", "count", "sha256"}:
+        raise BackupError("Backup manifest has invalid tombstone history evidence")
+    count = value.get("count")
+    digest = value.get("sha256")
+    if (
+        value.get("schema_version") != TOMBSTONE_HISTORY_SCHEMA
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 0
+        or count != expected_count
+        or not isinstance(digest, str)
+        or SHA256_PATTERN.fullmatch(digest) is None
+    ):
+        raise BackupError("Backup manifest has invalid tombstone history evidence")
 
 
 def _verify_object_store(value: Any) -> None:
@@ -590,20 +681,340 @@ def verify_manifest(directory: Path) -> dict[str, Any]:
     return manifest
 
 
+def _compose_tcp_port(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if 1 <= value <= 65_535 else None
+    if not isinstance(value, str) or re.fullmatch(r"[1-9][0-9]{0,4}", value) is None:
+        return None
+    port = int(value)
+    return port if port <= 65_535 else None
+
+
+def _is_canonical_s3_bucket(bucket: str) -> bool:
+    """Mirror the production config guard without importing the API package."""
+
+    try:
+        ipv4_literal = ipaddress.ip_address(bucket).version == 4
+    except ValueError:
+        ipv4_literal = False
+    return (
+        S3_BUCKET_PATTERN.fullmatch(bucket) is not None and ".." not in bucket and not ipv4_literal
+    )
+
+
 def _resolved_storage(config: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
     try:
-        api_environment = config["services"]["api"]["environment"]
-        object_image = str(config["services"]["object-storage"]["image"])
+        storage_service = config["services"]["object-storage"]
+        storage_environment = storage_service["environment"]
+        object_image = str(storage_service["image"])
         object_volume = str(config["volumes"]["object-storage-data"]["name"])
-        endpoint = str(api_environment["S3_PUBLIC_ENDPOINT"])
-        access_key = str(api_environment["S3_ACCESS_KEY"])
-        secret_key = str(api_environment["S3_SECRET_KEY"])
-        bucket = str(api_environment["S3_BUCKET"])
+        endpoint = str(storage_environment["S3_BACKUP_ENDPOINT"])
+        access_key = str(storage_environment["AWS_ACCESS_KEY_ID"])
+        secret_key = str(storage_environment["AWS_SECRET_ACCESS_KEY"])
+        bucket = str(storage_environment["S3_BUCKET"])
     except (KeyError, TypeError) as exc:
         raise BackupError("Compose configuration is missing object-storage settings") from exc
+    if not _is_canonical_s3_bucket(bucket):
+        raise BackupError("Compose object-storage bucket must be a canonical S3 DNS name")
     if not SEAWEEDFS_IMAGE_PATTERN.fullmatch(object_image):
         raise BackupError("Compose must use the repository-owned SeaweedFS build")
+    try:
+        parsed_endpoint = urlsplit(endpoint)
+        endpoint_host = ipaddress.ip_address(parsed_endpoint.hostname or "")
+        endpoint_port = parsed_endpoint.port
+        endpoint_valid = (
+            endpoint == endpoint.strip()
+            and re.search(r"[\\\x00-\x20\x7f]", endpoint) is None
+            and parsed_endpoint.scheme == "http"
+            and endpoint_host.is_loopback
+            and endpoint_port is not None
+            and 1 <= endpoint_port <= 65_535
+            and parsed_endpoint.username is None
+            and parsed_endpoint.password is None
+            and parsed_endpoint.path in {"", "/"}
+            and not parsed_endpoint.query
+            and not parsed_endpoint.fragment
+        )
+    except ValueError:
+        endpoint_valid = False
+        endpoint_host = ipaddress.ip_address("127.0.0.1")
+        endpoint_port = None
+    matching_port = False
+    if endpoint_valid:
+        for published in storage_service.get("ports", []) or []:
+            if not isinstance(published, dict):
+                continue
+            raw_published = published.get("published")
+            raw_target = published.get("target")
+            published_port = _compose_tcp_port(raw_published)
+            target_port = _compose_tcp_port(raw_target)
+            if published_port is None or target_port is None:
+                continue
+            try:
+                published_host = ipaddress.ip_address(str(published.get("host_ip", "")))
+            except ValueError:
+                continue
+            if (
+                published_host == endpoint_host
+                and published_port == endpoint_port
+                and target_port == 8333
+                and str(published.get("protocol", "tcp")).lower() == "tcp"
+            ):
+                matching_port = True
+                break
+    if not matching_port:
+        raise BackupError("Compose object-storage backup endpoint must match its loopback S3 port")
     return object_volume, object_image, endpoint, access_key, secret_key, bucket
+
+
+def refresh_capacity_attestor(
+    compose_prefix: list[str],
+    repo: Path,
+    *,
+    resume: bool,
+) -> None:
+    """Require a heartbeat bound to new exact PostgreSQL evidence."""
+
+    service = "storage-capacity-attestor"
+    if resume:
+        run(
+            [*compose_prefix, "unpause", service],
+            cwd=repo,
+            timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+            operation="Unpause storage capacity attestor",
+        )
+    run(
+        [
+            *compose_prefix,
+            "exec",
+            "-T",
+            service,
+            "python",
+            "-m",
+            "scripts.storage_capacity_refresh",
+            "prepare",
+            "--heartbeat",
+            CAPACITY_HEARTBEAT_PATH,
+            "--request",
+            CAPACITY_REFRESH_REQUEST_PATH,
+        ],
+        cwd=repo,
+        timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
+        operation="Record storage capacity refresh baseline",
+    )
+    run(
+        [*compose_prefix, "kill", "--signal", "SIGUSR1", service],
+        cwd=repo,
+        timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
+        operation="Request fresh storage capacity evidence",
+    )
+    run(
+        [
+            *compose_prefix,
+            "exec",
+            "-T",
+            service,
+            "python",
+            "-m",
+            "scripts.storage_capacity_refresh",
+            "wait",
+            "--heartbeat",
+            CAPACITY_HEARTBEAT_PATH,
+            "--request",
+            CAPACITY_REFRESH_REQUEST_PATH,
+            "--timeout-seconds",
+            "110",
+        ],
+        cwd=repo,
+        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+        operation="Wait for fresh storage capacity evidence",
+    )
+
+
+def run_storage_recovery(compose_prefix: list[str], repo: Path) -> None:
+    """Run the one-shot maintenance gate and require an unambiguous success."""
+
+    run(
+        [
+            *compose_prefix,
+            "run",
+            "--rm",
+            "--no-deps",
+            "-e",
+            "STORAGE_RECOVERY_TIMEOUT_SECONDS=" + str(STORAGE_RECOVERY_TIMEOUT_SECONDS),
+            "storage-recovery",
+        ],
+        cwd=repo,
+        timeout_seconds=STORAGE_RECOVERY_COMMAND_TIMEOUT_SECONDS,
+        operation="Storage recovery gate",
+    )
+
+
+def _stop_worker(compose_prefix: list[str], repo: Path, *, operation: str) -> None:
+    """Warm-stop Celery with enough time for its longest active task to drain."""
+
+    run(
+        [
+            *compose_prefix,
+            "stop",
+            "--timeout",
+            str(WORKER_DRAIN_GRACE_SECONDS),
+            "worker",
+        ],
+        cwd=repo,
+        timeout_seconds=WORKER_DRAIN_COMMAND_TIMEOUT_SECONDS,
+        operation=operation,
+    )
+
+
+def _worker_container_id(
+    compose_prefix: list[str],
+    repo: Path,
+) -> str:
+    """Resolve one exact existing worker container without starting dependencies."""
+
+    container_id = run_capture(
+        [
+            *compose_prefix,
+            "ps",
+            "--all",
+            "--quiet",
+            "--no-trunc",
+            "worker",
+        ],
+        cwd=repo,
+        timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
+        operation="Worker container identity lookup",
+    )
+    if WORKER_CONTAINER_ID_PATTERN.fullmatch(container_id) is None:
+        raise BackupError("Compose worker container identity is missing or ambiguous")
+    return container_id
+
+
+def _worker_runtime_state(
+    docker: str,
+    repo: Path,
+    container_id: str,
+    *,
+    timeout_seconds: int,
+) -> tuple[str, str]:
+    raw = run_capture(
+        [
+            docker,
+            "container",
+            "inspect",
+            "--format",
+            "{{json .State}}",
+            container_id,
+        ],
+        cwd=repo,
+        timeout_seconds=timeout_seconds,
+        operation="Worker runtime-state inspection",
+    )
+    try:
+        state = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise BackupError("Worker runtime state is not valid JSON") from exc
+    status = state.get("Status") if isinstance(state, dict) else None
+    health = state.get("Health") if isinstance(state, dict) else None
+    health_status = health.get("Status") if isinstance(health, dict) else None
+    if not isinstance(status, str) or health_status not in {
+        "starting",
+        "healthy",
+        "unhealthy",
+    }:
+        raise BackupError("Worker runtime state is incomplete or invalid")
+    return status, health_status
+
+
+def _wait_for_worker_health(
+    docker: str,
+    repo: Path,
+    container_id: str,
+    *,
+    timeout_seconds: int,
+) -> None:
+    if timeout_seconds <= 0:
+        raise BackupError("Worker health wait requires a positive timeout")
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if remaining < 1:
+            time.sleep(remaining)
+            continue
+        status, health = _worker_runtime_state(
+            docker,
+            repo,
+            container_id,
+            timeout_seconds=min(
+                WORKER_HEALTH_INSPECT_TIMEOUT_SECONDS,
+                int(remaining),
+            ),
+        )
+        if status == "running" and health == "healthy":
+            return
+        if status != "running" or health == "unhealthy":
+            raise BackupError(
+                "Exact worker container stopped or became unhealthy during restart"
+            )
+        time.sleep(
+            min(
+                WORKER_HEALTH_RETRY_INTERVAL_SECONDS,
+                max(0.0, deadline - time.monotonic()),
+            )
+        )
+    raise BackupError(
+        "Exact worker container did not become healthy before the recovery deadline"
+    )
+
+
+def _start_exact_worker(
+    docker: str,
+    compose_prefix: list[str],
+    repo: Path,
+    expected_container_id: str,
+) -> None:
+    if _worker_container_id(compose_prefix, repo) != expected_container_id:
+        raise BackupError(
+            "Compose worker container identity changed while writers were quiesced"
+        )
+    run(
+        [docker, "container", "start", expected_container_id],
+        cwd=repo,
+        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+        operation="Start worker",
+    )
+    _wait_for_worker_health(
+        docker,
+        repo,
+        expected_container_id,
+        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+    )
+
+
+def _fail_closed_service(
+    compose_prefix: list[str],
+    repo: Path,
+    service: str,
+) -> None:
+    """Best-effort bounded stop used only after a quiescence command failed."""
+
+    run(
+        [
+            *compose_prefix,
+            "stop",
+            "--timeout",
+            str(FAIL_CLOSED_STOP_GRACE_SECONDS),
+            service,
+        ],
+        cwd=repo,
+        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+        operation=f"Fail-closed stop {service}",
+    )
 
 
 def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
@@ -613,6 +1024,20 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
     _prepare_private_output_directory(output)
 
     config = compose_config(repo, compose)
+    services = config.get("services", {})
+    required_services = {
+        "api",
+        "worker",
+        "scheduler",
+        "storage-recovery",
+        "storage-capacity-attestor",
+    }
+    if not isinstance(services, dict) or not required_services.issubset(services):
+        configured_services = set(services) if isinstance(services, dict) else set()
+        missing = sorted(required_services - configured_services)
+        raise BackupError(
+            "Compose configuration is missing required backup services: " + ", ".join(missing)
+        )
     project = str(config.get("name", "unknown"))
     postgres_environment = config["services"]["postgres"].get("environment", {})
     database = str(postgres_environment.get("POSTGRES_DB", "custombuild"))
@@ -622,25 +1047,71 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
     docker = executable("docker")
     compose_prefix = [docker, "compose", "--file", str(compose)]
 
-    # Record the service before invoking Docker.  A client-side timeout does
-    # not prove the daemon failed to apply the pause, so every attempted pause
-    # receives one bounded unpause attempt in ``finally``.
+    # Record each transition before invoking Docker. A client-side timeout does
+    # not prove what the daemon applied, so a failed gate never permits writers
+    # to resume and an attempted resume is rolled back on any later failure.
     pause_attempted_services: list[str] = []
+    worker_stop_attempted = False
+    worker_container_id: str | None = None
+    attestor_pause_attempted = False
+    storage_recovery_completed = False
+    pre_capture_capacity_verified = False
+    capture_started = False
+    gate_failed = False
     object_stopped = False
     inventory: list[dict[str, Any]] | None = None
     snapshot: dict[str, Any] | None = None
     operation_error: BaseException | None = None
     try:
-        for service in ("api", "worker", "scheduler"):
-            if service not in config.get("services", {}):
-                continue
+        quiescence_errors: list[str] = []
+        for service in ("api", "scheduler"):
             pause_attempted_services.append(service)
-            run(
-                [*compose_prefix, "pause", service],
-                cwd=repo,
-                timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
-                operation=f"Pause {service}",
-            )
+            try:
+                run(
+                    [*compose_prefix, "pause", service],
+                    cwd=repo,
+                    timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
+                    operation=f"Pause {service}",
+                )
+            except BackupError as exc:
+                quiescence_errors.append(f"{service} pause failed: {exc}")
+                try:
+                    _fail_closed_service(compose_prefix, repo, service)
+                except BackupError as stop_exc:
+                    quiescence_errors.append(f"{service} fail-closed stop failed: {stop_exc}")
+        worker_stop_attempted = True
+        try:
+            worker_container_id = _worker_container_id(compose_prefix, repo)
+        except BackupError as exc:
+            quiescence_errors.append(f"worker identity capture failed: {exc}")
+        try:
+            _stop_worker(compose_prefix, repo, operation="Drain and stop worker")
+        except BackupError as exc:
+            quiescence_errors.append(f"worker drain failed: {exc}")
+            try:
+                run(
+                    [*compose_prefix, "kill", "--signal", "SIGKILL", "worker"],
+                    cwd=repo,
+                    timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+                    operation="Fail-closed kill worker",
+                )
+            except BackupError as kill_exc:
+                quiescence_errors.append(f"worker fail-closed kill failed: {kill_exc}")
+        if quiescence_errors:
+            raise BackupError("Writer quiescence failed: " + "; ".join(quiescence_errors))
+
+        run_storage_recovery(compose_prefix, repo)
+        storage_recovery_completed = True
+        refresh_capacity_attestor(compose_prefix, repo, resume=False)
+        pre_capture_capacity_verified = True
+        attestor_pause_attempted = True
+        run(
+            [*compose_prefix, "pause", "storage-capacity-attestor"],
+            cwd=repo,
+            timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
+            operation="Pause storage capacity attestor",
+        )
+        capture_started = True
         inventory = inventory_s3(endpoint, access_key, secret_key, bucket)
         snapshot = database_snapshot(compose_prefix, repo, database, user)
         with _open_private_binary(output / "database.dump.partial") as target:
@@ -716,6 +1187,8 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
             raise BackupError("S3 inventory changed while the backup was quiesced")
     except BaseException as exc:
         operation_error = exc
+        if not capture_started:
+            gate_failed = True
     finally:
         recovery_errors: list[str] = []
         storage_available = not object_stopped
@@ -743,21 +1216,102 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
                 storage_available = True
             except BackupError as exc:
                 recovery_errors.append(f"object-storage readiness failed: {exc}")
-        if storage_available:
-            for service in reversed(pause_attempted_services):
-                try:
+        capacity_available = False
+        if storage_available and storage_recovery_completed:
+            try:
+                refresh_capacity_attestor(
+                    compose_prefix,
+                    repo,
+                    resume=attestor_pause_attempted,
+                )
+                capacity_available = True
+            except BackupError as exc:
+                recovery_errors.append(f"storage capacity refresh failed: {exc}")
+        can_resume_writers = (
+            storage_available
+            and storage_recovery_completed
+            and pre_capture_capacity_verified
+            and capacity_available
+            and not gate_failed
+            and not recovery_errors
+        )
+        if can_resume_writers:
+            resumed_services: list[str] = []
+            worker_start_attempted = False
+            try:
+                worker_start_attempted = worker_stop_attempted
+                if worker_stop_attempted:
+                    if worker_container_id is None:
+                        raise BackupError(
+                            "Worker container identity was not captured before quiescence"
+                        )
+                    _start_exact_worker(
+                        docker,
+                        compose_prefix,
+                        repo,
+                        worker_container_id,
+                    )
+                for service in ("scheduler", "api"):
+                    if service not in pause_attempted_services:
+                        continue
+                    resumed_services.append(service)
                     run(
                         [*compose_prefix, "unpause", service],
                         cwd=repo,
                         timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
                         operation=f"Unpause {service}",
                     )
-                except BackupError as exc:
-                    recovery_errors.append(f"{service} unpause failed: {exc}")
-        elif pause_attempted_services:
-            recovery_errors.append(
-                "application writers remain paused because object storage is unavailable"
-            )
+            except BackupError as exc:
+                recovery_errors.append(f"writer restart failed: {exc}")
+                for service in reversed(resumed_services):
+                    try:
+                        run(
+                            [*compose_prefix, "pause", service],
+                            cwd=repo,
+                            timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+                            operation=f"Re-pause {service} after recovery failure",
+                        )
+                    except BackupError as pause_exc:
+                        recovery_errors.append(
+                            f"{service} fail-closed re-pause failed: {pause_exc}"
+                        )
+                if worker_start_attempted:
+                    try:
+                        _stop_worker(
+                            compose_prefix,
+                            repo,
+                            operation="Fail-closed stop worker after recovery failure",
+                        )
+                    except BackupError as stop_exc:
+                        recovery_errors.append(f"worker fail-closed stop failed: {stop_exc}")
+        else:
+            if not storage_recovery_completed:
+                recovery_errors.append(
+                    "application writers remain stopped or paused because storage "
+                    "recovery did not complete"
+                )
+            elif gate_failed or not pre_capture_capacity_verified:
+                recovery_errors.append(
+                    "application writers remain stopped or paused because the "
+                    "pre-capture storage gate failed"
+                )
+            elif not storage_available:
+                recovery_errors.append(
+                    "application writers remain stopped or paused because object "
+                    "storage is unavailable"
+                )
+            elif not capacity_available:
+                recovery_errors.append(
+                    "application writers remain stopped or paused because storage "
+                    "capacity was not freshly attested"
+                )
+            else:
+                recovery_errors.append(
+                    "application writers remain stopped or paused because recovery "
+                    "reported an error"
+                )
+        if recovery_errors and can_resume_writers:
+            recovery_errors.append("application writers were returned to a stopped or paused state")
         if recovery_errors:
             detail = "; ".join(recovery_errors)
             if operation_error is not None:

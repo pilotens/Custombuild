@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime, timedelta
 from threading import Event
+from types import SimpleNamespace
 from typing import Any
 
+import app.api as api_module
+import app.storage as storage_module
 import custombuild_worker.tasks as worker_tasks
 import pytest
 from app.db import Base
@@ -18,6 +22,7 @@ from app.models import (
     OutboxEvent,
 )
 from celery.exceptions import SoftTimeLimitExceeded
+from custombuild_manufacturing import MAX_ARTIFACT_BYTES, MAX_CORE_DOCUMENT_BYTES
 from custombuild_manufacturing.readiness import ReadinessValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -98,6 +103,9 @@ def _seed_generation_job(
 
 def _generation_result() -> dict[str, Any]:
     return {
+        "production_engine_context_hash": worker_tasks.sha256_hex(
+            worker_tasks.canonical_json_bytes({"schema": "test"})
+        ),
         "bundle_object_key": "private/bundle.zip",
         "bundle_sha256": "a" * 64,
         "bundle_size_bytes": 100,
@@ -106,6 +114,112 @@ def _generation_result() -> dict[str, Any]:
         "manifest_size_bytes": 200,
         "evidence_artifacts": [],
     }
+
+
+def test_completion_rejects_detached_engine_context_before_state_or_artifacts(
+    worker_session_factory: sessionmaker[Session],
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    job, version = claim
+    token = job.lease_token
+    assert token is not None
+    detached = _generation_result()
+    detached["production_engine_context_hash"] = "0" * 64
+
+    with pytest.raises(
+        worker_tasks.ProductionBlockedError,
+        match="not bound to the persisted production engine context",
+    ):
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            token,
+            version,
+            detached,
+        )
+
+    with worker_session_factory() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.status == JobStatus.running
+        assert stored.lease_token == token
+        assert stored.result_json is None
+        assert list(session.scalars(select(Artifact))) == []
+        assert list(
+            session.scalars(
+                select(AuditEvent).where(
+                    AuditEvent.entity_id == job_id,
+                    AuditEvent.action == "generation.succeeded",
+                )
+            )
+        ) == []
+
+
+def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b'{"completion":"verified"}'
+    digest = hashlib.sha256(payload).hexdigest()
+    build_identity = {
+        "app_version": "1.4.0",
+        "vcs_ref": "a" * 40,
+        "build_date": "2026-08-28T00:00:00Z",
+        "source_url": "https://github.com/pilotens/Custombuild",
+        "source_manifest_sha256": "b" * 64,
+        "dependency_lock_sha256": "c" * 64,
+    }
+    calls: list[dict[str, Any]] = []
+
+    class WorkerS3Client:
+        def head_object(self, **kwargs: Any) -> dict[str, Any]:
+            calls.append(kwargs)
+            return {
+                "ContentLength": len(payload),
+                "ContentType": "application/json",
+                "Metadata": {"sha256": digest},
+            }
+
+    client = WorkerS3Client()
+    runtime = SimpleNamespace(
+        s3_bucket="production-artifacts",
+        build_identity=build_identity,
+    )
+
+    def must_not_load_api_settings() -> None:
+        raise AssertionError("worker completion loaded API-only settings")
+
+    def canonical_gate(
+        _session: Any,
+        organization_id: str,
+        _job: GenerationJob,
+        **kwargs: Any,
+    ) -> None:
+        assert organization_id == "tenant-a"
+        assert kwargs["build_identity"] == build_identity
+        storage_module.verify_stored_object(
+            storage_module.StoredObjectExpectation(
+                object_key="tenant-a/evidence.json",
+                sha256=digest,
+                size_bytes=len(payload),
+                content_type="application/json",
+            ),
+            stream_hash=False,
+        )
+
+    monkeypatch.setattr(worker_tasks, "WORKER_SETTINGS", runtime)
+    monkeypatch.setattr(worker_tasks, "_s3_client", lambda: client)
+    monkeypatch.setattr(api_module, "_require_review_evidence", canonical_gate)
+    monkeypatch.setattr(storage_module, "get_settings", must_not_load_api_settings)
+
+    worker_tasks._validate_completion_evidence(
+        object(),
+        "tenant-a",
+        GenerationJob(),
+    )
+
+    assert calls == [{"Bucket": "production-artifacts", "Key": "tenant-a/evidence.json"}]
 
 
 def test_replaced_lease_rejects_old_worker_completion_and_failure(
@@ -149,7 +263,7 @@ def test_replaced_lease_rejects_old_worker_completion_and_failure(
         first_token,
         RuntimeError("old worker must not win"),
         terminal=True,
-    ) is False
+    ) is None
 
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
@@ -303,6 +417,59 @@ def test_completion_validation_runs_before_success_and_rolls_back_on_failure(
         ) == []
 
 
+@pytest.mark.parametrize(
+    ("location", "invalid_size"),
+    (
+        ("bundle_size_bytes", True),
+        ("bundle_size_bytes", 0),
+        ("bundle_size_bytes", MAX_ARTIFACT_BYTES + 1),
+        ("manifest_size_bytes", MAX_CORE_DOCUMENT_BYTES + 1),
+        ("evidence", False),
+        ("evidence", MAX_CORE_DOCUMENT_BYTES + 1),
+    ),
+)
+def test_completion_rejects_coerced_empty_or_oversize_artifact_claims(
+    worker_session_factory: sessionmaker[Session],
+    location: str,
+    invalid_size: object,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    job, version = claim
+    token = job.lease_token
+    assert token is not None
+    result = _generation_result()
+    if location == "evidence":
+        result["evidence_artifacts"] = [
+            {
+                "kind": "dfm_report",
+                "object_key": "private/dfm-report.json",
+                "sha256": "c" * 64,
+                "size_bytes": invalid_size,
+                "content_type": "application/json",
+            }
+        ]
+    else:
+        result[location] = invalid_size
+
+    with pytest.raises(worker_tasks.ProductionBlockedError, match="inventory"):
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            token,
+            version,
+            result,
+        )
+
+    with worker_session_factory() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.status == JobStatus.running
+        assert stored.result_json is None
+        assert list(session.scalars(select(Artifact))) == []
+
+
 def test_lease_heartbeat_extends_only_the_current_tenant_owner(
     worker_session_factory: sessionmaker[Session],
 ) -> None:
@@ -428,7 +595,11 @@ def test_soft_time_limit_terminalizes_the_owned_job_without_retry(
 ) -> None:
     job_id, organization_id = _seed_generation_job(worker_session_factory)
 
-    def exceed_deadline(_job: GenerationJob, _version: DesignVersion) -> dict[str, Any]:
+    def exceed_deadline(
+        _job: GenerationJob,
+        _version: DesignVersion,
+        **_kwargs: object,
+    ) -> dict[str, Any]:
         raise SoftTimeLimitExceeded()
 
     monkeypatch.setattr(worker_tasks, "_generate", exceed_deadline)
@@ -458,6 +629,7 @@ def test_readiness_validation_failure_is_terminal_without_retry(
     def reject_readiness(
         _job: GenerationJob,
         _version: DesignVersion,
+        **_kwargs: object,
     ) -> dict[str, Any]:
         raise ReadinessValidationError("canonical readiness invalid")
 
@@ -502,6 +674,7 @@ def test_runtime_error_remains_retryable_and_requeues_owned_job(
     def fail_transiently(
         _job: GenerationJob,
         _version: DesignVersion,
+        **_kwargs: object,
     ) -> dict[str, Any]:
         raise RuntimeError("temporary dependency failure")
 
@@ -549,6 +722,7 @@ def test_transient_failure_after_server_deadline_is_terminal_without_retry(
     def fail_after_deadline(
         _job: GenerationJob,
         _version: DesignVersion,
+        **_kwargs: object,
     ) -> dict[str, Any]:
         raise RuntimeError("late transient failure")
 
@@ -592,6 +766,7 @@ def test_global_attempt_budget_terminalizes_fourth_transient_failure(
     def fail_on_final_attempt(
         _job: GenerationJob,
         _version: DesignVersion,
+        **_kwargs: object,
     ) -> dict[str, Any]:
         raise RuntimeError("fourth transient failure")
 

@@ -5,9 +5,41 @@
 - Every tenant query contains an application-level organization predicate and
   PostgreSQL applies a second Row-Level Security policy using transaction-local
   `app.current_organization_id`.
-- The API, migrator and worker database roles are `NOSUPERUSER NOBYPASSRLS`.
+- The API, migrator, worker and storage-attestor database roles are
+  `NOSUPERUSER NOBYPASSRLS`. The long-running capacity attestor never uses the
+  migrator login: `custombuild_storage_attestor` has no role memberships,
+  receives SELECT only on `organizations` plus the four storage inventory
+  tables (`storage_global_quotas`, `storage_tenant_quotas`, `stored_objects` and
+  `storage_object_tombstones`) and can execute only the three fixed-search-path
+  capacity functions. A narrow security-definer lock function gives it the
+  global writer fence without granting table UPDATE.
+  The short-lived `storage-recovery` startup service uses the migrator login
+  only after migrations, exits before the attestor and all writers, and is
+  never restarted as a daemon. PostgreSQL also disables container-runtime
+  automatic restart; a deliberate Compose-managed database update propagates
+  one ordered restart through migration, recovery, attestation and the writers.
+  Its failure blocks the entire writer chain without a privileged restart loop.
   Worker transactions bind the persisted organization context before tenant
   reads or writes; a background process is not exempt from the database boundary.
+  Every storage delete first binds the configured bucket to the attested ledger
+  and binds provider `HEAD` metadata to the claim's exact SHA-256 and byte size.
+  Deferred PostgreSQL constraint triggers require domain references to match a
+  fully committed ledger identity (project, owner and idempotency key included).
+  A separate immediate liveness trigger and KEY SHARE fence prevent generation-
+  job retries or live leases from racing an active token-bound reaper claim.
+  A successful reap atomically replaces the live ledger row with an append-only
+  `storage_object_tombstones` identity before quota counters are released. The
+  tombstone retains bucket, key, tenant/project, checksum, size, media type,
+  owner, idempotency identity, accounting origin, claim token and retirement
+  time without foreign keys or cascades. Its trigger rejects both UPDATE and
+  DELETE, and reservations reject a key or idempotency identity already retired
+  in the attested bucket. Reaping may be reclaimed after an expired reaper lease,
+  but it can never be rebound to `reserved` or `committed`.
+  Neither `custombuild_api` nor `custombuild_worker` has any table privilege on
+  the tombstone registry; they can reach only their allow-listed fixed-search-path
+  storage functions. The attestor has SELECT only on that exact five-table
+  allow-list. This prevents a compromised runtime from erasing the anti-ABA
+  history that those functions enforce.
 - Roles gate design, review, production and release actions. Released revisions
   are immutable and changes create new revisions. Production additionally
   requires four-eyes approval: design and CAM reviews must come from different
@@ -28,19 +60,25 @@
   Image's `fill` mode via `unsafe-hashes`, never general `unsafe-inline`. The policy includes no
   `unsafe-eval`. API and HTTPS OIDC origins are reduced to explicit origins in
   `connect-src`.
-- Artifact links are tenant-bound HMACs with five-minute expiry and lead to a
-  second short-lived object-store URL. The API rechecks revision freshness before
-  issuing or redirecting a link. An object-store URL already issued cannot be
-  revoked synchronously and ages out within the configured maximum TTL.
+- Artifact links are tenant-bound HMACs with five-minute expiry and remain on
+  the authenticated API origin. The API rechecks revision freshness, verifies
+  the complete persisted object into bounded private storage and streams only
+  checksum-matching bytes; the object store has no browser-facing URL contract.
 - Imported files are size-, MIME-, signature- and filename-checked. Document
   content is untrusted data. The MVP inspection endpoint records only a hash and
   explicit unknown assumptions; it does not decode, render or convert the file.
+  Every new physical import uses a server-issued UUID incarnation in both its
+  object key and idempotency identity. Likewise, each generation lease derives a
+  distinct attempt UUID and per-kind artifact UUID. A retry can therefore never
+  overwrite or reclaim bytes belonging to an earlier attempt, even when the
+  content digest is identical.
   Future converters must run non-root in the read-only worker container with
   dropped capabilities, bounded PIDs and disposable `/tmp`.
 - Development bearer tokens are rejected when production configuration is
   validated. Production requires HTTPS OIDC and CORS origins, password-authenticated
-  PostgreSQL, replaced signing/database/object-store credentials and an HTTPS
-  public artifact endpoint. Render `compose.yml` together with
+  PostgreSQL and replaced signing/database/object-store credentials. The
+  object-store host port is loopback-only and exists solely for backup/restore
+  operations. Render `compose.yml` together with
   `compose.external-production.yml`, then run
   `python scripts/check_external_production.py --repo .`; a non-zero result is a
   deployment blocker and includes the missing operator action without echoing secrets.

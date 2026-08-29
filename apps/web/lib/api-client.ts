@@ -188,6 +188,7 @@ const MAX_RULE_INPUTS = 128;
 const MAX_RULE_ACTIONS = 16;
 const MAX_RULE_ACTION_CHANGES = 32;
 const MAX_RESPONSE_STRING = 2_000;
+const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
 // The API derives a displayed centre from integer-micrometre placement and
 // floors half of an odd-sized part. Reconstructing an AABB from that centre can
 // therefore appear half a micrometre outside the exact integer envelope.
@@ -205,6 +206,14 @@ function asNumber(value: unknown, fallback: number): number {
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value.length > 0 ? value : fallback;
+}
+
+function sha256HexToBase64(sha256: string): string {
+  const bytes = new Uint8Array(32);
+  for (let index = 0; index < bytes.length; index += 1) {
+    bytes[index] = Number.parseInt(sha256.slice(index * 2, index * 2 + 2), 16);
+  }
+  return btoa(String.fromCharCode(...bytes));
 }
 
 function boundedServerNumber(
@@ -1042,6 +1051,54 @@ export class CustombuildApiClient {
       ?? this.developmentToken;
   }
 
+  private artifactDownloadUrl(artifact: Pick<ArtifactRead, "id" | "download_path">): URL {
+    if (!this.baseUrl) {
+      throw new ApiError("API-adress saknas. Artefakten kan inte hämtas verifierat.");
+    }
+    const id = artifact.id;
+    const path = artifact.download_path;
+    if (
+      typeof id !== "string"
+      || id.length === 0
+      || typeof path !== "string"
+      || !path.startsWith("/")
+      || path.startsWith("//")
+      || /[\\\u0000-\u0020\u007f]/.test(path)
+    ) {
+      throw new ApiError("Servern returnerade en ogiltig signerad artefaktsökväg.");
+    }
+
+    let apiOrigin: URL;
+    let resolved: URL;
+    try {
+      apiOrigin = new URL(this.baseUrl);
+      resolved = new URL(path, apiOrigin);
+    } catch {
+      throw new ApiError("Servern returnerade en ogiltig signerad artefaktsökväg.");
+    }
+    const expectedPath = `/v1/artifacts/${encodeURIComponent(id)}/download`;
+    const queryKeys = [...resolved.searchParams.keys()];
+    const expiresValues = resolved.searchParams.getAll("expires");
+    const signatureValues = resolved.searchParams.getAll("signature");
+    if (
+      resolved.origin !== apiOrigin.origin
+      || resolved.username !== ""
+      || resolved.password !== ""
+      || resolved.hash !== ""
+      || resolved.pathname !== expectedPath
+      || queryKeys.length !== 2
+      || new Set(queryKeys).size !== 2
+      || expiresValues.length !== 1
+      || signatureValues.length !== 1
+      || !/^[1-9][0-9]{0,15}$/.test(expiresValues[0] ?? "")
+      || !Number.isSafeInteger(Number(expiresValues[0]))
+      || !/^[a-f0-9]{64}$/.test(signatureValues[0] ?? "")
+    ) {
+      throw new ApiError("Servern returnerade en ogiltig signerad artefaktsökväg.");
+    }
+    return resolved;
+  }
+
   private async request<ResponseBody>(path: string, options: RequestInit): Promise<ResponseBody> {
     if (!this.baseUrl) throw new ApiError("API-adress saknas. Lokal deterministisk förhandsvisning används.");
     const token = this.accessToken();
@@ -1324,29 +1381,133 @@ export class CustombuildApiClient {
     );
     return payload.map((artifact) => {
       const id = asString(artifact.id, "");
-      const downloadUrl = asString(artifact.download_url, "");
       const sha256 = asString(artifact.sha256, "");
       const sizeBytes = asNumber(artifact.size_bytes, -1);
-      let isWebUrl = false;
-      try {
-        const parsed = new URL(downloadUrl);
-        isWebUrl = parsed.protocol === "https:" || parsed.protocol === "http:";
-      } catch {
-        // The URL is validated below together with the artifact identity and digest.
-      }
-      if (!id || !isWebUrl || !/^[a-f0-9]{64}$/.test(sha256) || sizeBytes < 0) {
+      const contentType = asString(artifact.content_type, "");
+      const downloadPath = asString(artifact.download_path, "");
+      if (
+        !id
+        || !/^[a-f0-9]{64}$/.test(sha256)
+        || !Number.isSafeInteger(sizeBytes)
+        || sizeBytes <= 0
+        || sizeBytes > MAX_ARTIFACT_BYTES
+        || !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(contentType)
+      ) {
         throw new ApiError("Servern returnerade en ogiltig artefaktlänk.");
       }
+      this.artifactDownloadUrl({ id, download_path: downloadPath });
       return {
         id,
         kind: asString(artifact.kind, "unknown"),
         sha256,
         size_bytes: sizeBytes,
-        content_type: asString(artifact.content_type, "application/octet-stream"),
-        download_url: downloadUrl,
-        download_path: asString(artifact.download_path, ""),
+        content_type: contentType,
+        // Never expose the untrusted external download_url returned for non-web
+        // clients. Web downloads always use the authenticated, signed API path.
+        download_url: downloadPath,
+        download_path: downloadPath,
       };
     });
+  }
+
+  async downloadArtifact(artifact: ArtifactRead, signal?: AbortSignal): Promise<Blob> {
+    const token = this.accessToken();
+    if (!token) {
+      throw new ApiError("Logga in för att hämta det verifierade granskningspaketet.", 401);
+    }
+    if (
+      !/^[a-f0-9]{64}$/.test(artifact.sha256)
+      || !Number.isSafeInteger(artifact.size_bytes)
+      || artifact.size_bytes <= 0
+      || artifact.size_bytes > MAX_ARTIFACT_BYTES
+      || !/^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(
+        artifact.content_type,
+      )
+    ) {
+      throw new ApiError("Artefaktens verifieringsmetadata är ogiltig.");
+    }
+    const downloadUrl = this.artifactDownloadUrl(artifact);
+    let response: Response;
+    try {
+      response = await fetch(downloadUrl.href, {
+        method: "GET",
+        headers: {
+          Accept: artifact.content_type,
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal,
+      });
+    } catch {
+      throw new ApiError(
+        "Kunde inte hämta granskningspaketet via den verifierade API-kanalen.",
+        undefined,
+        "ARTIFACT_DOWNLOAD_TRANSPORT_FAILURE",
+        undefined,
+        true,
+      );
+    }
+
+    let responseUrl: URL;
+    try {
+      responseUrl = new URL(response.url);
+    } catch {
+      throw new ApiError("Servern returnerade ett ogiltigt nedladdningssvar.");
+    }
+    if (
+      response.status !== 200
+      || response.redirected
+      || responseUrl.origin !== downloadUrl.origin
+      || responseUrl.href !== downloadUrl.href
+    ) {
+      throw new ApiError(
+        response.status === 200
+          ? "Servern försökte flytta artefakthämtningen utanför den verifierade API-kanalen."
+          : `Artefakthämtningen misslyckades (HTTP ${response.status}).`,
+        response.status,
+      );
+    }
+
+    const contentLength = response.headers.get("Content-Length");
+    const contentType = response.headers.get("Content-Type");
+    const digest = response.headers.get("Digest");
+    const etag = response.headers.get("ETag");
+    const expectedDigest = `sha-256=${sha256HexToBase64(artifact.sha256)}`;
+    if (
+      contentLength === null
+      || !/^[1-9][0-9]*$/.test(contentLength)
+      || !Number.isSafeInteger(Number(contentLength))
+      || Number(contentLength) !== artifact.size_bytes
+      || contentType !== artifact.content_type
+      || digest !== expectedDigest
+      || etag !== `"${artifact.sha256}"`
+    ) {
+      throw new ApiError("Artefaktens svarshuvuden matchar inte den signerade inventeringen.");
+    }
+
+    let body: ArrayBuffer;
+    try {
+      body = await response.arrayBuffer();
+    } catch {
+      throw new ApiError("Artefaktens svarskropp kunde inte läsas fullständigt.");
+    }
+    if (body.byteLength !== artifact.size_bytes) {
+      throw new ApiError("Artefaktens faktiska storlek matchar inte den signerade inventeringen.");
+    }
+    let actualSha256: string;
+    try {
+      const digestBytes = await crypto.subtle.digest("SHA-256", body);
+      actualSha256 = [...new Uint8Array(digestBytes)]
+        .map((value) => value.toString(16).padStart(2, "0"))
+        .join("");
+    } catch {
+      throw new ApiError("Webbläsaren kunde inte verifiera artefaktens SHA-256.");
+    }
+    if (actualSha256 !== artifact.sha256) {
+      throw new ApiError("Artefaktens innehåll matchar inte den signerade SHA-256-identiteten.");
+    }
+    return new Blob([body], { type: artifact.content_type });
   }
 
   async releaseVersion(

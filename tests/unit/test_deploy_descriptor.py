@@ -24,6 +24,7 @@ from scripts.deploy_descriptor import (
 REPOSITORY = "pilotens/Custombuild"
 REVISION = "a" * 40
 SOURCE_MANIFEST = "b" * 64
+REPOSITORY_CONTENT_ROOT = "e" * 64
 RUN_ID = 123456
 RUN_ATTEMPT = 2
 APPLICATION_DIGESTS = {
@@ -64,9 +65,7 @@ PINNED_CONFIG_DIGESTS = {
 
 def application_images() -> dict[str, str]:
     return {
-        component: (
-            f"ghcr.io/{REPOSITORY.lower()}-{component}@{APPLICATION_DIGESTS[component]}"
-        )
+        component: (f"ghcr.io/{REPOSITORY.lower()}-{component}@{APPLICATION_DIGESTS[component]}")
         for component in APPLICATION_COMPONENTS
     }
 
@@ -82,14 +81,20 @@ def evidence_object() -> dict[str, object]:
         for component, reference in PINNED_RUNTIME_IMAGES.items()
     }
     return {
-        "schema_version": "custombuild.release-readiness-evidence.v1",
+        "schema_version": "custombuild.release-readiness-evidence.v2",
         "git_revision": REVISION,
         "source_manifest_sha256": SOURCE_MANIFEST,
+        "repository_content_root_sha256": REPOSITORY_CONTENT_ROOT,
+        "external_semantic_approval_required": True,
         "software_release_ready": True,
         "commercial_release_ready": False,
         "physical_machine_release_ready": False,
         "static_report": {
-            "schema_version": "custombuild.release-readiness-static.v2",
+            "schema_version": "custombuild.release-readiness-static.v3",
+            "git_revision": REVISION,
+            "source_manifest_sha256": SOURCE_MANIFEST,
+            "repository_content_root_sha256": REPOSITORY_CONTENT_ROOT,
+            "external_semantic_approval_required": True,
             "static_controls_ready": True,
         },
         "runtime_image_config_digests": config_digests,
@@ -197,7 +202,7 @@ def test_descriptor_is_deterministic_canonical_and_cross_bound() -> None:
     assert verify(canonical, evidence) == descriptor
     assert descriptor["roles"] == ROLE_COMPONENTS
     assert descriptor["release_evidence"] == {
-        "schema_version": "custombuild.release-readiness-evidence.v1",
+        "schema_version": "custombuild.release-readiness-evidence.v2",
         "sha256": hashlib.sha256(evidence).hexdigest(),
     }
     assert descriptor["images"] == {**application_images(), **PINNED_RUNTIME_IMAGES}
@@ -207,8 +212,9 @@ def test_descriptor_is_deterministic_canonical_and_cross_bound() -> None:
         component: hashlib.sha256(payload).hexdigest()
         for component, payload in publication_bytes().items()
     }
-    assert descriptor["images"]["api"].split("@", 1)[1] != (
-        evidence_object()["runtime_platform_manifest_digests"]["api"]
+    assert (
+        descriptor["images"]["api"].split("@", 1)[1]
+        != (evidence_object()["runtime_platform_manifest_digests"]["api"])
     )
     assert descriptor_for(evidence) == descriptor
 
@@ -221,13 +227,16 @@ def test_publication_evidence_is_canonical_and_keeps_identity_domains_distinct()
     assert publication["registry_manifest_digest"] == APPLICATION_DIGESTS["api"]
     assert publication["image_config_digest"] == APPLICATION_CONFIG_DIGESTS["api"]
     assert publication["archive_sha256"] == APPLICATION_ARCHIVE_DIGESTS["api"]
-    assert len(
-        {
-            publication["registry_manifest_digest"],
-            publication["image_config_digest"],
-            f"sha256:{publication['archive_sha256']}",
-        }
-    ) == 3
+    assert (
+        len(
+            {
+                publication["registry_manifest_digest"],
+                publication["image_config_digest"],
+                f"sha256:{publication['archive_sha256']}",
+            }
+        )
+        == 3
+    )
 
 
 @pytest.mark.parametrize("identity", ("registry", "config", "archive"))
@@ -240,9 +249,7 @@ def test_independent_publication_identity_mutations_invalidate_descriptor(
     if identity == "registry":
         digest = f"sha256:{'9' * 64}"
         publication["registry_manifest_digest"] = digest
-        publication["registry_image"] = (
-            f"ghcr.io/{REPOSITORY.lower()}-api@{digest}"
-        )
+        publication["registry_image"] = f"ghcr.io/{REPOSITORY.lower()}-api@{digest}"
     elif identity == "config":
         publication["image_config_digest"] = f"sha256:{'9' * 64}"
     else:
@@ -285,8 +292,7 @@ def test_signing_policy_is_exact_and_commit_bound() -> None:
     assert policy == {
         "cosign": {
             "certificate_identity": (
-                "https://github.com/pilotens/Custombuild/.github/workflows/"
-                "cd.yml@refs/heads/main"
+                "https://github.com/pilotens/Custombuild/.github/workflows/cd.yml@refs/heads/main"
             ),
             "certificate_oidc_issuer": "https://token.actions.githubusercontent.com",
         },
@@ -412,6 +418,8 @@ def test_descriptor_mutations_fail_closed(
         (("application_image_archive_sha256",), "api"),
         (("publication_evidence_sha256",), "api"),
         (("roles",), "migrate"),
+        (("roles",), "storage-recovery"),
+        (("roles",), "storage-capacity-attestor"),
         (("signing_policy",), "cosign"),
         (("signing_policy", "github_attestations"), "source_digest"),
     ),
@@ -496,9 +504,16 @@ def test_descriptor_rejects_oversized_input() -> None:
         (("schema_version",), "other.evidence.v1"),
         (("git_revision",), "c" * 40),
         (("source_manifest_sha256",), "c" * 64),
+        (("repository_content_root_sha256",), "not-a-sha256"),
+        (("external_semantic_approval_required",), False),
         (("software_release_ready",), False),
         (("commercial_release_ready",), True),
         (("physical_machine_release_ready",), True),
+        (("static_report", "schema_version"), "custombuild.release-readiness-static.v2"),
+        (("static_report", "git_revision"), "c" * 40),
+        (("static_report", "source_manifest_sha256"), "c" * 64),
+        (("static_report", "repository_content_root_sha256"), "c" * 64),
+        (("static_report", "external_semantic_approval_required"), False),
         (("static_report", "static_controls_ready"), False),
         (("runtime_deployment_reference_digests", "postgres"), f"sha256:{'9' * 64}"),
         (("runtime_image_config_digests", "api"), f"sha256:{'9' * 64}"),
@@ -514,6 +529,31 @@ def test_render_rejects_cross_source_or_unsafe_release_evidence(
 ) -> None:
     evidence = evidence_object()
     set_path(evidence, path, replacement)
+
+    with pytest.raises(DescriptorError):
+        descriptor_for(evidence_bytes(evidence))
+
+
+@pytest.mark.parametrize(
+    "path",
+    (
+        ("repository_content_root_sha256",),
+        ("external_semantic_approval_required",),
+        ("static_report", "schema_version"),
+        ("static_report", "repository_content_root_sha256"),
+        ("static_report", "external_semantic_approval_required"),
+    ),
+)
+def test_render_requires_complete_repository_content_root_evidence(
+    path: tuple[str, ...],
+) -> None:
+    evidence = evidence_object()
+    owner = evidence
+    for key in path[:-1]:
+        child = owner[key]
+        assert isinstance(child, dict)
+        owner = child
+    del owner[path[-1]]
 
     with pytest.raises(DescriptorError):
         descriptor_for(evidence_bytes(evidence))
@@ -601,9 +641,7 @@ def test_cli_renders_verifies_and_emits_only_digest_refs(
     assert deploy_descriptor.main() == 0
     digest = capsys.readouterr().out.strip()
     assert digest == hashlib.sha256(descriptor.read_bytes()).hexdigest()
-    assert descriptor_sha.read_text(encoding="ascii") == (
-        f"{digest}  {descriptor.name}\n"
-    )
+    assert descriptor_sha.read_text(encoding="ascii") == (f"{digest}  {descriptor.name}\n")
 
     monkeypatch.setattr(
         "sys.argv",
@@ -710,9 +748,7 @@ def test_cli_rejection_does_not_emit_compose_environment(
 
 def test_checked_in_registry_overlay_is_exact() -> None:
     assert registry_overlay_issues(Path("compose.registry.yml")) == []
-    assert Path("compose.registry.yml").read_text(encoding="utf-8") == (
-        EXPECTED_REGISTRY_OVERLAY
-    )
+    assert Path("compose.registry.yml").read_text(encoding="utf-8") == (EXPECTED_REGISTRY_OVERLAY)
 
 
 @pytest.mark.parametrize(

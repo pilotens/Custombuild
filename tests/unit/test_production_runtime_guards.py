@@ -35,6 +35,17 @@ def production_worker_settings(**overrides: object) -> WorkerSettings:
         "redis_url": "redis://:strong-worker-redis-password@redis:6379/0",
         "s3_access_key": "production-worker-access",
         "s3_secret_key": "strong-production-object-secret",
+        "s3_bucket": "production-artifacts",
+        "storage_capacity_operator_config_sha256": "d" * 64,
+        "storage_capacity_volume_identity": "provider-volume-0001",
+        "storage_capacity_provisioned_bytes": 1_000,
+        "storage_capacity_metadata_overhead_bytes": 100,
+        "storage_capacity_emergency_reserve_bytes": 100,
+        "storage_capacity_headroom_bytes": 200,
+        "storage_capacity_byte_limit": 800,
+        "storage_capacity_object_limit": 100,
+        "storage_capacity_deploy_descriptor_sha256": "e" * 64,
+        "storage_capacity_max_age_seconds": 600,
     }
     values.update(overrides)
     return WorkerSettings(_env_file=None, **values)  # type: ignore[arg-type]
@@ -47,9 +58,10 @@ def test_worker_accepts_secure_production_and_development_defaults() -> None:
     assert production.app_env == "production"
     assert production.build_identity["vcs_ref"] == "a" * 40
     assert production.build_identity["source_manifest_sha256"] == "c" * 64
-    assert production.build_identity["dependency_lock_sha256"] == hashlib.sha256(
-        DEPENDENCY_LOCK_PATH.read_bytes()
-    ).hexdigest()
+    assert (
+        production.build_identity["dependency_lock_sha256"]
+        == hashlib.sha256(DEPENDENCY_LOCK_PATH.read_bytes()).hexdigest()
+    )
     assert development.database_url.startswith("sqlite")
     assert development.s3_access_key == "custombuild"
 
@@ -107,8 +119,16 @@ def test_worker_lock_verification_is_independent_of_celery_workdir(
         ({"redis_url": "redis://:change-me-redis@redis:6379/0"}, "Redis password"),
         ({"redis_url": "redis://:short@redis:6379/0"}, "at least 24 characters"),
         ({"s3_access_key": "minioadmin"}, "access key"),
+        ({"s3_access_key": "production\naccess"}, "control characters"),
         ({"s3_secret_key": "development-only-object-secret"}, "object-storage secret"),
         ({"s3_secret_key": "short"}, "at least 24 characters"),
+        ({"s3_secret_key": "strong-production\x7fobject-secret"}, "control characters"),
+        ({"s3_bucket": "arn:aws:s3:::production-artifacts"}, "canonical S3 DNS"),
+        ({"s3_bucket": "production\nartifacts"}, "control characters"),
+        ({"s3_bucket": "Production-Artifacts"}, "canonical S3 DNS"),
+        ({"s3_bucket": "production_artifacts"}, "canonical S3 DNS"),
+        ({"s3_bucket": ".."}, "canonical S3 DNS"),
+        ({"s3_bucket": "192.0.2.1"}, "canonical S3 DNS"),
     ),
 )
 def test_worker_rejects_insecure_production_configuration(
@@ -139,10 +159,7 @@ def test_shared_guards_reject_malformed_urls_and_blank_credentials() -> None:
         "sqlite+pysqlite:///migrations.db",
         "postgresql+psycopg://custombuild_migrator@postgres/custombuild",
         ("postgresql+psycopg://custombuild_migrator:change-me-migrator@postgres/custombuild"),
-        (
-            "postgresql+psycopg://custombuild_api:strong-migrator-db-password"
-            "@postgres/custombuild"
-        ),
+        ("postgresql+psycopg://custombuild_api:strong-migrator-db-password@postgres/custombuild"),
         "postgresql+psycopg://custombuild_migrator:short@postgres/custombuild",
         (
             "postgresql+psycopg://custombuild_migrator:%20strong-migrator-db-password%20"
@@ -303,6 +320,8 @@ def _run_postgres_init(
         "MIGRATOR_DATABASE_PASSWORD": "change-me-migrator",
         "API_DATABASE_PASSWORD": "change-me-api",
         "WORKER_DATABASE_PASSWORD": "change-me-worker",
+        "CAPACITY_ATTESTOR_DATABASE_USER": "custombuild_storage_attestor",
+        "CAPACITY_ATTESTOR_DATABASE_PASSWORD": "change-me-capacity-attestor",
     }
     environment.update(overrides or {})
     return subprocess.run(  # noqa: S603
@@ -319,6 +338,17 @@ def test_postgres_init_keeps_development_defaults_working(tmp_path: Path) -> Non
     assert completed.returncode == 0, completed.stderr
 
 
+def test_postgres_init_provisions_and_isolates_the_capacity_attestor() -> None:
+    source = Path("infra/postgres/init-roles.sh").read_text(encoding="utf-8")
+
+    assert "CREATE ROLE custombuild_storage_attestor LOGIN PASSWORD %L" in source
+    assert "ALTER ROLE custombuild_storage_attestor WITH LOGIN PASSWORD %L" in source
+    assert "NOINHERIT NOREPLICATION NOBYPASSRLS" in source
+    assert "member.rolname = 'custombuild_storage_attestor'" in source
+    assert "granted.rolname = 'custombuild_storage_attestor'" in source
+    assert "FROM custombuild_api, custombuild_worker, custombuild_storage_attestor" in source
+
+
 @pytest.mark.parametrize(
     ("variable", "value"),
     (
@@ -328,6 +358,7 @@ def test_postgres_init_keeps_development_defaults_working(tmp_path: Path) -> Non
         ("API_DATABASE_PASSWORD", "too-short"),
         ("WORKER_DATABASE_PASSWORD", "password"),
         ("WORKER_DATABASE_PASSWORD", "   "),
+        ("CAPACITY_ATTESTOR_DATABASE_PASSWORD", "change-me-capacity-attestor"),
     ),
 )
 def test_postgres_init_rejects_insecure_production_passwords(
@@ -341,6 +372,7 @@ def test_postgres_init_rejects_insecure_production_passwords(
             "MIGRATOR_DATABASE_PASSWORD": "strong-migrator-db-password",
             "API_DATABASE_PASSWORD": "strong-api-database-password",
             "WORKER_DATABASE_PASSWORD": "strong-worker-db-password",
+            "CAPACITY_ATTESTOR_DATABASE_PASSWORD": ("strong-capacity-attestor-db-password"),
             variable: value,
         },
     )
@@ -358,9 +390,28 @@ def test_postgres_init_accepts_replaced_production_passwords(tmp_path: Path) -> 
             "MIGRATOR_DATABASE_PASSWORD": "strong-migrator-db-password",
             "API_DATABASE_PASSWORD": "strong-api-database-password",
             "WORKER_DATABASE_PASSWORD": "strong-worker-db-password",
+            "CAPACITY_ATTESTOR_DATABASE_PASSWORD": ("strong-capacity-attestor-db-password"),
         },
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_postgres_init_rejects_reused_capacity_attestor_password(tmp_path: Path) -> None:
+    shared = "strong-but-shared-database-password"
+    completed = _run_postgres_init(
+        tmp_path,
+        app_env="production",
+        overrides={
+            "POSTGRES_PASSWORD": "strong-bootstrap-db-password",
+            "MIGRATOR_DATABASE_PASSWORD": shared,
+            "API_DATABASE_PASSWORD": "strong-api-database-password",
+            "WORKER_DATABASE_PASSWORD": "strong-worker-db-password",
+            "CAPACITY_ATTESTOR_DATABASE_PASSWORD": shared,
+        },
+    )
+
+    assert completed.returncode == 64
+    assert "must be unique" in completed.stderr
 
 
 @pytest.mark.parametrize(
@@ -368,6 +419,7 @@ def test_postgres_init_accepts_replaced_production_passwords(tmp_path: Path) -> 
     (
         ("POSTGRES_USER", "custombuild_migrator"),
         ("MIGRATOR_DATABASE_USER", "custombuild_bootstrap"),
+        ("CAPACITY_ATTESTOR_DATABASE_USER", "custombuild_worker"),
     ),
 )
 def test_postgres_init_rejects_role_name_substitution(
@@ -381,6 +433,7 @@ def test_postgres_init_rejects_role_name_substitution(
             "MIGRATOR_DATABASE_PASSWORD": "strong-migrator-db-password",
             "API_DATABASE_PASSWORD": "strong-api-database-password",
             "WORKER_DATABASE_PASSWORD": "strong-worker-database-password",
+            "CAPACITY_ATTESTOR_DATABASE_PASSWORD": ("strong-capacity-attestor-database-password"),
             variable: value,
         },
     )
@@ -392,10 +445,11 @@ def test_postgres_init_rejects_role_name_substitution(
 def test_compose_routes_production_mode_through_every_startup_guard() -> None:
     compose = Path("compose.yml").read_text(encoding="utf-8")
 
-    # PostgreSQL, migration, API, worker and scheduler retain their local
-    # default. Web distinguishes unset from explicitly blank so blank cannot
-    # silently weaken a production server to development mode.
-    assert compose.count("APP_ENV: ${APP_ENV:-development}") == 5
+    # PostgreSQL, migration, one-shot storage recovery, the local-only capacity
+    # attestor, API, worker and scheduler retain their local default. Web distinguishes unset from
+    # explicitly blank so blank cannot silently weaken a production server.
+    assert compose.count("APP_ENV: ${APP_ENV:-development}") == 7
     assert compose.count("APP_ENV: ${APP_ENV-development}") == 1
     assert compose.count('SEED_DEVELOPMENT_DATA: "true"') == 1
     assert 'command: ["python", "-m", "scripts.run_migrations"]' in compose
+    assert 'command: ["python", "-m", "scripts.storage_recovery"]' in compose

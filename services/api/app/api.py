@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import base64
 import hashlib
 import json
+import re
 import time
-from collections.abc import Mapping
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Iterator, Mapping
+from contextlib import contextmanager, suppress
+from contextvars import ContextVar
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from functools import lru_cache
+from threading import Lock
 from typing import Annotated, Any, Literal
 from uuid import uuid4
 
@@ -25,16 +33,23 @@ from custombuild_manufacturing import (
     GENERATION_PLAN_ARTIFACT_PATH,
     GENERATION_PLAN_ARTIFACT_ROLE,
     MANIFEST_CONTEXT_HASH_FIELDS,
+    MAX_CATALOG_SOURCE_BYTES,
+    MAX_CORE_DOCUMENT_BYTES,
+    MAX_EVIDENCE_ARTIFACTS,
+    MAX_EVIDENCE_TOTAL_BYTES,
+    MAX_READINESS_STATUS_BYTES,
     STOCK_PROFILE_MISSING_CODE,
     ArtifactError,
     CAMStageStatus,
     DesignReviewPackageStatus,
     Severity,
+    artifact_size_limit,
     canonical_json_bytes,
     dado_retention_evidence_missing,
     grain_control_projection,
     normalize_design_review_dfm_report,
     normalize_design_review_package_status,
+    valid_artifact_size,
     validate_design_review_status_dfm_report,
     validate_design_review_status_inventory_entries,
     validate_manifest_artifact_entries,
@@ -57,14 +72,27 @@ from custombuild_manufacturing.readiness import (
 )
 from custombuild_rules import RULES_VERSION
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from sqlalchemy import delete, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
+from starlette.types import Receive, Scope, Send
 
+from .artifact_operations import (
+    ArtifactOperationBusyError,
+    ArtifactOperationCapacityError,
+    ArtifactOperationLeaseManager,
+    ArtifactOperationOwnershipLostError,
+    ArtifactOperationUnavailableError,
+    InMemoryArtifactOperationStore,
+    RedisArtifactOperationStore,
+)
 from .auth import Principal, get_principal, require_minimum_role
 from .config import get_settings
+from .config_guards import BuildIdentityValues
+from .db import get_session_factory
 from .design_service import (
     RuleEngineUnavailable,
     assert_rule_engine_available,
@@ -92,6 +120,7 @@ from .models import (
     Project,
     Release,
     Role,
+    StoredObject,
 )
 from .repository import audit, canonical_hash, tenant_project, tenant_session, tenant_version
 from .schemas import (
@@ -109,6 +138,7 @@ from .schemas import (
     ProjectDraftRead,
     ProjectDraftUpdate,
     ProjectRead,
+    ReleaseArtifactRead,
     ReleaseCreate,
     ReleaseRead,
     RevisionProductionContext,
@@ -118,13 +148,31 @@ from .storage import (
     ArtifactIntegrityError,
     ArtifactStorageUnavailableError,
     StoredObjectExpectation,
-    presigned_get,
+    VerifiedStoredObject,
+    open_verified_stored_object,
     read_verified_stored_object,
+    reserve_transient_bytes,
     sign_artifact_access,
+    storage_read_deadline,
     store_evidence_object,
     store_immutable_object,
     verify_artifact_access,
     verify_stored_object,
+)
+from .storage_quota import (
+    MAX_GENERATION_RETRY_AFTER_SECONDS,
+    StorageClaimConflict,
+    StorageObjectClaim,
+    StorageQuotaError,
+    StorageQuotaExceeded,
+    StorageQuotaInvariantError,
+    StorageReservationBusy,
+    commit_storage_batch_in_transaction,
+    generation_retry_after_from_database_error,
+    prepare_generation_storage_retry,
+    require_committed_storage_binding,
+    reserve_storage_batch,
+    reserve_storage_batch_in_transaction,
 )
 
 router = APIRouter(prefix="/v1")
@@ -133,6 +181,7 @@ router = APIRouter(prefix="/v1")
 # the response has been sent; a client can otherwise receive ``201 Created``
 # and immediately fail to read the newly-created row from another connection.
 SessionDep = Annotated[Session, Depends(tenant_session, scope="function")]
+DownloadSessionDep = Annotated[Session, Depends(tenant_session, scope="request")]
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
 DesignerDep = Annotated[Principal, Depends(require_minimum_role(Role.designer))]
 ReviewerDep = Annotated[Principal, Depends(require_minimum_role(Role.reviewer))]
@@ -143,12 +192,22 @@ EVIDENCE_RULE_TYPES: dict[str, str] = {
     "DFM-GRAIN-001": "material_grain",
 }
 
-_WORKSHOP_READINESS_MAX_BYTES = 64 * 1024
-_DESIGN_REVIEW_PACKAGE_STATUS_MAX_BYTES = 64 * 1024
-_STOCK_SELECTION_MAX_BYTES = 8 * 1024 * 1024
-_GENERATION_PLAN_MAX_BYTES = 8 * 1024 * 1024
-_DFM_REPORT_MAX_BYTES = 8 * 1024 * 1024
-_PRODUCTION_MANIFEST_MAX_BYTES = 8 * 1024 * 1024
+_WORKSHOP_READINESS_MAX_BYTES = MAX_READINESS_STATUS_BYTES
+_DESIGN_REVIEW_PACKAGE_STATUS_MAX_BYTES = MAX_READINESS_STATUS_BYTES
+_STOCK_SELECTION_MAX_BYTES = MAX_CORE_DOCUMENT_BYTES
+_GENERATION_PLAN_MAX_BYTES = MAX_CORE_DOCUMENT_BYTES
+_DFM_REPORT_MAX_BYTES = MAX_CORE_DOCUMENT_BYTES
+_UPLOAD_STORAGE_RESERVATION_LEASE = timedelta(minutes=15)
+_PRODUCTION_MANIFEST_MAX_BYTES = MAX_CORE_DOCUMENT_BYTES
+_REVIEW_STORAGE_TOTAL_SECONDS = 60.0
+_REVIEW_DOCUMENT_MAX_BYTES = {
+    "workshop_readiness": _WORKSHOP_READINESS_MAX_BYTES,
+    "dfm_report": _DFM_REPORT_MAX_BYTES,
+    "design_review_package_status": _DESIGN_REVIEW_PACKAGE_STATUS_MAX_BYTES,
+    "stock_selection": _STOCK_SELECTION_MAX_BYTES,
+    "generation_plan": _GENERATION_PLAN_MAX_BYTES,
+    "manifest": _PRODUCTION_MANIFEST_MAX_BYTES,
+}
 _WORKSHOP_READINESS_ARTIFACT_PATH = "validation/workshop-readiness.json"
 _WORKSHOP_READINESS_ARTIFACT_ROLE = "WORKSHOP_READINESS_REPORT"
 _DFM_REPORT_ARTIFACT_PATH = "validation/dfm-report.json"
@@ -245,9 +304,10 @@ _RULE_REPORT_DISCLAIMER = (
     "Beräkningarna är deterministisk screening och beslutsstöd, inte "
     "produktcertifiering eller garanti för säker konstruktion."
 )
-FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE = (
-    "FOUR_EYES_APPROVER_SEPARATION_REQUIRED"
+_CANONICAL_UUID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
+FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE = "FOUR_EYES_APPROVER_SEPARATION_REQUIRED"
 
 
 def _as_utc(value: datetime) -> datetime:
@@ -349,6 +409,205 @@ def _evidence_snapshot(evidence: ExternalEvidence) -> dict[str, Any]:
     }
 
 
+_ExternalEvidenceBinding = tuple[Any, ...]
+_ApprovalBinding = tuple[Any, ...]
+
+
+def _external_evidence_binding(evidence: ExternalEvidence) -> _ExternalEvidenceBinding:
+    """Return the complete private DB identity of one verified evidence row."""
+
+    return (
+        evidence.id,
+        evidence.organization_id,
+        evidence.project_id,
+        evidence.evidence_type,
+        evidence.rule_id,
+        evidence.catalog_id,
+        evidence.catalog_version,
+        evidence.design_hash,
+        evidence.object_key,
+        evidence.sha256,
+        evidence.size_bytes,
+        evidence.content_type,
+        evidence.created_by,
+        evidence.created_at,
+        evidence.updated_at,
+        evidence.expires_at,
+        evidence.revoked_at,
+    )
+
+
+def _approval_binding(approval: Approval) -> _ApprovalBinding:
+    """Return an immutable comparison value for every approval-owned field."""
+
+    return (
+        approval.id,
+        approval.organization_id,
+        approval.design_version_id,
+        approval.approval_type,
+        approval.approved_by,
+        approval.reason,
+        approval.generation_job_id,
+        approval.production_context_hash,
+        approval.manifest_sha256,
+        canonical_hash(approval.overrides_json),
+        approval.created_at,
+        approval.updated_at,
+    )
+
+
+def _external_evidence_not_found() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "EXTERNAL_EVIDENCE_NOT_FOUND",
+            "message": "One or more evidence IDs are missing or belong to another project.",
+            "solution": "Upload and select evidence for this exact project and design.",
+        },
+    )
+
+
+def _external_evidence_stale(evidence_id: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "EXTERNAL_EVIDENCE_STALE",
+            "message": "External evidence is revoked, expired or bound to another design.",
+            "solution": "Upload current evidence for this exact design and control.",
+            "evidence_id": evidence_id,
+        },
+    )
+
+
+def _external_evidence_snapshot_stale() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "EXTERNAL_EVIDENCE_SNAPSHOT_STALE",
+            "message": "External evidence changed while its immutable object was being verified.",
+            "solution": "Review the current evidence record and retry.",
+        },
+    )
+
+
+def _resolve_external_evidence_rows(
+    session: Session,
+    organization_id: str,
+    project_id: str,
+    design_hash: str,
+    evidence_ids: list[str],
+    *,
+    expected_rule_id: str | None = None,
+    populate_existing: bool = False,
+) -> list[ExternalEvidence]:
+    """Resolve and validate current evidence rows without touching object storage."""
+
+    if not evidence_ids:
+        return []
+    query = select(ExternalEvidence).where(
+        ExternalEvidence.organization_id == organization_id,
+        ExternalEvidence.project_id == project_id,
+        ExternalEvidence.id.in_(evidence_ids),
+    )
+    if populate_existing:
+        # A normal ORM SELECT can return the already-cached Python attributes even
+        # though PostgreSQL returned a newer row. Force a real final DB refresh.
+        query = query.execution_options(populate_existing=True)
+    evidence_rows = list(session.scalars(query))
+    by_id = {item.id: item for item in evidence_rows}
+    if set(by_id) != set(evidence_ids):
+        raise _external_evidence_not_found()
+
+    evidence_type_counts: dict[str, int] = {}
+    for evidence_id in evidence_ids:
+        evidence_type = by_id[evidence_id].evidence_type
+        evidence_type_counts[evidence_type] = evidence_type_counts.get(evidence_type, 0) + 1
+    duplicate_types = sorted(
+        evidence_type for evidence_type, count in evidence_type_counts.items() if count > 1
+    )
+    if duplicate_types:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "EXTERNAL_EVIDENCE_TYPE_DUPLICATE",
+                "message": "Multiple selected evidence records claim the same evidence type.",
+                "solution": "Select exactly one current evidence record per evidence type.",
+                "evidence_types": duplicate_types,
+            },
+        )
+
+    now = datetime.now(UTC)
+    ordered = [by_id[evidence_id] for evidence_id in evidence_ids]
+    for evidence in ordered:
+        expires_at = _as_utc(evidence.expires_at) if evidence.expires_at is not None else None
+        expected_type = EVIDENCE_RULE_TYPES.get(evidence.rule_id)
+        if (
+            evidence.revoked_at is not None
+            or evidence.design_hash != design_hash
+            or expected_type != evidence.evidence_type
+            or (expected_rule_id is not None and evidence.rule_id != expected_rule_id)
+            or (expires_at is not None and expires_at <= now)
+        ):
+            raise _external_evidence_stale(evidence.id)
+    return ordered
+
+
+def _require_external_evidence_bindings_current(
+    session: Session,
+    expected_bindings: Mapping[str, _ExternalEvidenceBinding],
+) -> None:
+    """Re-read previously verified evidence after later I/O and compare all fields."""
+
+    if not expected_bindings:
+        return
+    query = (
+        select(ExternalEvidence)
+        .where(ExternalEvidence.id.in_(sorted(expected_bindings)))
+        .execution_options(populate_existing=True)
+    )
+    current_rows = list(session.scalars(query))
+    current = {row.id: row for row in current_rows}
+    if set(current) != set(expected_bindings):
+        raise _external_evidence_not_found()
+    now = datetime.now(UTC)
+    for evidence_id in sorted(expected_bindings):
+        evidence = current[evidence_id]
+        expires_at = _as_utc(evidence.expires_at) if evidence.expires_at is not None else None
+        if (
+            evidence.revoked_at is not None
+            or (expires_at is not None and expires_at <= now)
+            or _external_evidence_binding(evidence) != expected_bindings[evidence_id]
+        ):
+            raise _external_evidence_snapshot_stale()
+
+
+def _require_approval_binding_current(
+    session: Session,
+    expected_binding: _ApprovalBinding,
+    *,
+    approval_id: str,
+    organization_id: str,
+    design_version_id: str,
+    approval_type: str,
+    detail: str | dict[str, Any],
+) -> Approval:
+    """Refresh one exact approval after I/O and reject deletion or any mutation."""
+
+    approval = session.scalar(
+        select(Approval)
+        .where(
+            Approval.id == approval_id,
+            Approval.organization_id == organization_id,
+            Approval.design_version_id == design_version_id,
+            Approval.approval_type == approval_type,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if approval is None or _approval_binding(approval) != expected_binding:
+        raise HTTPException(status_code=409, detail=detail)
+    return approval
+
+
 def _import_storage_error(*, unavailable: bool) -> HTTPException:
     if unavailable:
         return HTTPException(
@@ -369,7 +628,214 @@ def _import_storage_error(*, unavailable: bool) -> HTTPException:
     )
 
 
-def _verify_imported_asset_object(asset: ImportedAsset) -> None:
+def _quota_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, StorageQuotaExceeded):
+        return HTTPException(
+            status_code=507,
+            detail={
+                "code": "STORAGE_QUOTA_EXCEEDED",
+                "message": "The verified object cannot fit inside the durable storage quota.",
+                "solution": "Remove retained objects or ask an operator to raise proven capacity.",
+            },
+        )
+    if isinstance(exc, StorageReservationBusy):
+        return HTTPException(
+            status_code=503,
+            detail={
+                "code": "STORAGE_RESERVATION_BUSY",
+                "message": "The immutable storage batch is owned by another live operation.",
+                "solution": "Retry after the active reservation lease expires.",
+            },
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        )
+    if isinstance(exc, StorageClaimConflict):
+        return HTTPException(
+            status_code=409,
+            detail={
+                "code": "STORAGE_IDENTITY_CONFLICT",
+                "message": "The immutable storage identity conflicts with an existing claim.",
+                "solution": "Retry after the active upload finishes or use a new source file.",
+            },
+        )
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "STORAGE_LEDGER_UNAVAILABLE",
+            "message": "The durable storage ledger cannot currently prove capacity or identity.",
+            "solution": "Retry after database storage accounting is healthy.",
+        },
+    )
+
+
+def _generation_storage_retry_busy(retry_after_seconds: int) -> HTTPException:
+    if (
+        type(retry_after_seconds) is not int
+        or retry_after_seconds < 1
+        or retry_after_seconds > MAX_GENERATION_RETRY_AFTER_SECONDS
+    ):
+        return _generation_storage_retry_unavailable()
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "GENERATION_STORAGE_RETRY_BUSY",
+            "message": "Generation storage is owned by an active cleanup operation.",
+            "solution": "Retry after the active storage claim expires.",
+        },
+        headers={"Retry-After": str(retry_after_seconds)},
+    )
+
+
+def _generation_storage_retry_unavailable() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "GENERATION_STORAGE_RETRY_UNAVAILABLE",
+            "message": "Generation storage cannot currently be proven safe for retry.",
+            "solution": "Retry after durable storage accounting is healthy.",
+        },
+    )
+
+
+def _require_generation_storage_retry_ready(
+    session: Session,
+    organization_id: str,
+    generation_job_id: str,
+) -> None:
+    try:
+        retry_after = prepare_generation_storage_retry(
+            session,
+            organization_id,
+            generation_job_id,
+        )
+    except StorageReservationBusy as exc:
+        raise _generation_storage_retry_busy(exc.retry_after_seconds) from exc
+    except StorageQuotaError as exc:
+        raise _generation_storage_retry_unavailable() from exc
+    if retry_after > 0:
+        raise _generation_storage_retry_busy(retry_after)
+
+
+def _flush_generation_storage_retry(session: Session) -> None:
+    """Force the immediate liveness trigger inside the request transaction."""
+
+    try:
+        session.flush()
+    except DBAPIError as exc:
+        try:
+            retry_after = generation_retry_after_from_database_error(exc)
+        except StorageQuotaInvariantError:
+            retry_after = None
+        with suppress(SQLAlchemyError):
+            session.rollback()
+        if retry_after is not None:
+            raise _generation_storage_retry_busy(retry_after) from exc
+        raise _generation_storage_retry_unavailable() from exc
+    except SQLAlchemyError as exc:
+        with suppress(SQLAlchemyError):
+            session.rollback()
+        raise _generation_storage_retry_unavailable() from exc
+
+
+async def _reserve_upload_storage(
+    session: Session,
+    organization_id: str,
+    claim: StorageObjectClaim,
+) -> str:
+    """Commit a durable quota claim before the first provider mutation."""
+
+    lease_token = str(uuid4())
+    try:
+        if session.get_bind().dialect.name == "postgresql":
+            await run_in_threadpool(
+                reserve_storage_batch,
+                get_session_factory(),
+                organization_id,
+                (claim,),
+                lease_token=lease_token,
+                lease_duration=_UPLOAD_STORAGE_RESERVATION_LEASE,
+                capacity_settings=get_settings(),
+            )
+        else:
+            # SQLite's in-memory StaticPool cannot own an independent
+            # transaction on the same connection.  Commit the durable test/dev
+            # reservation before provider I/O; production always uses the
+            # independent PostgreSQL branch above.
+            reserve_storage_batch_in_transaction(
+                session,
+                organization_id,
+                (claim,),
+                lease_token=lease_token,
+                lease_duration=_UPLOAD_STORAGE_RESERVATION_LEASE,
+            )
+            session.commit()
+    except (StorageClaimConflict, StorageQuotaExceeded, StorageQuotaInvariantError) as exc:
+        if session.get_bind().dialect.name != "postgresql":
+            session.rollback()
+        raise _quota_http_error(exc) from exc
+    return lease_token
+
+
+def _commit_upload_storage(
+    session: Session,
+    organization_id: str,
+    claim: StorageObjectClaim,
+    lease_token: str,
+) -> None:
+    try:
+        commit_storage_batch_in_transaction(
+            session,
+            organization_id,
+            (claim,),
+            lease_token=lease_token,
+        )
+    except (StorageClaimConflict, StorageQuotaExceeded, StorageQuotaInvariantError) as exc:
+        raise _quota_http_error(exc) from exc
+
+
+def _require_committed_domain_object(
+    session: Session,
+    organization_id: str,
+    *,
+    project_id: str,
+    object_key: str,
+    sha256: str,
+    size_bytes: int,
+    media_type: str,
+    owner_type: str,
+    owner_id: str,
+) -> None:
+    try:
+        require_committed_storage_binding(
+            session,
+            organization_id,
+            project_id=project_id,
+            object_key=object_key,
+            sha256=sha256,
+            size_bytes=size_bytes,
+            media_type=media_type,
+            owner_type=owner_type,
+            owner_id=owner_id,
+        )
+    except (StorageClaimConflict, StorageQuotaInvariantError) as exc:
+        raise _quota_http_error(exc) from exc
+
+
+def _verify_imported_asset_object(session: Session, asset: ImportedAsset) -> None:
+    _require_committed_domain_object(
+        session,
+        asset.organization_id,
+        project_id=asset.project_id,
+        object_key=asset.object_key,
+        sha256=asset.sha256,
+        size_bytes=asset.size_bytes,
+        media_type=asset.media_type,
+        owner_type="imported_asset",
+        owner_id=asset.id,
+    )
+    _verify_imported_asset_bytes(asset)
+
+
+def _verify_imported_asset_bytes(asset: ImportedAsset) -> None:
     try:
         verify_stored_object(
             StoredObjectExpectation(
@@ -434,7 +900,7 @@ def _verified_reference_provenance(
                 ),
             },
         )
-    _verify_imported_asset_object(asset)
+    _verify_imported_asset_object(session, asset)
     snapshot = {
         **source_provenance,
         "import_id": asset.id,
@@ -475,7 +941,7 @@ def _verify_frozen_reference_asset(
         or provenance.get("verified_model_fingerprint") != version.design_hash
     ):
         raise _import_storage_error(unavailable=False)
-    _verify_imported_asset_object(asset)
+    _verify_imported_asset_object(session, asset)
 
 
 def _verified_external_evidence(
@@ -486,71 +952,31 @@ def _verified_external_evidence(
     evidence_ids: list[str],
     *,
     expected_rule_id: str | None = None,
+    verified_bindings: dict[str, _ExternalEvidenceBinding] | None = None,
 ) -> list[dict[str, Any]]:
     """Resolve tenant records and stream-verify every claimed evidence object."""
 
-    if not evidence_ids:
-        return []
-    evidence_rows = list(
-        session.scalars(
-            select(ExternalEvidence).where(
-                ExternalEvidence.organization_id == organization_id,
-                ExternalEvidence.project_id == project_id,
-                ExternalEvidence.id.in_(evidence_ids),
-            )
-        )
+    evidence_rows = _resolve_external_evidence_rows(
+        session,
+        organization_id,
+        project_id,
+        design_hash,
+        evidence_ids,
+        expected_rule_id=expected_rule_id,
     )
-    by_id = {item.id: item for item in evidence_rows}
-    if set(by_id) != set(evidence_ids):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "EXTERNAL_EVIDENCE_NOT_FOUND",
-                "message": "One or more evidence IDs are missing or belong to another project.",
-                "solution": "Upload and select evidence for this exact project and design.",
-            },
+    initial_bindings = {item.id: _external_evidence_binding(item) for item in evidence_rows}
+    for evidence in evidence_rows:
+        _require_committed_domain_object(
+            session,
+            organization_id,
+            project_id=evidence.project_id,
+            object_key=evidence.object_key,
+            sha256=evidence.sha256,
+            size_bytes=evidence.size_bytes,
+            media_type=evidence.content_type,
+            owner_type="external_evidence",
+            owner_id=evidence.id,
         )
-    evidence_type_counts: dict[str, int] = {}
-    for evidence_id in evidence_ids:
-        evidence_type = by_id[evidence_id].evidence_type
-        evidence_type_counts[evidence_type] = evidence_type_counts.get(evidence_type, 0) + 1
-    duplicate_types = sorted(
-        evidence_type for evidence_type, count in evidence_type_counts.items() if count > 1
-    )
-    if duplicate_types:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "EXTERNAL_EVIDENCE_TYPE_DUPLICATE",
-                "message": "Multiple selected evidence records claim the same evidence type.",
-                "solution": "Select exactly one current evidence record per evidence type.",
-                "evidence_types": duplicate_types,
-            },
-        )
-    snapshots: list[dict[str, Any]] = []
-    now = datetime.now(UTC)
-    for evidence_id in evidence_ids:
-        evidence = by_id[evidence_id]
-        expires_at = evidence.expires_at
-        if expires_at is not None and expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
-        expected_type = EVIDENCE_RULE_TYPES.get(evidence.rule_id)
-        if (
-            evidence.revoked_at is not None
-            or evidence.design_hash != design_hash
-            or expected_type != evidence.evidence_type
-            or (expected_rule_id is not None and evidence.rule_id != expected_rule_id)
-            or (expires_at is not None and expires_at <= now)
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "EXTERNAL_EVIDENCE_STALE",
-                    "message": "External evidence is revoked, expired or bound to another design.",
-                    "solution": "Upload current evidence for this exact design and control.",
-                    "evidence_id": evidence.id,
-                },
-            )
         try:
             verify_stored_object(
                 StoredObjectExpectation(
@@ -580,29 +1006,53 @@ def _verified_external_evidence(
                     "solution": "Retry after object storage is healthy; approval remains blocked.",
                 },
             ) from exc
-        snapshots.append(_evidence_snapshot(evidence))
-    return snapshots
+
+    # Do not repeat the object read: that only moves the race window. Refresh
+    # every mutable DB field after the final storage byte was checked.
+    current_rows = _resolve_external_evidence_rows(
+        session,
+        organization_id,
+        project_id,
+        design_hash,
+        evidence_ids,
+        expected_rule_id=expected_rule_id,
+        populate_existing=True,
+    )
+    current_bindings = {item.id: _external_evidence_binding(item) for item in current_rows}
+    if current_bindings != initial_bindings:
+        raise _external_evidence_snapshot_stale()
+    if verified_bindings is not None:
+        for evidence_id, binding in current_bindings.items():
+            previous = verified_bindings.get(evidence_id)
+            if previous is not None and previous != binding:
+                raise _external_evidence_snapshot_stale()
+            verified_bindings[evidence_id] = binding
+    return [_evidence_snapshot(evidence) for evidence in current_rows]
 
 
 def _require_current_artifacts(
     session: Session,
-    principal: Principal,
+    organization_id: str,
     job: GenerationJob,
+    *,
+    populate_existing: bool = False,
 ) -> DesignVersion:
-    version = session.scalar(
-        select(DesignVersion).where(
-            DesignVersion.id == job.design_version_id,
-            DesignVersion.organization_id == principal.organization_id,
-        )
+    version_query = select(DesignVersion).where(
+        DesignVersion.id == job.design_version_id,
+        DesignVersion.organization_id == organization_id,
     )
+    if populate_existing:
+        version_query = version_query.execution_options(populate_existing=True)
+    version = session.scalar(version_query)
     if version is None:
         raise HTTPException(status_code=404, detail="Design version not found")
-    project = session.scalar(
-        select(Project).where(
-            Project.id == version.project_id,
-            Project.organization_id == principal.organization_id,
-        )
+    project_query = select(Project).where(
+        Project.id == version.project_id,
+        Project.organization_id == organization_id,
     )
+    if populate_existing:
+        project_query = project_query.execution_options(populate_existing=True)
+    project = session.scalar(project_query)
     if (
         project is None
         or project.archived
@@ -621,7 +1071,513 @@ def _artifact_filename(kind: str, revision: int) -> str | None:
     return {
         "production_bundle": f"custombuild-design-review-rev-{revision}.zip",
         "manifest": f"custombuild-design-review-rev-{revision}-manifest.json",
+        "stock_selection": f"custombuild-stock-selection-rev-{revision}.json",
+        "generation_plan": f"custombuild-generation-plan-rev-{revision}.json",
     }.get(kind)
+
+
+def _require_generation_result_context_binding(job: GenerationJob) -> None:
+    """Bind a successful result to the exact persisted engine-context bytes.
+
+    The persisted context is the server-owned fact frozen when the job was
+    queued.  Recomputing only the current catalog context is insufficient: a
+    later result-row edit could otherwise replace or remove the worker's hash
+    while leaving every external artifact checksum intact.
+    """
+
+    engine_context = job.production_engine_context_json
+    result = job.result_json
+    try:
+        if not isinstance(engine_context, Mapping) or not isinstance(result, Mapping):
+            raise ProductionContextError("generation context binding is missing")
+        expected = hashlib.sha256(canonical_json_bytes(engine_context)).hexdigest()
+        actual = result.get("production_engine_context_hash")
+        if actual != expected:
+            raise ProductionContextError("generation result engine-context hash does not match")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ProductionContextError("generation context binding is malformed") from exc
+
+
+def _release_archive_error() -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail="Released package failed immutable integrity verification",
+    )
+
+
+def _release_artifact_signature_subject(release_id: str, artifact_id: str) -> str:
+    """Bind a signed historical URL to both immutable database identities."""
+
+    if (
+        _CANONICAL_UUID_PATTERN.fullmatch(release_id) is None
+        or _CANONICAL_UUID_PATTERN.fullmatch(artifact_id) is None
+    ):
+        raise HTTPException(status_code=404, detail="Release artifact not found")
+    return f"release:{release_id}:artifact:{artifact_id}"
+
+
+def _release_artifact_filename(
+    release_number: str,
+    revision: int,
+    kind: str,
+    content_type: str,
+) -> str:
+    """Return a deterministic, header-safe name without trusting stored text."""
+
+    if re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,39}", release_number) is None:
+        raise _release_archive_error()
+    if re.fullmatch(r"[a-z0-9_]{1,64}", kind) is None:
+        kind_token = f"artifact-{hashlib.sha256(kind.encode('utf-8')).hexdigest()[:12]}"
+    else:
+        kind_token = kind.replace("_", "-")[:40]
+    extension = {
+        "application/json": ".json",
+        "application/vnd.freecad": ".FCStd",
+        "application/zip": ".zip",
+        "image/svg+xml": ".svg",
+        "model/gltf-binary": ".glb",
+    }.get(content_type, ".bin")
+    if kind == "production_bundle" and content_type == "application/zip":
+        return f"custombuild-release-{release_number}-rev-{revision}.zip"
+    return f"custombuild-release-{release_number}-rev-{revision}-{kind_token}{extension}"
+
+
+@dataclass(frozen=True, slots=True)
+class _ReleaseArchive:
+    release: Release
+    version: DesignVersion
+    job: GenerationJob
+    artifacts: tuple[Artifact, ...]
+    stored_objects: tuple[StoredObject, ...]
+    binding: tuple[Any, ...]
+
+
+def _frozen_release_inventory(
+    job: GenerationJob,
+    artifacts: tuple[Artifact, ...],
+) -> tuple[dict[str, StoredObjectExpectation], list[dict[str, Any]]]:
+    """Build the canonical, row-identity-bound inventory stored on a release."""
+
+    expectations, invalid_result = _artifact_expectations(job)
+    if (
+        invalid_result
+        or len(artifacts) != len(expectations)
+        or {item.kind for item in artifacts} != set(expectations)
+        or any(_CANONICAL_UUID_PATTERN.fullmatch(item.id) is None for item in artifacts)
+    ):
+        raise _release_archive_error()
+    inventory: list[dict[str, Any]] = []
+    for artifact in artifacts:
+        expectation = expectations[artifact.kind]
+        if (
+            artifact.organization_id != job.organization_id
+            or artifact.generation_job_id != job.id
+            or artifact.object_key != expectation.object_key
+            or artifact.sha256 != expectation.sha256
+            or artifact.size_bytes != expectation.size_bytes
+            or artifact.content_type != expectation.content_type
+        ):
+            raise _release_archive_error()
+        inventory.append(
+            {
+                "artifact_id": artifact.id,
+                "kind": artifact.kind,
+                "object_key": artifact.object_key,
+                "sha256": artifact.sha256,
+                "size_bytes": artifact.size_bytes,
+                "content_type": artifact.content_type,
+            }
+        )
+    return expectations, inventory
+
+
+def _release_matches_frozen_job(
+    release: Release,
+    job: GenerationJob,
+    inventory: list[dict[str, Any]],
+) -> bool:
+    """Compare live job/package state with the append-only release snapshot."""
+
+    try:
+        return (
+            isinstance(job.result_json, Mapping)
+            and release.generation_job_id == job.id
+            and release.production_context_hash == job.production_context_hash
+            and release.manifest_sha256 == job.result_json.get("manifest_sha256")
+            and canonical_json_bytes(release.generation_result_json)
+            == canonical_json_bytes(job.result_json)
+            and canonical_json_bytes(release.artifact_inventory_json)
+            == canonical_json_bytes(inventory)
+        )
+    except (AttributeError, TypeError, ValueError, RecursionError):
+        return False
+
+
+def _release_archive_binding(
+    release: Release,
+    version: DesignVersion,
+    job: GenerationJob,
+    artifacts: tuple[Artifact, ...],
+    stored_objects: tuple[StoredObject, ...],
+) -> tuple[Any, ...]:
+    """Freeze every database field that authorizes historical bytes."""
+
+    try:
+        return (
+            (
+                release.id,
+                release.organization_id,
+                release.design_version_id,
+                release.release_number,
+                release.released_by,
+                release.manifest_sha256,
+                release.generation_job_id,
+                release.production_context_hash,
+                canonical_json_bytes(release.generation_result_json),
+                canonical_json_bytes(release.artifact_inventory_json),
+                release.created_at,
+                release.updated_at,
+            ),
+            (
+                version.id,
+                version.organization_id,
+                version.project_id,
+                version.revision,
+                version.status.value,
+                version.design_hash,
+                version.context_hash,
+                canonical_json_bytes(version.spec_json),
+                canonical_json_bytes(version.source_provenance_json),
+                version.source_import_id,
+                canonical_json_bytes(version.result_json),
+                version.engine_version,
+                version.template_version,
+                version.template_id,
+                version.template_capability_fingerprint,
+                version.rule_version,
+                version.created_by,
+                version.immutable,
+                version.created_at,
+                version.updated_at,
+            ),
+            (
+                job.id,
+                job.organization_id,
+                job.design_version_id,
+                job.status.value,
+                job.idempotency_key,
+                job.production_context_hash,
+                canonical_json_bytes(job.production_engine_context_json),
+                canonical_json_bytes(job.request_json),
+                canonical_json_bytes(job.result_json),
+                job.attempts,
+                job.lease_token,
+                job.lease_expires_at,
+                job.deadline_at,
+                job.error,
+                job.started_at,
+                job.finished_at,
+                job.created_at,
+                job.updated_at,
+            ),
+            tuple(
+                (
+                    artifact.id,
+                    artifact.organization_id,
+                    artifact.generation_job_id,
+                    artifact.kind,
+                    artifact.object_key,
+                    artifact.sha256,
+                    artifact.size_bytes,
+                    artifact.content_type,
+                    artifact.created_at,
+                    artifact.updated_at,
+                )
+                for artifact in artifacts
+            ),
+            tuple(
+                (
+                    stored.organization_id,
+                    stored.object_key,
+                    stored.project_id,
+                    stored.sha256,
+                    stored.size_bytes,
+                    stored.media_type,
+                    stored.owner_type,
+                    stored.owner_id,
+                    stored.idempotency_key,
+                    stored.state.value,
+                    stored.lease_token,
+                    stored.lease_expires_at,
+                    stored.claim_token,
+                    stored.claim_expires_at,
+                    stored.created_at,
+                    stored.updated_at,
+                )
+                for stored in stored_objects
+            ),
+        )
+    except (AttributeError, TypeError, ValueError, RecursionError) as exc:
+        raise _release_archive_error() from exc
+
+
+def _release_build_identity(job: GenerationJob) -> BuildIdentityValues:
+    context = job.production_engine_context_json
+    keys = (
+        "app_version",
+        "vcs_ref",
+        "build_date",
+        "source_url",
+        "source_manifest_sha256",
+        "dependency_lock_sha256",
+    )
+    if not isinstance(context, Mapping) or any(
+        not isinstance(context.get(key), str) or not context.get(key) for key in keys
+    ):
+        raise _release_archive_error()
+    return {
+        "app_version": context["app_version"],
+        "vcs_ref": context["vcs_ref"],
+        "build_date": context["build_date"],
+        "source_url": context["source_url"],
+        "source_manifest_sha256": context["source_manifest_sha256"],
+        "dependency_lock_sha256": context["dependency_lock_sha256"],
+    }
+
+
+def _resolve_release_archive(
+    session: Session,
+    organization_id: str,
+    release_id: str,
+    *,
+    populate_existing: bool = False,
+) -> _ReleaseArchive:
+    """Resolve one release to exactly one successful, manifest-bound job."""
+
+    if populate_existing:
+        session.expire_all()
+    query_options = {"populate_existing": True} if populate_existing else {}
+    release = session.scalar(
+        select(Release)
+        .where(
+            Release.id == release_id,
+            Release.organization_id == organization_id,
+        )
+        .execution_options(**query_options)
+    )
+    if release is None:
+        raise HTTPException(status_code=404, detail="Release not found")
+    version = session.scalar(
+        select(DesignVersion)
+        .where(
+            DesignVersion.id == release.design_version_id,
+            DesignVersion.organization_id == organization_id,
+        )
+        .execution_options(**query_options)
+        .with_for_update()
+    )
+    if (
+        version is None
+        or _CANONICAL_UUID_PATTERN.fullmatch(release.id) is None
+        or _CANONICAL_UUID_PATTERN.fullmatch(version.id) is None
+        or _CANONICAL_UUID_PATTERN.fullmatch(release.generation_job_id) is None
+        or version.immutable is not True
+        or version.status
+        not in {DesignStatus.released, DesignStatus.superseded, DesignStatus.archived}
+        or re.fullmatch(r"[a-f0-9]{64}", release.manifest_sha256) is None
+        or re.fullmatch(r"[a-f0-9]{64}", release.production_context_hash) is None
+        or re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,39}", release.release_number) is None
+        or not isinstance(release.generation_result_json, Mapping)
+        or not isinstance(release.artifact_inventory_json, list)
+        or not release.artifact_inventory_json
+    ):
+        raise _release_archive_error()
+
+    jobs = tuple(
+        session.scalars(
+            select(GenerationJob)
+            .where(
+                GenerationJob.organization_id == organization_id,
+                GenerationJob.design_version_id == version.id,
+            )
+            .order_by(GenerationJob.id)
+            .execution_options(**query_options)
+            .with_for_update()
+        )
+    )
+    bound_jobs = tuple(job for job in jobs if job.id == release.generation_job_id)
+    if len(bound_jobs) != 1:
+        raise _release_archive_error()
+    job = bound_jobs[0]
+    matching_jobs = tuple(
+        job
+        for job in jobs
+        if job.status == JobStatus.succeeded
+        and isinstance(job.result_json, Mapping)
+        and job.result_json.get("manifest_sha256") == release.manifest_sha256
+    )
+    if (
+        job.status != JobStatus.succeeded
+        or len(matching_jobs) != 1
+        or matching_jobs[0].id != job.id
+        or not _release_matches_frozen_job(
+            release,
+            job,
+            release.artifact_inventory_json,
+        )
+    ):
+        raise _release_archive_error()
+    if _CANONICAL_UUID_PATTERN.fullmatch(job.id) is None:
+        raise _release_archive_error()
+
+    artifacts = tuple(
+        session.scalars(
+            select(Artifact)
+            .where(
+                Artifact.organization_id == organization_id,
+                Artifact.generation_job_id == job.id,
+            )
+            .order_by(Artifact.kind, Artifact.id)
+            .execution_options(**query_options)
+        )
+    )
+    expectations, inventory = _frozen_release_inventory(job, artifacts)
+    manifest_expectation = expectations.get("manifest")
+    if (
+        manifest_expectation is None
+        or manifest_expectation.sha256 != release.manifest_sha256
+        or not _release_matches_frozen_job(release, job, inventory)
+    ):
+        raise _release_archive_error()
+
+    stored_objects: list[StoredObject] = []
+    for artifact in artifacts:
+        expectation = expectations[artifact.kind]
+        if (
+            artifact.object_key != expectation.object_key
+            or artifact.sha256 != expectation.sha256
+            or artifact.size_bytes != expectation.size_bytes
+            or artifact.content_type != expectation.content_type
+        ):
+            raise _release_archive_error()
+        stored = session.scalar(
+            select(StoredObject)
+            .where(
+                StoredObject.organization_id == organization_id,
+                StoredObject.object_key == artifact.object_key,
+            )
+            .execution_options(**query_options)
+        )
+        if stored is None:
+            raise _release_archive_error()
+        try:
+            require_committed_storage_binding(
+                session,
+                organization_id,
+                project_id=version.project_id,
+                object_key=artifact.object_key,
+                sha256=artifact.sha256,
+                size_bytes=artifact.size_bytes,
+                media_type=artifact.content_type,
+                owner_type="generation_job",
+                owner_id=job.id,
+            )
+        except (StorageClaimConflict, StorageQuotaInvariantError) as exc:
+            raise _release_archive_error() from exc
+        if stored.idempotency_key != (f"generation:{job.id}:{artifact.kind}:{artifact.id}"):
+            raise _release_archive_error()
+        stored_objects.append(stored)
+
+    stored_tuple = tuple(stored_objects)
+    return _ReleaseArchive(
+        release=release,
+        version=version,
+        job=job,
+        artifacts=artifacts,
+        stored_objects=stored_tuple,
+        binding=_release_archive_binding(
+            release,
+            version,
+            job,
+            artifacts,
+            stored_tuple,
+        ),
+    )
+
+
+def _verify_release_archive_owned(
+    session: Session,
+    organization_id: str,
+    archive: _ReleaseArchive,
+    *,
+    verified_download_kind: str | None = None,
+    verified_download: VerifiedStoredObject | None = None,
+) -> _ReleaseArchive:
+    """Verify frozen package semantics without consulting mutable approvals."""
+
+    try:
+        missing, invalid, readiness_valid = _review_evidence_issues_owned(
+            session,
+            organization_id,
+            archive.job,
+            stream_hash=False,
+            require_cam=True,
+            bind_review_documents=True,
+            verified_download_kind=verified_download_kind,
+            verified_download=verified_download,
+            build_identity=_release_build_identity(archive.job),
+        )
+    except ArtifactStorageUnavailableError as exc:
+        raise _storage_unavailable() from exc
+    if missing or invalid or not readiness_valid:
+        raise _release_archive_error()
+    current = _resolve_release_archive(
+        session,
+        organization_id,
+        archive.release.id,
+        populate_existing=True,
+    )
+    if current.binding != archive.binding:
+        raise _release_archive_error()
+    return current
+
+
+def _prepare_release_artifact_download(
+    session: Session,
+    organization_id: str,
+    archive: _ReleaseArchive,
+    artifact: Artifact,
+) -> tuple[_ReleaseArchive, VerifiedStoredObject]:
+    """Spool and semantically verify a release target under one hard deadline."""
+
+    expectations, invalid_result = _artifact_expectations(archive.job)
+    expectation = expectations.get(artifact.kind)
+    if invalid_result or expectation is None:
+        raise _release_archive_error()
+    verified: VerifiedStoredObject | None = None
+    try:
+        with storage_read_deadline(_REVIEW_STORAGE_TOTAL_SECONDS):
+            try:
+                verified = open_verified_stored_object(
+                    expectation,
+                    max_bytes=artifact_size_limit(artifact.kind),
+                )
+            except ArtifactIntegrityError as exc:
+                raise _release_archive_error() from exc
+            except ArtifactStorageUnavailableError as exc:
+                raise _storage_unavailable() from exc
+            current = _verify_release_archive_owned(
+                session,
+                organization_id,
+                archive,
+                verified_download_kind=artifact.kind,
+                verified_download=verified,
+            )
+        return current, verified
+    except BaseException:
+        if verified is not None:
+            verified.close()
+        raise
 
 
 def _require_current_generation_context(
@@ -631,6 +1587,7 @@ def _require_current_generation_context(
     """Reject a job frozen against any superseded production implementation."""
 
     try:
+        _require_generation_result_context_binding(job)
         _require_frozen_template_capability(version)
         result_json = version.result_json if isinstance(version.result_json, dict) else {}
         assert_job_matches_frozen_revision_context(
@@ -707,11 +1664,15 @@ def _require_current_design_approval(
     organization_id: str,
     approval: Approval | None,
     version: DesignVersion,
+    *,
+    verified_evidence_bindings: dict[str, _ExternalEvidenceBinding] | None = None,
 ) -> Approval:
     """Require an approval that covers exactly the version's current server warnings."""
 
     if approval is None:
         raise HTTPException(status_code=409, detail="A current design approval is required")
+    approval_binding = _approval_binding(approval)
+    evidence_bindings = verified_evidence_bindings if verified_evidence_bindings is not None else {}
     if len(approval.reason.strip()) < 5:
         raise HTTPException(status_code=409, detail="The design approval reason is missing")
     warnings = {
@@ -785,6 +1746,7 @@ def _require_current_design_approval(
             version.design_hash,
             evidence_ids,
             expected_rule_id=rule_id,
+            verified_bindings=evidence_bindings,
         )
         if verified != evidence_snapshots:
             raise HTTPException(
@@ -795,7 +1757,22 @@ def _require_current_design_approval(
                     "solution": "Review and approve the current immutable evidence again.",
                 },
             )
-    return approval
+    # Earlier evidence can be revoked while a later override is being hashed.
+    # Re-resolve every verified row, then the approval itself, without more I/O.
+    _require_external_evidence_bindings_current(session, evidence_bindings)
+    return _require_approval_binding_current(
+        session,
+        approval_binding,
+        approval_id=approval.id,
+        organization_id=organization_id,
+        design_version_id=version.id,
+        approval_type="design",
+        detail={
+            "code": "DESIGN_APPROVAL_SNAPSHOT_STALE",
+            "message": "The design approval changed while its evidence was being verified.",
+            "solution": "Review the current approval and generate the package again.",
+        },
+    )
 
 
 def _require_four_eyes_approval_separation(
@@ -804,17 +1781,12 @@ def _require_four_eyes_approval_separation(
 ) -> None:
     """Enforce distinct design and CAM reviewers when the deployment requires it."""
 
-    if (
-        get_settings().production_four_eyes_required
-        and design_approver_id == cam_approver_id
-    ):
+    if get_settings().production_four_eyes_required and design_approver_id == cam_approver_id:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE,
-                "message": (
-                    "Design and CAM approval must be completed by different users."
-                ),
+                "message": ("Design and CAM approval must be completed by different users."),
                 "solution": (
                     "Ask a different authorized reviewer to complete CAM approval "
                     "for the current design approval."
@@ -840,19 +1812,24 @@ def _require_current_bound_job_evidence(
     request = job.request_json
     if not isinstance(request, Mapping):
         raise HTTPException(status_code=409, detail="Generation evidence binding is malformed")
+    verified_evidence_bindings: dict[str, _ExternalEvidenceBinding] = {}
     design_approval = session.scalar(
-        select(Approval).where(
+        select(Approval)
+        .where(
             Approval.organization_id == organization_id,
             Approval.design_version_id == version.id,
             Approval.approval_type == "design",
         )
+        .execution_options(populate_existing=True)
     )
     design_approval = _require_current_design_approval(
         session,
         organization_id,
         design_approval,
         version,
+        verified_evidence_bindings=verified_evidence_bindings,
     )
+    design_approval_binding = _approval_binding(design_approval)
     if request.get("approved_design_review") != _design_approval_snapshot(design_approval):
         raise HTTPException(
             status_code=409,
@@ -867,9 +1844,7 @@ def _require_current_bound_job_evidence(
     if not isinstance(snapshots, list) or any(not isinstance(item, Mapping) for item in snapshots):
         raise HTTPException(status_code=409, detail="Generation evidence snapshot is malformed")
     evidence_ids = [
-        str(snapshot.get("evidence_id"))
-        for snapshot in snapshots
-        if snapshot.get("evidence_id")
+        str(snapshot.get("evidence_id")) for snapshot in snapshots if snapshot.get("evidence_id")
     ]
     if len(evidence_ids) != len(snapshots):
         raise HTTPException(status_code=409, detail="Generation evidence snapshot is malformed")
@@ -879,6 +1854,7 @@ def _require_current_bound_job_evidence(
         version.project_id,
         version.design_hash,
         evidence_ids,
+        verified_bindings=verified_evidence_bindings,
     )
     if current != snapshots:
         raise HTTPException(
@@ -887,6 +1863,33 @@ def _require_current_bound_job_evidence(
                 "code": "EXTERNAL_EVIDENCE_SNAPSHOT_STALE",
                 "message": "The generated package evidence no longer matches its server record.",
                 "solution": "Generate and review a new package with current immutable evidence.",
+            },
+        )
+
+    # The job-evidence object reads happen after the approval check.  Make the
+    # final operation a DB-only re-resolution of both mutable authorities so a
+    # cached identity-map row cannot authorize a link, CAM action or release.
+    _require_external_evidence_bindings_current(session, verified_evidence_bindings)
+    design_approval = _require_approval_binding_current(
+        session,
+        design_approval_binding,
+        approval_id=design_approval.id,
+        organization_id=organization_id,
+        design_version_id=version.id,
+        approval_type="design",
+        detail={
+            "code": "DESIGN_APPROVAL_SNAPSHOT_STALE",
+            "message": "The generated package approval changed during evidence verification.",
+            "solution": "Generate and review a new package from the current approval.",
+        },
+    )
+    if request.get("approved_design_review") != _design_approval_snapshot(design_approval):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DESIGN_APPROVAL_SNAPSHOT_STALE",
+                "message": "The generated package is not bound to the current design approval.",
+                "solution": "Generate and review a new package from the current approval.",
             },
         )
 
@@ -1018,6 +2021,8 @@ def _frozen_stock_selection_snapshot(version: DesignVersion) -> bytes | None:
 def _frozen_generation_plan_snapshot(
     job: GenerationJob,
     version: DesignVersion,
+    *,
+    build_identity: BuildIdentityValues | None = None,
 ) -> bytes | None:
     """Rebuild the worker's exact generation plan from frozen request inputs."""
 
@@ -1058,10 +2063,16 @@ def _frozen_generation_plan_snapshot(
             or type(validation_program_requested) is not bool
         ):
             return None
+        identity = get_settings().build_identity if build_identity is None else build_identity
         resolved = resolve_production_components(
             machine_profile_id=machine_profile_id,
             postprocessor_id=postprocessor_id,
-            **get_settings().build_identity,
+            app_version=identity["app_version"],
+            vcs_ref=identity["vcs_ref"],
+            build_date=identity["build_date"],
+            source_url=identity["source_url"],
+            source_manifest_sha256=identity["source_manifest_sha256"],
+            dependency_lock_sha256=identity["dependency_lock_sha256"],
         )
         if not contexts_equal(job.production_engine_context_json, resolved.context):
             return None
@@ -1479,6 +2490,8 @@ def _review_document_binding_issues(
     result_json: Mapping[str, Any],
     expectations: Mapping[str, StoredObjectExpectation],
     verified_documents: Mapping[str, bytes],
+    *,
+    build_identity: BuildIdentityValues | None = None,
 ) -> list[str]:
     """Bind the successful job claims to their exact readiness and manifest bytes."""
 
@@ -1575,7 +2588,11 @@ def _review_document_binding_issues(
         ):
             raise ValueError("generation-plan evidence is missing")
         _strict_canonical_json_object(generation_plan_payload)
-        expected_generation_plan = _frozen_generation_plan_snapshot(job, version)
+        expected_generation_plan = _frozen_generation_plan_snapshot(
+            job,
+            version,
+            build_identity=build_identity,
+        )
         if (
             expected_generation_plan is None
             or generation_plan_payload != expected_generation_plan
@@ -1803,9 +2820,7 @@ def _review_document_binding_issues(
         blocker_codes = normalized_package_status.blocker_codes
         grain_blocked = blocker_codes == (DFM_GRAIN_BLOCKER_CODE,)
         stock_blocked = blocker_codes == (STOCK_PROFILE_MISSING_CODE,)
-        retention_blocked = blocker_codes == (
-            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
-        )
+        retention_blocked = blocker_codes == (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
         if stored_dfm_report is None or not _stock_report_matches_frozen_version(
             stored_dfm_report,
             expected_stock_missing_issues,
@@ -1854,6 +2869,37 @@ def _review_evidence_issues(
     stream_hash: bool = False,
     require_cam: bool = True,
     bind_review_documents: bool = False,
+    verified_download_kind: str | None = None,
+    verified_download: VerifiedStoredObject | None = None,
+    build_identity: BuildIdentityValues | None = None,
+) -> tuple[list[str], list[str], bool]:
+    """Serialize expensive evidence verification per tenant and always release."""
+
+    with _artifact_operation_scope(organization_id):
+        return _review_evidence_issues_owned(
+            session,
+            organization_id,
+            job,
+            stream_hash=stream_hash,
+            require_cam=require_cam,
+            bind_review_documents=bind_review_documents,
+            verified_download_kind=verified_download_kind,
+            verified_download=verified_download,
+            build_identity=build_identity,
+        )
+
+
+def _review_evidence_issues_owned(
+    session: Session,
+    organization_id: str,
+    job: GenerationJob,
+    *,
+    stream_hash: bool = False,
+    require_cam: bool = True,
+    bind_review_documents: bool = False,
+    verified_download_kind: str | None = None,
+    verified_download: VerifiedStoredObject | None = None,
+    build_identity: BuildIdentityValues | None = None,
 ) -> tuple[list[str], list[str], bool]:
     """Return missing/invalid evidence without changing the reviewed job."""
 
@@ -1874,6 +2920,24 @@ def _review_evidence_issues(
     by_kind = {artifact.kind: artifact for artifact in artifacts}
     expectations, result_invalid = _artifact_expectations(job)
     invalid = list(result_invalid)
+    if version is not None:
+        for artifact in artifacts:
+            try:
+                require_committed_storage_binding(
+                    session,
+                    organization_id,
+                    project_id=version.project_id,
+                    object_key=artifact.object_key,
+                    sha256=artifact.sha256,
+                    size_bytes=artifact.size_bytes,
+                    media_type=artifact.content_type,
+                    owner_type="generation_job",
+                    owner_id=job.id,
+                )
+            except (StorageClaimConflict, StorageQuotaInvariantError):
+                invalid.append(artifact.kind)
+    if (verified_download_kind is None) != (verified_download is None):
+        invalid.append("verified_download")
     if version is None:
         invalid.append("design_version")
     result_json = job.result_json if isinstance(job.result_json, dict) else {}
@@ -1913,63 +2977,69 @@ def _review_evidence_issues(
         # it is ambiguous, fail closed before reading any caller-selected key.
         return sorted(set(missing)), sorted(set(invalid)), readiness_valid
     verified_documents: dict[str, bytes] = {}
-    for kind, expectation in expectations.items():
-        artifact = by_kind.get(kind)
-        if artifact is None:
-            continue
-        if (
-            artifact.object_key != expectation.object_key
-            or artifact.sha256 != expectation.sha256
-            or artifact.size_bytes != expectation.size_bytes
-            or artifact.content_type != expectation.content_type
-        ):
-            invalid.append(kind)
-            continue
-        try:
-            if (stream_hash or bind_review_documents) and kind == "workshop_readiness":
-                verified_documents[kind] = read_verified_stored_object(
-                    expectation,
-                    max_bytes=_WORKSHOP_READINESS_MAX_BYTES,
+    consumed_verified_download = False
+    retain_review_documents = stream_hash or bind_review_documents
+    retained_bytes = sum(
+        expectation.size_bytes
+        for kind, expectation in expectations.items()
+        if retain_review_documents
+        and kind in _REVIEW_DOCUMENT_MAX_BYTES
+        # A target document is already covered by the open verified token's
+        # reservation until the response closes.
+        and kind != verified_download_kind
+    )
+    with (
+        storage_read_deadline(_REVIEW_STORAGE_TOTAL_SECONDS),
+        reserve_transient_bytes(retained_bytes),
+    ):
+        for kind, expectation in expectations.items():
+            review_artifact = by_kind.get(kind)
+            if review_artifact is None:
+                continue
+            if (
+                review_artifact.object_key != expectation.object_key
+                or review_artifact.sha256 != expectation.sha256
+                or review_artifact.size_bytes != expectation.size_bytes
+                or review_artifact.content_type != expectation.content_type
+            ):
+                invalid.append(kind)
+                continue
+            try:
+                review_limit = _REVIEW_DOCUMENT_MAX_BYTES.get(kind)
+                if kind == verified_download_kind and verified_download is not None:
+                    consumed_verified_download = True
+                    if (
+                        verified_download.sha256 != expectation.sha256
+                        or verified_download.size_bytes != expectation.size_bytes
+                        or verified_download.content_type != expectation.content_type
+                    ):
+                        invalid.append(kind)
+                    elif retain_review_documents and review_limit is not None:
+                        verified_documents[kind] = verified_download.validation_bytes(
+                            max_bytes=review_limit
+                        )
+                elif retain_review_documents and review_limit is not None:
+                    verified_documents[kind] = read_verified_stored_object(
+                        expectation,
+                        max_bytes=review_limit,
+                    )
+                else:
+                    verify_stored_object(expectation, stream_hash=stream_hash)
+            except ArtifactIntegrityError:
+                invalid.append(kind)
+        if verified_download is not None and not consumed_verified_download:
+            invalid.append("verified_download")
+        if retain_review_documents and version is not None:
+            invalid.extend(
+                _review_document_binding_issues(
+                    job,
+                    version,
+                    result_json,
+                    expectations,
+                    verified_documents,
+                    build_identity=build_identity,
                 )
-            elif (stream_hash or bind_review_documents) and kind == "dfm_report":
-                verified_documents[kind] = read_verified_stored_object(
-                    expectation,
-                    max_bytes=_DFM_REPORT_MAX_BYTES,
-                )
-            elif (stream_hash or bind_review_documents) and kind == "design_review_package_status":
-                verified_documents[kind] = read_verified_stored_object(
-                    expectation,
-                    max_bytes=_DESIGN_REVIEW_PACKAGE_STATUS_MAX_BYTES,
-                )
-            elif (stream_hash or bind_review_documents) and kind == "stock_selection":
-                verified_documents[kind] = read_verified_stored_object(
-                    expectation,
-                    max_bytes=_STOCK_SELECTION_MAX_BYTES,
-                )
-            elif (stream_hash or bind_review_documents) and kind == "generation_plan":
-                verified_documents[kind] = read_verified_stored_object(
-                    expectation,
-                    max_bytes=_GENERATION_PLAN_MAX_BYTES,
-                )
-            elif (stream_hash or bind_review_documents) and kind == "manifest":
-                verified_documents[kind] = read_verified_stored_object(
-                    expectation,
-                    max_bytes=_PRODUCTION_MANIFEST_MAX_BYTES,
-                )
-            else:
-                verify_stored_object(expectation, stream_hash=stream_hash)
-        except ArtifactIntegrityError:
-            invalid.append(kind)
-    if (stream_hash or bind_review_documents) and version is not None:
-        invalid.extend(
-            _review_document_binding_issues(
-                job,
-                version,
-                result_json,
-                expectations,
-                verified_documents,
             )
-        )
     return sorted(set(missing)), sorted(set(invalid)), readiness_valid
 
 
@@ -1987,6 +3057,7 @@ def _artifact_expectations(
         return {}, ["generation_result"]
     expectations: dict[str, StoredObjectExpectation] = {}
     normalized_kinds: set[str] = set()
+    object_keys: set[str] = set()
     invalid: list[str] = []
 
     def add(
@@ -2018,12 +3089,11 @@ def _artifact_expectations(
             )
             or not isinstance(object_key, str)
             or not object_key
+            or object_key in object_keys
             or not isinstance(sha256, str)
             or len(sha256) != 64
             or any(character not in "0123456789abcdef" for character in sha256)
-            or not isinstance(size_bytes, int)
-            or isinstance(size_bytes, bool)
-            or size_bytes <= 0
+            or not valid_artifact_size(kind_value, size_bytes)
             or not isinstance(content_type, str)
             or not content_type
             or any(
@@ -2055,7 +3125,9 @@ def _artifact_expectations(
         ):
             invalid.append(kind_value or "generation_result")
             return
+        assert type(size_bytes) is int
         normalized_kinds.add(normalized_kind)
+        object_keys.add(object_key)
         expectations[kind_value] = StoredObjectExpectation(
             object_key=object_key,
             sha256=sha256,
@@ -2080,13 +3152,20 @@ def _artifact_expectations(
         "application/json",
     )
     evidence = result.get("evidence_artifacts")
-    if not isinstance(evidence, list):
+    if not isinstance(evidence, list) or len(evidence) > MAX_EVIDENCE_ARTIFACTS:
         invalid.append("evidence_artifacts")
     else:
+        evidence_total_bytes = 0
         for item in evidence:
             if not isinstance(item, dict):
                 invalid.append("evidence_artifacts")
                 continue
+            raw_size = item.get("size_bytes")
+            if type(raw_size) is int and raw_size > 0:
+                evidence_total_bytes += raw_size
+                if evidence_total_bytes > MAX_EVIDENCE_TOTAL_BYTES:
+                    invalid.append("evidence_artifacts")
+                    break
             add(
                 item.get("kind"),
                 item.get("object_key"),
@@ -2112,34 +3191,487 @@ def _require_review_evidence(
     stream_hash: bool,
     require_cam: bool = True,
     bind_review_documents: bool = False,
+    build_identity: BuildIdentityValues | None = None,
 ) -> None:
     """Require persisted, checksum-addressed evidence for the exact successful job."""
 
-    try:
-        missing, invalid, readiness_valid = _review_evidence_issues(
+    with _artifact_operation_scope(organization_id):
+        try:
+            # Own the shared tenant/global slot until artifact verification,
+            # external-evidence I/O and their final DB refresh all complete.
+            missing, invalid, readiness_valid = _review_evidence_issues_owned(
+                session,
+                organization_id,
+                job,
+                stream_hash=stream_hash,
+                require_cam=require_cam,
+                bind_review_documents=bind_review_documents,
+                build_identity=build_identity,
+            )
+        except ArtifactStorageUnavailableError as exc:
+            raise _storage_unavailable() from exc
+        if missing or invalid or not readiness_valid:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Production evidence failed integrity verification; regenerate the package"
+                ),
+            )
+        version = session.scalar(
+            select(DesignVersion).where(
+                DesignVersion.organization_id == organization_id,
+                DesignVersion.id == job.design_version_id,
+            )
+        )
+        if version is None:
+            raise HTTPException(status_code=409, detail="Generation design version is missing")
+        _require_current_bound_job_evidence(session, organization_id, job, version)
+
+
+def _prepare_review_artifact_download(
+    session: Session,
+    organization_id: str,
+    job: GenerationJob,
+    version: DesignVersion,
+    artifact_kind: str,
+) -> VerifiedStoredObject:
+    """Verify the exact target once and fail closed on every sibling artifact."""
+
+    with storage_read_deadline(_REVIEW_STORAGE_TOTAL_SECONDS):
+        return _prepare_review_artifact_download_within_deadline(
             session,
             organization_id,
             job,
-            stream_hash=stream_hash,
-            require_cam=require_cam,
-            bind_review_documents=bind_review_documents,
+            version,
+            artifact_kind,
         )
-    except ArtifactStorageUnavailableError as exc:
-        raise _storage_unavailable() from exc
-    if missing or invalid or not readiness_valid:
+
+
+def _prepare_review_artifact_download_within_deadline(
+    session: Session,
+    organization_id: str,
+    job: GenerationJob,
+    version: DesignVersion,
+    artifact_kind: str,
+) -> VerifiedStoredObject:
+    """Run one complete download review within its inherited absolute deadline."""
+
+    expectations, result_invalid = _artifact_expectations(job)
+    expectation = expectations.get(artifact_kind)
+    if result_invalid or expectation is None:
         raise HTTPException(
             status_code=409,
             detail="Production evidence failed integrity verification; regenerate the package",
         )
-    version = session.scalar(
-        select(DesignVersion).where(
-            DesignVersion.organization_id == organization_id,
-            DesignVersion.id == job.design_version_id,
+    artifact_row = session.scalar(
+        select(Artifact).where(
+            Artifact.organization_id == organization_id,
+            Artifact.generation_job_id == job.id,
+            Artifact.kind == artifact_kind,
         )
     )
-    if version is None:
-        raise HTTPException(status_code=409, detail="Generation design version is missing")
-    _require_current_bound_job_evidence(session, organization_id, job, version)
+    if artifact_row is None:
+        raise HTTPException(
+            status_code=409,
+            detail="Production evidence failed integrity verification; regenerate the package",
+        )
+    try:
+        require_committed_storage_binding(
+            session,
+            organization_id,
+            project_id=version.project_id,
+            object_key=artifact_row.object_key,
+            sha256=artifact_row.sha256,
+            size_bytes=artifact_row.size_bytes,
+            media_type=artifact_row.content_type,
+            owner_type="generation_job",
+            owner_id=job.id,
+        )
+    except (StorageClaimConflict, StorageQuotaInvariantError) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Production evidence failed integrity verification; regenerate the package",
+        ) from exc
+    try:
+        verified = open_verified_stored_object(
+            expectation,
+            max_bytes=artifact_size_limit(artifact_kind),
+        )
+    except ArtifactIntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Production evidence failed integrity verification; regenerate the package",
+        ) from exc
+    except ArtifactStorageUnavailableError as exc:
+        raise _storage_unavailable() from exc
+
+    try:
+        try:
+            # The enclosing authenticated download already owns the shared
+            # tenant/global artifact-operation slot.  Re-entering the public
+            # limiter here would double-count one request and self-reject.
+            missing, invalid, readiness_valid = _review_evidence_issues_owned(
+                session,
+                organization_id,
+                job,
+                stream_hash=False,
+                require_cam=False,
+                bind_review_documents=True,
+                verified_download_kind=artifact_kind,
+                verified_download=verified,
+            )
+        except ArtifactStorageUnavailableError as exc:
+            raise _storage_unavailable() from exc
+        if missing or invalid or not readiness_valid:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Production evidence failed integrity verification; regenerate the package"
+                ),
+            )
+        _require_current_bound_job_evidence(
+            session,
+            organization_id,
+            job,
+            version,
+        )
+        # Object and bound-evidence verification can involve bounded network and
+        # spool I/O.  A concurrent revision may supersede/archive this version
+        # while either operation is in flight, so refresh mutable state only
+        # after all of that I/O and immediately before response ownership.
+        fresh_version = _require_current_artifacts(
+            session,
+            organization_id,
+            job,
+            populate_existing=True,
+        )
+        if fresh_version.id != version.id:
+            raise HTTPException(
+                status_code=409,
+                detail="Production artifacts are stale after a design change",
+            )
+    except BaseException:
+        try:
+            verified.close()
+        except ArtifactStorageUnavailableError as exc:
+            raise _storage_unavailable() from exc
+        raise
+    return verified
+
+
+class _VerifiedArtifactStreamingResponse(StreamingResponse):
+    """Own and close a verified spool across every ASGI exit path."""
+
+    def __init__(
+        self,
+        verified: VerifiedStoredObject,
+        *,
+        headers: Mapping[str, str],
+        tenant_lease: _TenantDownloadLease | None,
+        stream_timeout_seconds: float,
+    ) -> None:
+        if stream_timeout_seconds <= 0:
+            raise ValueError("artifact stream timeout must be positive")
+        self._verified = verified
+        self._tenant_lease = tenant_lease
+        self._stream_timeout_seconds = stream_timeout_seconds
+        super().__init__(
+            verified.iter_bytes(),
+            status_code=200,
+            media_type=None,
+            headers=headers,
+        )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            async with asyncio.timeout(self._stream_timeout_seconds):
+                await super().__call__(scope, receive, send)
+        finally:
+            # Starlette does not run a BackgroundTask when ASGI send() fails,
+            # including before response.start.  Close the storage-owned token
+            # around the complete response call so disconnects cannot retain a
+            # potentially large verified temporary file.
+            try:
+                self._verified.close()
+            finally:
+                if self._tenant_lease is not None:
+                    self._tenant_lease.close()
+
+
+class _TenantDownloadLease:
+    """Release one tenant's single in-flight artifact transfer exactly once."""
+
+    __slots__ = ("_limiter", "_lock", "_organization_id")
+
+    def __init__(self, limiter: _TenantDownloadLimiter, organization_id: str) -> None:
+        self._limiter: _TenantDownloadLimiter | None = limiter
+        self._organization_id = organization_id
+        self._lock = Lock()
+
+    def close(self) -> None:
+        with self._lock:
+            limiter = self._limiter
+            self._limiter = None
+        if limiter is not None:
+            limiter._release(self._organization_id)
+
+
+class _TenantDownloadLimiter:
+    """Bound artifact work globally and to one in-flight operation per tenant."""
+
+    __slots__ = ("_active", "_lock", "_max_active")
+
+    def __init__(self, max_active: int = 8) -> None:
+        if type(max_active) is not int or max_active <= 0:
+            raise ValueError("artifact operation capacity must be a positive integer")
+        self._active: set[str] = set()
+        self._lock = Lock()
+        self._max_active = max_active
+
+    def acquire(self, organization_id: str) -> _TenantDownloadLease:
+        with self._lock:
+            if organization_id in self._active:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Another verified artifact operation is already active for this tenant",
+                    headers={"Retry-After": "5"},
+                )
+            if len(self._active) >= self._max_active:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Verified artifact operation capacity is temporarily exhausted",
+                    headers={"Retry-After": "5"},
+                )
+            self._active.add(organization_id)
+        return _TenantDownloadLease(self, organization_id)
+
+    def _release(self, organization_id: str) -> None:
+        with self._lock:
+            self._active.discard(organization_id)
+
+
+_ARTIFACT_OPERATION_LIMITER = _TenantDownloadLimiter()
+_TENANT_DOWNLOAD_LIMITER = _ARTIFACT_OPERATION_LIMITER
+_TENANT_REVIEW_LIMITER = _ARTIFACT_OPERATION_LIMITER
+_ACTIVE_ARTIFACT_OPERATION_ORGANIZATION: ContextVar[str | None] = ContextVar(
+    "active_artifact_operation_organization",
+    default=None,
+)
+_IN_MEMORY_ARTIFACT_OPERATION_STORE = InMemoryArtifactOperationStore()
+_ARTIFACT_OPERATION_TENANT_LOCK_NAMESPACE = 1_129_659_476
+_ARTIFACT_OPERATION_GLOBAL_LOCK_NAMESPACE = 1_129_659_463
+_ARTIFACT_OPERATION_GLOBAL_LOCK_COUNT = 8
+
+
+@lru_cache(maxsize=1)
+def _artifact_operation_lease_manager() -> ArtifactOperationLeaseManager:
+    """Build one process-local adapter around the production Redis lease store."""
+
+    settings = get_settings()
+    store = (
+        RedisArtifactOperationStore(settings.redis_url)
+        if settings.app_env == "production"
+        else _IN_MEMORY_ARTIFACT_OPERATION_STORE
+    )
+    return ArtifactOperationLeaseManager(store)
+
+
+def _artifact_operation_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ArtifactOperationBusyError):
+        return HTTPException(
+            status_code=429,
+            detail="Another verified artifact operation is already active for this tenant",
+            headers={"Retry-After": "5"},
+        )
+    if isinstance(exc, ArtifactOperationCapacityError):
+        return HTTPException(
+            status_code=503,
+            detail="Verified artifact operation capacity is temporarily exhausted",
+            headers={"Retry-After": "5"},
+        )
+    return HTTPException(
+        status_code=503,
+        detail="Verified artifact operation coordination is temporarily unavailable",
+        headers={"Retry-After": "5"},
+    )
+
+
+def _acquire_database_artifact_operation_locks(
+    session: Session,
+    organization_id: str,
+) -> None:
+    """Fence one tenant and one of eight global slots in the request transaction."""
+
+    if session.get_bind().dialect.name != "postgresql":
+        return
+    tenant_key = int.from_bytes(
+        hashlib.sha256(organization_id.encode("utf-8")).digest()[:4],
+        byteorder="big",
+        signed=True,
+    )
+    try:
+        tenant_acquired = session.scalar(
+            text("SELECT pg_try_advisory_xact_lock(:namespace, :tenant_key)"),
+            {
+                "namespace": _ARTIFACT_OPERATION_TENANT_LOCK_NAMESPACE,
+                "tenant_key": tenant_key,
+            },
+        )
+    except SQLAlchemyError as exc:
+        raise ArtifactOperationUnavailableError(
+            "database artifact-operation coordination is unavailable"
+        ) from exc
+    if tenant_acquired is not True:
+        raise ArtifactOperationBusyError()
+    for slot in range(_ARTIFACT_OPERATION_GLOBAL_LOCK_COUNT):
+        try:
+            acquired = session.scalar(
+                text("SELECT pg_try_advisory_xact_lock(:namespace, :slot)"),
+                {
+                    "namespace": _ARTIFACT_OPERATION_GLOBAL_LOCK_NAMESPACE,
+                    "slot": slot,
+                },
+            )
+        except SQLAlchemyError as exc:
+            raise ArtifactOperationUnavailableError(
+                "database artifact-operation coordination is unavailable"
+            ) from exc
+        if acquired is True:
+            return
+    raise ArtifactOperationCapacityError()
+
+
+@contextmanager
+def _artifact_operation_scope(organization_id: str) -> Iterator[None]:
+    """Own one re-entrant tenant/global slot across a complete storage operation."""
+
+    active_organization_id = _ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.get()
+    if active_organization_id is not None:
+        if active_organization_id != organization_id:
+            raise RuntimeError("artifact operation scope cannot switch tenant")
+        yield
+        return
+
+    tenant_lease = _TENANT_REVIEW_LIMITER.acquire(organization_id)
+    token = _ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.set(organization_id)
+    try:
+        with storage_read_deadline(_REVIEW_STORAGE_TOTAL_SECONDS):
+            yield
+    finally:
+        _ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.reset(token)
+        tenant_lease.close()
+
+
+async def _artifact_operation_dependency(
+    principal: PrincipalDep,
+    session: SessionDep,
+) -> AsyncIterator[None]:
+    """Fence a non-streaming mutation in Redis, PostgreSQL and this process."""
+
+    local_lease: _TenantDownloadLease | None = None
+    try:
+        async with _artifact_operation_lease_manager().lease(principal.organization_id):
+            _acquire_database_artifact_operation_locks(
+                session,
+                principal.organization_id,
+            )
+            local_lease = _TENANT_REVIEW_LIMITER.acquire(principal.organization_id)
+            _ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.set(principal.organization_id)
+            with storage_read_deadline(_REVIEW_STORAGE_TOTAL_SECONDS):
+                yield
+    except (
+        ArtifactOperationBusyError,
+        ArtifactOperationCapacityError,
+        ArtifactOperationOwnershipLostError,
+        ArtifactOperationUnavailableError,
+    ) as exc:
+        raise _artifact_operation_http_error(exc) from exc
+    finally:
+        _ACTIVE_ARTIFACT_OPERATION_ORGANIZATION.set(None)
+        if local_lease is not None:
+            local_lease.close()
+
+
+async def _artifact_stream_operation_dependency(
+    principal: PrincipalDep,
+    session: DownloadSessionDep,
+) -> AsyncIterator[None]:
+    """Keep explicit leases and DB locks alive through the complete body stream."""
+
+    local_lease: _TenantDownloadLease | None = None
+    try:
+        async with _artifact_operation_lease_manager().lease(principal.organization_id):
+            _acquire_database_artifact_operation_locks(
+                session,
+                principal.organization_id,
+            )
+            local_lease = _TENANT_DOWNLOAD_LIMITER.acquire(principal.organization_id)
+            yield
+    except (
+        ArtifactOperationBusyError,
+        ArtifactOperationCapacityError,
+        ArtifactOperationOwnershipLostError,
+        ArtifactOperationUnavailableError,
+    ) as exc:
+        raise _artifact_operation_http_error(exc) from exc
+    finally:
+        if local_lease is not None:
+            local_lease.close()
+
+
+_ARTIFACT_OPERATION_DEPENDENCY = Depends(
+    _artifact_operation_dependency,
+    scope="function",
+)
+_ARTIFACT_STREAM_OPERATION_DEPENDENCY = Depends(
+    _artifact_stream_operation_dependency,
+    scope="request",
+)
+
+
+def _verified_artifact_response(
+    verified: VerifiedStoredObject,
+    *,
+    filename: str,
+    tenant_lease: _TenantDownloadLease | None = None,
+    stream_timeout_seconds: float | None = None,
+) -> StreamingResponse:
+    """Transfer ownership of a verified spool to response and background cleanup."""
+
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", filename) is None:
+        try:
+            verified.close()
+        except ArtifactStorageUnavailableError as exc:
+            raise _storage_unavailable() from exc
+        raise HTTPException(status_code=409, detail="Artifact filename is invalid")
+    digest = base64.b64encode(bytes.fromhex(verified.sha256)).decode("ascii")
+    headers = {
+        "Cache-Control": "private, no-store, no-transform, max-age=0",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Length": str(verified.size_bytes),
+        "Content-Type": verified.content_type,
+        "Digest": f"sha-256={digest}",
+        "ETag": f'"{verified.sha256}"',
+        "Pragma": "no-cache",
+        "X-Content-Type-Options": "nosniff",
+    }
+    try:
+        return _VerifiedArtifactStreamingResponse(
+            verified,
+            headers=headers,
+            tenant_lease=tenant_lease,
+            stream_timeout_seconds=(
+                float(get_settings().artifact_stream_timeout_seconds)
+                if stream_timeout_seconds is None
+                else stream_timeout_seconds
+            ),
+        )
+    except Exception:
+        try:
+            verified.close()
+        except ArtifactStorageUnavailableError as exc:
+            raise _storage_unavailable() from exc
+        raise
 
 
 @router.get("/me")
@@ -2261,7 +3793,7 @@ def list_external_evidence(
     principal: PrincipalDep,
 ) -> list[ExternalEvidence]:
     project = tenant_project(session, principal, project_id)
-    return list(
+    rows = list(
         session.scalars(
             select(ExternalEvidence)
             .where(
@@ -2272,12 +3804,26 @@ def list_external_evidence(
             .order_by(ExternalEvidence.created_at.desc())
         )
     )
+    for evidence in rows:
+        _require_committed_domain_object(
+            session,
+            principal.organization_id,
+            project_id=project.id,
+            object_key=evidence.object_key,
+            sha256=evidence.sha256,
+            size_bytes=evidence.size_bytes,
+            media_type=evidence.content_type,
+            owner_type="external_evidence",
+            owner_id=evidence.id,
+        )
+    return rows
 
 
 @router.post(
     "/projects/{project_id}/evidence",
     response_model=ExternalEvidenceRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
 )
 async def upload_external_evidence(
     project_id: str,
@@ -2324,7 +3870,7 @@ async def upload_external_evidence(
         )
         if normalized_expiry <= datetime.now(UTC):
             raise HTTPException(status_code=422, detail="Evidence expiry must be in the future")
-    content = await document.read(20 * 1024 * 1024 + 1)
+    content = await document.read(MAX_CATALOG_SOURCE_BYTES + 1)
     try:
         validate_upload(content, document.content_type or "", document.filename or "")
     except ValueError as exc:
@@ -2340,16 +3886,33 @@ async def upload_external_evidence(
         ) from exc
     evidence_id = str(uuid4())
     digest = hashlib.sha256(content).hexdigest()
+    media_type = document.content_type or "application/octet-stream"
     extension = (document.filename or "evidence").rpartition(".")[2].lower()
     object_key = (
         f"{principal.organization_id}/projects/{project.id}/external-evidence/"
-        f"{evidence_id}/document.{extension}"
+        f"sha256/{digest}/{evidence_id}/document.{extension}"
+    )
+    claim = StorageObjectClaim(
+        project_id=project.id,
+        object_key=object_key,
+        sha256=digest,
+        size_bytes=len(content),
+        media_type=media_type,
+        owner_type="external_evidence",
+        owner_id=evidence_id,
+        idempotency_key=f"external-evidence:{evidence_id}",
+    )
+    storage_lease_token = await _reserve_upload_storage(
+        session,
+        principal.organization_id,
+        claim,
     )
     try:
-        store_evidence_object(
+        await run_in_threadpool(
+            store_evidence_object,
             object_key,
             content,
-            document.content_type or "application/octet-stream",
+            media_type,
             digest,
         )
     except ArtifactIntegrityError as exc:
@@ -2375,12 +3938,18 @@ async def upload_external_evidence(
         object_key=object_key,
         sha256=digest,
         size_bytes=len(content),
-        content_type=document.content_type or "application/octet-stream",
+        content_type=media_type,
         created_by=principal.user_id,
         expires_at=expires_at,
     )
     session.add(evidence)
     session.flush()
+    _commit_upload_storage(
+        session,
+        principal.organization_id,
+        claim,
+        storage_lease_token,
+    )
     audit(
         session,
         principal,
@@ -2527,6 +4096,7 @@ def list_versions(
     "/projects/{project_id}/versions",
     response_model=DesignVersionRead,
     status_code=status.HTTP_201_CREATED,
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
 )
 def create_version(
     project_id: str,
@@ -2799,7 +4369,9 @@ def get_production_state(
 
 
 @router.post(
-    "/projects/{project_id}/versions/{revision}/validate", response_model=DesignVersionRead
+    "/projects/{project_id}/versions/{revision}/validate",
+    response_model=DesignVersionRead,
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
 )
 def validate_version(
     project_id: str,
@@ -2830,6 +4402,7 @@ def validate_version(
     "/projects/{project_id}/versions/{revision}/generate",
     response_model=JobRead,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
 )
 def generate_version(
     project_id: str,
@@ -2887,12 +4460,14 @@ def generate_version(
             ),
         )
     request_json = payload.model_dump(mode="json")
+    verified_evidence_bindings: dict[str, _ExternalEvidenceBinding] = {}
     request_json["external_evidence"] = _verified_external_evidence(
         session,
         principal.organization_id,
         version.project_id,
         version.design_hash,
         payload.external_evidence_ids,
+        verified_bindings=verified_evidence_bindings,
     )
     warning_rule_ids = {
         str(item["rule_id"])
@@ -2912,7 +4487,11 @@ def generate_version(
             detail="Explicit design approval is required before generation",
         )
     design_approval = _require_current_design_approval(
-        session, principal.organization_id, design_approval, version
+        session,
+        principal.organization_id,
+        design_approval,
+        version,
+        verified_evidence_bindings=verified_evidence_bindings,
     )
     if warning_rule_ids:
         approved_rule_ids = {str(item.get("rule_id")) for item in design_approval.overrides_json}
@@ -2958,7 +4537,13 @@ def generate_version(
         .with_for_update()
     )
     if existing is not None:
+        generation_requeued = False
         if existing.status == JobStatus.failed:
+            _require_generation_storage_retry_ready(
+                session,
+                principal.organization_id,
+                existing.id,
+            )
             previous_error = existing.error
             retry_started_at = datetime.now(UTC)
             session.execute(
@@ -2995,7 +4580,12 @@ def generate_version(
                 existing.id,
                 {"previous_error": previous_error},
             )
+            generation_requeued = True
         elif existing.status == JobStatus.succeeded:
+            # A succeeded row is immutable evidence.  Reject a detached result
+            # before the repair/reuse branch can delete artifacts, approvals or
+            # otherwise mutate production state.
+            _require_current_generation_context(existing, version)
             try:
                 missing, invalid, readiness_valid = _review_evidence_issues(
                     session,
@@ -3025,6 +4615,11 @@ def generate_version(
                             "restore the current production state"
                         ),
                     )
+                _require_generation_storage_retry_ready(
+                    session,
+                    principal.organization_id,
+                    existing.id,
+                )
                 removed_artifact_kinds = list(
                     session.scalars(
                         select(Artifact.kind).where(
@@ -3109,6 +4704,9 @@ def generate_version(
                         "cam_approvals_remaining": len(remaining_cam_approval_ids),
                     },
                 )
+                generation_requeued = True
+        if generation_requeued:
+            _flush_generation_storage_retry(session)
         return existing
     if version.status in {DesignStatus.cam_validated, DesignStatus.approved}:
         session.execute(
@@ -3181,7 +4779,11 @@ def get_job(job_id: str, session: SessionDep, principal: PrincipalDep) -> Genera
     return job
 
 
-@router.post("/projects/{project_id}/versions/{revision}/approve", response_model=DesignVersionRead)
+@router.post(
+    "/projects/{project_id}/versions/{revision}/approve",
+    response_model=DesignVersionRead,
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
+)
 def approve_version(
     project_id: str,
     revision: int,
@@ -3315,6 +4917,7 @@ def approve_version(
             status_code=422, detail="warning_overrides are only valid for design approval"
         )
     if payload.approval_type == "design":
+        verified_evidence_bindings: dict[str, _ExternalEvidenceBinding] = {}
         warnings = {
             str(item["rule_id"]): item
             for item in version.result_json.get("rule_evaluations", [])
@@ -3357,6 +4960,7 @@ def approve_version(
                     version.design_hash,
                     supplied[rule_id].evidence_ids,
                     expected_rule_id=rule_id,
+                    verified_bindings=verified_evidence_bindings,
                 )
                 evidence_status = "verified" if evidence_snapshots else "missing"
             approved_overrides.append(
@@ -3370,6 +4974,7 @@ def approve_version(
                     "external_evidence": evidence_snapshots,
                 }
             )
+        _require_external_evidence_bindings_current(session, verified_evidence_bindings)
     approval = session.scalar(
         select(Approval).where(
             Approval.organization_id == principal.organization_id,
@@ -3465,6 +5070,7 @@ def approve_version(
 @router.post(
     "/projects/{project_id}/versions/{revision}/release",
     response_model=ReleaseRead,
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
 )
 def release_version(
     project_id: str,
@@ -3509,6 +5115,7 @@ def release_version(
     )
     if cam_approval is None or cam_approval.generation_job_id is None:
         raise HTTPException(status_code=409, detail="A bound CAM approval is required")
+    cam_approval_binding = _approval_binding(cam_approval)
     _require_four_eyes_approval_separation(
         design_approval.approved_by,
         cam_approval.approved_by,
@@ -3553,6 +5160,25 @@ def release_version(
         job,
         stream_hash=True,
     )
+    cam_approval = _require_approval_binding_current(
+        session,
+        cam_approval_binding,
+        approval_id=cam_approval.id,
+        organization_id=principal.organization_id,
+        design_version_id=version.id,
+        approval_type="cam",
+        detail={
+            "code": "CAM_APPROVAL_SNAPSHOT_STALE",
+            "message": "The CAM approval changed while production evidence was being verified.",
+            "solution": "Review and approve the current generated package again.",
+        },
+    )
+    _require_four_eyes_approval_separation(
+        design_approval.approved_by,
+        cam_approval.approved_by,
+    )
+    if cam_approval.generation_job_id != job.id:
+        raise HTTPException(status_code=409, detail="The bound CAM approval changed generation job")
     if job.result_json.get("authoritative_geometry") is not True:
         raise HTTPException(
             status_code=409,
@@ -3574,11 +5200,27 @@ def release_version(
             status_code=409,
             detail="CAM approval does not match the selected production context and manifest",
         )
+    release_artifacts = tuple(
+        session.scalars(
+            select(Artifact)
+            .where(
+                Artifact.organization_id == principal.organization_id,
+                Artifact.generation_job_id == job.id,
+            )
+            .order_by(Artifact.kind, Artifact.id)
+        )
+    )
+    _expectations, release_inventory = _frozen_release_inventory(job, release_artifacts)
+    if not isinstance(job.result_json, dict):
+        raise HTTPException(status_code=409, detail="Checked generation result is malformed")
+    frozen_generation_result = json.loads(canonical_json_bytes(job.result_json))
+    if not isinstance(frozen_generation_result, dict):
+        raise HTTPException(status_code=409, detail="Checked generation result is malformed")
     if existing_release is not None:
-        if existing_release.manifest_sha256 != manifest_sha:
+        if not _release_matches_frozen_job(existing_release, job, release_inventory):
             raise HTTPException(
                 status_code=409,
-                detail="The stored release does not match the checked production manifest",
+                detail="The stored release does not match the checked immutable package",
             )
         return {
             "release_id": existing_release.id,
@@ -3591,9 +5233,13 @@ def release_version(
     release = Release(
         organization_id=principal.organization_id,
         design_version_id=version.id,
+        generation_job_id=job.id,
         release_number=payload.release_number,
         released_by=principal.user_id,
         manifest_sha256=manifest_sha,
+        production_context_hash=job.production_context_hash,
+        generation_result_json=frozen_generation_result,
+        artifact_inventory_json=release_inventory,
     )
     version.status = DesignStatus.released
     version.immutable = True
@@ -3605,7 +5251,13 @@ def release_version(
         "design_version.released",
         "release",
         release.id,
-        {"release_number": payload.release_number, "manifest_sha256": manifest_sha},
+        {
+            "release_number": payload.release_number,
+            "manifest_sha256": manifest_sha,
+            "generation_job_id": job.id,
+            "production_context_hash": job.production_context_hash,
+            "artifact_inventory": release_inventory,
+        },
     )
     return {
         "release_id": release.id,
@@ -3617,7 +5269,117 @@ def release_version(
     }
 
 
-@router.get("/jobs/{job_id}/artifacts", response_model=list[ArtifactRead])
+@router.get(
+    "/releases/{release_id}/artifacts",
+    response_model=list[ReleaseArtifactRead],
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
+)
+def list_release_artifacts(
+    release_id: str,
+    session: SessionDep,
+    principal: PrincipalDep,
+) -> list[dict[str, Any]]:
+    """List the exact package inventory frozen by a historical release."""
+
+    archive = _resolve_release_archive(session, principal.organization_id, release_id)
+    archive = _verify_release_archive_owned(
+        session,
+        principal.organization_id,
+        archive,
+    )
+    expires = int(time.time()) + get_settings().artifact_url_ttl_seconds
+    result: list[dict[str, Any]] = []
+    for item in archive.artifacts:
+        signature_subject = _release_artifact_signature_subject(release_id, item.id)
+        download_path = (
+            f"/v1/releases/{release_id}/artifacts/{item.id}/download"
+            f"?expires={expires}&signature="
+            f"{sign_artifact_access(signature_subject, principal.organization_id, expires)}"
+        )
+        result.append(
+            {
+                "release_id": archive.release.id,
+                "release_number": archive.release.release_number,
+                "revision": archive.version.revision,
+                "id": item.id,
+                "kind": item.kind,
+                "sha256": item.sha256,
+                "size_bytes": item.size_bytes,
+                "content_type": item.content_type,
+                "download_url": download_path,
+                "download_path": download_path,
+            }
+        )
+    return result
+
+
+@router.get(
+    "/releases/{release_id}/artifacts/{artifact_id}/download",
+    response_class=StreamingResponse,
+    dependencies=[_ARTIFACT_STREAM_OPERATION_DEPENDENCY],
+    responses={
+        200: {
+            "description": "Fully verified immutable release artifact bytes",
+            "content": {
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            },
+        }
+    },
+)
+def download_release_artifact(
+    release_id: str,
+    artifact_id: str,
+    expires: int,
+    signature: str,
+    session: DownloadSessionDep,
+    principal: PrincipalDep,
+) -> StreamingResponse:
+    """Stream an archived release without requiring it to be the current revision."""
+
+    signature_subject = _release_artifact_signature_subject(release_id, artifact_id)
+    verify_artifact_access(
+        signature_subject,
+        principal.organization_id,
+        expires,
+        signature,
+    )
+    archive = _resolve_release_archive(session, principal.organization_id, release_id)
+    artifact = next((item for item in archive.artifacts if item.id == artifact_id), None)
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="Release artifact not found")
+
+    verified: VerifiedStoredObject | None = None
+    try:
+        archive, verified = _prepare_release_artifact_download(
+            session,
+            principal.organization_id,
+            archive,
+            artifact,
+        )
+        current_artifact = next(
+            (item for item in archive.artifacts if item.id == artifact_id),
+            None,
+        )
+        if current_artifact is None:
+            raise _release_archive_error()
+        filename = _release_artifact_filename(
+            archive.release.release_number,
+            archive.version.revision,
+            current_artifact.kind,
+            current_artifact.content_type,
+        )
+        return _verified_artifact_response(verified, filename=filename)
+    except BaseException:
+        if verified is not None:
+            verified.close()
+        raise
+
+
+@router.get(
+    "/jobs/{job_id}/artifacts",
+    response_model=list[ArtifactRead],
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
+)
 def list_artifacts(
     job_id: str,
     session: SessionDep,
@@ -3631,7 +5393,7 @@ def list_artifacts(
     )
     if job is None:
         raise HTTPException(status_code=404, detail="Generation job not found")
-    version = _require_current_artifacts(session, principal, job)
+    _require_current_artifacts(session, principal.organization_id, job)
     _require_review_evidence(
         session,
         principal.organization_id,
@@ -3639,6 +5401,15 @@ def list_artifacts(
         stream_hash=False,
         require_cam=False,
         bind_review_documents=True,
+    )
+    # Review verification can perform bounded object-store I/O.  Refresh the
+    # mutable project/version state after that I/O so a concurrent revision can
+    # never receive newly signed links for stale artifacts.
+    _require_current_artifacts(
+        session,
+        principal.organization_id,
+        job,
+        populate_existing=True,
     )
     artifacts = session.scalars(
         select(Artifact).where(
@@ -3648,34 +5419,48 @@ def list_artifacts(
     )
     now = int(time.time())
     expires = now + get_settings().artifact_url_ttl_seconds
-    return [
-        {
-            "id": item.id,
-            "kind": item.kind,
-            "sha256": item.sha256,
-            "size_bytes": item.size_bytes,
-            "content_type": item.content_type,
-            "download_url": presigned_get(
-                item.object_key,
-                filename=_artifact_filename(item.kind, version.revision),
-            ),
-            "download_path": (
-                f"/v1/artifacts/{item.id}/download?expires={expires}&signature="
-                f"{sign_artifact_access(item.id, principal.organization_id, expires)}"
-            ),
+    result: list[dict[str, Any]] = []
+    for item in artifacts:
+        download_path = (
+            f"/v1/artifacts/{item.id}/download?expires={expires}&signature="
+            f"{sign_artifact_access(item.id, principal.organization_id, expires)}"
+        )
+        result.append(
+            {
+                "id": item.id,
+                "kind": item.kind,
+                "sha256": item.sha256,
+                "size_bytes": item.size_bytes,
+                "content_type": item.content_type,
+                # Kept for one schema transition; both values are now the same
+                # authenticated API path and never expose an object-store URL.
+                "download_url": download_path,
+                "download_path": download_path,
+            }
+        )
+    return result
+
+
+@router.get(
+    "/artifacts/{artifact_id}/download",
+    response_class=StreamingResponse,
+    dependencies=[_ARTIFACT_STREAM_OPERATION_DEPENDENCY],
+    responses={
+        200: {
+            "description": "Fully verified artifact bytes",
+            "content": {
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            },
         }
-        for item in artifacts
-    ]
-
-
-@router.get("/artifacts/{artifact_id}/download")
+    },
+)
 def download_artifact(
     artifact_id: str,
     expires: int,
     signature: str,
-    session: SessionDep,
+    session: DownloadSessionDep,
     principal: PrincipalDep,
-) -> RedirectResponse:
+) -> StreamingResponse:
     verify_artifact_access(artifact_id, principal.organization_id, expires, signature)
     artifact = session.scalar(
         select(Artifact).where(
@@ -3693,27 +5478,36 @@ def download_artifact(
     )
     if job is None:
         raise HTTPException(status_code=404, detail="Generation job not found")
-    version = _require_current_artifacts(session, principal, job)
-    _require_review_evidence(
-        session,
-        principal.organization_id,
-        job,
-        stream_hash=False,
-        require_cam=False,
-        bind_review_documents=True,
-    )
-    return RedirectResponse(
-        presigned_get(
-            artifact.object_key,
-            filename=_artifact_filename(artifact.kind, version.revision),
-        ),
-        status_code=307,
-    )
+    version = _require_current_artifacts(session, principal.organization_id, job)
+    verified: VerifiedStoredObject | None = None
+    try:
+        verified = _prepare_review_artifact_download(
+            session,
+            principal.organization_id,
+            job,
+            version,
+            artifact.kind,
+        )
+        filename = _artifact_filename(artifact.kind, version.revision) or "custombuild-artifact.bin"
+        # The request-scoped session deliberately retains its PostgreSQL
+        # transaction-level tenant/global advisory locks until streaming ends.
+        # Capacity is bounded to eight transfers and the response has a hard
+        # deadline, so a second replica cannot overlap this tenant even if
+        # Redis restarts while bytes are in flight.
+        return _verified_artifact_response(
+            verified,
+            filename=filename,
+        )
+    except BaseException:
+        if verified is not None:
+            verified.close()
+        raise
 
 
 @router.post(
     "/projects/{project_id}/imports/inspect",
     response_model=ImportInspection,
+    dependencies=[_ARTIFACT_OPERATION_DEPENDENCY],
 )
 async def inspect_import(
     project_id: str,
@@ -3722,7 +5516,7 @@ async def inspect_import(
     document: Annotated[UploadFile, File()],
 ) -> ImportInspection:
     project = tenant_project(session, principal, project_id)
-    content = await document.read(20 * 1024 * 1024 + 1)
+    content = await document.read(MAX_CATALOG_SOURCE_BYTES + 1)
     try:
         validate_upload(content, document.content_type or "", document.filename or "")
     except ValueError as exc:
@@ -3755,15 +5549,48 @@ async def inspect_import(
         )
     )
     if existing is not None:
-        _verify_imported_asset_object(existing)
+        _require_committed_domain_object(
+            session,
+            principal.organization_id,
+            project_id=existing.project_id,
+            object_key=existing.object_key,
+            sha256=existing.sha256,
+            size_bytes=existing.size_bytes,
+            media_type=existing.media_type,
+            owner_type="imported_asset",
+            owner_id=existing.id,
+        )
+        await run_in_threadpool(_verify_imported_asset_bytes, existing)
         asset = existing
     else:
         asset_id = str(uuid4())
         object_key = (
-            f"{principal.organization_id}/projects/{project.id}/reference-imports/sha256/{digest}"
+            f"{principal.organization_id}/projects/{project.id}/reference-imports/"
+            f"sha256/{digest}/{asset_id}"
+        )
+        claim = StorageObjectClaim(
+            project_id=project.id,
+            object_key=object_key,
+            sha256=digest,
+            size_bytes=len(content),
+            media_type=media_type,
+            owner_type="imported_asset",
+            owner_id=asset_id,
+            idempotency_key=f"imported:{asset_id}",
+        )
+        storage_lease_token = await _reserve_upload_storage(
+            session,
+            principal.organization_id,
+            claim,
         )
         try:
-            store_immutable_object(object_key, content, media_type, digest)
+            await run_in_threadpool(
+                store_immutable_object,
+                object_key,
+                content,
+                media_type,
+                digest,
+            )
         except ArtifactIntegrityError as exc:
             raise _import_storage_error(unavailable=False) from exc
         except ArtifactStorageUnavailableError as exc:
@@ -3800,9 +5627,26 @@ async def inspect_import(
                         "solution": "Retry the upload after the current project has refreshed.",
                     },
                 ) from None
-            _verify_imported_asset_object(raced)
+            _require_committed_domain_object(
+                session,
+                principal.organization_id,
+                project_id=raced.project_id,
+                object_key=raced.object_key,
+                sha256=raced.sha256,
+                size_bytes=raced.size_bytes,
+                media_type=raced.media_type,
+                owner_type="imported_asset",
+                owner_id=raced.id,
+            )
+            await run_in_threadpool(_verify_imported_asset_bytes, raced)
             asset = raced
         else:
+            _commit_upload_storage(
+                session,
+                principal.organization_id,
+                claim,
+                storage_lease_token,
+            )
             audit(
                 session,
                 principal,

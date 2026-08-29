@@ -7,13 +7,16 @@ from typing import Any
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
+    CheckConstraint,
     DateTime,
     Enum,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -58,6 +61,13 @@ class JobStatus(str, enum.Enum):
     succeeded = "succeeded"
     failed = "failed"
     cancelled = "cancelled"
+
+
+class StoredObjectState(str, enum.Enum):
+    reserved = "reserved"
+    committed = "committed"
+    delete_pending = "delete_pending"
+    reaping = "reaping"
 
 
 class IdMixin:
@@ -158,16 +168,12 @@ class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     context_hash: Mapped[str] = mapped_column(String(64), index=True)
     spec_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     source_provenance_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    source_import_id: Mapped[str | None] = mapped_column(
-        String(36), nullable=True, index=True
-    )
+    source_import_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     engine_version: Mapped[str] = mapped_column(String(40))
     template_version: Mapped[str] = mapped_column(String(40))
     template_id: Mapped[str] = mapped_column(String(80), default="shelving")
-    template_capability_fingerprint: Mapped[str] = mapped_column(
-        String(64), default="0" * 64
-    )
+    template_capability_fingerprint: Mapped[str] = mapped_column(String(64), default="0" * 64)
     rule_version: Mapped[str] = mapped_column(String(40), default="unversioned")
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     immutable: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -187,6 +193,12 @@ class ImportedAsset(IdMixin, TimestampMixin, TenantMixin, Base):
             ["projects.organization_id", "projects.id"],
             name="fk_imported_assets_org_project",
             ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "object_key"],
+            ["stored_objects.organization_id", "stored_objects.object_key"],
+            name="fk_imported_assets_stored_object",
+            ondelete="RESTRICT",
         ),
         Index("ix_imported_assets_project_created", "project_id", "created_at"),
     )
@@ -259,6 +271,12 @@ class Artifact(IdMixin, TimestampMixin, TenantMixin, Base):
             name="fk_artifacts_org_generation_job",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "object_key"],
+            ["stored_objects.organization_id", "stored_objects.object_key"],
+            name="fk_artifacts_stored_object",
+            ondelete="RESTRICT",
+        ),
     )
 
     generation_job_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -280,6 +298,12 @@ class ExternalEvidence(IdMixin, TimestampMixin, TenantMixin, Base):
             name="fk_external_evidence_org_project",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "object_key"],
+            ["stored_objects.organization_id", "stored_objects.object_key"],
+            name="fk_external_evidence_stored_object",
+            ondelete="RESTRICT",
+        ),
         Index("ix_external_evidence_project_type", "project_id", "evidence_type"),
     )
 
@@ -294,12 +318,290 @@ class ExternalEvidence(IdMixin, TimestampMixin, TenantMixin, Base):
     size_bytes: Mapped[int] = mapped_column(Integer)
     content_type: Mapped[str] = mapped_column(String(160))
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
-    expires_at: Mapped[datetime | None] = mapped_column(
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class StorageGlobalQuota(TimestampMixin, Base):
+    """One durable process-wide storage counter row."""
+
+    __tablename__ = "storage_global_quotas"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_storage_global_quota_singleton"),
+        CheckConstraint(
+            "byte_limit > 0 AND object_limit > 0",
+            name="ck_storage_global_quota_positive_limits",
+        ),
+        CheckConstraint(
+            "reserved_bytes >= 0 AND committed_bytes >= 0 "
+            "AND reserved_count >= 0 AND committed_count >= 0",
+            name="ck_storage_global_quota_nonnegative_counters",
+        ),
+        CheckConstraint(
+            "reserved_bytes <= byte_limit - committed_bytes "
+            "AND reserved_count <= object_limit - committed_count",
+            name="ck_storage_global_quota_within_limits",
+        ),
+        CheckConstraint(
+            "capacity_verified = false OR ("
+            "provisioned_bytes IS NOT NULL AND provisioned_bytes > 0 "
+            "AND metadata_overhead_bytes IS NOT NULL AND metadata_overhead_bytes > 0 "
+            "AND emergency_reserve_bytes IS NOT NULL AND emergency_reserve_bytes > 0 "
+            "AND capacity_headroom_bytes IS NOT NULL "
+            "AND capacity_headroom_bytes = metadata_overhead_bytes + emergency_reserve_bytes "
+            "AND capacity_headroom_bytes < provisioned_bytes "
+            "AND byte_limit <= provisioned_bytes - capacity_headroom_bytes "
+            "AND volume_identity IS NOT NULL AND length(volume_identity) > 0 "
+            "AND capacity_bucket IS NOT NULL AND length(capacity_bucket) > 0 "
+            "AND capacity_operator_config_sha256 IS NOT NULL "
+            "AND length(capacity_operator_config_sha256) = 64 "
+            "AND deploy_descriptor_sha256 IS NOT NULL "
+            "AND length(deploy_descriptor_sha256) = 64 "
+            "AND inventory_sha256 IS NOT NULL AND length(inventory_sha256) = 64 "
+            "AND inventory_object_count IS NOT NULL AND inventory_object_count >= 0 "
+            "AND inventory_bytes IS NOT NULL AND inventory_bytes >= 0 "
+            "AND ledger_object_count IS NOT NULL AND ledger_object_count >= 0 "
+            "AND ledger_bytes IS NOT NULL AND ledger_bytes >= 0 "
+            "AND capacity_attested_at IS NOT NULL "
+            "AND capacity_verified_at IS NOT NULL "
+            "AND capacity_evidence_sha256 IS NOT NULL "
+            "AND length(capacity_evidence_sha256) = 64)",
+            name="ck_storage_global_quota_verified_capacity",
+        ),
+        CheckConstraint(
+            "maintenance_epoch >= 0",
+            name="ck_storage_global_quota_maintenance_epoch",
+        ),
+        CheckConstraint(
+            "(maintenance_token IS NULL AND maintenance_started_at IS NULL "
+            "AND maintenance_owner_expires_at IS NULL "
+            "AND maintenance_database_started_at IS NULL) OR "
+            "(maintenance_token IS NOT NULL AND length(maintenance_token) = 36 "
+            "AND maintenance_started_at IS NOT NULL "
+            "AND maintenance_database_started_at IS NOT NULL "
+            "AND maintenance_started_at >= maintenance_database_started_at "
+            "AND maintenance_owner_expires_at > maintenance_started_at)",
+            name="ck_storage_global_quota_maintenance_gate",
+        ),
+        CheckConstraint(
+            "(recovery_database_started_at IS NULL AND recovery_completed_at IS NULL) "
+            "OR (recovery_database_started_at IS NOT NULL "
+            "AND recovery_completed_at >= recovery_database_started_at)",
+            name="ck_storage_global_quota_recovery_proof",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, default=1)
+    byte_limit: Mapped[int] = mapped_column(BigInteger)
+    object_limit: Mapped[int] = mapped_column(BigInteger)
+    reserved_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    committed_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    reserved_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    committed_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    capacity_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    provisioned_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    metadata_overhead_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    emergency_reserve_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    capacity_headroom_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    volume_identity: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    capacity_bucket: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    capacity_operator_config_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    deploy_descriptor_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inventory_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inventory_object_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    inventory_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ledger_object_count: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ledger_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    capacity_attested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    revoked_at: Mapped[datetime | None] = mapped_column(
+    capacity_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    capacity_evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    maintenance_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    maintenance_epoch: Mapped[int] = mapped_column(BigInteger, default=0)
+    maintenance_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    maintenance_owner_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    maintenance_database_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    recovery_database_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    recovery_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class StorageTenantQuota(TimestampMixin, Base):
+    """One durable counter row for each organization."""
+
+    __tablename__ = "storage_tenant_quotas"
+    __table_args__ = (
+        CheckConstraint(
+            "byte_limit > 0 AND object_limit > 0",
+            name="ck_storage_tenant_quota_positive_limits",
+        ),
+        CheckConstraint(
+            "reserved_bytes >= 0 AND committed_bytes >= 0 "
+            "AND reserved_count >= 0 AND committed_count >= 0",
+            name="ck_storage_tenant_quota_nonnegative_counters",
+        ),
+        CheckConstraint(
+            "reserved_bytes <= byte_limit - committed_bytes "
+            "AND reserved_count <= object_limit - committed_count",
+            name="ck_storage_tenant_quota_within_limits",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    byte_limit: Mapped[int] = mapped_column(BigInteger)
+    object_limit: Mapped[int] = mapped_column(BigInteger)
+    reserved_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    committed_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    reserved_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    committed_count: Mapped[int] = mapped_column(BigInteger, default=0)
+
+
+class StoredObject(TimestampMixin, Base):
+    """Exact, tenant-bound identity and lifecycle for every persisted object."""
+
+    __tablename__ = "stored_objects"
+    __table_args__ = (
+        UniqueConstraint(
+            "object_key",
+            name="uq_stored_objects_global_object_key",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_stored_objects_org_idempotency_key",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "project_id"],
+            ["projects.organization_id", "projects.id"],
+            name="fk_stored_objects_org_project",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(object_key) > 0 AND length(idempotency_key) > 0",
+            name="ck_stored_objects_nonempty_keys",
+        ),
+        CheckConstraint(
+            "length(sha256) = 64 AND sha256 = lower(sha256)",
+            name="ck_stored_objects_sha256_canonical",
+        ),
+        CheckConstraint("size_bytes > 0", name="ck_stored_objects_positive_size"),
+        CheckConstraint(
+            "length(media_type) > 0 AND length(owner_type) > 0 AND length(owner_id) > 0",
+            name="ck_stored_objects_nonempty_identity",
+        ),
+        CheckConstraint(
+            "(state = 'reserved' AND lease_token IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL AND claim_token IS NULL "
+            "AND claim_expires_at IS NULL) OR "
+            "(state = 'committed' AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL AND claim_token IS NULL "
+            "AND claim_expires_at IS NULL) OR "
+            "(state = 'delete_pending' AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL AND claim_token IS NULL "
+            "AND claim_expires_at IS NULL) OR "
+            "(state = 'reaping' AND lease_token IS NULL "
+            "AND lease_expires_at IS NULL AND claim_token IS NOT NULL "
+            "AND claim_expires_at IS NOT NULL)",
+            name="ck_stored_objects_state_lease",
+        ),
+        Index(
+            "ix_stored_objects_org_state_lease",
+            "organization_id",
+            "state",
+            "lease_expires_at",
+            "claim_expires_at",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    object_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    media_type: Mapped[str] = mapped_column(String(160))
+    owner_type: Mapped[str] = mapped_column(String(40))
+    owner_id: Mapped[str] = mapped_column(String(36))
+    idempotency_key: Mapped[str] = mapped_column(String(512))
+    state: Mapped[StoredObjectState] = mapped_column(
+        Enum(StoredObjectState, native_enum=False, length=16)
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    claim_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    claim_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class StorageObjectTombstone(Base):
+    """Append-only proof that one physical bucket key can never be reused."""
+
+    __tablename__ = "storage_object_tombstones"
+    __table_args__ = (
+        UniqueConstraint(
+            "capacity_bucket",
+            "idempotency_key",
+            name="uq_storage_tombstones_bucket_idempotency_key",
+        ),
+        CheckConstraint(
+            "length(capacity_bucket) > 0 AND length(object_key) > 0 "
+            "AND length(idempotency_key) > 0",
+            name="ck_storage_tombstones_nonempty_keys",
+        ),
+        CheckConstraint(
+            "length(sha256) = 64 AND sha256 = lower(sha256)",
+            name="ck_storage_tombstones_sha256_canonical",
+        ),
+        CheckConstraint("size_bytes > 0", name="ck_storage_tombstones_positive_size"),
+        CheckConstraint(
+            "length(organization_id) > 0 AND length(project_id) > 0 "
+            "AND length(media_type) > 0 AND length(owner_type) > 0 "
+            "AND length(owner_id) > 0",
+            name="ck_storage_tombstones_nonempty_identity",
+        ),
+        CheckConstraint(
+            "accounting_state IN ('reserved', 'committed')",
+            name="ck_storage_tombstones_accounting_state",
+        ),
+    )
+
+    # These historical identity fields intentionally have no foreign keys.
+    # Tenant or project deletion must never erase a burned physical key.
+    capacity_bucket: Mapped[str] = mapped_column(String(63), primary_key=True)
+    object_key: Mapped[str] = mapped_column(String(512), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(String(36))
+    project_id: Mapped[str] = mapped_column(String(36))
+    sha256: Mapped[str] = mapped_column(String(64))
+    size_bytes: Mapped[int] = mapped_column(BigInteger)
+    media_type: Mapped[str] = mapped_column(String(160))
+    owner_type: Mapped[str] = mapped_column(String(40))
+    owner_id: Mapped[str] = mapped_column(String(36))
+    idempotency_key: Mapped[str] = mapped_column(String(512))
+    accounting_state: Mapped[str] = mapped_column(String(16))
+    claim_token: Mapped[str] = mapped_column(String(36))
+    retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Approval(IdMixin, TimestampMixin, TenantMixin, Base):
@@ -334,18 +636,33 @@ class Release(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "releases"
     __table_args__ = (
         UniqueConstraint("design_version_id"),
+        UniqueConstraint(
+            "organization_id",
+            "generation_job_id",
+            name="uq_releases_org_generation_job",
+        ),
         ForeignKeyConstraint(
             ["organization_id", "design_version_id"],
             ["design_versions.organization_id", "design_versions.id"],
             name="fk_releases_org_design_version",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "generation_job_id"],
+            ["generation_jobs.organization_id", "generation_jobs.id"],
+            name="fk_releases_org_generation_job",
+            ondelete="RESTRICT",
+        ),
     )
 
     design_version_id: Mapped[str] = mapped_column(String(36))
+    generation_job_id: Mapped[str] = mapped_column(String(36))
     release_number: Mapped[str] = mapped_column(String(80))
     released_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     manifest_sha256: Mapped[str] = mapped_column(String(64))
+    production_context_hash: Mapped[str] = mapped_column(String(64))
+    generation_result_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    artifact_inventory_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON)
 
 
 class AuditEvent(IdMixin, TenantMixin, Base):

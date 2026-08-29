@@ -26,9 +26,19 @@ def production_settings(**overrides: object) -> Settings:
         "redis_url": "redis://:strong-api-redis-password-0001@redis.internal:6379/0",
         "oidc_issuer": "https://identity.example.test/tenant",
         "artifact_signing_secret": "strong-artifact-signing-secret-0001",
-        "s3_public_endpoint": "https://artifacts.example.test",
         "s3_access_key": "production-access-key",
         "s3_secret_key": "strong-object-storage-secret",
+        "s3_bucket": "production-artifacts",
+        "storage_capacity_operator_config_sha256": "d" * 64,
+        "storage_capacity_volume_identity": "provider-volume-0001",
+        "storage_capacity_provisioned_bytes": 1_000,
+        "storage_capacity_metadata_overhead_bytes": 100,
+        "storage_capacity_emergency_reserve_bytes": 100,
+        "storage_capacity_headroom_bytes": 200,
+        "storage_capacity_byte_limit": 800,
+        "storage_capacity_object_limit": 100,
+        "storage_capacity_deploy_descriptor_sha256": "e" * 64,
+        "storage_capacity_max_age_seconds": 600,
         "cors_origins": "https://custombuild.example.test",
         "trusted_proxy_cidrs": "172.20.0.0/24",
     }
@@ -49,6 +59,19 @@ def test_complete_production_configuration_is_accepted() -> None:
         "source_manifest_sha256": "c" * 64,
         "dependency_lock_sha256": hashlib.sha256(DEPENDENCY_LOCK_PATH.read_bytes()).hexdigest(),
     }
+
+
+def test_production_capacity_values_must_be_explicit_not_inherited_defaults() -> None:
+    values = production_settings().model_dump()
+    values.pop("storage_capacity_object_limit")
+
+    with pytest.raises(ValidationError, match="storage_capacity_object_limit"):
+        Settings(_env_file=None, **values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bucket", ("abc", "a.b-c", "a" * 63))
+def test_production_accepts_canonical_s3_bucket_boundaries(bucket: str) -> None:
+    assert production_settings(s3_bucket=bucket).s3_bucket == bucket
 
 
 def test_production_lock_verification_is_independent_of_process_cwd(
@@ -74,16 +97,20 @@ def test_compose_forwards_every_production_guard_switch_to_the_api() -> None:
         "AUTH_MODE",
         "PRODUCTION_FOUR_EYES_REQUIRED",
         "DATABASE_URL",
+        "DATABASE_STATEMENT_TIMEOUT_SECONDS",
+        "DATABASE_LOCK_TIMEOUT_SECONDS",
         "READINESS_TIMEOUT_SECONDS",
         "RATE_LIMIT_REQUESTS",
         "RATE_LIMIT_WINDOW_SECONDS",
+        "REQUEST_BODY_IDLE_TIMEOUT_SECONDS",
+        "REQUEST_BODY_TOTAL_TIMEOUT_SECONDS",
         "TRUSTED_PROXY_CIDRS",
         "OIDC_ISSUER",
         "OIDC_AUDIENCE",
         "CORS_ORIGINS",
         "ARTIFACT_SIGNING_SECRET",
         "ARTIFACT_URL_TTL_SECONDS",
-        "S3_PUBLIC_ENDPOINT",
+        "ARTIFACT_STREAM_TIMEOUT_SECONDS",
         "S3_ACCESS_KEY",
         "S3_SECRET_KEY",
     ):
@@ -93,6 +120,8 @@ def test_compose_forwards_every_production_guard_switch_to_the_api() -> None:
     assert 'REDIS_URL: "redis://:${REDIS_PASSWORD' in compose
     assert "REDIS_PASSWORD=" in environment
     assert "REDIS_URL=" in environment
+    assert "S3_BACKUP_ENDPOINT: ${S3_BACKUP_ENDPOINT" in compose
+    assert "S3_BACKUP_ENDPOINT=" in environment
 
 
 def test_development_compose_only_publishes_services_on_loopback() -> None:
@@ -168,24 +197,74 @@ def test_development_compose_only_publishes_services_on_loopback() -> None:
         ),
         ({"redis_url": "redis://:short@redis.internal:6379/0"}, "at least 24 characters"),
         (
-            {
-                "redis_url": (
-                    "redis://:%20strong-api-redis-password-0001%20@redis.internal:6379/0"
-                )
-            },
+            {"redis_url": ("redis://:%20strong-api-redis-password-0001%20@redis.internal:6379/0")},
             "surrounding whitespace",
         ),
         ({"artifact_signing_secret": "development-signing-secret-000000"}, "signing"),
         ({"s3_access_key": "custombuild"}, "access key"),
+        ({"s3_access_key": " production-access-key"}, "surrounding whitespace"),
+        ({"s3_access_key": "production\naccess-key"}, "control characters"),
+        ({"s3_access_key": "production\x7faccess-key"}, "control characters"),
+        ({"s3_access_key": "production:access-key"}, "access key"),
+        ({"s3_access_key": "production/access-key"}, "access key"),
         ({"s3_secret_key": "change-me-object-secret"}, "object-storage secret"),
         ({"s3_secret_key": "short"}, "at least 24 characters"),
         (
             {"s3_secret_key": " strong-object-storage-secret "},
             "surrounding whitespace",
         ),
-        ({"s3_public_endpoint": "http://artifacts.example.test"}, "HTTPS public S3"),
-        ({"s3_public_endpoint": "https://user@artifacts.example.test"}, "HTTPS public S3"),
-        ({"s3_public_endpoint": "https:///missing-host"}, "HTTPS public S3"),
+        (
+            {"s3_secret_key": "strong-object-storage-secret\nvalue"},
+            "control characters",
+        ),
+        (
+            {"s3_secret_key": "strong-object-storage-secret\x7fvalue"},
+            "control characters",
+        ),
+        ({"s3_bucket": " production-artifacts"}, "surrounding whitespace"),
+        ({"s3_bucket": "production\nartifacts"}, "control characters"),
+        ({"s3_bucket": "production\x7fartifacts"}, "control characters"),
+        ({"s3_bucket": "arn:aws:s3:::production-artifacts"}, "canonical S3 DNS"),
+        ({"s3_bucket": "production/artifacts"}, "canonical S3 DNS"),
+        ({"s3_bucket": "Production-Artifacts"}, "canonical S3 DNS"),
+        ({"s3_bucket": "production_artifacts"}, "canonical S3 DNS"),
+        ({"s3_bucket": "."}, "canonical S3 DNS"),
+        ({"s3_bucket": ".."}, "canonical S3 DNS"),
+        ({"s3_bucket": "a..b"}, "canonical S3 DNS"),
+        ({"s3_bucket": "-production"}, "canonical S3 DNS"),
+        ({"s3_bucket": "production-"}, "canonical S3 DNS"),
+        ({"s3_bucket": "192.0.2.1"}, "canonical S3 DNS"),
+        ({"s3_bucket": "ab"}, "canonical S3 DNS"),
+        ({"s3_bucket": "a" * 64}, "canonical S3 DNS"),
+        ({"s3_bucket": ""}, "canonical S3 DNS"),
+        (
+            {"storage_capacity_operator_config_sha256": "unverified"},
+            "STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256",
+        ),
+        (
+            {"storage_capacity_volume_identity": "invalid/volume"},
+            "STORAGE_CAPACITY_VOLUME_IDENTITY",
+        ),
+        (
+            {"storage_capacity_headroom_bytes": 201},
+            "HEADROOM_BYTES",
+        ),
+        (
+            {"storage_capacity_provisioned_bytes": 200},
+            "PROVISIONED_BYTES",
+        ),
+        (
+            {"storage_capacity_byte_limit": 801},
+            "BYTE_LIMIT",
+        ),
+        (
+            {"storage_capacity_deploy_descriptor_sha256": "unverified"},
+            "STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256",
+        ),
+        (
+            {"storage_capacity_max_age_seconds": 599},
+            "MAX_AGE_SECONDS",
+        ),
         ({"cors_origins": "http://custombuild.example.test"}, "HTTPS origins"),
         ({"cors_origins": "https://custombuild.example.test/path"}, "HTTPS origins"),
         ({"trusted_proxy_cidrs": ""}, "private IP networks"),
@@ -203,7 +282,4 @@ def test_insecure_production_configuration_is_rejected(
 
 def test_four_eyes_setting_defaults_off_outside_production() -> None:
     assert Settings(_env_file=None).production_four_eyes_required is False
-    assert (
-        Settings(_env_file=None, app_env="test").production_four_eyes_required
-        is False
-    )
+    assert Settings(_env_file=None, app_env="test").production_four_eyes_required is False
