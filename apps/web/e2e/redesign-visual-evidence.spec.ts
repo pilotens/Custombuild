@@ -800,7 +800,9 @@ for (const visualCase of visualCases) {
     test("locks Utforska, Studio, Kontroll and Underlag", async ({ page }) => {
       test.setTimeout(120_000);
       await startWithEmptyPlanningStorage(page);
-      await page.goto("/", { waitUntil: "networkidle" });
+      // openPlanning below is the product hydration barrier. Network idleness
+      // can remain false for unrelated background work on a loaded WebKit runner.
+      await page.goto("/", { waitUntil: "domcontentloaded" });
       await freezeVisualMotion(page);
 
       const explore = await openPlanning(page);
