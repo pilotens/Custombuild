@@ -525,7 +525,7 @@ def _release_evidence(
     for component, digest in pinned_deployment_digests.items():
         if deployment_digests.get(component) != digest:
             raise DescriptorError(f"release evidence has another deployment digest for {component}")
-        if scan_inputs.get(component) != (f"registry:{PINNED_RUNTIME_SCAN_REFERENCES[component]}"):
+        if scan_inputs.get(component) != PINNED_RUNTIME_SCAN_REFERENCES[component]:
             raise DescriptorError(
                 f"release evidence has another registry scan input for {component}"
             )

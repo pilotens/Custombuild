@@ -106,7 +106,7 @@ def evidence_object() -> dict[str, object]:
                 for component in APPLICATION_COMPONENTS
             },
             **{
-                component: f"registry:{reference}"
+                component: reference
                 for component, reference in PINNED_RUNTIME_SCAN_REFERENCES.items()
             },
         },
@@ -124,6 +124,31 @@ def evidence_object() -> dict[str, object]:
 
 def evidence_bytes(value: dict[str, object] | None = None) -> bytes:
     return (json.dumps(value or evidence_object(), sort_keys=True, indent=2) + "\n").encode()
+
+
+@pytest.mark.parametrize("component", tuple(PINNED_RUNTIME_IMAGES))
+def test_release_evidence_uses_grype_normalized_registry_scan_inputs(
+    component: str,
+) -> None:
+    evidence = evidence_object()
+    scan_inputs = evidence["runtime_scan_inputs"]
+    assert isinstance(scan_inputs, dict)
+    assert scan_inputs[component] == PINNED_RUNTIME_SCAN_REFERENCES[component]
+
+    descriptor_for(evidence_bytes(evidence))
+
+
+@pytest.mark.parametrize("component", tuple(PINNED_RUNTIME_IMAGES))
+def test_render_rejects_registry_selector_in_persisted_scan_input(
+    component: str,
+) -> None:
+    evidence = evidence_object()
+    scan_inputs = evidence["runtime_scan_inputs"]
+    assert isinstance(scan_inputs, dict)
+    scan_inputs[component] = f"registry:{PINNED_RUNTIME_SCAN_REFERENCES[component]}"
+
+    with pytest.raises(DescriptorError, match=f"registry scan input for {component}"):
+        descriptor_for(evidence_bytes(evidence))
 
 
 def publication_bytes() -> dict[str, bytes]:
