@@ -1002,6 +1002,7 @@ jobs:
               --source-ref refs/heads/main \
               --source-digest "$GITHUB_SHA" \
               --deny-self-hosted-runners \
+              --format json \
               > "artifacts/published/github-attestation-${{ matrix.component }}.txt"; then
               break
             fi
@@ -1009,7 +1010,9 @@ jobs:
             sleep 5
           done
           test -s "artifacts/published/cosign-${{ matrix.component }}.json"
-          test -s "artifacts/published/github-attestation-${{ matrix.component }}.txt"
+          jq --exit-status 'type == "array" and length > 0' \
+            "artifacts/published/github-attestation-${{ matrix.component }}.txt" \
+            > /dev/null
       - name: Record immutable publication identity
         shell: bash
         env:
