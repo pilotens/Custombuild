@@ -361,8 +361,13 @@ def test_publication_uses_exact_keyless_identity_and_github_attestation() -> Non
         "--source-ref refs/heads/main",
         "--source-digest \"$GITHUB_SHA\"",
         "--deny-self-hosted-runners",
+        "--format json",
     ):
         assert value in source
+    assert (
+        "jq --exit-status 'type == \"array\" and length > 0'"
+        in source
+    )
 
 
 def test_descriptor_is_canonical_digest_only_and_stops_before_deployment() -> None:
