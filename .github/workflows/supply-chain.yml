@@ -200,13 +200,15 @@ jobs:
           security_overrides_sha256="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.security-overrides.sha256" }}')"
           go_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go.version" }}')"
           etcd_client_pkg_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-etcd-client-pkg.version" }}')"
+          x_crypto_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-x-crypto.version" }}')"
           x_image_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-x-image.version" }}')"
           x_text_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-x-text.version" }}')"
           image_id="$(docker image inspect "$image" --format '{{.Id}}')"
           test "$source_sha256" = "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
-          test "$security_overrides_sha256" = "1a96843ba71c16cee5c7e396a3082ab3ae0327ab429956db51d0d1b07f6508e5"
+          test "$security_overrides_sha256" = "f787879847f3b5e1eaba89ee03a43997f11787ece23c4aab0cce4978f0942b50"
           test "$go_version" = "1.26.6"
           test "$etcd_client_pkg_version" = "3.6.14"
+          test "$x_crypto_version" = "0.55.0"
           test "$x_image_version" = "0.45.0"
           test "$x_text_version" = "0.41.0"
           jq -n \
@@ -216,10 +218,11 @@ jobs:
             --arg security_overrides_sha256 "$security_overrides_sha256" \
             --arg go_version "$go_version" \
             --arg etcd_client_pkg_version "$etcd_client_pkg_version" \
+            --arg x_crypto_version "$x_crypto_version" \
             --arg x_image_version "$x_image_version" \
             --arg x_text_version "$x_text_version" \
             --arg image_id "$image_id" \
-            '{schema_version:$schema_version,revision:$revision,source_sha256:$source_sha256,security_overrides_sha256:$security_overrides_sha256,go_version:$go_version,etcd_client_pkg_version:$etcd_client_pkg_version,x_image_version:$x_image_version,x_text_version:$x_text_version,image_id:$image_id}' \
+            '{schema_version:$schema_version,revision:$revision,source_sha256:$source_sha256,security_overrides_sha256:$security_overrides_sha256,go_version:$go_version,etcd_client_pkg_version:$etcd_client_pkg_version,x_crypto_version:$x_crypto_version,x_image_version:$x_image_version,x_text_version:$x_text_version,image_id:$image_id}' \
             > "custombuild-seaweedfs-${{ github.sha }}.release.json"
       - name: Generate SeaweedFS SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0

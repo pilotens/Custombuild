@@ -71,7 +71,7 @@ def _job_and_version() -> tuple[GenerationJob, DesignVersion]:
         "back_stock_height_mm": 1220,
         "back_stock_count": 2,
         "machine_profile_id": "custombuild-router-1325-linuxcnc",
-        "postprocessor_id": "linuxcnc-validation-1.0.0",
+        "postprocessor_id": "linuxcnc-validation-1.1.0",
         "include_step": False,
         "include_freecad_project": False,
     }

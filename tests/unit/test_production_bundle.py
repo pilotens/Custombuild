@@ -9,14 +9,18 @@ from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
+import custombuild_manufacturing.dfm as manufacturing_dfm
 import custombuild_manufacturing.pipeline as manufacturing_pipeline
 import custombuild_manufacturing.review_status as review_status_contract
 import ezdxf
 import pytest
 from custombuild_cad import CADArtifacts, CadQueryAdapter, FreeCADProjectArtifacts
 from custombuild_domain import (
+    BOOKCASE_JOINT_SUPPORT_MATRIX,
+    BackPanelType,
     BookcaseDesignSpec,
     BookcaseParameters,
+    JointType,
     build_bookcase,
     screening_birch_plywood_6,
     screening_birch_plywood_18,
@@ -24,6 +28,7 @@ from custombuild_domain import (
     screening_mdf_18,
 )
 from custombuild_manufacturing import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DFM_GRAIN_BLOCKER_CODE,
     DFM_GRAIN_REQUIRED_ACTION,
@@ -43,11 +48,17 @@ from custombuild_manufacturing import (
     linuxcnc_reference_router_1325,
     read_and_verify_package,
 )
-from custombuild_manufacturing.adapters import AdaptedDesign
+from custombuild_manufacturing.adapters import AdaptedDesign, adapt_design_result
+from custombuild_manufacturing.dfm import (
+    FEATURE_TO_OPERATION,
+    JOINT_SYSTEM_UNSUPPORTED_CODE,
+    joint_type_has_end_to_end_support,
+)
 from custombuild_postprocessors import validate_validation_program
 
 _REAL_CAD_EXPORT = CadQueryAdapter.export_design
 _REAL_DADO_RETENTION_CHECK = manufacturing_pipeline.dado_retention_evidence_missing
+_REAL_UNSUPPORTED_JOINT_CHECK = manufacturing_pipeline.unsupported_joint_system_issues
 _VALID_CAD_BY_DESIGN_HASH: dict[str, CADArtifacts] = {}
 
 
@@ -66,6 +77,11 @@ def _simulate_versioned_retention_for_legacy_cam_tests(
         review_status_contract,
         "dado_retention_evidence_missing",
         lambda _design: False,
+    )
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "unsupported_joint_system_issues",
+        lambda _design, **_kwargs: (),
     )
 
 
@@ -264,6 +280,131 @@ def test_plain_dado_yields_review_package_but_never_cam_artifacts(
     assert bundle.workshop_readiness.physical_cutting_authorized is False
 
 
+@pytest.mark.parametrize("allow_blocked_cam", (False, True))
+def test_surface_back_rabbet_is_deferred_only_to_its_retention_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+    allow_blocked_cam: bool,
+) -> None:
+    design, machine, stock, context = design_and_request(
+        BookcaseParameters(back_panel=BackPanelType.SURFACE_MOUNTED)
+    )
+    adapted = adapt_design_result(design)
+    rabbet_features = tuple(
+        feature
+        for part in adapted.parts
+        for feature in part.features
+        if feature.kind is FeatureKind.RABBET
+    )
+    assert rabbet_features
+    assert all(
+        FEATURE_TO_OPERATION[feature.kind] is OperationKind.GROOVE
+        for feature in rabbet_features
+    )
+
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "unsupported_joint_system_issues",
+        _REAL_UNSUPPORTED_JOINT_CHECK,
+    )
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "generate_operations_document",
+        lambda **_kwargs: pytest.fail("unsupported RABBET reached CAM generation"),
+    )
+
+    if not allow_blocked_cam:
+        with pytest.raises(
+            ProductionBlockedError,
+            match=BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        ):
+            build_production_bundle(
+                design,
+                stock=stock,
+                machine=machine,
+                context=context,
+                include_step=True,
+                allow_blocked_cam=False,
+                two_sided_registration_by_stock=explicit_two_sided_registration(stock),
+            )
+        return
+
+    bundle = build_production_bundle(
+        design,
+        stock=stock,
+        machine=machine,
+        context=context,
+        include_step=True,
+        allow_blocked_cam=True,
+        two_sided_registration_by_stock=explicit_two_sided_registration(stock),
+    )
+    assert bundle.review_status.blocker_codes == (
+        BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    )
+    assert bundle.operations is None
+    assert bundle.layouts == ()
+
+
+def test_surface_back_deferral_does_not_hide_an_unrelated_rabbet(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    design, _machine, _stock, _context = design_and_request(
+        BookcaseParameters(back_panel=BackPanelType.SURFACE_MOUNTED)
+    )
+    back_part_ids = {
+        part.part_id for part in design.parts if part.role.value == "back"
+    }
+    carcass_joint = next(
+        joint
+        for joint in design.joints
+        if not back_part_ids & {member.part_id for member in joint.members}
+    )
+    unrelated_rabbet = carcass_joint.model_copy(
+        update={
+            "joint_id": "unrelated-carcass-rabbet",
+            "joint_type": JointType.RABBET,
+            "retention_application_class": None,
+            "retention": None,
+        }
+    )
+    canonical_with_extra = design.model_copy(
+        update={"joints": (*design.joints, unrelated_rabbet)}
+    )
+    monkeypatch.setattr(
+        manufacturing_dfm,
+        "_canonical_bookcase_design",
+        lambda _design: canonical_with_extra,
+    )
+
+    issues = _REAL_UNSUPPORTED_JOINT_CHECK(
+        design,
+        defer_surface_back_to_retention=True,
+    )
+
+    assert len(issues) == 1
+    assert issues[0].code == JOINT_SYSTEM_UNSUPPORTED_CODE
+    assert issues[0].inputs["joint_type"] == JointType.RABBET.value
+    assert issues[0].inputs["joint_ids"] == (unrelated_rabbet.joint_id,)
+
+
+@pytest.mark.parametrize(
+    "joint_type",
+    tuple(
+        joint_type
+        for joint_type, claim in BOOKCASE_JOINT_SUPPORT_MATRIX.items()
+        if claim["status"] == "blocked"
+    ),
+)
+def test_every_matrix_blocked_joint_type_fails_the_manufacturing_support_decision(
+    joint_type: JointType,
+) -> None:
+    assert not joint_type_has_end_to_end_support(joint_type, shelf_mount="fixed")
+
+
+def test_only_declared_adjustable_shelf_pin_condition_is_accepted() -> None:
+    assert joint_type_has_end_to_end_support(JointType.SHELF_PIN, shelf_mount="adjustable")
+    assert not joint_type_has_end_to_end_support(JointType.SHELF_PIN, shelf_mount="fixed")
+
+
 def test_missing_registration_can_yield_only_a_truthful_design_review_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -351,7 +492,7 @@ def test_missing_stock_profile_yields_only_a_stockless_design_review_package(
     assert bundle.layouts == ()
     assert bundle.review_status.cam_status.value == "BLOCKED"
     assert bundle.review_status.blocker_codes == ("STOCK_PROFILE_MISSING",)
-    assert bundle.manifest["postprocessor_version"] == "linuxcnc-validation-1.0.0"
+    assert bundle.manifest["postprocessor_version"] == "linuxcnc-validation-1.1.0"
     assert bundle.dfm_report.status is Severity.BLOCK
     assert bundle.dfm_report.engine_version == "dfm-1.3.0"
     assert bundle.dfm_report.blocking_issues
@@ -1058,9 +1199,14 @@ def test_domain_to_multistock_bundle_is_safe_complete_and_reproducible(
         programs = [name for name in archive.namelist() if name.endswith(".validation.ngc")]
         assert programs
         for program in programs:
+            content = archive.read(program)
             validate_validation_program(
-                archive.read(program),
+                content,
                 required_safe_z_mm=Decimal("15"),
+                maximum_z_mm=Decimal("15"),
+                x_bounds_mm=(Decimal(0), Decimal(machine.work_width_um) / 1_000),
+                y_bounds_mm=(Decimal(0), Decimal(machine.work_height_um) / 1_000),
+                required_wcs="G55" if b"\nG55\n" in content else "G54",
             )
 
 

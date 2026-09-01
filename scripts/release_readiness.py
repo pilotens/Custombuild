@@ -1759,7 +1759,11 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         "OPERATIONS_ENGINE_VERSION": "semantic-operations-1.2.0",
         "STOCK_PROFILE_MISSING": "STOCK_PROFILE_MISSING",
         "DFM_GRAIN_MISSING": "DFM-GRAIN-001",
+        "TWO_SIDED_REGISTRATION_MISSING": "TWO_SIDED_REGISTRATION_MISSING",
         "DADO_RETENTION_EVIDENCE_MISSING": "DADO_RETENTION_EVIDENCE_MISSING",
+        "BACK_PANEL_RETENTION_EVIDENCE_MISSING": (
+            "BACK_PANEL_RETENTION_EVIDENCE_MISSING"
+        ),
     }
     for name, expected in expected_constants.items():
         values = assignments.get(name, [])
@@ -1772,22 +1776,38 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         if len(required_actions) == 1
         else _STATIC_VALUE_MISSING
     )
-    retention_action = (
-        required_action_values.get("DADO_RETENTION_EVIDENCE_MISSING")
-        if isinstance(required_action_values, dict)
-        else None
-    )
-    if retention_action != (
-        "The current MVP cannot resolve this blocker because it has no authenticated "
-        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-        "checksum-addressed mechanical retention contract to every DADO joint, including "
-        "exact geometry, hardware quantity, material/thickness applicability and separate "
-        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-        "bearing check is not retention evidence."
+    expected_blocker_codes = {
+        "STOCK_PROFILE_MISSING",
+        "DFM-GRAIN-001",
+        "TWO_SIDED_REGISTRATION_MISSING",
+        "DADO_RETENTION_EVIDENCE_MISSING",
+        "BACK_PANEL_RETENTION_EVIDENCE_MISSING",
+    }
+    if (
+        not isinstance(required_action_values, dict)
+        or set(required_action_values) != expected_blocker_codes
     ):
         issues.append(
-            f"{relative} does not bind the DADO retention blocker to its canonical action"
+            f"{relative} does not bind the exact supported blocked-CAM action set"
         )
+    expected_retention_actions = {
+        "DADO_RETENTION_EVIDENCE_MISSING": (
+            "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+            "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+            "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+            "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
+        ),
+        "BACK_PANEL_RETENTION_EVIDENCE_MISSING": (
+            "Use only the canonical inset back whose four boundary grooves and multi-direction "
+            "closing sequence prove mechanical capture, or bind independently authenticated "
+            "back-panel retention evidence when that application class is implemented."
+        ),
+    }
+    if not isinstance(required_action_values, dict) or any(
+        required_action_values.get(code) != action
+        for code, action in expected_retention_actions.items()
+    ):
+        issues.append(f"{relative} does not bind retention blockers to canonical actions")
 
     context_fields = assignments.get("CONTEXT_HASH_FIELDS", [])
     context_field_values = (
@@ -1986,6 +2006,8 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "web",
     ):
         service = services.get(name, {})
@@ -2000,6 +2022,58 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         issues.append("api has no dependency-backed readiness healthcheck")
     if not services.get("worker", {}).get("healthcheck"):
         issues.append("worker has no Celery healthcheck")
+    if not services.get("maintenance-worker", {}).get("healthcheck"):
+        issues.append("maintenance-worker has no Celery healthcheck")
+    if not services.get("storage-reaper-worker", {}).get("healthcheck"):
+        issues.append("storage-reaper-worker has no Celery healthcheck")
+
+    def celery_command(service_name: str) -> str:
+        value = services.get(service_name, {}).get("command", [])
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return " ".join(str(item) for item in value)
+        return ""
+
+    generation_command = celery_command("worker")
+    maintenance_command = celery_command("maintenance-worker")
+    storage_reaper_command = celery_command("storage-reaper-worker")
+    scheduler_command = celery_command("scheduler")
+    if (
+        " worker " not in f" {generation_command} "
+        or "--queues=generation" not in generation_command
+        or "--queues=maintenance" in generation_command
+    ):
+        issues.append("worker is not isolated to the generation queue")
+    if (
+        " worker " not in f" {maintenance_command} "
+        or "--queues=maintenance" not in maintenance_command
+        or "--queues=generation" in maintenance_command
+        or "--queues=storage-reaper" in maintenance_command
+        or "--concurrency=1" not in maintenance_command
+    ):
+        issues.append("maintenance-worker is not an isolated singleton")
+    if (
+        " worker " not in f" {storage_reaper_command} "
+        or "--queues=storage-reaper" not in storage_reaper_command
+        or "--queues=generation" in storage_reaper_command
+        or "--queues=maintenance" in storage_reaper_command
+        or "--concurrency=1" not in storage_reaper_command
+    ):
+        issues.append("storage-reaper-worker is not an isolated singleton")
+    if " beat " not in f" {scheduler_command} " or " worker " in f" {scheduler_command} ":
+        issues.append("scheduler is not beat-only")
+    for service_name, expected_queue in (
+        ("worker", "generation"),
+        ("maintenance-worker", "maintenance"),
+        ("storage-reaper-worker", "storage-reaper"),
+    ):
+        environment = services.get(service_name, {}).get("environment", {})
+        if (
+            not isinstance(environment, dict)
+            or environment.get("CELERY_EXPECTED_QUEUE") != expected_queue
+        ):
+            issues.append(f"{service_name} health is not bound to its exact Celery queue")
     attestor_healthcheck = services.get("storage-capacity-attestor", {}).get("healthcheck", {})
     attestor_health_test = (
         attestor_healthcheck.get("test", []) if isinstance(attestor_healthcheck, dict) else []
@@ -2014,6 +2088,8 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "web",
     ):
         if services.get(name, {}).get("restart") != "unless-stopped":
@@ -2028,6 +2104,8 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         "object-storage",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
         "storage-recovery",
         "storage-capacity-attestor",
@@ -2059,6 +2137,24 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
     )
     if not redis_url_has_password(worker_redis_url):
         issues.append("worker Redis connection is not password-authenticated")
+    maintenance_environment = services.get("maintenance-worker", {}).get("environment", {})
+    maintenance_redis_url: object = (
+        maintenance_environment.get("REDIS_URL", "")
+        if isinstance(maintenance_environment, dict)
+        else ""
+    )
+    if not redis_url_has_password(maintenance_redis_url):
+        issues.append("maintenance-worker Redis connection is not password-authenticated")
+    storage_reaper_environment = services.get("storage-reaper-worker", {}).get(
+        "environment", {}
+    )
+    storage_reaper_redis_url: object = (
+        storage_reaper_environment.get("REDIS_URL", "")
+        if isinstance(storage_reaper_environment, dict)
+        else ""
+    )
+    if not redis_url_has_password(storage_reaper_redis_url):
+        issues.append("storage-reaper-worker Redis connection is not password-authenticated")
     redis_service = services.get("redis", {})
     redis_environment = redis_service.get("environment", {})
     redis_command = " ".join(str(item) for item in (redis_service.get("command") or []))
@@ -2133,7 +2229,13 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         )
     if dependency_condition("storage-capacity-attestor", "object-storage") != "service_healthy":
         issues.append("storage-capacity-attestor does not wait for healthy object storage")
-    for name in ("api", "worker", "scheduler"):
+    for name in (
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         if dependency_condition(name, "storage-capacity-attestor") != "service_healthy":
             issues.append(f"{name} does not wait for healthy storage capacity evidence")
         if not dependency_restarts(name, "storage-capacity-attestor"):
@@ -2174,7 +2276,14 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         issues.append("web is not isolated to the edge network")
     if not {"edge", "backend"}.issubset(attached_networks("api")):
         issues.append("api does not bridge edge and backend networks")
-    for name in ("postgres", "redis", "object-storage", "worker"):
+    for name in (
+        "postgres",
+        "redis",
+        "object-storage",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+    ):
         service_networks = attached_networks(name)
         if "backend" not in service_networks or "edge" in service_networks:
             issues.append(f"{name} is not isolated to the backend network")
@@ -2362,8 +2471,9 @@ def supply_chain_issues(repo: Path) -> list[str]:
                 "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
             ),
             "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd",
-            "1a96843ba71c16cee5c7e396a3082ab3ae0327ab429956db51d0d1b07f6508e5",
+            "f787879847f3b5e1eaba89ee03a43997f11787ece23c4aab0cce4978f0942b50",
             "go.etcd.io/etcd/client/pkg/v3@v3.6.14",
+            "golang.org/x/crypto@v0.55.0",
             "golang.org/x/image@v0.45.0",
             "golang.org/x/text@v0.41.0",
             "-mod=readonly",
@@ -2371,6 +2481,7 @@ def supply_chain_issues(repo: Path) -> list[str]:
             'io.custombuild.security-overrides.sha256="${SEAWEEDFS_SECURITY_OVERRIDES_SHA256}"',
             'io.custombuild.go.version="1.26.6"',
             'io.custombuild.go-etcd-client-pkg.version="3.6.14"',
+            'io.custombuild.go-x-crypto.version="0.55.0"',
             'io.custombuild.go-x-image.version="0.45.0"',
             'io.custombuild.go-x-text.version="0.41.0"',
             "ENV TMPDIR=/tmp",
@@ -2581,6 +2692,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "services/api/alembic/versions/0012_storage_quota_ledger.py",
         "services/api/alembic/versions/0013_storage_quota_security_functions.py",
         "services/api/alembic/versions/0014_release_generation_binding.py",
+        "services/api/alembic/versions/0015_outbox_retry_schedule.py",
         "services/api/app/artifact_operations.py",
         "services/api/app/storage_capacity.py",
         "services/api/app/storage_quota.py",

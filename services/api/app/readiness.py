@@ -21,7 +21,7 @@ DependencyName = Literal[
     "object_storage",
     "rule_engine",
 ]
-REQUIRED_DATABASE_REVISION = "0014_release_generation_binding"
+REQUIRED_DATABASE_REVISION = "0015_outbox_retry_schedule"
 
 
 @dataclass(frozen=True)

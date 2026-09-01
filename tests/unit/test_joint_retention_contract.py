@@ -25,6 +25,10 @@ from custombuild_domain import (
     screening_mdf_6,
     screening_mdf_18,
 )
+from custombuild_domain.models import (
+    JointRetentionApplicationClass,
+    captive_inset_back_topology_is_complete,
+)
 from custombuild_manufacturing import (
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     ManifestContext,
@@ -75,16 +79,12 @@ def structured_retention_contract() -> JointRetentionContract:
                 material_id="mdf",
                 material_version="screening-2026.1",
             ),
-            JointRetentionMaterialIdentity(
-                material_id="mdf-6",
-                material_version="screening-2026.1",
-            ),
         ),
         joint_geometry_sha256=dado_joint_geometry_fingerprint(
             preview.parts,
             preview.joints,
         ),
-        minimum_applicable_thickness_um=mm(6),
+        minimum_applicable_thickness_um=mm(17),
         maximum_applicable_thickness_um=mm(19),
         load_cases=(
             JointRetentionLoadCase(
@@ -139,14 +139,35 @@ def test_synthetic_structurally_complete_contract_exercises_future_path_without_
     structured_retention_contract: JointRetentionContract,
 ) -> None:
     dado_joints = tuple(
-        joint for joint in retained_design.joints if joint.joint_type == JointType.DADO
+        joint
+        for joint in retained_design.joints
+        if joint.retention_application_class
+        == JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+    )
+    back_grooves = tuple(
+        joint
+        for joint in retained_design.joints
+        if joint.retention_application_class
+        == JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
     )
     assert dado_joints
+    assert len(back_grooves) == 4
     assert all(joint.retention == structured_retention_contract for joint in dado_joints)
     assert all(
         joint.hardware_sku == structured_retention_contract.hardware_sku
         and joint.hardware_count == structured_retention_contract.hardware_count_per_joint
         for joint in dado_joints
+    )
+    assert all(
+        joint.retention is None
+        and joint.hardware_sku is None
+        and joint.hardware_count == 0
+        for joint in back_grooves
+    )
+    assert captive_inset_back_topology_is_complete(
+        retained_design.parts,
+        retained_design.joints,
+        retained_design.assembly_graph,
     )
     assert dado_retention_evidence_missing(retained_design) is False
     assert "joint_retention" in retained_design.spec.model_dump(mode="json")
@@ -189,9 +210,7 @@ def test_synthetic_structurally_complete_contract_exercises_future_path_without_
         contract_row["joint_geometry_sha256"]
         == structured_retention_contract.joint_geometry_sha256
     )
-    assert contract_row["applicable_materials"] == (
-        "mdf@screening-2026.1|mdf-6@screening-2026.1"
-    )
+    assert contract_row["applicable_materials"] == "mdf@screening-2026.1"
     assert contract_row["rated_shear_design_load_n"] == "300"
     assert contract_row["rated_withdrawal_design_load_n"] == "50"
 
@@ -338,11 +357,16 @@ def test_contract_rejects_capacity_below_its_load_and_safety_factor(
         JointRetentionContract.model_validate(payload)
 
 
-def test_design_rejects_a_contract_that_omits_a_dado_member_material(
+def test_design_rejects_a_contract_that_omits_the_carcass_material(
     structured_retention_contract: JointRetentionContract,
 ) -> None:
     payload = structured_retention_contract.model_dump(mode="python")
-    payload["applicable_materials"] = payload["applicable_materials"][:1]
+    payload["applicable_materials"] = [
+        {
+            "material_id": "mdf-6",
+            "material_version": "screening-2026.1",
+        }
+    ]
     incomplete_contract = JointRetentionContract.model_validate(payload)
 
     with pytest.raises(ValidationError, match="every DADO member material version"):
@@ -382,7 +406,8 @@ def test_post_validation_tampering_cannot_resolve_retention(
     )
     tampered_joints = tuple(
         joint.model_copy(update={"retention": tampered_contract})
-        if joint.joint_type == JointType.DADO
+        if joint.retention_application_class
+        == JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
         else joint
         for joint in retained_design.joints
     )

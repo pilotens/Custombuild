@@ -124,7 +124,7 @@ def manufacturing_values():
         "1.0.0",
         machine.profile_id,
         machine.version,
-        "linuxcnc-validation-1.0.0",
+        "linuxcnc-validation-1.1.0",
         "NOT_REQUESTED",
         "f" * 64,
         {

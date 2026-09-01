@@ -46,6 +46,11 @@ def worker_session_factory(
         "_validate_completion_evidence",
         lambda _session, _organization_id, _job: None,
     )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_validate_retention_before_generation",
+        lambda _organization_id, _version, *, minimum_valid_until: None,
+    )
     return factory
 
 
@@ -96,6 +101,7 @@ def _seed_generation_job(
                 production_engine_context_json={"schema": "test"},
                 request_json={},
                 attempts=0,
+                next_attempt_at=datetime(2020, 1, 1, tzinfo=UTC),
             )
         )
     return job_id, organization_id
@@ -147,14 +153,17 @@ def test_completion_rejects_detached_engine_context_before_state_or_artifacts(
         assert stored.lease_token == token
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
-        assert list(
-            session.scalars(
-                select(AuditEvent).where(
-                    AuditEvent.entity_id == job_id,
-                    AuditEvent.action == "generation.succeeded",
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
                 )
             )
-        ) == []
+            == []
+        )
 
 
 def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
@@ -185,6 +194,7 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
     runtime = SimpleNamespace(
         s3_bucket="production-artifacts",
         build_identity=build_identity,
+        joint_retention_trust_registry_json='{"registry":"worker-owned"}',
     )
 
     def must_not_load_api_settings() -> None:
@@ -198,6 +208,7 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
     ) -> None:
         assert organization_id == "tenant-a"
         assert kwargs["build_identity"] == build_identity
+        assert kwargs["trust_registry_json"] == '{"registry":"worker-owned"}'
         storage_module.verify_stored_object(
             storage_module.StoredObjectExpectation(
                 object_key="tenant-a/evidence.json",
@@ -238,9 +249,11 @@ def test_replaced_lease_rejects_old_worker_completion_and_failure(
     with worker_session_factory.begin() as session:
         stored = session.get(GenerationJob, job_id)
         assert stored is not None
+        recovery_now = datetime.now(UTC)
+        stored.lease_expires_at = recovery_now - timedelta(seconds=1)
         recovery = worker_tasks._recover_stale_job(
             stored,
-            now=datetime.now(UTC) + worker_tasks.GENERATION_LEASE_TTL + timedelta(seconds=1),
+            now=recovery_now,
         )
         assert recovery is not None
         session.add(recovery)
@@ -250,20 +263,26 @@ def test_replaced_lease_rejects_old_worker_completion_and_failure(
     second_token = second_job.lease_token
     assert second_token is not None and second_token != first_token
 
-    assert worker_tasks._complete_job(
-        job_id,
-        organization_id,
-        first_token,
-        first_version,
-        _generation_result(),
-    ) is False
-    assert worker_tasks._record_failure(
-        job_id,
-        organization_id,
-        first_token,
-        RuntimeError("old worker must not win"),
-        terminal=True,
-    ) is None
+    assert (
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            first_token,
+            first_version,
+            _generation_result(),
+        )
+        is False
+    )
+    assert (
+        worker_tasks._record_failure(
+            job_id,
+            organization_id,
+            first_token,
+            RuntimeError("old worker must not win"),
+            terminal=True,
+        )
+        is None
+    )
 
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
@@ -273,13 +292,16 @@ def test_replaced_lease_rejects_old_worker_completion_and_failure(
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
 
-    assert worker_tasks._complete_job(
-        job_id,
-        organization_id,
-        second_token,
-        second_version,
-        _generation_result(),
-    ) is True
+    assert (
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            second_token,
+            second_version,
+            _generation_result(),
+        )
+        is True
+    )
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
         assert stored is not None
@@ -343,14 +365,83 @@ def test_deadline_fences_owned_completion_before_artifacts_and_success_audit(
         assert stored.error == worker_tasks.GENERATION_DEADLINE_ERROR
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
-        assert list(
-            session.scalars(
-                select(AuditEvent).where(
-                    AuditEvent.entity_id == job_id,
-                    AuditEvent.action == "generation.succeeded",
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
                 )
             )
-        ) == []
+            == []
+        )
+
+
+@pytest.mark.parametrize(
+    ("expired_fence", "expected_error"),
+    (
+        ("deadline", worker_tasks.GenerationDeadlineExceeded),
+        ("lease", worker_tasks.GenerationLeaseOwnershipLost),
+    ),
+)
+def test_final_completion_fence_rolls_back_if_liveness_expires_during_evidence(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    expired_fence: str,
+    expected_error: type[Exception],
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    job, version = claim
+    token = job.lease_token
+    assert token is not None
+    first_check = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+    final_check = first_check + timedelta(seconds=10)
+    with worker_session_factory.begin() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        stored.deadline_at = (
+            final_check if expired_fence == "deadline" else final_check + timedelta(minutes=1)
+        )
+        stored.lease_expires_at = (
+            final_check if expired_fence == "lease" else final_check + timedelta(minutes=1)
+        )
+    checks = iter((first_check, final_check))
+    monkeypatch.setattr(
+        worker_tasks,
+        "_database_time",
+        lambda _session, _override=None: next(checks),
+    )
+
+    with pytest.raises(expected_error):
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            token,
+            version,
+            _generation_result(),
+        )
+
+    with worker_session_factory() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.status == JobStatus.running
+        assert stored.lease_token == token
+        assert stored.result_json is None
+        assert list(session.scalars(select(Artifact))) == []
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
+                )
+            )
+            == []
+        )
 
 
 def test_completion_validation_runs_before_success_and_rolls_back_on_failure(
@@ -407,14 +498,17 @@ def test_completion_validation_runs_before_success_and_rolls_back_on_failure(
         assert stored.lease_token == token
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
-        assert list(
-            session.scalars(
-                select(AuditEvent).where(
-                    AuditEvent.entity_id == job_id,
-                    AuditEvent.action == "generation.succeeded",
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
                 )
             )
-        ) == []
+            == []
+        )
 
 
 @pytest.mark.parametrize(
@@ -481,24 +575,33 @@ def test_lease_heartbeat_extends_only_the_current_tenant_owner(
     assert token is not None
 
     renewed_at = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
-    assert worker_tasks._renew_job_lease(
-        job_id,
-        organization_id,
-        token,
-        now=renewed_at,
-    ) is True
-    assert worker_tasks._renew_job_lease(
-        job_id,
-        organization_id,
-        "00000000-0000-4000-8000-000000000000",
-        now=renewed_at,
-    ) is False
-    assert worker_tasks._renew_job_lease(
-        job_id,
-        "99999999-9999-4999-8999-999999999999",
-        token,
-        now=renewed_at,
-    ) is False
+    assert (
+        worker_tasks._renew_job_lease(
+            job_id,
+            organization_id,
+            token,
+            now=renewed_at,
+        )
+        is True
+    )
+    assert (
+        worker_tasks._renew_job_lease(
+            job_id,
+            organization_id,
+            "00000000-0000-4000-8000-000000000000",
+            now=renewed_at,
+        )
+        is False
+    )
+    assert (
+        worker_tasks._renew_job_lease(
+            job_id,
+            "99999999-9999-4999-8999-999999999999",
+            token,
+            now=renewed_at,
+        )
+        is False
+    )
 
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
@@ -578,8 +681,7 @@ def test_celery_generation_limits_are_bound_to_the_server_job_policy() -> None:
         worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS
     )
     assert worker_tasks.GENERATION_TASK_HARD_TIME_LIMIT_SECONDS == (
-        worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS
-        + 60
+        worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS + 60
     )
     assert worker_tasks.celery_app.conf.task_soft_time_limit == (
         worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS
@@ -587,6 +689,38 @@ def test_celery_generation_limits_are_bound_to_the_server_job_policy() -> None:
     assert worker_tasks.celery_app.conf.task_time_limit == (
         worker_tasks.GENERATION_TASK_HARD_TIME_LIMIT_SECONDS
     )
+    assert (
+        worker_tasks.celery_app.conf.broker_transport_options["visibility_timeout"]
+        >= worker_tasks.GENERATION_TASK_HARD_TIME_LIMIT_SECONDS
+    )
+
+
+def test_celery_routes_generation_and_maintenance_to_exact_fail_closed_queues() -> None:
+    configured_queues = {queue.name for queue in worker_tasks.celery_app.conf.task_queues}
+    assert configured_queues == {
+        worker_tasks.GENERATION_QUEUE,
+        worker_tasks.MAINTENANCE_QUEUE,
+        worker_tasks.STORAGE_REAPER_QUEUE,
+        worker_tasks.UNROUTED_QUEUE,
+    }
+    assert worker_tasks.celery_app.conf.task_default_queue == worker_tasks.UNROUTED_QUEUE
+    assert worker_tasks.celery_app.conf.task_create_missing_queues is False
+    assert worker_tasks.celery_app.conf.task_routes == {
+        "custombuild.generate_package": {"queue": worker_tasks.GENERATION_QUEUE},
+        "custombuild.dispatch_outbox": {"queue": worker_tasks.MAINTENANCE_QUEUE},
+        "custombuild.recover_stale_jobs": {"queue": worker_tasks.MAINTENANCE_QUEUE},
+        "custombuild.reap_abandoned_storage": {"queue": worker_tasks.STORAGE_REAPER_QUEUE},
+    }
+    schedules = worker_tasks.celery_app.conf.beat_schedule
+    assert schedules["dispatch-transactional-outbox"]["options"] == {
+        "queue": worker_tasks.MAINTENANCE_QUEUE
+    }
+    assert schedules["recover-stale-generation-leases"]["options"] == {
+        "queue": worker_tasks.MAINTENANCE_QUEUE
+    }
+    assert schedules["reap-abandoned-storage"]["options"] == {
+        "queue": worker_tasks.STORAGE_REAPER_QUEUE
+    }
 
 
 def test_soft_time_limit_terminalizes_the_owned_job_without_retry(
@@ -666,10 +800,6 @@ def test_runtime_error_remains_retryable_and_requeues_owned_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     job_id, organization_id = _seed_generation_job(worker_session_factory)
-    retry_calls: list[Exception] = []
-
-    class RetryRequested(Exception):
-        pass
 
     def fail_transiently(
         _job: GenerationJob,
@@ -678,21 +808,17 @@ def test_runtime_error_remains_retryable_and_requeues_owned_job(
     ) -> dict[str, Any]:
         raise RuntimeError("temporary dependency failure")
 
-    def capture_retry(*_args: object, **kwargs: Any) -> None:
-        retry_calls.append(kwargs["exc"])
-        raise RetryRequested()
-
     monkeypatch.setattr(worker_tasks, "_generate", fail_transiently)
-    monkeypatch.setattr(worker_tasks.generate_package, "retry", capture_retry)
+    result = worker_tasks.generate_package.run(
+        job_id=job_id,
+        organization_id=organization_id,
+    )
 
-    with pytest.raises(RetryRequested):
-        worker_tasks.generate_package.run(
-            job_id=job_id,
-            organization_id=organization_id,
-        )
-
-    assert len(retry_calls) == 1
-    assert isinstance(retry_calls[0], RuntimeError)
+    assert result == {
+        "job_id": job_id,
+        "state": "retry_scheduled",
+        "retry_after_seconds": 5,
+    }
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
         assert stored is not None
@@ -703,6 +829,47 @@ def test_runtime_error_remains_retryable_and_requeues_owned_job(
         assert stored.started_at is None
         assert stored.finished_at is None
         assert stored.error == "RuntimeError: temporary dependency failure"
+        retry_event = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_key == f"generation-retry:{job_id}:1")
+        )
+        assert retry_event is not None
+        assert retry_event.dispatched_at is None
+        assert retry_event.dead_lettered_at is None
+        assert retry_event.available_at >= retry_event.created_at + timedelta(seconds=4)
+        assert stored.next_attempt_at == retry_event.available_at
+
+
+def test_duplicate_delivery_cannot_bypass_durable_job_retry_time(
+    worker_session_factory: sessionmaker[Session],
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    token = claim[0].lease_token
+    assert token is not None
+
+    status = worker_tasks._record_failure(
+        job_id,
+        organization_id,
+        token,
+        RuntimeError("transient storage ownership"),
+        terminal=False,
+        retry_after_seconds=125,
+    )
+
+    assert status is JobStatus.queued
+    assert worker_tasks._claim_job(job_id, organization_id) is None
+    with worker_session_factory.begin() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.attempts == 1
+        assert stored.next_attempt_at is not None
+        stored.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    second_claim = worker_tasks._claim_job(job_id, organization_id)
+    assert second_claim is not None
+    assert second_claim[0].attempts == 2
+    assert second_claim[0].next_attempt_at is None
 
 
 def test_transient_failure_after_server_deadline_is_terminal_without_retry(
@@ -827,9 +994,7 @@ def test_queued_job_at_global_attempt_budget_is_not_claimed_again(
         assert stored.lease_token is None
         assert stored.lease_expires_at is None
         assert stored.finished_at is not None
-        assert stored.error == (
-            "Generation job exhausted the maximum of 4 attempts"
-        )
+        assert stored.error == ("Generation job exhausted the maximum of 4 attempts")
 
 
 def test_recovery_task_ignores_live_lease_then_requeues_expired_lease(
@@ -942,9 +1107,7 @@ def test_poison_outbox_event_is_dead_lettered_without_blocking_the_next_event(
     assert worker_tasks.dispatch_outbox.run(limit=10) == 1
 
     with worker_session_factory() as session:
-        poison = session.scalar(
-            select(OutboxEvent).where(OutboxEvent.event_key == "poison-topic")
-        )
+        poison = session.scalar(select(OutboxEvent).where(OutboxEvent.event_key == "poison-topic"))
         valid = session.scalar(
             select(OutboxEvent).where(OutboxEvent.event_key == "valid-after-poison")
         )
@@ -959,12 +1122,14 @@ def test_poison_outbox_event_is_dead_lettered_without_blocking_the_next_event(
             "kwargs": {
                 "job_id": job_id,
                 "organization_id": organization_id,
-            }
+            },
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
         }
     ]
 
 
-def test_transient_outbox_failure_is_bounded_and_sanitized(
+def test_transient_outbox_failure_is_durable_backed_off_and_sanitized(
     worker_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -990,6 +1155,7 @@ def test_transient_outbox_failure_is_bounded_and_sanitized(
             )
         )
     attempts = 0
+    clock = datetime.now(UTC)
 
     def fail_publish(*_args: object, **_kwargs: object) -> None:
         nonlocal attempts
@@ -997,21 +1163,47 @@ def test_transient_outbox_failure_is_bounded_and_sanitized(
         raise RuntimeError("broker-secret-password")
 
     monkeypatch.setattr(worker_tasks.celery_app, "send_task", fail_publish)
-    for _ in range(worker_tasks.MAX_OUTBOX_PUBLISH_ATTEMPTS + 1):
-        worker_tasks.dispatch_outbox.run(limit=10)
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: clock)
+    for expected_attempts in range(1, 9):
+        assert worker_tasks.dispatch_outbox.run(limit=10) == 0
+        with worker_session_factory() as session:
+            pending = session.scalar(
+                select(OutboxEvent).where(OutboxEvent.event_key == "bounded-transient")
+            )
+            assert pending is not None
+            assert pending.attempts == expected_attempts
+            assert worker_tasks._as_utc(pending.available_at) > clock
+            clock = worker_tasks._as_utc(pending.available_at)
 
     with worker_session_factory() as session:
         event = session.scalar(
             select(OutboxEvent).where(OutboxEvent.event_key == "bounded-transient")
         )
         assert event is not None
-        assert event.attempts == worker_tasks.MAX_OUTBOX_PUBLISH_ATTEMPTS
-        assert event.dead_lettered_at is not None
+        assert event.attempts == 8
+        assert event.dead_lettered_at is None
         assert event.dispatched_at is None
         assert event.last_error is not None
         assert "broker-secret-password" not in event.last_error
         assert "payload-secret" not in event.last_error
-    assert attempts == worker_tasks.MAX_OUTBOX_PUBLISH_ATTEMPTS
+        assert worker_tasks._as_utc(event.available_at) <= clock + timedelta(
+            seconds=worker_tasks.OUTBOX_PUBLISH_BACKOFF_MAX_SECONDS
+        )
+    assert attempts == 8
+
+    published: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published.append(kwargs),
+    )
+    assert worker_tasks.dispatch_outbox.run(limit=10) == 1
+    with worker_session_factory() as session:
+        event = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_key == "bounded-transient")
+        )
+        assert event is not None and event.dispatched_at is not None
+        assert event.last_error is None
 
 
 def test_outbox_dispatch_is_tenant_local_payload_bound_and_globally_limited(
@@ -1077,20 +1269,30 @@ def test_outbox_dispatch_is_tenant_local_payload_bound_and_globally_limited(
 
     assert worker_tasks.dispatch_outbox.run(limit=1) == 1
     assert published == [
-        {"kwargs": {"job_id": job_a, "organization_id": organization_a}}
+        {
+            "kwargs": {"job_id": job_a, "organization_id": organization_a},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        }
     ]
     assert worker_tasks.dispatch_outbox.run(limit=10) == 1
 
     assert contexts == [organization_a, organization_a, organization_b]
     assert published == [
-        {"kwargs": {"job_id": job_a, "organization_id": organization_a}},
-        {"kwargs": {"job_id": job_b, "organization_id": organization_b}},
+        {
+            "kwargs": {"job_id": job_a, "organization_id": organization_a},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        },
+        {
+            "kwargs": {"job_id": job_b, "organization_id": organization_b},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        },
     ]
     with worker_session_factory() as session:
         forged = session.scalar(
-            select(OutboxEvent).where(
-                OutboxEvent.event_key == "tenant-a-forged-payload"
-            )
+            select(OutboxEvent).where(OutboxEvent.event_key == "tenant-a-forged-payload")
         )
         assert forged is not None
         assert forged.dispatched_at is None
@@ -1133,9 +1335,7 @@ def test_stale_recovery_runs_one_tenant_transaction_per_organization(
     monkeypatch.setattr(
         worker_tasks,
         "set_tenant_context",
-        lambda session, organization_id: tenant_sessions.append(
-            (organization_id, session)
-        ),
+        lambda session, organization_id: tenant_sessions.append((organization_id, session)),
     )
 
     assert worker_tasks.recover_stale_jobs.run(limit=2) == 2
@@ -1199,11 +1399,15 @@ def test_outbox_tenant_rollback_does_not_block_other_tenants(
 
     original_dispatch = worker_tasks._dispatch_tenant_outbox_events
 
-    def fail_tenant_a(events: list[OutboxEvent], organization_id: str) -> int:
+    def fail_tenant_a(
+        events: list[OutboxEvent],
+        organization_id: str,
+        **kwargs: Any,
+    ) -> int:
         if organization_id == organization_a:
             events[0].last_error = "must roll back"
             raise RuntimeError("isolated tenant failure")
-        return original_dispatch(events, organization_id)
+        return original_dispatch(events, organization_id, **kwargs)
 
     published: list[dict[str, Any]] = []
     monkeypatch.setattr(worker_tasks, "_dispatch_tenant_outbox_events", fail_tenant_a)
@@ -1215,7 +1419,11 @@ def test_outbox_tenant_rollback_does_not_block_other_tenants(
 
     assert worker_tasks.dispatch_outbox.run(limit=1) == 1
     assert published == [
-        {"kwargs": {"job_id": job_b, "organization_id": organization_b}}
+        {
+            "kwargs": {"job_id": job_b, "organization_id": organization_b},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        }
     ]
     with worker_session_factory() as session:
         event_a = session.scalar(

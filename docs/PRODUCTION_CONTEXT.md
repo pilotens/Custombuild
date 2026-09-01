@@ -53,5 +53,9 @@ their empty snapshot fails the current-context guard and they must be regenerate
 
 Deploy application code, worker code and migrations as one coordinated release.
 Do not let old and new workers consume the same queue across an implementation
-version change. Drain or stop workers, migrate, deploy both services, then enqueue
-new jobs.
+version change. The current topology replaces the former `celery` default queue with
+explicit `generation` and `maintenance` queues. For that cutover, pause API and beat,
+drain the legacy queue completely with the old image, stop every old worker, migrate,
+then start the new generation worker, singleton maintenance worker and singleton beat
+as one release. Never overlap the old and new topology or abandon legacy messages:
+their outbox rows may already be marked dispatched.

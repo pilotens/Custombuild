@@ -4,7 +4,7 @@ import logging
 import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Event, Lock, Thread
 from types import MappingProxyType
 from typing import Any
@@ -88,6 +88,7 @@ from custombuild_manufacturing.production_context import (
 )
 from custombuild_manufacturing.readiness import ReadinessValidationError
 from custombuild_rules import RuleStatus, evaluate_design
+from kombu import Queue  # type: ignore[import-untyped]
 from redis import Redis
 from redis.exceptions import RedisError
 from sqlalchemy import and_, create_engine, func, or_, select
@@ -172,6 +173,13 @@ _EVIDENCE_ARTIFACT_CONTRACTS: Mapping[str, tuple[str, str, str]] = {
 }
 _SETUP_EVIDENCE_PATH = re.compile(r"cam/setups/[A-Za-z0-9][A-Za-z0-9._-]*\.svg")
 celery_app = Celery("custombuild-worker", broker=REDIS_URL, backend=REDIS_URL)
+GENERATION_QUEUE = "generation"
+MAINTENANCE_QUEUE = "maintenance"
+STORAGE_REAPER_QUEUE = "storage-reaper"
+UNROUTED_QUEUE = "unrouted"
+BROKER_VISIBILITY_TIMEOUT_SECONDS = GENERATION_TASK_HARD_TIME_LIMIT_SECONDS + 60
+OUTBOX_PUBLISH_BACKOFF_BASE_SECONDS = 2
+OUTBOX_PUBLISH_BACKOFF_MAX_SECONDS = 60
 celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
@@ -181,18 +189,42 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_soft_time_limit=GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS,
     task_time_limit=GENERATION_TASK_HARD_TIME_LIMIT_SECONDS,
+    task_queues=(
+        Queue(GENERATION_QUEUE),
+        Queue(MAINTENANCE_QUEUE),
+        Queue(STORAGE_REAPER_QUEUE),
+        Queue(UNROUTED_QUEUE),
+    ),
+    task_default_queue=UNROUTED_QUEUE,
+    task_create_missing_queues=False,
+    task_routes={
+        "custombuild.generate_package": {"queue": GENERATION_QUEUE},
+        "custombuild.dispatch_outbox": {"queue": MAINTENANCE_QUEUE},
+        "custombuild.recover_stale_jobs": {"queue": MAINTENANCE_QUEUE},
+        "custombuild.reap_abandoned_storage": {"queue": STORAGE_REAPER_QUEUE},
+    },
+    task_publish_retry=False,
+    broker_transport_options={
+        "visibility_timeout": BROKER_VISIBILITY_TIMEOUT_SECONDS,
+        "socket_connect_timeout": 5,
+        "socket_timeout": 5,
+        "retry_on_timeout": False,
+    },
     beat_schedule={
         "dispatch-transactional-outbox": {
             "task": "custombuild.dispatch_outbox",
             "schedule": 2.0,
+            "options": {"queue": MAINTENANCE_QUEUE},
         },
         "recover-stale-generation-leases": {
             "task": "custombuild.recover_stale_jobs",
             "schedule": GENERATION_RECOVERY_INTERVAL_SECONDS,
+            "options": {"queue": MAINTENANCE_QUEUE},
         },
         "reap-abandoned-storage": {
             "task": "custombuild.reap_abandoned_storage",
             "schedule": 60.0,
+            "options": {"queue": STORAGE_REAPER_QUEUE},
         },
     },
 )
@@ -217,7 +249,6 @@ _engine = create_engine(
 )
 SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
 MAX_GENERATION_ATTEMPTS = 4
-MAX_OUTBOX_PUBLISH_ATTEMPTS = 5
 DEFAULT_SCHEDULER_BATCH_LIMIT = 50
 DEFAULT_STORAGE_REAPER_BATCH_LIMIT = 25
 STORAGE_REAPER_TENANT_BATCH_LIMIT = 10
@@ -320,6 +351,7 @@ def _terminalize_deadline(job: GenerationJob, *, now: datetime) -> None:
     job.status = JobStatus.failed
     job.lease_token = None
     job.lease_expires_at = None
+    job.next_attempt_at = None
     job.error = GENERATION_DEADLINE_ERROR
     job.finished_at = now
 
@@ -328,6 +360,7 @@ def _terminalize_attempt_budget(job: GenerationJob, *, now: datetime) -> None:
     job.status = JobStatus.failed
     job.lease_token = None
     job.lease_expires_at = None
+    job.next_attempt_at = None
     job.error = f"Generation job exhausted the maximum of {MAX_GENERATION_ATTEMPTS} attempts"
     job.finished_at = now
 
@@ -413,6 +446,19 @@ def _dead_letter(event: OutboxEvent, reason: str, *, increment_attempt: bool = T
     event.last_error = reason[:500]
 
 
+def _outbox_publish_backoff(attempts: int) -> timedelta:
+    """Return a bounded deterministic delay for one failed broker publication."""
+
+    if type(attempts) is not int or attempts < 1:
+        raise ValueError("outbox attempts must be a positive integer")
+    exponent = min(attempts - 1, 30)
+    seconds = min(
+        OUTBOX_PUBLISH_BACKOFF_BASE_SECONDS * (2**exponent),
+        OUTBOX_PUBLISH_BACKOFF_MAX_SECONDS,
+    )
+    return timedelta(seconds=seconds)
+
+
 @celery_app.task(name="custombuild.dispatch_outbox")  # type: ignore[misc]
 def dispatch_outbox(limit: int = 50) -> int:
     """Publish committed outbox events. Duplicate delivery is safe by job identity."""
@@ -428,6 +474,7 @@ def dispatch_outbox(limit: int = 50) -> int:
         tenant_dispatched = 0
         try:
             with _tenant_transaction(tenant_id) as session:
+                now = _database_time(session)
                 events = list(
                     session.scalars(
                         select(OutboxEvent)
@@ -435,6 +482,7 @@ def dispatch_outbox(limit: int = 50) -> int:
                             OutboxEvent.organization_id == tenant_id,
                             OutboxEvent.dispatched_at.is_(None),
                             OutboxEvent.dead_lettered_at.is_(None),
+                            OutboxEvent.available_at <= now,
                         )
                         .order_by(OutboxEvent.created_at, OutboxEvent.id)
                         .with_for_update(skip_locked=True)
@@ -442,7 +490,11 @@ def dispatch_outbox(limit: int = 50) -> int:
                     )
                 )
                 tenant_handled = len(events)
-                tenant_dispatched = _dispatch_tenant_outbox_events(events, tenant_id)
+                tenant_dispatched = _dispatch_tenant_outbox_events(
+                    events,
+                    tenant_id,
+                    published_at=now,
+                )
         except Exception as exc:
             logger.error(
                 "Tenant outbox transaction rolled back (%s); continuing with other tenants.",
@@ -457,17 +509,15 @@ def dispatch_outbox(limit: int = 50) -> int:
 def _dispatch_tenant_outbox_events(
     events: list[OutboxEvent],
     organization_id: str,
+    *,
+    published_at: datetime | None = None,
 ) -> int:
+    now = _as_utc(published_at or _utcnow())
     dispatched = 0
     for event in events:
         if event.organization_id != organization_id:
             raise RuntimeError("tenant-local outbox query returned a cross-tenant row")
-        if event.attempts >= MAX_OUTBOX_PUBLISH_ATTEMPTS:
-            _dead_letter(
-                event,
-                "Broker publish retry limit exceeded; event was dead-lettered.",
-                increment_attempt=False,
-            )
+        if _as_utc(event.available_at) > now:
             continue
         if event.topic != "generation.requested":
             _dead_letter(event, "Unsupported outbox topic; event was dead-lettered.")
@@ -492,18 +542,17 @@ def _dispatch_tenant_outbox_events(
                     "job_id": job_id,
                     "organization_id": payload_organization_id,
                 },
+                queue=GENERATION_QUEUE,
+                retry=False,
             )
         except Exception:
             event.attempts += 1
-            if event.attempts >= MAX_OUTBOX_PUBLISH_ATTEMPTS:
-                event.dead_lettered_at = _utcnow()
-                event.last_error = (
-                    "Broker publish failed at the retry limit; event was dead-lettered."
-                )
-            else:
-                event.last_error = "Broker publish failed; a bounded retry is scheduled."
+            event.available_at = now + _outbox_publish_backoff(event.attempts)
+            event.last_error = (
+                "Broker publish failed; a durable bounded-backoff retry is scheduled."
+            )
             continue
-        event.dispatched_at = _utcnow()
+        event.dispatched_at = now
         event.attempts += 1
         event.last_error = None
         dispatched += 1
@@ -635,6 +684,7 @@ def _recover_stale_job(job: GenerationJob, *, now: datetime) -> OutboxEvent | No
         job.status = JobStatus.failed
         job.lease_token = None
         job.lease_expires_at = None
+        job.next_attempt_at = None
         job.error = (
             "Stale worker lease exhausted the maximum of "
             f"{MAX_GENERATION_ATTEMPTS} generation attempts"
@@ -645,6 +695,7 @@ def _recover_stale_job(job: GenerationJob, *, now: datetime) -> OutboxEvent | No
     job.status = JobStatus.queued
     job.lease_token = None
     job.lease_expires_at = None
+    job.next_attempt_at = now
     job.error = "Recovered after stale worker lease"
     job.started_at = None
     job.finished_at = None
@@ -656,16 +707,12 @@ def _recover_stale_job(job: GenerationJob, *, now: datetime) -> OutboxEvent | No
             "job_id": job.id,
             "organization_id": job.organization_id,
         },
+        available_at=now,
     )
 
 
-@celery_app.task(  # type: ignore[misc]
-    bind=True,
-    name="custombuild.generate_package",
-    max_retries=MAX_GENERATION_ATTEMPTS - 1,
-    default_retry_delay=5,
-)
-def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[str, Any]:
+@celery_app.task(name="custombuild.generate_package")  # type: ignore[misc]
+def generate_package(*, job_id: str, organization_id: str) -> dict[str, Any]:
     claim = _claim_job(job_id, organization_id)
     if claim is None:
         return {"job_id": job_id, "state": "already_running_or_complete"}
@@ -681,6 +728,12 @@ def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[st
             organization_id,
             lease_token,
         ) as lease_guard:
+            _validate_retention_before_generation(
+                organization_id,
+                version,
+                minimum_valid_until=job.deadline_at,
+            )
+            lease_guard.check()
             result = _generate(
                 job,
                 version,
@@ -712,11 +765,16 @@ def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[st
         raise
     except Exception as exc:
         failure_at = _utcnow()
-        terminal = (
-            job.attempts >= MAX_GENERATION_ATTEMPTS
-            or self.request.retries >= self.max_retries
-            or isinstance(exc, IMMEDIATE_TERMINAL_GENERATION_ERRORS)
+        terminal = job.attempts >= MAX_GENERATION_ATTEMPTS or isinstance(
+            exc,
+            (GenerationDeadlineExceeded, *IMMEDIATE_TERMINAL_GENERATION_ERRORS),
         )
+        if isinstance(exc, GenerationStorageReservationBusy):
+            retry_delay = exc.retry_after_seconds
+        elif lease_guard is not None and bool(lease_guard.storage_claims()):
+            retry_delay = int(GENERATION_LEASE_TTL.total_seconds()) + 5
+        else:
+            retry_delay = 5
         recorded_status = _record_failure(
             job_id,
             organization_id,
@@ -724,16 +782,15 @@ def generate_package(self: Any, *, job_id: str, organization_id: str) -> dict[st
             exc,
             terminal=terminal,
             recorded_at=failure_at,
+            retry_after_seconds=retry_delay,
         )
         if recorded_status is not JobStatus.queued:
             raise
-        if isinstance(exc, GenerationStorageReservationBusy):
-            retry_delay = exc.retry_after_seconds
-        elif lease_guard is not None and bool(lease_guard.storage_claims()):
-            retry_delay = int(GENERATION_LEASE_TTL.total_seconds()) + 5
-        else:
-            retry_delay = 5
-        raise self.retry(exc=exc, countdown=retry_delay) from exc
+        return {
+            "job_id": job_id,
+            "state": "retry_scheduled",
+            "retry_after_seconds": retry_delay,
+        }
 
 
 def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, DesignVersion] | None:
@@ -759,6 +816,8 @@ def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, Design
         if job.attempts >= MAX_GENERATION_ATTEMPTS:
             _terminalize_attempt_budget(job, now=now)
             return None
+        if job.next_attempt_at is not None and _as_utc(job.next_attempt_at) > now:
+            return None
         version = session.scalar(
             select(DesignVersion).where(
                 DesignVersion.id == job.design_version_id,
@@ -771,6 +830,7 @@ def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, Design
         job.lease_token = str(uuid4())
         job.started_at = now
         job.lease_expires_at = now + GENERATION_LEASE_TTL
+        job.next_attempt_at = None
         job.deadline_at = job.deadline_at or now + GENERATION_JOB_TIMEOUT
         job.finished_at = None
         job.attempts += 1
@@ -1657,12 +1717,28 @@ def _complete_job(
                 ) from exc
         session.flush()
         _validate_completion_evidence(session, organization_id, job)
+        # The evidence gate performs remote object-store reads while this
+        # transaction is open. Re-read the database clock immediately before
+        # success so a deadline or lease that elapsed during those reads can
+        # never commit artifacts, quota or a success audit. Raising rolls the
+        # entire completion transaction back; the failure transaction then
+        # terminalizes or durably requeues the exact still-owned attempt.
+        final_fence_at = _database_time(session)
+        if _deadline_is_expired(job, now=final_fence_at):
+            raise GenerationDeadlineExceeded(
+                "Generation completion crossed the server execution deadline"
+            )
+        if not _lease_is_live(job, now=final_fence_at):
+            raise GenerationLeaseOwnershipLost(
+                "generation completion lease expired before the success commit"
+            )
         # Success is the final state transition.  The exact API download gate
         # above must pass while the job is still lease-owned and ``running``;
         # any exception rolls this transaction back without a success audit.
         job.status = JobStatus.succeeded
         job.lease_token = None
         job.lease_expires_at = None
+        job.next_attempt_at = None
         job.finished_at = completed_at
         session.add(
             AuditEvent(
@@ -1704,6 +1780,7 @@ def _validate_completion_evidence(
                 require_cam=False,
                 bind_review_documents=True,
                 build_identity=WORKER_SETTINGS.build_identity,
+                trust_registry_json=WORKER_SETTINGS.joint_retention_trust_registry_json,
             )
     except (BotoCoreError, ClientError, OSError) as exc:
         raise ArtifactStorageUnavailableError(
@@ -1719,6 +1796,60 @@ def _validate_completion_evidence(
         ) from exc
 
 
+def _validate_retention_before_generation(
+    organization_id: str,
+    claimed_version: DesignVersion,
+    *,
+    minimum_valid_until: datetime | None,
+) -> None:
+    """Revalidate mutable retention trust before spending a generation attempt.
+
+    The API validates the binding when it queues the job and the completion
+    evidence gate validates it again before success.  This additional boundary
+    prevents a revoked or expired statement from consuming a full CAM/package
+    run after a queued job has waited for capacity.
+    """
+
+    from app.api import _require_current_retention_binding
+    from fastapi import HTTPException
+
+    try:
+        client = _s3_client()
+        with (
+            _tenant_transaction(organization_id) as session,
+            storage_runtime(client=client, bucket=WORKER_SETTINGS.s3_bucket),
+        ):
+            version = session.scalar(
+                select(DesignVersion).where(
+                    DesignVersion.id == claimed_version.id,
+                    DesignVersion.organization_id == organization_id,
+                )
+            )
+            if version is None:
+                raise ProductionBlockedError(
+                    "generation retention preflight references a missing design version"
+                )
+            _require_current_retention_binding(
+                session,
+                organization_id,
+                version,
+                minimum_valid_until=minimum_valid_until,
+                trust_registry_json=WORKER_SETTINGS.joint_retention_trust_registry_json,
+            )
+    except (BotoCoreError, ClientError, OSError) as exc:
+        raise ArtifactStorageUnavailableError(
+            "retention evidence storage is temporarily unavailable"
+        ) from exc
+    except HTTPException as exc:
+        if exc.status_code == 503:
+            raise ArtifactStorageUnavailableError(
+                "retention evidence storage is temporarily unavailable"
+            ) from exc
+        raise ProductionBlockedError(
+            "retention evidence failed the canonical generation preflight"
+        ) from exc
+
+
 def _record_failure(
     job_id: str,
     organization_id: str,
@@ -1727,7 +1858,10 @@ def _record_failure(
     *,
     terminal: bool,
     recorded_at: datetime | None = None,
+    retry_after_seconds: int = 0,
 ) -> JobStatus | None:
+    if type(retry_after_seconds) is not int or retry_after_seconds < 0:
+        raise ValueError("retry_after_seconds must be a non-negative integer")
     with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
@@ -1759,6 +1893,23 @@ def _record_failure(
         job.error = f"{type(exc).__name__}: {exc}"[:4000]
         job.finished_at = failed_at if job.status == JobStatus.failed else None
         job.started_at = None if job.status == JobStatus.queued else job.started_at
+        if job.status == JobStatus.queued:
+            retry_at = failed_at + timedelta(seconds=retry_after_seconds)
+            job.next_attempt_at = retry_at
+            session.add(
+                OutboxEvent(
+                    organization_id=organization_id,
+                    event_key=f"generation-retry:{job.id}:{job.attempts}",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job.id,
+                        "organization_id": organization_id,
+                    },
+                    available_at=retry_at,
+                )
+            )
+        else:
+            job.next_attempt_at = None
         return job.status
 
 

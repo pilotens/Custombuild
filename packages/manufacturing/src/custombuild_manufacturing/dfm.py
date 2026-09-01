@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from typing import Any
 
 from .grain import stock_grain_binding_issues
 from .model import (
@@ -41,6 +42,15 @@ FEATURE_TO_OPERATION: dict[FeatureKind, OperationKind] = {
 }
 
 DFM_ENGINE_VERSION = "dfm-1.3.0"
+JOINT_SYSTEM_UNSUPPORTED_CODE = "JOINT_SYSTEM_UNSUPPORTED"
+JOINT_SYSTEM_UNSUPPORTED_MESSAGE = (
+    "The frozen design contains a joint system without verified end-to-end "
+    "manufacturing support."
+)
+JOINT_SYSTEM_UNSUPPORTED_REQUIRED_ACTION = (
+    "Use only a joint system whose versioned capability claim is supported for the exact "
+    "bookcase configuration; a feature-to-operation alias does not establish joint support."
+)
 STOCK_PROFILE_MISSING_CODE = "STOCK_PROFILE_MISSING"
 STOCK_PROFILE_MISSING_MESSAGE = (
     "No selected stock profile matches the part material, thickness and size."
@@ -52,6 +62,166 @@ STOCK_PROFILE_MISSING_REQUIRED_ACTION = (
 _STOCK_PROFILE_MISSING_INPUT_KEYS = frozenset(
     {"material_id", "material_version", "thickness_um", "blank_um"}
 )
+
+
+def _enum_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _canonical_bookcase_design(design_result: Any) -> Any | None:
+    """Rebuild and compare topology before deriving a manufacturing support claim."""
+
+    try:
+        from custombuild_domain import BookcaseDesignSpec, build_bookcase
+
+        spec = BookcaseDesignSpec.model_validate(getattr(design_result, "spec", None))
+        canonical = build_bookcase(spec)
+    except (TypeError, ValueError):
+        return None
+    if any(
+        getattr(design_result, field, None) != getattr(canonical, field)
+        for field in (
+            "design_hash",
+            "engine_version",
+            "template_version",
+            "spec",
+            "parts",
+            "joints",
+            "assembly_graph",
+            "total_weight_g",
+        )
+    ):
+        return None
+    return canonical
+
+
+def joint_type_has_end_to_end_support(
+    joint_type: Any,
+    *,
+    shelf_mount: Any,
+) -> bool:
+    """Return a fail-closed support decision from the versioned domain matrix.
+
+    ``conditional`` is not a synonym for supported. The sole current conditional
+    claim is a shelf-pin joint in an adjustable-shelf design. Any new conditional
+    type remains blocked until its exact predicate is implemented here.
+    """
+
+    from custombuild_domain import BOOKCASE_JOINT_SUPPORT_MATRIX
+
+    joint_value = _enum_value(joint_type)
+    claim = next(
+        (
+            candidate
+            for candidate_type, candidate in BOOKCASE_JOINT_SUPPORT_MATRIX.items()
+            if _enum_value(candidate_type) == joint_value
+        ),
+        None,
+    )
+    if claim is None:
+        return False
+    status = claim.get("status")
+    if status == "supported":
+        return True
+    return (
+        status == "conditional"
+        and joint_value == "shelf_pin"
+        and _enum_value(shelf_mount) == "adjustable"
+    )
+
+
+def unsupported_joint_system_issues(
+    design_result: Any,
+    *,
+    defer_surface_back_to_retention: bool = False,
+) -> tuple[DFMIssue, ...]:
+    """Derive blockers for every unverified canonical joint type before CAM lowering.
+
+    A canonical surface-mounted back is a distinct retention application.  The
+    pipeline may defer only its exact back-member RABBET joints to the stricter
+    back-retention blocker, which produces a design-review-only package.  This
+    does not establish RABBET manufacturing support: every other RABBET remains
+    blocked here, and callers cannot nominate arbitrary joints for deferral.
+    """
+
+    from custombuild_domain import BOOKCASE_JOINT_SUPPORT_MATRIX, BOOKCASE_JOINT_SUPPORT_VERSION
+
+    canonical = _canonical_bookcase_design(design_result)
+    if canonical is None:
+        return (
+            DFMIssue(
+                JOINT_SYSTEM_UNSUPPORTED_CODE,
+                Severity.BLOCK,
+                JOINT_SYSTEM_UNSUPPORTED_MESSAGE,
+                inputs={
+                    "joint_type": "UNVERIFIABLE",
+                    "joint_ids": (),
+                    "joint_support_version": BOOKCASE_JOINT_SUPPORT_VERSION,
+                    "support_status": "unknown",
+                },
+                suggestion=JOINT_SYSTEM_UNSUPPORTED_REQUIRED_ACTION,
+            ),
+        )
+
+    shelf_mount = getattr(getattr(canonical.spec, "parameters", None), "shelf_mount", None)
+    deferred_joint_ids: frozenset[str] = frozenset()
+    if (
+        defer_surface_back_to_retention
+        and _enum_value(getattr(canonical.spec.parameters, "back_panel", None))
+        == "surface_mounted"
+    ):
+        back_part_ids = {
+            str(part.part_id)
+            for part in canonical.parts
+            if _enum_value(getattr(part, "role", None)) == "back"
+        }
+        deferred_joint_ids = frozenset(
+            str(joint.joint_id)
+            for joint in canonical.joints
+            if _enum_value(getattr(joint, "joint_type", None)) == "rabbet"
+            and any(
+                str(getattr(member, "part_id", "")) in back_part_ids
+                for member in getattr(joint, "members", ())
+            )
+        )
+    joints_by_type: dict[str, list[str]] = defaultdict(list)
+    claim_by_type: dict[str, Any] = {}
+    for joint in canonical.joints:
+        if str(getattr(joint, "joint_id", "")) in deferred_joint_ids:
+            continue
+        joint_type = getattr(joint, "joint_type", None)
+        if joint_type_has_end_to_end_support(joint_type, shelf_mount=shelf_mount):
+            continue
+        joint_value = _enum_value(joint_type)
+        stable_joint_value = joint_value if isinstance(joint_value, str) else "UNVERIFIABLE"
+        joints_by_type[stable_joint_value].append(str(getattr(joint, "joint_id", "")))
+        claim_by_type[stable_joint_value] = next(
+            (
+                candidate
+                for candidate_type, candidate in BOOKCASE_JOINT_SUPPORT_MATRIX.items()
+                if _enum_value(candidate_type) == joint_value
+            ),
+            None,
+        )
+
+    issues: list[DFMIssue] = []
+    for joint_value in sorted(joints_by_type):
+        claim = claim_by_type[joint_value]
+        issues.append(
+            DFMIssue(
+                JOINT_SYSTEM_UNSUPPORTED_CODE,
+                Severity.BLOCK,
+                JOINT_SYSTEM_UNSUPPORTED_MESSAGE,
+                inputs={
+                    "joint_type": joint_value,
+                    "joint_ids": tuple(sorted(joints_by_type[joint_value])),
+                    "joint_support_version": BOOKCASE_JOINT_SUPPORT_VERSION,
+                    "support_status": claim.get("status") if claim is not None else "unknown",
+                },
+                suggestion=JOINT_SYSTEM_UNSUPPORTED_REQUIRED_ACTION,
+            )
+        )
+    return tuple(issues)
 
 
 def stock_profile_missing_issue(part: PartSpec) -> DFMIssue:

@@ -17,15 +17,22 @@ from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from custombuild_domain import (
+    BackPanelType,
     BookcaseDesignSpec,
     TemplateCapabilityError,
     build_bookcase,
+    dado_joint_geometry_fingerprint,
     joint_support_payload,
     require_template_for_revision,
     resolve_template_capability,
     template_capability_registry_payload,
 )
+from custombuild_domain.models import (
+    JointRetentionApplicationClass,
+    captive_inset_back_topology_is_complete,
+)
 from custombuild_manufacturing import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
@@ -44,6 +51,7 @@ from custombuild_manufacturing import (
     DesignReviewPackageStatus,
     Severity,
     artifact_size_limit,
+    back_panel_retention_evidence_missing,
     canonical_json_bytes,
     dado_retention_evidence_missing,
     grain_control_projection,
@@ -97,16 +105,24 @@ from .design_service import (
     RuleEngineUnavailable,
     assert_rule_engine_available,
     auto_fix,
+    bind_joint_retention,
     canonical_preview,
     generation_plan_snapshot_for_design,
     grain_rule_evaluation,
-    preview,
     preview_grain_issues_for_design,
     stock_grain_issues_for_design,
     stock_missing_issues_for_design,
     stock_selection_snapshot_for_design,
 )
 from .job_policy import GENERATION_JOB_TIMEOUT
+from .joint_retention import (
+    JOINT_GEOMETRY_FINGERPRINT_SCHEMA,
+    MAX_SIGNED_EVIDENCE_BYTES,
+    SIGNED_EVIDENCE_SCHEMA_VERSION,
+    JointRetentionTrustError,
+    resolve_joint_retention_contract,
+    validate_signed_retention_evidence_structure,
+)
 from .models import (
     Approval,
     Artifact,
@@ -190,6 +206,7 @@ EVIDENCE_RULE_TYPES: dict[str, str] = {
     "CB-TIP-001": "wall_anchor",
     "CB-HARDWARE-001": "hardware",
     "DFM-GRAIN-001": "material_grain",
+    "CB-JOINT-001": "joint_retention",
 }
 
 _WORKSHOP_READINESS_MAX_BYTES = MAX_READINESS_STATUS_BYTES
@@ -333,6 +350,7 @@ def _expire_generation_job_if_overdue(
     job.status = JobStatus.failed
     job.lease_token = None
     job.lease_expires_at = None
+    job.next_attempt_at = None
     job.error = "Generation job exceeded the server deadline of 120 minutes"
     job.finished_at = now
     return True
@@ -1030,6 +1048,477 @@ def _verified_external_evidence(
     return [_evidence_snapshot(evidence) for evidence in current_rows]
 
 
+def _retention_trust_error(code: str, message: str, solution: str) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={"code": code, "message": message, "solution": solution},
+    )
+
+
+def _joint_retention_trust_registry(
+    encoded_override: str | None = None,
+) -> Mapping[str, Any]:
+    # Workers have a deliberately narrower settings model and database role.
+    # Accept their already-validated deployment value explicitly instead of
+    # constructing API Settings (and therefore requiring API credentials) in
+    # the generation process.
+    encoded = (
+        get_settings().joint_retention_trust_registry_json
+        if encoded_override is None
+        else encoded_override
+    )
+    if not encoded:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_TRUST_NOT_CONFIGURED",
+            "No server-owned joint-retention trust registry is configured.",
+            "Keep the design in review until approved certifier keys are deployed.",
+        )
+    try:
+        registry = json.loads(encoded)
+    except json.JSONDecodeError as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_TRUST_INVALID",
+            "The server-owned joint-retention trust registry is malformed.",
+            "Repair the deployment configuration; physical release remains blocked.",
+        ) from exc
+    if not isinstance(registry, Mapping):
+        raise _retention_trust_error(
+            "JOINT_RETENTION_TRUST_INVALID",
+            "The server-owned joint-retention trust registry is not a JSON object.",
+            "Repair the deployment configuration; physical release remains blocked.",
+        )
+    return registry
+
+
+def _verified_joint_retention_evidence_bytes(
+    session: Session,
+    organization_id: str,
+    project_id: str,
+    base_design_hash: str,
+    evidence_id: str,
+) -> tuple[ExternalEvidence, bytes]:
+    rows = _resolve_external_evidence_rows(
+        session,
+        organization_id,
+        project_id,
+        base_design_hash,
+        [evidence_id],
+        expected_rule_id="CB-JOINT-001",
+    )
+    evidence = rows[0]
+    initial_binding = _external_evidence_binding(evidence)
+    _require_committed_domain_object(
+        session,
+        organization_id,
+        project_id=evidence.project_id,
+        object_key=evidence.object_key,
+        sha256=evidence.sha256,
+        size_bytes=evidence.size_bytes,
+        media_type=evidence.content_type,
+        owner_type="external_evidence",
+        owner_id=evidence.id,
+    )
+    try:
+        content = read_verified_stored_object(
+            StoredObjectExpectation(
+                object_key=evidence.object_key,
+                sha256=evidence.sha256,
+                size_bytes=evidence.size_bytes,
+                content_type=evidence.content_type,
+            ),
+            max_bytes=MAX_SIGNED_EVIDENCE_BYTES,
+        )
+    except ArtifactIntegrityError as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_EVIDENCE_INTEGRITY_FAILED",
+            "The signed retention statement no longer matches its immutable record.",
+            "Upload and select a new signed statement; physical release remains blocked.",
+        ) from exc
+    except ArtifactStorageUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "JOINT_RETENTION_EVIDENCE_STORAGE_UNAVAILABLE",
+                "message": "Retention evidence storage cannot currently be verified.",
+                "solution": "Retry after storage is healthy; physical release remains blocked.",
+            },
+        ) from exc
+    # Runtime roles intentionally have no UPDATE privilege on evidence rows;
+    # PostgreSQL would reject SELECT FOR UPDATE.  Refresh after the object read
+    # and compare every mutable binding instead.  A later revocation makes the
+    # frozen revision stale at each subsequent lifecycle gate.
+    current = session.scalar(
+        select(ExternalEvidence)
+        .where(
+            ExternalEvidence.id == evidence_id,
+            ExternalEvidence.organization_id == organization_id,
+            ExternalEvidence.project_id == project_id,
+        )
+        .execution_options(populate_existing=True)
+    )
+    if current is None or _external_evidence_binding(current) != initial_binding:
+        raise _external_evidence_snapshot_stale()
+    return current, content
+
+
+def _resolve_joint_retention_binding(
+    session: Session,
+    organization_id: str,
+    project_id: str,
+    base_spec: BookcaseDesignSpec,
+    base_result: Any,
+    evidence_id: str,
+    *,
+    trust_registry_json: str | None = None,
+) -> tuple[Any, dict[str, Any]]:
+    if (
+        base_spec.parameters.back_panel == BackPanelType.INSET_GROOVE
+        and not captive_inset_back_topology_is_complete(
+            base_result.parts,
+            base_result.joints,
+            base_result.assembly_graph,
+        )
+    ):
+        raise _retention_trust_error(
+            "BACK_PANEL_RETENTION_EVIDENCE_MISSING",
+            "The inset back is not proven mechanically captive on four boundaries.",
+            (
+                "Keep this revision in design review until the canonical four-groove topology "
+                "and multi-direction closing sequence are restored or independent back-panel "
+                "retention evidence is implemented."
+            ),
+        )
+    if base_spec.joint_retention is not None:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_ALREADY_BOUND",
+            "The canonical base design already contains a retention contract.",
+            "Create a new unbound design revision before selecting new evidence.",
+        )
+    evidence, evidence_bytes = _verified_joint_retention_evidence_bytes(
+        session,
+        organization_id,
+        project_id,
+        base_result.design_hash,
+        evidence_id,
+    )
+    registry = _joint_retention_trust_registry(trust_registry_json)
+    geometry_sha256 = dado_joint_geometry_fingerprint(base_result.parts, base_result.joints)
+    try:
+        contract = resolve_joint_retention_contract(
+            trust_registry=registry,
+            evidence_bytes=evidence_bytes,
+            expected_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+            ),
+            expected_joint_geometry_sha256=geometry_sha256,
+            expected_engine_version=base_result.engine_version,
+            expected_template_version=base_result.template_version,
+            required_materials=((base_spec.material.material_id, base_spec.material.version),),
+            required_thicknesses_um=(base_spec.parameters.actual_thickness_um,),
+        )
+    except JointRetentionTrustError as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_EVIDENCE_REJECTED",
+            str(exc),
+            "Select current evidence signed by an approved certifier for this exact geometry.",
+        ) from exc
+    raw_statement = json.loads(evidence_bytes)
+    if not isinstance(raw_statement, Mapping):  # guarded by the resolver; keep fail-closed
+        raise _retention_trust_error(
+            "JOINT_RETENTION_EVIDENCE_REJECTED",
+            "The signed retention statement is malformed.",
+            "Select a valid server-verifiable retention statement.",
+        )
+    signed_expiry_raw = raw_statement.get("expires_at")
+    try:
+        signed_expiry = datetime.fromisoformat(str(signed_expiry_raw)).astimezone(UTC)
+    except (TypeError, ValueError) as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_EVIDENCE_REJECTED",
+            "The signed retention expiry is malformed.",
+            "Select a valid server-verifiable retention statement.",
+        ) from exc
+    row_expiry = _as_utc(evidence.expires_at) if evidence.expires_at is not None else None
+    if (
+        evidence.sha256 != contract.evidence_sha256
+        or evidence.catalog_id != contract.system_id
+        or evidence.catalog_version != contract.system_version
+        or row_expiry != signed_expiry
+    ):
+        raise _retention_trust_error(
+            "JOINT_RETENTION_EVIDENCE_METADATA_MISMATCH",
+            "Stored evidence metadata does not match the authenticated statement.",
+            "Upload a new statement using its signed system, version and expiry values.",
+        )
+    snapshot = {
+        "schema_version": "custombuild.joint-retention-binding.v2",
+        "application_class": (
+            JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO.value
+        ),
+        "storage_evidence_id": evidence.id,
+        "storage_evidence_sha256": evidence.sha256,
+        "base_design_hash": base_result.design_hash,
+        "joint_geometry_sha256": geometry_sha256,
+        "registry_sha256": hashlib.sha256(canonical_json_bytes(registry)).hexdigest(),
+        "issuer_id": raw_statement.get("issuer_id"),
+        "key_id": raw_statement.get("key_id"),
+        "signed_evidence_id": contract.evidence_id,
+        "signed_evidence_expires_at": raw_statement.get("expires_at"),
+        "system_id": contract.system_id,
+        "system_version": contract.system_version,
+        "contract_sha256": canonical_hash(contract.model_dump(mode="json")),
+    }
+    return contract, snapshot
+
+
+def _canonical_preview_with_optional_retention(
+    session: Session,
+    organization_id: str,
+    project: Project | None,
+    payload: BookcasePreviewInput,
+    *,
+    design_id: str,
+    revision: int,
+    evidence_id: str | None,
+) -> tuple[BookcaseDesignSpec, Any, dict[str, Any], dict[str, Any] | None]:
+    base_spec, base_result, presented = canonical_preview(
+        payload.model_dump(exclude_none=True),
+        design_id=design_id,
+        revision=revision,
+    )
+    if project is not None:
+        presented = {
+            **presented,
+            "retention_certification_request": _retention_certification_request(
+                base_spec,
+                base_result,
+            ),
+        }
+    if evidence_id is None:
+        return base_spec, base_result, presented, None
+    if project is None:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_PROJECT_REQUIRED",
+            "Retention evidence can only be resolved inside an existing project.",
+            "Save the project draft, then preview the signed retention selection again.",
+        )
+    contract, snapshot = _resolve_joint_retention_binding(
+        session,
+        organization_id,
+        project.id,
+        base_spec,
+        base_result,
+        evidence_id,
+    )
+    spec, result, bound_presented = bind_joint_retention(base_spec, contract)
+    return (
+        spec,
+        result,
+        {
+            **bound_presented,
+            "retention_certification_request": presented["retention_certification_request"],
+            "retention_trust": snapshot,
+        },
+        snapshot,
+    )
+
+
+def _retention_certification_request(
+    spec: BookcaseDesignSpec,
+    result: Any,
+) -> dict[str, Any]:
+    parameters = spec.parameters
+    captive_back_proven = (
+        parameters.back_panel == BackPanelType.INSET_GROOVE
+        and captive_inset_back_topology_is_complete(
+            result.parts,
+            result.joints,
+            result.assembly_graph,
+        )
+    )
+    # This request covers only load-bearing carcass DADOs.  A surface-mounted
+    # back remains a separate unresolved application and will keep CAM blocked,
+    # but it must not prevent exact carcass evidence from crossing its own
+    # narrower trust boundary.  Otherwise the truthful back-panel blocker is
+    # unreachable and degrades to the higher-priority plain-DADO blocker.
+    eligible = parameters.back_panel != BackPanelType.INSET_GROOVE or captive_back_proven
+    required_materials = [
+        {
+            "material_id": spec.material.material_id,
+            "material_version": spec.material.version,
+            "actual_thickness_um": parameters.actual_thickness_um,
+        }
+    ]
+    return {
+        "schema_version": "custombuild.joint-retention-certification-request.v2",
+        "signed_evidence_schema_version": SIGNED_EVIDENCE_SCHEMA_VERSION,
+        "application_class": (
+            JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO.value
+        ),
+        "joint_geometry_fingerprint_schema": JOINT_GEOMETRY_FINGERPRINT_SCHEMA,
+        "source_design_hash": result.design_hash,
+        "joint_geometry_sha256": dado_joint_geometry_fingerprint(
+            result.parts,
+            result.joints,
+        ),
+        "engine_version": result.engine_version,
+        "template_version": result.template_version,
+        "eligible_for_current_binding": eligible,
+        "blocking_issue": (
+            None
+            if eligible
+            else (
+                "back_panel_capture_not_proven"
+            )
+        ),
+        "excluded_applications": (
+            [
+                {
+                    "application_class": (
+                        JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE.value
+                    ),
+                    "joint_count": sum(
+                        1
+                        for joint in result.joints
+                        if joint.retention_application_class
+                        == JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
+                    ),
+                    "retention_basis": "canonical_four_boundary_geometric_capture",
+                    "capture_proven": captive_back_proven,
+                }
+            ]
+            if parameters.back_panel == BackPanelType.INSET_GROOVE
+            else (
+                [
+                    {
+                        "application_class": "surface_mounted_back",
+                        "joint_count": sum(
+                            1
+                            for joint in result.joints
+                            if joint.joint_type.value == "rabbet"
+                            and any(
+                                part.role.value == "back"
+                                for member in joint.members
+                                for part in result.parts
+                                if part.part_id == member.part_id
+                            )
+                        ),
+                        "retention_basis": "independent_authenticated_evidence_required",
+                        "capture_proven": False,
+                    }
+                ]
+                if parameters.back_panel == BackPanelType.SURFACE_MOUNTED
+                else []
+            )
+        ),
+        "required_materials": required_materials,
+        "required_load_cases": [
+            {
+                "mode": "shear",
+                "rated_design_load_n": max(parameters.shelf_load_n, 1),
+            },
+            {
+                "mode": "withdrawal",
+                "rated_design_load_n": parameters.assumed_horizontal_force_n,
+            },
+        ],
+        "minimum_safety_factor_permille": parameters.structural_safety_factor_permille,
+    }
+
+
+def _require_current_retention_binding(
+    session: Session,
+    organization_id: str,
+    version: DesignVersion,
+    *,
+    minimum_valid_until: datetime | None = None,
+    trust_registry_json: str | None = None,
+) -> None:
+    try:
+        bound_spec = BookcaseDesignSpec.model_validate(version.spec_json)
+    except ValidationError as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The frozen retention-bound design cannot be reconstructed.",
+            "Create and review a new design revision.",
+        ) from exc
+    if bound_spec.joint_retention is None:
+        return
+    frozen_snapshot = version.result_json.get("retention_trust")
+    if not isinstance(frozen_snapshot, Mapping):
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The frozen design has no authenticated retention trust snapshot.",
+            "Create and review a new design revision with signed retention evidence.",
+        )
+    base_spec = bound_spec.model_copy(update={"joint_retention": None})
+    try:
+        base_result = build_bookcase(base_spec)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The retention base geometry can no longer be reconstructed.",
+            "Create and review a new design revision.",
+        ) from exc
+    evidence_id = frozen_snapshot.get("storage_evidence_id")
+    if not isinstance(evidence_id, str):
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The frozen retention evidence identifier is malformed.",
+            "Create and review a new design revision.",
+        )
+    contract, current_snapshot = _resolve_joint_retention_binding(
+        session,
+        organization_id,
+        version.project_id,
+        base_spec,
+        base_result,
+        evidence_id,
+        trust_registry_json=trust_registry_json,
+    )
+    if minimum_valid_until is not None:
+        try:
+            signed_expiry = datetime.fromisoformat(
+                str(current_snapshot["signed_evidence_expires_at"])
+            ).astimezone(UTC)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise _retention_trust_error(
+                "JOINT_RETENTION_BINDING_STALE",
+                "The frozen retention validity window is malformed.",
+                "Create and review a new revision from current signed evidence.",
+            ) from exc
+        if signed_expiry < minimum_valid_until.astimezone(UTC):
+            raise _retention_trust_error(
+                "JOINT_RETENTION_VALIDITY_TOO_SHORT",
+                "Retention evidence may expire before the generation deadline.",
+                "Select evidence valid beyond the complete generation and review window.",
+            )
+    if (
+        contract != bound_spec.joint_retention
+        or dict(frozen_snapshot) != current_snapshot
+        or base_result.design_hash != frozen_snapshot.get("base_design_hash")
+    ):
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "Retention evidence, registry or frozen contract changed after revision creation.",
+            "Create and review a new revision from current signed evidence.",
+        )
+    try:
+        bound_result = build_bookcase(bound_spec)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The frozen retention-bound design cannot be rebuilt.",
+            "Create and review a new revision.",
+        ) from exc
+    if bound_result.design_hash != version.design_hash:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The frozen retention contract no longer matches the version design hash.",
+            "Create and review a new revision.",
+        )
+
+
 def _require_current_artifacts(
     session: Session,
     organization_id: str,
@@ -1515,6 +2004,7 @@ def _verify_release_archive_owned(
 ) -> _ReleaseArchive:
     """Verify frozen package semantics without consulting mutable approvals."""
 
+    _require_current_retention_binding(session, organization_id, archive.version)
     try:
         missing, invalid, readiness_valid = _review_evidence_issues_owned(
             session,
@@ -1800,6 +2290,8 @@ def _require_current_bound_job_evidence(
     organization_id: str,
     job: GenerationJob,
     version: DesignVersion,
+    *,
+    trust_registry_json: str | None = None,
 ) -> None:
     """Re-resolve mutable evidence rows before a frozen job may be trusted.
 
@@ -1812,6 +2304,12 @@ def _require_current_bound_job_evidence(
     request = job.request_json
     if not isinstance(request, Mapping):
         raise HTTPException(status_code=409, detail="Generation evidence binding is malformed")
+    _require_current_retention_binding(
+        session,
+        organization_id,
+        version,
+        trust_registry_json=trust_registry_json,
+    )
     verified_evidence_bindings: dict[str, _ExternalEvidenceBinding] = {}
     design_approval = session.scalar(
         select(Approval)
@@ -1919,6 +2417,20 @@ def _frozen_dado_retention_is_unresolved(version: DesignVersion) -> bool | None:
     return dado_retention_evidence_missing(design)
 
 
+def _frozen_back_panel_retention_is_unresolved(version: DesignVersion) -> bool | None:
+    """Rebuild the frozen design and recheck its exact back-panel retention class."""
+
+    if not isinstance(version.spec_json, Mapping):
+        return None
+    try:
+        design = build_bookcase(BookcaseDesignSpec.model_validate(version.spec_json))
+    except (TypeError, ValueError, ValidationError):
+        return None
+    if design.design_hash != version.design_hash:
+        return None
+    return back_panel_retention_evidence_missing(design)
+
+
 def _require_resolved_dado_retention(version: DesignVersion) -> None:
     unresolved = _frozen_dado_retention_is_unresolved(version)
     if unresolved is None:
@@ -1935,10 +2447,9 @@ def _require_resolved_dado_retention(version: DesignVersion) -> None:
                     "A plain DADO proves geometry and local bearing, not permanent retention."
                 ),
                 "solution": (
-                    "The current MVP has no authenticated retention-catalogue resolver, so "
-                    "clients cannot resolve this blocker yet. Keep the job in design review "
-                    "until a server-side trust root can authenticate and bind exact geometry, "
-                    "hardware, applicability and capacity evidence."
+                    "Select current Ed25519-signed evidence from a server-approved certifier "
+                    "for this exact geometry, material and compiler version, then create and "
+                    "review a new revision."
                 ),
             },
         )
@@ -2198,6 +2709,7 @@ def _blocked_cam_review_package_is_valid(result_json: Mapping[str, Any]) -> bool
             DFM_GRAIN_BLOCKER_CODE,
             "TWO_SIDED_REGISTRATION_MISSING",
             DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+            BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
         }
         or result_json.get("authoritative_geometry") is not True
         or result_json.get("machine_program_mode") != "CAM_BLOCKED"
@@ -2820,7 +3332,12 @@ def _review_document_binding_issues(
         blocker_codes = normalized_package_status.blocker_codes
         grain_blocked = blocker_codes == (DFM_GRAIN_BLOCKER_CODE,)
         stock_blocked = blocker_codes == (STOCK_PROFILE_MISSING_CODE,)
-        retention_blocked = blocker_codes == (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+        dado_retention_blocked = blocker_codes == (
+            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        )
+        back_retention_blocked = blocker_codes == (
+            BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        )
         if stored_dfm_report is None or not _stock_report_matches_frozen_version(
             stored_dfm_report,
             expected_stock_missing_issues,
@@ -2846,8 +3363,26 @@ def _review_document_binding_issues(
                 raise ValueError("stock blocker grain warning does not match the frozen design")
         elif expected_grain_issues:
             raise ValueError("unbound directional stock is not represented by the package status")
-        if retention_blocked and _frozen_dado_retention_is_unresolved(version) is not True:
+        frozen_dado_retention = _frozen_dado_retention_is_unresolved(version)
+        frozen_back_retention = _frozen_back_panel_retention_is_unresolved(version)
+        if frozen_dado_retention is None or frozen_back_retention is None:
+            raise ValueError("frozen retention applications cannot be reconstructed")
+        if dado_retention_blocked and frozen_dado_retention is not True:
             raise ValueError("DADO retention blocker does not match the frozen design")
+        if back_retention_blocked and (
+            frozen_dado_retention is not False or frozen_back_retention is not True
+        ):
+            raise ValueError("back-panel retention blocker does not match the frozen design")
+        if (
+            normalized_package_status.cam_status is CAMStageStatus.VALIDATION_GENERATED
+            and (frozen_dado_retention or frozen_back_retention)
+        ):
+            raise ValueError("generated CAM status contradicts frozen joint retention")
+        if (
+            blocker_codes == ("TWO_SIDED_REGISTRATION_MISSING",)
+            and (frozen_dado_retention or frozen_back_retention)
+        ):
+            raise ValueError("registration blocker masks unresolved frozen joint retention")
     except (
         ArtifactError,
         ArtifactIntegrityError,
@@ -3192,6 +3727,7 @@ def _require_review_evidence(
     require_cam: bool = True,
     bind_review_documents: bool = False,
     build_identity: BuildIdentityValues | None = None,
+    trust_registry_json: str | None = None,
 ) -> None:
     """Require persisted, checksum-addressed evidence for the exact successful job."""
 
@@ -3225,7 +3761,13 @@ def _require_review_evidence(
         )
         if version is None:
             raise HTTPException(status_code=409, detail="Generation design version is missing")
-        _require_current_bound_job_evidence(session, organization_id, job, version)
+        _require_current_bound_job_evidence(
+            session,
+            organization_id,
+            job,
+            version,
+            trust_registry_json=trust_registry_json,
+        )
 
 
 def _prepare_review_artifact_download(
@@ -3705,13 +4247,18 @@ def preview_design(
     session: SessionDep,
     principal: PrincipalDep,
     project_id: str | None = None,
+    joint_retention_evidence_id: str | None = None,
 ) -> dict[str, Any]:
     project = tenant_project(session, principal, project_id) if project_id else None
     try:
-        _, _, presented = preview(
-            payload.model_dump(exclude_none=True),
+        _, _, presented, _ = _canonical_preview_with_optional_retention(
+            session,
+            principal.organization_id,
+            project,
+            payload,
             design_id=project.id if project else "preview",
             revision=project.current_revision + 1 if project else 1,
+            evidence_id=joint_retention_evidence_id,
         )
         return presented
     except (ValueError, ValidationError) as exc:
@@ -3830,7 +4377,10 @@ async def upload_external_evidence(
     session: SessionDep,
     principal: ReviewerDep,
     document: Annotated[UploadFile, File()],
-    evidence_type: Annotated[Literal["wall_anchor", "hardware", "material_grain"], Form()],
+    evidence_type: Annotated[
+        Literal["wall_anchor", "hardware", "material_grain", "joint_retention"],
+        Form(),
+    ],
     rule_id: Annotated[str, Form(pattern=r"^(CB|DFM)-[A-Z]+-[0-9]{3}$")],
     catalog_id: Annotated[str, Form(min_length=1, max_length=160)],
     catalog_version: Annotated[str, Form(min_length=1, max_length=80)],
@@ -3864,15 +4414,44 @@ async def upload_external_evidence(
                 "solution": "Save the current draft and upload evidence against its shown hash.",
             },
         )
+    normalized_expiry: datetime | None = None
     if expires_at is not None:
         normalized_expiry = (
             expires_at.replace(tzinfo=UTC) if expires_at.tzinfo is None else expires_at
-        )
+        ).astimezone(UTC)
         if normalized_expiry <= datetime.now(UTC):
             raise HTTPException(status_code=422, detail="Evidence expiry must be in the future")
     content = await document.read(MAX_CATALOG_SOURCE_BYTES + 1)
     try:
-        validate_upload(content, document.content_type or "", document.filename or "")
+        if evidence_type == "joint_retention":
+            if (document.content_type or "").split(";", 1)[
+                0
+            ].strip().lower() != "application/json" or not (
+                document.filename or ""
+            ).lower().endswith(".json"):
+                raise ValueError("signed joint-retention evidence must be an application/json file")
+            validate_signed_retention_evidence_structure(content)
+            statement = json.loads(content)
+            entry = statement.get("catalogue_entry") if isinstance(statement, Mapping) else None
+            signed_expiry_raw = (
+                statement.get("expires_at") if isinstance(statement, Mapping) else None
+            )
+            if not isinstance(entry, Mapping):
+                raise ValueError("signed joint-retention catalogue entry is missing")
+            try:
+                signed_expiry = datetime.fromisoformat(str(signed_expiry_raw)).astimezone(UTC)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("signed joint-retention expiry is malformed") from exc
+            if (
+                catalog_id.strip() != entry.get("system_id")
+                or catalog_version.strip() != entry.get("system_version")
+                or normalized_expiry != signed_expiry
+            ):
+                raise ValueError(
+                    "upload metadata must match signed retention system, version and expiry"
+                )
+        else:
+            validate_upload(content, document.content_type or "", document.filename or "")
     except ValueError as exc:
         raise HTTPException(
             status_code=422,
@@ -3880,7 +4459,8 @@ async def upload_external_evidence(
                 "code": "EXTERNAL_EVIDENCE_INVALID",
                 "message": str(exc),
                 "solution": (
-                    "Choose a supported image, PDF or DXF no larger than 20 MiB and retry."
+                    "Choose a supported image, PDF, DXF or signed retention JSON no larger "
+                    "than 20 MiB and retry."
                 ),
             },
         ) from exc
@@ -3940,7 +4520,7 @@ async def upload_external_evidence(
         size_bytes=len(content),
         content_type=media_type,
         created_by=principal.user_id,
-        expires_at=expires_at,
+        expires_at=normalized_expiry,
     )
     session.add(evidence)
     session.flush()
@@ -4122,10 +4702,14 @@ def create_version(
     except TemplateCapabilityError as exc:
         raise _template_capability_error(exc) from exc
     try:
-        spec, result, presented = canonical_preview(
-            payload.spec.model_dump(exclude_none=True),
+        spec, result, presented, retention_trust = _canonical_preview_with_optional_retention(
+            session,
+            principal.organization_id,
+            project,
+            payload.spec,
             design_id=project.id,
             revision=revision,
+            evidence_id=payload.joint_retention_evidence_id,
         )
     except (ValueError, ValidationError) as exc:
         raise _validation_error(exc) from exc
@@ -4168,21 +4752,22 @@ def create_version(
                 "version": spec.back_material.version,
             }
         )
-    context_hash = canonical_hash(
-        {
-            "design_hash": result.design_hash,
-            "engine_version": result.engine_version,
-            "template_version": result.template_version,
-            "rule_version": f"bookcase-rules@{RULES_VERSION}",
-            "source_provenance": source_provenance,
-            "production_context": production_context,
-            "template_capability": template_capability.snapshot(),
-            "materials": sorted(
-                materials,
-                key=lambda item: (item["material_id"], item["version"]),
-            ),
-        }
-    )
+    context_payload = {
+        "design_hash": result.design_hash,
+        "engine_version": result.engine_version,
+        "template_version": result.template_version,
+        "rule_version": f"bookcase-rules@{RULES_VERSION}",
+        "source_provenance": source_provenance,
+        "production_context": production_context,
+        "template_capability": template_capability.snapshot(),
+        "materials": sorted(
+            materials,
+            key=lambda item: (item["material_id"], item["version"]),
+        ),
+    }
+    if retention_trust is not None:
+        context_payload["retention_trust"] = retention_trust
+    context_hash = canonical_hash(context_payload)
 
     existing = session.scalar(
         select(DesignVersion).where(
@@ -4246,6 +4831,7 @@ def create_version(
             job.status = JobStatus.cancelled
             job.lease_token = None
             job.lease_expires_at = None
+            job.next_attempt_at = None
             job.finished_at = datetime.now(UTC)
             job.error = "Cancelled because the design revision was superseded"
     version = DesignVersion(
@@ -4281,6 +4867,7 @@ def create_version(
             "source": source_provenance.get("source", "parametric_template"),
             "production_context": production_context,
             "template_capability": template_capability.snapshot(),
+            "retention_trust": retention_trust,
         },
     )
     return version
@@ -4383,6 +4970,7 @@ def validate_version(
     _require_rule_engine()
     _require_frozen_template_capability(version)
     _verify_frozen_reference_asset(session, principal, version)
+    _require_current_retention_binding(session, principal.organization_id, version)
     if _frozen_grain_contract(version) is None:
         raise HTTPException(
             status_code=409,
@@ -4416,6 +5004,12 @@ def generate_version(
     _require_rule_engine()
     _require_frozen_template_capability(version)
     _verify_frozen_reference_asset(session, principal, version)
+    _require_current_retention_binding(
+        session,
+        principal.organization_id,
+        version,
+        minimum_valid_until=(datetime.now(UTC) + GENERATION_JOB_TIMEOUT + timedelta(minutes=5)),
+    )
     if _frozen_grain_contract(version) is None:
         raise HTTPException(
             status_code=409,
@@ -4556,6 +5150,7 @@ def generate_version(
             existing.attempts = 0
             existing.lease_token = None
             existing.lease_expires_at = None
+            existing.next_attempt_at = retry_started_at
             existing.deadline_at = retry_started_at + GENERATION_JOB_TIMEOUT
             existing.error = None
             existing.result_json = None
@@ -4671,6 +5266,7 @@ def generate_version(
                 existing.attempts = 0
                 existing.lease_token = None
                 existing.lease_expires_at = None
+                existing.next_attempt_at = retry_started_at
                 existing.deadline_at = retry_started_at + GENERATION_JOB_TIMEOUT
                 existing.error = None
                 existing.result_json = None
@@ -4717,6 +5313,7 @@ def generate_version(
             )
         )
         version.status = DesignStatus.design_validated
+    queued_at = datetime.now(UTC)
     job = GenerationJob(
         organization_id=principal.organization_id,
         design_version_id=version.id,
@@ -4725,7 +5322,8 @@ def generate_version(
         production_context_hash=production_context_hash,
         production_engine_context_json=resolved.context.as_dict(),
         request_json=request_json,
-        deadline_at=datetime.now(UTC) + GENERATION_JOB_TIMEOUT,
+        deadline_at=queued_at + GENERATION_JOB_TIMEOUT,
+        next_attempt_at=queued_at,
     )
     try:
         with session.begin_nested():
@@ -4794,6 +5392,7 @@ def approve_version(
     version = tenant_version(session, principal, project_id, revision)
     session.refresh(version, with_for_update=True)
     _require_frozen_template_capability(version)
+    _require_current_retention_binding(session, principal.organization_id, version)
     if version.immutable:
         raise HTTPException(status_code=409, detail="Immutable revisions cannot be changed")
     if payload.approval_type == "design" and version.status not in {
@@ -5085,6 +5684,7 @@ def release_version(
     # A missing CAM approval must never mask an unresolved physical-retention
     # invariant.  Release therefore returns the same canonical blocker as CAM.
     _require_resolved_dado_retention(version)
+    _require_current_retention_binding(session, principal.organization_id, version)
     if version.status == DesignStatus.superseded:
         raise HTTPException(status_code=409, detail="Superseded revisions cannot be released")
     existing_release: Release | None = None

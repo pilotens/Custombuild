@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Download, LoaderCircle, RefreshCw, ShieldAlert } from "lucide-react";
+import { Check, Download, FileDown, LoaderCircle, RefreshCw, ShieldAlert } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ApiError,
@@ -809,6 +809,73 @@ function artifactRoleLabel(kind: string): string {
   return kind.replaceAll("_", " ");
 }
 
+function artifactFormatLabel(artifact: Pick<ArtifactRead, "kind" | "content_type">): string {
+  if (artifact.kind === "design_fcstd") return "FreeCAD";
+  if (artifact.kind === "design_glb" || artifact.content_type === "model/gltf-binary") return "GLB";
+  if (artifact.content_type === "application/zip") return "ZIP";
+  if (artifact.content_type === "application/json") return "JSON";
+  if (artifact.content_type === "image/svg+xml") return "SVG";
+  if (artifact.content_type === "application/pdf") return "PDF";
+  if (artifact.content_type === "text/csv") return "CSV";
+  return artifact.content_type;
+}
+
+function artifactReviewUseLabel(kind: string): string {
+  if (kind === "production_bundle") return "Samlat underlag för designgranskning";
+  if (kind === "design_glb") return "Visuell 3D-granskning";
+  if (kind === "design_fcstd") return "Valfri CAD-granskning";
+  if (kind === "validation_backplot") return "Icke-skärande validering";
+  if (kind.startsWith("setup_sheet_")) return "Setupgranskning – inte arbetsorder";
+  if (kind === "operations") return "Semantisk kontroll – inte körbar CNC-kod";
+  return "Verifieringsbevis för designgranskning";
+}
+
+function artifactFileExtension(artifact: Pick<ArtifactRead, "kind" | "content_type">): string {
+  if (artifact.kind === "design_fcstd") return "FCStd";
+  if (artifact.kind === "design_glb" || artifact.content_type === "model/gltf-binary") return "glb";
+  if (artifact.content_type === "application/zip") return "zip";
+  if (artifact.content_type === "application/json") return "json";
+  if (artifact.content_type === "image/svg+xml") return "svg";
+  if (artifact.content_type === "application/pdf") return "pdf";
+  if (artifact.content_type === "text/csv") return "csv";
+  return "bin";
+}
+
+function artifactDownloadFileName(
+  artifact: Pick<ArtifactRead, "kind" | "content_type">,
+  revision: number,
+): string {
+  const canonicalApiNames: Record<string, string> = {
+    production_bundle: `custombuild-design-review-rev-${revision}.zip`,
+    manifest: `custombuild-design-review-rev-${revision}-manifest.json`,
+    stock_selection: `custombuild-stock-selection-rev-${revision}.json`,
+    generation_plan: `custombuild-generation-plan-rev-${revision}.json`,
+  };
+  const canonicalApiName = canonicalApiNames[artifact.kind];
+  if (canonicalApiName) return canonicalApiName;
+  const safeKind = artifact.kind
+    .toLocaleLowerCase("en-US")
+    .replaceAll(/[^a-z0-9._-]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "") || "artifact";
+  return `custombuild-${safeKind}-rev-${revision}.${artifactFileExtension(artifact)}`;
+}
+
+function sameArtifactIdentity(left: ArtifactRead, right: ArtifactRead): boolean {
+  return left.id === right.id
+    && left.kind === right.kind
+    && left.sha256 === right.sha256
+    && left.size_bytes === right.size_bytes
+    && left.content_type === right.content_type;
+}
+
+const CUSTOMER_REVIEW_DOCUMENTS = [
+  ["Monteringsmanual", "PDF", "Granskningskopia – inte frisläppt monteringsinstruktion"],
+  ["Material- och komponentlista (BOM)", "PDF", "Kvantitets- och måttgranskning"],
+  ["Beslagslista", "CSV", "Inköps- och konstruktionsgranskning"],
+  ["Deletiketter", "PDF", "Identifiering mot designhash och del-ID"],
+  ["Mätprotokoll", "PDF", "Underlag för fysisk verifiering"],
+] as const;
+
 export function ProductionWorkflow({
   spec,
   design,
@@ -836,6 +903,7 @@ export function ProductionWorkflow({
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback>();
   const [jobPollingIssue, setJobPollingIssue] = useState<JobPollingIssue>();
   const [jobPollRetryRequest, setJobPollRetryRequest] = useState(0);
+  const [downloadingArtifactId, setDownloadingArtifactId] = useState<string>();
   const [handoffGuidanceMode, setHandoffGuidanceMode] = useState<HandoffGuidanceMode>("self_build");
   const [loadedStorageKey, setLoadedStorageKey] = useState<string>();
   const [serverSynchronized, setServerSynchronized] = useState(false);
@@ -1134,12 +1202,17 @@ export function ProductionWorkflow({
     && /^[a-f0-9]{64}$/.test(job.result_json.manifest_sha256)
     ? job.result_json.manifest_sha256
     : undefined;
-  const artifactInventory = [...artifacts.reduce((inventory, artifact) => {
-    inventory.set(artifact.kind, (inventory.get(artifact.kind) ?? 0) + 1);
-    return inventory;
-  }, new Map<string, number>())]
-    .map(([kind, count]) => ({ kind, count, label: artifactRoleLabel(kind) }))
-    .sort((left, right) => left.label.localeCompare(right.label, "sv"));
+  const artifactInventory = artifacts
+    .map((artifact) => ({
+      artifact,
+      label: artifactRoleLabel(artifact.kind),
+      format: artifactFormatLabel(artifact),
+      reviewUse: artifactReviewUseLabel(artifact.kind),
+    }))
+    .sort((left, right) => (
+      left.label.localeCompare(right.label, "sv")
+      || left.artifact.id.localeCompare(right.artifact.id)
+    ));
   const completedArtifactSet = Boolean(
     job?.status === "succeeded" && requiredArtifactsComplete && productionBundle,
   );
@@ -1361,7 +1434,7 @@ export function ProductionWorkflow({
         back_stock_height_mm: spec.back_stock_height_mm,
         back_stock_count: spec.back_stock_count,
         machine_profile_id: spec.machine_profile_id,
-        postprocessor_id: "linuxcnc-validation-1.0.0",
+        postprocessor_id: "linuxcnc-validation-1.1.0",
         include_step: true,
         include_freecad_project: false,
         include_validation_program: true,
@@ -1384,7 +1457,7 @@ export function ProductionWorkflow({
         back_stock_height_mm: spec.back_stock_height_mm,
         back_stock_count: spec.back_stock_count,
         machine_profile_id: spec.machine_profile_id,
-        postprocessor_id: "linuxcnc-validation-1.0.0",
+        postprocessor_id: "linuxcnc-validation-1.1.0",
         include_step: true,
         include_freecad_project: false,
         include_validation_program: true,
@@ -1396,45 +1469,87 @@ export function ProductionWorkflow({
     });
   }
 
+  function startVerifiedBrowserDownload(blob: Blob, fileName: string) {
+    const objectUrl = URL.createObjectURL(blob);
+    pendingDownloadUrlsRef.current.set(objectUrl, undefined);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = fileName;
+    link.rel = "noopener noreferrer";
+    try {
+      document.body.append(link);
+      link.click();
+    } finally {
+      link.remove();
+      if (pendingDownloadUrlsRef.current.has(objectUrl)) {
+        const timer = window.setTimeout(() => {
+          if (!pendingDownloadUrlsRef.current.delete(objectUrl)) return;
+          URL.revokeObjectURL(objectUrl);
+        }, 250);
+        pendingDownloadUrlsRef.current.set(objectUrl, timer);
+      }
+    }
+  }
+
+  async function currentVerifiedArtifacts(): Promise<ArtifactRead[]> {
+    if (!job || !version || !designReviewReady) {
+      throw new ApiError("Det finns inget verifierat granskningspaket att hämta.");
+    }
+    const currentArtifacts = await api.listArtifacts(job.id);
+    setArtifacts(currentArtifacts);
+    if (!reviewPackageArtifactInventoryIsTruthful(
+      currentArtifacts,
+      reviewPackageStatus,
+      reviewPackageStatusClaimed,
+    )) {
+      throw new ApiError(
+        "Granskningspaketets aktuella artefaktlista är inte längre verifierbar. Skapa om paketet.",
+      );
+    }
+    return currentArtifacts;
+  }
+
   function downloadPackage() {
     void perform("download", "Förbereder hämtningen…", async () => {
-      if (!job || !version || !designReviewReady) {
-        throw new ApiError("Det finns inget verifierat granskningspaket att hämta.");
-      }
-      const currentArtifacts = await api.listArtifacts(job.id);
-      setArtifacts(currentArtifacts);
-      if (!reviewPackageArtifactInventoryIsTruthful(
-        currentArtifacts,
-        reviewPackageStatus,
-        reviewPackageStatusClaimed,
-      )) {
-        throw new ApiError(
-          "Granskningspaketets aktuella artefaktlista är inte längre verifierbar. Skapa om paketet.",
-        );
-      }
+      if (!version) throw new ApiError("Det finns ingen aktuell revision att hämta.");
+      const currentArtifacts = await currentVerifiedArtifacts();
       const artifact = currentArtifacts.find((candidate) => candidate.kind === "production_bundle");
       if (!artifact) throw new ApiError("Granskningspaketet saknas eller är inte längre tillgängligt.");
       const verifiedArtifact = await api.downloadArtifact(artifact);
-      const objectUrl = URL.createObjectURL(verifiedArtifact);
-      pendingDownloadUrlsRef.current.set(objectUrl, undefined);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = `custombuild-design-review-rev-${version.revision}.zip`;
-      link.rel = "noopener noreferrer";
-      try {
-        document.body.append(link);
-        link.click();
-      } finally {
-        link.remove();
-        if (pendingDownloadUrlsRef.current.has(objectUrl)) {
-          const timer = window.setTimeout(() => {
-            if (!pendingDownloadUrlsRef.current.delete(objectUrl)) return;
-            URL.revokeObjectURL(objectUrl);
-          }, 250);
-          pendingDownloadUrlsRef.current.set(objectUrl, timer);
-        }
-      }
+      startVerifiedBrowserDownload(
+        verifiedArtifact,
+        artifactDownloadFileName(artifact, version.revision),
+      );
       return "Granskningspaketet har hämtats.";
+    });
+  }
+
+  function downloadIndividualArtifact(selectedArtifact: ArtifactRead) {
+    setDownloadingArtifactId(selectedArtifact.id);
+    void perform(
+      "download",
+      `Verifierar ${artifactRoleLabel(selectedArtifact.kind)} före hämtning…`,
+      async () => {
+        if (!version) throw new ApiError("Det finns ingen aktuell revision att hämta.");
+        const currentArtifacts = await currentVerifiedArtifacts();
+        const matches = currentArtifacts.filter((candidate) => candidate.id === selectedArtifact.id);
+        if (matches.length !== 1 || !sameArtifactIdentity(matches[0]!, selectedArtifact)) {
+          throw new ApiError(
+            "Filen har ändrats eller är inte längre entydigt bunden till paketet. Skapa om granskningspaketet.",
+          );
+        }
+        const currentArtifact = matches[0]!;
+        const verifiedArtifact = await api.downloadArtifact(currentArtifact);
+        startVerifiedBrowserDownload(
+          verifiedArtifact,
+          artifactDownloadFileName(currentArtifact, version.revision),
+        );
+        return `${artifactRoleLabel(currentArtifact.kind)} har hämtats för designgranskning.`;
+      },
+    ).finally(() => {
+      setDownloadingArtifactId((current) => (
+        current === selectedArtifact.id ? undefined : current
+      ));
     });
   }
 
@@ -1801,6 +1916,25 @@ export function ProductionWorkflow({
                   )}
                 </p>
                 <section
+                  className="production-release-boundary"
+                  aria-label="Skillnad mellan designgranskning och fysisk frisläppning"
+                >
+                  <article className="review-ready">
+                    <span>1 · Designgranskning</span>
+                    <strong>Klar för revision {version?.revision ?? "–"}</strong>
+                    <small>Filerna får öppnas, jämföras och kommenteras som granskningsunderlag.</small>
+                  </article>
+                  <article className={workshopReadiness?.physical_cutting_authorized ? "physical-ready" : "physical-blocked"}>
+                    <span>2 · Fysisk tillverkning</span>
+                    <strong>{workshopReadiness?.physical_cutting_authorized ? "Frisläppt" : "Ej frisläppt"}</strong>
+                    <small>
+                      {workshopReadiness?.physical_cutting_authorized
+                        ? "Följ den godkända arbetsordern och verkstadens säkerhetsrutiner."
+                        : `${missingWorkshopRequirements.length} externa krav återstår. Filerna är inte en arbetsorder eller skärande CNC-kod.`}
+                    </small>
+                  </article>
+                </section>
+                <section
                   className="production-handoff-guide"
                   aria-label="Vägledning för hur delarna ska tas fram"
                 >
@@ -1876,6 +2010,18 @@ export function ProductionWorkflow({
                       <dd>Designgranskning</dd>
                     </div>
                     <div>
+                      <dt>Status</dt>
+                      <dd>Designgranskning klar</dd>
+                    </div>
+                    <div>
+                      <dt>Fysisk frisläppning</dt>
+                      <dd>{workshopReadiness?.physical_cutting_authorized ? "Frisläppt" : "Ej frisläppt"}</dd>
+                    </div>
+                    <div>
+                      <dt>Dokumentspråk</dt>
+                      <dd>Svenska PDF:er · tekniska datafält på engelska</dd>
+                    </div>
+                    <div>
                       <dt>ZIP-storlek</dt>
                       <dd>{productionBundle ? formatArtifactSize(productionBundle.size_bytes) : "–"}</dd>
                     </div>
@@ -1888,17 +2034,70 @@ export function ProductionWorkflow({
                       <dd><code>{manifestSha256 ?? "Saknas"}</code></dd>
                     </div>
                   </dl>
-                  <div className="production-artifact-inventory">
-                    <strong>Tillgängligt innehåll</strong>
+                  <section
+                    className="production-customer-documents"
+                    aria-label="Kunddokument i granskningspaketet"
+                  >
+                    <header>
+                      <span>
+                        <strong>Förväntade kunddokument i ZIP-filen</strong>
+                        <small>Svenska PDF:er · revision {version?.revision ?? "–"} · endast designgranskning</small>
+                      </span>
+                      <b>{CUSTOMER_REVIEW_DOCUMENTS.length}</b>
+                    </header>
                     <ul>
-                      {artifactInventory.map((item) => (
-                        <li key={item.kind}>
-                          <span>{item.label}</span>
-                          <small>{item.count} {item.count === 1 ? "fil" : "filer"}</small>
+                      {CUSTOMER_REVIEW_DOCUMENTS.map(([name, format, purpose]) => (
+                        <li key={name}>
+                          <span>
+                            <strong>{name}</strong>
+                            <small>{purpose}</small>
+                          </span>
+                          <b>{format}</b>
                         </li>
                       ))}
                     </ul>
-                  </div>
+                    <p>
+                      Kunddokumenten ingår i ZIP-filen, inte som separata hämtningar. Listan
+                      beskriver det nuvarande paketschemat, inte en separat serverinventering.
+                      Använd paketets manifest för att kontrollera aktuell förekomst, identitet och checksumma.
+                    </p>
+                  </section>
+                  <section
+                    className="production-artifact-inventory"
+                    aria-label="Separat verifierbara serverfiler"
+                  >
+                    <header>
+                      <span>
+                        <strong>Separat verifierbara serverfiler</strong>
+                        <small>Varje hämtning verifieras på nytt mot checksummebunden serverinventering.</small>
+                      </span>
+                      <b>{artifactInventory.length}</b>
+                    </header>
+                    <ul>
+                      {artifactInventory.map((item) => (
+                        <li key={item.artifact.id}>
+                          <span>
+                            <strong>{item.label}</strong>
+                            <small>
+                              {item.format} · revision {version?.revision ?? "–"} · {formatArtifactSize(item.artifact.size_bytes)} · {item.reviewUse}
+                            </small>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => downloadIndividualArtifact(item.artifact)}
+                            disabled={Boolean(busy)}
+                            aria-busy={busy === "download" && downloadingArtifactId === item.artifact.id}
+                            aria-label={`Hämta fil – ${item.label}`}
+                          >
+                            {busy === "download" && downloadingArtifactId === item.artifact.id
+                              ? <LoaderCircle className="spin" aria-hidden="true" size={14} />
+                              : <FileDown aria-hidden="true" size={14} />}
+                            Hämta fil
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
                 </section>
                 {!workshopReadiness?.physical_cutting_authorized && missingWorkshopRequirements.length > 0 ? (
                   <section

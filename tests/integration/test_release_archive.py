@@ -53,6 +53,11 @@ def _use_verified_in_process_objects(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_module, "open_verified_stored_object", open_verified)
     monkeypatch.setattr(api_module, "store_immutable_object", lambda *_args: None)
     monkeypatch.setattr(api_module, "_require_resolved_dado_retention", lambda _version: None)
+    monkeypatch.setattr(
+        api_module,
+        "_frozen_dado_retention_is_unresolved",
+        lambda _version: False,
+    )
 
 
 def _release_first_revision_and_create_second(

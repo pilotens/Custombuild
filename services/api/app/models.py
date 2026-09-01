@@ -20,6 +20,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -224,6 +226,7 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
             ondelete="CASCADE",
         ),
         Index("ix_generation_jobs_status_lease_expires_at", "status", "lease_expires_at"),
+        Index("ix_generation_jobs_status_next_attempt_at", "status", "next_attempt_at"),
     )
 
     design_version_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -241,6 +244,11 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        server_default=func.current_timestamp(),
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -248,11 +256,25 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
 
 class OutboxEvent(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "outbox_events"
-    __table_args__ = (UniqueConstraint("event_key"),)
+    __table_args__ = (
+        UniqueConstraint("event_key"),
+        Index(
+            "ix_outbox_events_pending_available",
+            "organization_id",
+            "available_at",
+            "created_at",
+            "id",
+            postgresql_where=text("dispatched_at IS NULL AND dead_lettered_at IS NULL"),
+        ),
+    )
 
     event_key: Mapped[str] = mapped_column(String(100))
     topic: Mapped[str] = mapped_column(String(100))
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.current_timestamp(),
+    )
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     dead_lettered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True

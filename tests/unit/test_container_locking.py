@@ -54,7 +54,9 @@ def test_worker_image_installs_locked_cad_group_but_api_does_not() -> None:
     assert scheduler_probe[:3] == ["CMD", "/opt/custombuild-venv/bin/python", "-c"]
     assert "celerybeat-schedule*" in scheduler_probe[3]
     assert "now-path.stat().st_mtime <= 300" in scheduler_probe[3]
-    assert compose.count("image: custombuild-worker:${VCS_REF:-uncommitted}") == 2
+    assert compose.count("image: custombuild-worker:${VCS_REF:-uncommitted}") == 4
+    assert '"--queues=generation"' in compose
+    assert '"--queues=maintenance"' in compose
     assert "INSTALL_FREECAD" not in compose
     assert "freecad-python3" not in worker
     assert 'io.custombuild.freecad.runtime="not-installed-fail-closed"' in worker
@@ -169,9 +171,9 @@ def test_compose_sets_resource_limits_and_passes_release_identity() -> None:
     assert "DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:-unknown}" in compose
     assert "SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:-unknown}" in compose
     assert "FRONTEND_LOCK_SHA256: ${FRONTEND_LOCK_SHA256:-unknown}" in compose
-    assert compose.count("mem_limit:") == 11
-    assert compose.count("cpus:") == 11
-    assert compose.count("*python-release-build-args") == 6
+    assert compose.count("mem_limit:") == 13
+    assert compose.count("cpus:") == 13
+    assert compose.count("*python-release-build-args") == 8
     assert compose.count("*release-build-args") == 2
 
 
@@ -444,14 +446,16 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
         "ADD --checksum=sha256:6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
     ) in dockerfile
     overrides_sha256 = hashlib.sha256(overrides).hexdigest()
-    assert overrides_sha256 == "1a96843ba71c16cee5c7e396a3082ab3ae0327ab429956db51d0d1b07f6508e5"
+    assert overrides_sha256 == "f787879847f3b5e1eaba89ee03a43997f11787ece23c4aab0cce4978f0942b50"
     assert f"ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256={overrides_sha256}" in dockerfile
     assert "go.etcd.io/etcd/client/pkg/v3@v3.6.14" in dockerfile
+    assert "golang.org/x/crypto@v0.55.0" in dockerfile
     assert "golang.org/x/image@v0.45.0" in dockerfile
     assert "golang.org/x/text@v0.41.0" in dockerfile
     assert 'go.etcd.io/etcd/client/pkg/v3)" = "v3.6.12"' in dockerfile
+    assert 'golang.org/x/crypto)" = "v0.54.0"' in dockerfile
     assert 'golang.org/x/image)" = "v0.44.0"' in dockerfile
-    assert dockerfile.count("-mod=readonly") == 7
+    assert dockerfile.count("-mod=readonly") == 9
     assert "go mod verify" in dockerfile
     assert "FROM scratch AS runtime" in dockerfile
     assert "USER 1000:1000" in dockerfile
@@ -466,6 +470,7 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
     for expected in (
         'test "$go_version" = "1.26.6"',
         'test "$etcd_client_pkg_version" = "3.6.14"',
+        'test "$x_crypto_version" = "0.55.0"',
         'test "$x_image_version" = "0.45.0"',
         'test "$x_text_version" = "0.41.0"',
         f'test "$security_overrides_sha256" = "{overrides_sha256}"',

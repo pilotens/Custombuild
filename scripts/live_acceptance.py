@@ -99,6 +99,9 @@ STOCK_PROFILE_MISSING: Final = "STOCK_PROFILE_MISSING"
 DFM_GRAIN_MISSING: Final = "DFM-GRAIN-001"
 TWO_SIDED_REGISTRATION_MISSING: Final = "TWO_SIDED_REGISTRATION_MISSING"
 DADO_RETENTION_EVIDENCE_MISSING: Final = "DADO_RETENTION_EVIDENCE_MISSING"
+BACK_PANEL_RETENTION_EVIDENCE_MISSING: Final = (
+    "BACK_PANEL_RETENTION_EVIDENCE_MISSING"
+)
 DFM_BLOCKER_CODES: Final = frozenset({STOCK_PROFILE_MISSING, DFM_GRAIN_MISSING})
 BLOCKED_CAM_REQUIRED_ACTIONS: Final = {
     STOCK_PROFILE_MISSING: (
@@ -115,12 +118,15 @@ BLOCKED_CAM_REQUIRED_ACTIONS: Final = {
         "do not infer WCS, pins, fixtures or registration coordinates."
     ),
     DADO_RETENTION_EVIDENCE_MISSING: (
-        "The current MVP cannot resolve this blocker because it has no authenticated "
-        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-        "checksum-addressed mechanical retention contract to every DADO joint, including "
-        "exact geometry, hardware quantity, material/thickness applicability and separate "
-        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-        "bearing check is not retention evidence."
+        "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+        "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+        "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+        "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
+    ),
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING: (
+        "Use only the canonical inset back whose four boundary grooves and multi-direction "
+        "closing sequence prove mechanical capture, or bind independently authenticated "
+        "back-panel retention evidence when that application class is implemented."
     ),
 }
 GENERATED_REVIEW_REQUIRED_ACTION: Final = (
@@ -585,7 +591,11 @@ def verify_blocked_cam_endpoint_rejection(
     """
 
     require(result.status == 409, f"{label} did not fail closed")
-    if blocker_codes != [DADO_RETENTION_EVIDENCE_MISSING]:
+    retention_blockers = {
+        DADO_RETENTION_EVIDENCE_MISSING,
+        BACK_PANEL_RETENTION_EVIDENCE_MISSING,
+    }
+    if len(blocker_codes) != 1 or blocker_codes[0] not in retention_blockers:
         return
     try:
         response = mapping(json.loads(result.body), f"{label} rejection")
@@ -593,8 +603,8 @@ def verify_blocked_cam_endpoint_rejection(
         raise AcceptanceFailure(f"{label} rejection is not JSON") from exc
     detail = mapping(response.get("detail"), f"{label} rejection detail")
     require(
-        detail.get("code") == DADO_RETENTION_EVIDENCE_MISSING,
-        f"{label} did not preserve the DADO retention blocker",
+        detail.get("code") == blocker_codes[0],
+        f"{label} did not preserve the joint-retention blocker",
     )
 
 
@@ -2019,7 +2029,7 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         "back_stock_height_mm": 1_220,
         "back_stock_count": 2,
         "machine_profile_id": "custombuild-router-1325-linuxcnc",
-        "postprocessor_id": "linuxcnc-validation-1.0.0",
+        "postprocessor_id": "linuxcnc-validation-1.1.0",
         "include_step": True,
         "include_freecad_project": False,
         "include_validation_program": True,

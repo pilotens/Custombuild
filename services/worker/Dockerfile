@@ -182,4 +182,4 @@ WORKDIR /app
 
 ENTRYPOINT []
 USER 65532:65532
-CMD ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+CMD ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "--queues=generation"]

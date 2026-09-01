@@ -520,9 +520,7 @@ def _generated_workspace_part_ids(spec: BookcasePreviewInput) -> set[str]:
             part_ids.add(f"cabinet-front-{cabinet}")
     if _legacy_back_panel_enabled(spec.back_panel):
         if spec.back_panel != "surface_mounted" and spec.divider_count > 0:
-            part_ids.update(
-                f"back-panel-bay-{bay}" for bay in range(1, spec.divider_count + 2)
-            )
+            part_ids.update(f"back-panel-bay-{bay}" for bay in range(1, spec.divider_count + 2))
         else:
             part_ids.add("back-panel")
     if spec.plinth:
@@ -646,6 +644,17 @@ class DesignVersionCreate(BaseModel):
     production_context: RevisionProductionContext
     expected_design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     expected_current_revision: int = Field(ge=0)
+    joint_retention_evidence_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        ),
+        description=(
+            "Optional immutable signed retention statement. The server verifies and "
+            "injects the resulting contract; clients never submit contract fields."
+        ),
+    )
     source_provenance: ReferenceImageSourceProvenance | None = None
 
 
@@ -679,7 +688,7 @@ class GenerationRequest(BaseModel):
     back_stock_height_mm: float = Field(default=1220, gt=0, le=5_000)
     back_stock_count: int = Field(default=2, ge=1, le=100)
     machine_profile_id: str = "custombuild-router-1325-linuxcnc"
-    postprocessor_id: str = "linuxcnc-validation-1.0.0"
+    postprocessor_id: str = "linuxcnc-validation-1.1.0"
     include_step: bool = True
     include_freecad_project: bool = False
     include_validation_program: bool = True
@@ -715,6 +724,7 @@ class JobRead(BaseModel):
     started_at: datetime | None
     lease_expires_at: datetime | None
     deadline_at: datetime | None
+    next_attempt_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -768,7 +778,12 @@ class ExternalEvidenceRead(BaseModel):
 
     id: str
     project_id: str
-    evidence_type: Literal["wall_anchor", "hardware", "material_grain"]
+    evidence_type: Literal[
+        "wall_anchor",
+        "hardware",
+        "material_grain",
+        "joint_retention",
+    ]
     rule_id: str = Field(pattern=r"^(CB|DFM)-[A-Z]+-[0-9]{3}$")
     catalog_id: str
     catalog_version: str

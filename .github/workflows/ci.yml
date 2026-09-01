@@ -377,17 +377,23 @@ jobs:
           before_attestor_id="$(container_id storage-capacity-attestor)"
           before_api_id="$(container_id api)"
           before_worker_id="$(container_id worker)"
+          before_maintenance_worker_id="$(container_id maintenance-worker)"
+          before_storage_reaper_worker_id="$(container_id storage-reaper-worker)"
           before_scheduler_id="$(container_id scheduler)"
           before_migrate_started="$(started_at migrate)"
           before_recovery_started="$(started_at storage-recovery)"
           before_attestor_started="$(started_at storage-capacity-attestor)"
           before_api_started="$(started_at api)"
           before_worker_started="$(started_at worker)"
+          before_maintenance_worker_started="$(started_at maintenance-worker)"
+          before_storage_reaper_worker_started="$(started_at storage-reaper-worker)"
           before_scheduler_started="$(started_at scheduler)"
 
           database_clients=(
             api
             worker
+            maintenance-worker
+            storage-reaper-worker
             scheduler
             storage-capacity-attestor
           )
@@ -398,6 +404,8 @@ jobs:
           done
           before_api_finished="$(finished_at api)"
           before_worker_finished="$(finished_at worker)"
+          before_maintenance_worker_finished="$(finished_at maintenance-worker)"
+          before_storage_reaper_worker_finished="$(finished_at storage-reaper-worker)"
           before_scheduler_finished="$(finished_at scheduler)"
           before_attestor_finished="$(finished_at storage-capacity-attestor)"
 
@@ -408,6 +416,8 @@ jobs:
             storage-capacity-attestor
             api
             worker
+            maintenance-worker
+            storage-reaper-worker
             scheduler
           )
           "${compose[@]}" up --detach --force-recreate "${replacement_services[@]}"
@@ -425,17 +435,23 @@ jobs:
                 && test "$(container_id storage-capacity-attestor)" != "$before_attestor_id" \
                 && test "$(container_id api)" != "$before_api_id" \
                 && test "$(container_id worker)" != "$before_worker_id" \
+                && test "$(container_id maintenance-worker)" != "$before_maintenance_worker_id" \
+                && test "$(container_id storage-reaper-worker)" != "$before_storage_reaper_worker_id" \
                 && test "$(container_id scheduler)" != "$before_scheduler_id" \
                 && test "$(started_at migrate)" != "$before_migrate_started" \
                 && test "$(started_at storage-recovery)" != "$before_recovery_started" \
                 && test "$(started_at storage-capacity-attestor)" != "$before_attestor_started" \
                 && test "$(started_at api)" != "$before_api_started" \
                 && test "$(started_at worker)" != "$before_worker_started" \
+                && test "$(started_at maintenance-worker)" != "$before_maintenance_worker_started" \
+                && test "$(started_at storage-reaper-worker)" != "$before_storage_reaper_worker_started" \
                 && test "$(started_at scheduler)" != "$before_scheduler_started" \
                 && recovery_completed \
                 && healthy storage-capacity-attestor \
                 && healthy api \
                 && healthy worker \
+                && healthy maintenance-worker \
+                && healthy storage-reaper-worker \
                 && healthy scheduler; then
                 restart_proved=true
                 break
@@ -448,6 +464,8 @@ jobs:
           python3 - \
             "$before_api_finished" \
             "$before_worker_finished" \
+            "$before_maintenance_worker_finished" \
+            "$before_storage_reaper_worker_finished" \
             "$before_scheduler_finished" \
             "$before_attestor_finished" \
             "$(started_at postgres)" \
@@ -455,6 +473,8 @@ jobs:
             "$(started_at storage-capacity-attestor)" \
             "$(started_at api)" \
             "$(started_at worker)" \
+            "$(started_at maintenance-worker)" \
+            "$(started_at storage-reaper-worker)" \
             "$(started_at scheduler)" <<'PY'
           import datetime
           import sys
@@ -462,13 +482,13 @@ jobs:
           def timestamp(value: str) -> datetime.datetime:
               return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-          old_finished = [timestamp(value) for value in sys.argv[1:5]]
-          postgres_started = timestamp(sys.argv[5])
-          completed = timestamp(sys.argv[6])
+          old_finished = [timestamp(value) for value in sys.argv[1:7]]
+          postgres_started = timestamp(sys.argv[7])
+          completed = timestamp(sys.argv[8])
           for finished in old_finished:
               assert finished <= postgres_started, (finished, postgres_started)
           assert postgres_started <= completed, (postgres_started, completed)
-          for started_value in sys.argv[7:]:
+          for started_value in sys.argv[9:]:
               started = timestamp(started_value)
               assert started >= completed, (started, completed)
           PY

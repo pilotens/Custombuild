@@ -12,6 +12,7 @@ from custombuild_domain import (
     BackPanelType,
     BookcaseDesignSpec,
     BookcaseParameters,
+    JointRetentionContract,
     JointType,
     PartRole,
     ReinforcementMode,
@@ -190,10 +191,7 @@ def normalize_preview(
             else (
                 screening_birch_plywood_6()
                 if requested_back_material == "birch-plywood-6"
-                or (
-                    requested_back_material is None
-                    and material.material_id == "birch-plywood"
-                )
+                or (requested_back_material is None and material.material_id == "birch-plywood")
                 else screening_mdf_6()
             )
         ),
@@ -556,3 +554,18 @@ def canonical_preview(
 
     resolver = auto_fix if payload.get("reinforcement_mode") == "auto" else preview
     return resolver(payload, design_id=design_id, revision=revision)
+
+
+def bind_joint_retention(
+    spec: BookcaseDesignSpec,
+    retention: JointRetentionContract,
+) -> tuple[BookcaseDesignSpec, Any, dict[str, Any]]:
+    """Rebuild and re-evaluate a design after a server-authenticated binding."""
+
+    if spec.joint_retention is not None:
+        raise ValueError("joint retention is already bound to this canonical design")
+    bound_spec = spec.model_copy(update={"joint_retention": retention})
+    bound_result = build_bookcase(bound_spec)
+    evaluate_design, _, _ = load_rule_engine()
+    evaluations = evaluate_design(bound_result).evaluations
+    return bound_spec, bound_result, present_design(bound_result, evaluations)

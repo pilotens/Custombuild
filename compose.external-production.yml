@@ -166,6 +166,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:?Set the HTTPS public web origin}
       ARTIFACT_SIGNING_SECRET: ${ARTIFACT_SIGNING_SECRET:?Set ARTIFACT_SIGNING_SECRET}
       ARTIFACT_STREAM_TIMEOUT_SECONDS: ${ARTIFACT_STREAM_TIMEOUT_SECONDS:-120}
+      JOINT_RETENTION_TRUST_REGISTRY_JSON: ${JOINT_RETENTION_TRUST_REGISTRY_JSON:-}
       S3_ENDPOINT: http://object-storage:8333
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
@@ -196,6 +197,61 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+      JOINT_RETENTION_TRUST_REGISTRY_JSON: ${JOINT_RETENTION_TRUST_REGISTRY_JSON:-}
+    depends_on:
+      storage-capacity-attestor:
+        condition: service_healthy
+        restart: true
+
+  maintenance-worker:
+    build:
+      args:
+        APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}
+        VCS_REF: ${VCS_REF:?Set the exact source commit SHA}
+        BUILD_DATE: ${BUILD_DATE:?Set the source commit timestamp}
+        SOURCE_URL: ${SOURCE_URL:?Set the canonical source URL}
+        SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
+        DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
+    environment:
+      <<: *storage-capacity-environment
+      APP_ENV: production
+      PRODUCTION_FOUR_EYES_REQUIRED: "true"
+      DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+      CELERY_EXPECTED_QUEUE: maintenance
+    depends_on:
+      storage-capacity-attestor:
+        condition: service_healthy
+        restart: true
+
+  storage-reaper-worker:
+    build:
+      args:
+        APP_VERSION: ${APP_VERSION:?Set immutable APP_VERSION}
+        VCS_REF: ${VCS_REF:?Set the exact source commit SHA}
+        BUILD_DATE: ${BUILD_DATE:?Set the source commit timestamp}
+        SOURCE_URL: ${SOURCE_URL:?Set the canonical source URL}
+        SOURCE_MANIFEST_SHA256: ${SOURCE_MANIFEST_SHA256:?Set the exact source manifest SHA-256}
+        DEPENDENCY_LOCK_SHA256: ${DEPENDENCY_LOCK_SHA256:?Set the uv.lock SHA-256}
+    environment:
+      <<: *storage-capacity-environment
+      APP_ENV: production
+      PRODUCTION_FOUR_EYES_REQUIRED: "true"
+      DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      S3_ENDPOINT: http://object-storage:8333
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
+      S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+      CELERY_EXPECTED_QUEUE: storage-reaper
     depends_on:
       storage-capacity-attestor:
         condition: service_healthy

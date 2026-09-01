@@ -1,6 +1,7 @@
 """Deterministic manufacturing engine for Custombuild."""
 
-from typing import Any
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
 from .artifact_limits import (
     MAX_API_TRANSIENT_BYTES,
@@ -69,30 +70,32 @@ from .model import (
 )
 from .nesting import DeterministicNester, validate_layout
 from .operations import TwoSidedRegistration, generate_operations_document
-from .package import (
-    GENERATION_PLAN_ARTIFACT_PATH,
-    GENERATION_PLAN_ARTIFACT_ROLE,
-    GENERATION_PLAN_SCHEMA_VERSION,
-    MANIFEST_CONTEXT_HASH_FIELDS,
-    STOCK_SELECTION_SCHEMA_VERSION,
-    ArtifactFile,
-    ManifestContext,
-    blocked_cam_artifact_violation,
-    build_deterministic_zip,
-    build_manifest,
-    default_artifacts,
-    design_review_artifacts,
-    generation_plan_artifact,
-    machine_profile_fingerprint,
-    normalize_design_review_dfm_report,
-    read_and_verify_package,
-    stock_profiles_fingerprint,
-    stock_selection_artifact,
-    validate_design_review_status_dfm_report,
-    validate_design_review_status_inventory_entries,
-    validate_manifest_artifact_entries,
-    validate_manifest_context_contract,
-)
+
+if TYPE_CHECKING:
+    from .package import (
+        GENERATION_PLAN_ARTIFACT_PATH,
+        GENERATION_PLAN_ARTIFACT_ROLE,
+        GENERATION_PLAN_SCHEMA_VERSION,
+        MANIFEST_CONTEXT_HASH_FIELDS,
+        STOCK_SELECTION_SCHEMA_VERSION,
+        ArtifactFile,
+        ManifestContext,
+        blocked_cam_artifact_violation,
+        build_deterministic_zip,
+        build_manifest,
+        default_artifacts,
+        design_review_artifacts,
+        generation_plan_artifact,
+        machine_profile_fingerprint,
+        normalize_design_review_dfm_report,
+        read_and_verify_package,
+        stock_profiles_fingerprint,
+        stock_selection_artifact,
+        validate_design_review_status_dfm_report,
+        validate_design_review_status_inventory_entries,
+        validate_manifest_artifact_entries,
+        validate_manifest_context_contract,
+    )
 from .procurement import (
     GROUPED_BOM_SCHEMA_VERSION,
     STOCK_PURCHASE_SCHEMA_VERSION,
@@ -115,17 +118,20 @@ from .readiness import (
     validate_workshop_evidence_binding,
 )
 from .review_status import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DESIGN_REVIEW_PACKAGE_STATUS_SCHEMA_VERSION,
     CAMStageStatus,
     DesignReviewPackageStatus,
+    back_panel_retention_evidence_missing,
     blocked_design_review_package_status,
     dado_retention_evidence_missing,
     generated_design_review_package_status,
     joint_retention_contract_is_structurally_complete,
     normalize_design_review_package_status,
+    retention_evidence_blocker_code,
     validate_design_review_status_retention_binding,
 )
 
@@ -138,9 +144,59 @@ def build_production_bundle(*args: Any, **kwargs: Any) -> Any:
     return build(*args, **kwargs)
 
 
+_PACKAGE_EXPORTS = frozenset(
+    {
+        "GENERATION_PLAN_ARTIFACT_PATH",
+        "GENERATION_PLAN_ARTIFACT_ROLE",
+        "GENERATION_PLAN_SCHEMA_VERSION",
+        "MANIFEST_CONTEXT_HASH_FIELDS",
+        "STOCK_SELECTION_SCHEMA_VERSION",
+        "ArtifactFile",
+        "ManifestContext",
+        "blocked_cam_artifact_violation",
+        "build_deterministic_zip",
+        "build_manifest",
+        "default_artifacts",
+        "design_review_artifacts",
+        "generation_plan_artifact",
+        "machine_profile_fingerprint",
+        "normalize_design_review_dfm_report",
+        "read_and_verify_package",
+        "stock_profiles_fingerprint",
+        "stock_selection_artifact",
+        "validate_design_review_status_dfm_report",
+        "validate_design_review_status_inventory_entries",
+        "validate_manifest_artifact_entries",
+        "validate_manifest_context_contract",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose cross-package artifact helpers without import cycles.
+
+    ``package`` depends on CAM and postprocessors.  Importing it while the
+    lightweight manufacturing models are still initialising makes a clean
+    ``import custombuild_cam`` or ``import custombuild_postprocessors`` depend
+    on whichever package happened to be imported first.
+    """
+
+    if name not in _PACKAGE_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    package_module = import_module(".package", __name__)
+    value = getattr(package_module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _PACKAGE_EXPORTS)
+
+
 __all__ = [
     "ArtifactError",
     "ArtifactFile",
+    "BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
     "MAX_ARTIFACT_BYTES",
     "MAX_API_TRANSIENT_BYTES",
     "MAX_CATALOG_SOURCE_BYTES",
@@ -216,6 +272,7 @@ __all__ = [
     "build_production_bundle",
     "artifact_size_limit",
     "build_workshop_readiness_report",
+    "back_panel_retention_evidence_missing",
     "blocked_design_review_package_status",
     "dado_retention_evidence_missing",
     "canonical_json_bytes",
@@ -232,6 +289,7 @@ __all__ = [
     "linuxcnc_reference_router_5125",
     "machine_profile_fingerprint",
     "normalize_design_review_package_status",
+    "retention_evidence_blocker_code",
     "normalize_design_review_dfm_report",
     "label_index_csv",
     "quality_measurement_plan_json",

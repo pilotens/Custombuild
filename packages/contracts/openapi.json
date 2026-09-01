@@ -219,7 +219,8 @@
             "enum": [
               "wall_anchor",
               "hardware",
-              "material_grain"
+              "material_grain",
+              "joint_retention"
             ],
             "title": "Evidence Type",
             "type": "string"
@@ -493,6 +494,19 @@
             "title": "Expected Design Hash",
             "type": "string"
           },
+          "joint_retention_evidence_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional immutable signed retention statement. The server verifies and injects the resulting contract; clients never submit contract fields.",
+            "title": "Joint Retention Evidence Id"
+          },
           "production_context": {
             "$ref": "#/components/schemas/RevisionProductionContext"
           },
@@ -662,7 +676,8 @@
             "enum": [
               "wall_anchor",
               "hardware",
-              "material_grain"
+              "material_grain",
+              "joint_retention"
             ],
             "title": "Evidence Type",
             "type": "string"
@@ -774,7 +789,7 @@
             "type": "string"
           },
           "postprocessor_id": {
-            "default": "linuxcnc-validation-1.0.0",
+            "default": "linuxcnc-validation-1.1.0",
             "title": "Postprocessor Id",
             "type": "string"
           },
@@ -961,6 +976,18 @@
             ],
             "title": "Lease Expires At"
           },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
           "production_context_hash": {
             "title": "Production Context Hash",
             "type": "string"
@@ -1015,6 +1042,7 @@
           "started_at",
           "lease_expires_at",
           "deadline_at",
+          "next_attempt_at",
           "finished_at",
           "created_at",
           "updated_at"
@@ -2294,6 +2322,22 @@
                 }
               ],
               "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "joint_retention_evidence_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Joint Retention Evidence Id"
             }
           }
         ],

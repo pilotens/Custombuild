@@ -946,15 +946,25 @@ def _topology_proven_feature_overlaps(
     design: Any | None,
     part_id: str,
 ) -> frozenset[frozenset[str]]:
-    """Return feature pairs backed by all three joints of a carcass corner."""
+    """Return feature pairs backed by all three joints of a carcass corner.
+
+    DADO crossings use the existing three-DADO proof.  A surface-mounted back
+    has two RABBET edges at each rear carcass corner instead.  Those RABBETs
+    participate only when the entire domain result exactly rebuilds from the
+    canonical surface-back spec; arbitrary or partial RABBET declarations never
+    become compatible cutters.  The caller additionally proves exact in-stock
+    relief-volume containment before accepting a covered no-op.
+    """
 
     if design is None:
         return frozenset()
     joints = tuple(getattr(design, "joints", ()))
+    canonical_surface_rabbet_ids = _canonical_surface_back_rabbet_joint_ids(design)
     connections: set[frozenset[str]] = set()
     joint_data: list[tuple[frozenset[str], dict[str, tuple[str, ...]]]] = []
     for joint in joints:
-        if _value(getattr(joint, "joint_type", "")) != "DADO":
+        joint_type = _value(getattr(joint, "joint_type", ""))
+        if joint_type != "DADO" and str(joint.joint_id) not in canonical_surface_rabbet_ids:
             continue
         by_part = {
             str(member.part_id): tuple(str(value) for value in member.feature_ids)
@@ -980,6 +990,48 @@ def _topology_proven_feature_overlaps(
                     if first_id != second_id:
                         proven.add(frozenset((first_id, second_id)))
     return frozenset(proven)
+
+
+def _canonical_surface_back_rabbet_joint_ids(design: Any) -> frozenset[str]:
+    """Identify only exact compiler-owned surface-back RABBET applications."""
+
+    try:
+        from custombuild_domain import BackPanelType, BookcaseDesignSpec, build_bookcase
+
+        spec = BookcaseDesignSpec.model_validate(getattr(design, "spec", None))
+        if spec.parameters.back_panel != BackPanelType.SURFACE_MOUNTED:
+            return frozenset()
+        canonical = build_bookcase(spec)
+    except (ImportError, TypeError, ValueError):
+        return frozenset()
+    if any(
+        getattr(design, field, None) != getattr(canonical, field)
+        for field in (
+            "design_hash",
+            "engine_version",
+            "template_version",
+            "spec",
+            "parts",
+            "joints",
+            "assembly_graph",
+            "total_weight_g",
+        )
+    ):
+        return frozenset()
+    back_part_ids = {
+        str(part.part_id)
+        for part in canonical.parts
+        if _value(getattr(part, "role", "")) == "BACK"
+    }
+    return frozenset(
+        str(joint.joint_id)
+        for joint in canonical.joints
+        if _value(getattr(joint, "joint_type", "")) == "RABBET"
+        and any(
+            str(getattr(member, "part_id", "")) in back_part_ids
+            for member in getattr(joint, "members", ())
+        )
+    )
 
 
 def _remove_material(

@@ -26,6 +26,7 @@ from .models import (
     FeatureDimensions,
     Joint,
     JointMember,
+    JointRetentionApplicationClass,
     ManufacturingFeature,
     PartInstance,
     Placement,
@@ -37,10 +38,12 @@ DADO_FIT_CLEARANCE_UM = mm("0.5")
 DADO_FEATURE_TOLERANCE_UM = mm("0.05")
 DADO_MAX_DEPTH_UM = mm(12)
 DADO_CORNER_RELIEF_RADIUS_UM = mm(3)
-# The inset back starts 12 mm from the rear edge. Four millimetres between
-# shelf/divider ends and that line keeps the 3 mm dogbone envelope separated
-# even after the versioned 0.05 mm machining tolerance is applied.
-INSET_BACK_RELIEF_CLEARANCE_UM = mm(4)
+# Four millimetres between a shelf/divider end and the nearest rear cut or
+# stock boundary keeps the 3 mm dogbone envelope clear even after the versioned
+# 0.05 mm machining tolerance is applied.  For a surface back this clearance
+# starts at the RABBET's inner edge; the previous 2 mm reveal both broke through
+# the side panel and overlapped an unrelated back-panel application.
+DADO_REAR_RELIEF_CLEARANCE_UM = mm(4)
 
 
 class BookcaseEngine:
@@ -94,9 +97,13 @@ class BookcaseEngine:
             else 0
         )
         shelf_depth = (
-            p.depth_um - mm(12) - p.back_thickness_um - INSET_BACK_RELIEF_CLEARANCE_UM
+            p.depth_um - mm(12) - p.back_thickness_um - DADO_REAR_RELIEF_CLEARANCE_UM
             if p.back_panel == BackPanelType.INSET_GROOVE
-            else case_depth - mm(2)
+            else (
+                case_depth - p.back_thickness_um - DADO_REAR_RELIEF_CLEARANCE_UM
+                if p.back_panel == BackPanelType.SURFACE_MOUNTED
+                else case_depth - DADO_REAR_RELIEF_CLEARANCE_UM
+            )
         )
         divider_depth = (
             p.depth_um - mm(12) if p.back_panel == BackPanelType.INSET_GROOVE else shelf_depth
@@ -535,10 +542,15 @@ class BookcaseEngine:
             direction: AssemblyDirection,
             mating: Point3D,
             *,
+            retention_application_class: JointRetentionApplicationClass | None = None,
             first_feature_face: FaceName | None = None,
             second_feature_face: FaceName | None = None,
             first_feature_dimensions: FeatureDimensions | None = None,
         ) -> None:
+            if kind == JointType.DADO and retention_application_class is None:
+                raise ValueError("every DADO call site must declare its retention application")
+            if kind != JointType.DADO and retention_application_class is not None:
+                raise ValueError("only DADO joints may declare a retention application")
             first, second = by_key[first_key], by_key[second_key]
             joint_id = stable_id("joint", spec.design_id, key)
             first_feature, second_feature = self._feature_pair(
@@ -556,7 +568,12 @@ class BookcaseEngine:
             if second_feature is not None:
                 feature_map[second.part_id].append(second_feature)
             hardware_sku, hardware_count = self._hardware(kind)
-            retention = spec.joint_retention if kind == JointType.DADO else None
+            retention = (
+                spec.joint_retention
+                if retention_application_class
+                == JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                else None
+            )
             if retention is not None:
                 hardware_sku = retention.hardware_sku
                 hardware_count = retention.hardware_count_per_joint
@@ -581,6 +598,7 @@ class BookcaseEngine:
                     hardware_sku=hardware_sku,
                     hardware_count=hardware_count,
                     tolerance_um=(DADO_FIT_CLEARANCE_UM if kind == JointType.DADO else mm("0.2")),
+                    retention_application_class=retention_application_class,
                     retention=retention,
                 )
             )
@@ -596,6 +614,11 @@ class BookcaseEngine:
             FaceName.LEFT,
             AssemblyDirection.POS_X,
             Point3D(x_um=p.actual_thickness_um, z_um=bottom.placement.z_um),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
+            ),
         )
         join(
             "bottom-right",
@@ -606,6 +629,11 @@ class BookcaseEngine:
             FaceName.RIGHT,
             AssemblyDirection.NEG_X,
             Point3D(x_um=p.width_um - p.actual_thickness_um, z_um=bottom.placement.z_um),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
+            ),
         )
         join(
             "top-left",
@@ -616,6 +644,11 @@ class BookcaseEngine:
             FaceName.LEFT,
             AssemblyDirection.POS_X,
             Point3D(x_um=p.actual_thickness_um, z_um=p.height_um - p.actual_thickness_um),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
+            ),
         )
         join(
             "top-right",
@@ -627,6 +660,11 @@ class BookcaseEngine:
             AssemblyDirection.NEG_X,
             Point3D(
                 x_um=p.width_um - p.actual_thickness_um, z_um=p.height_um - p.actual_thickness_um
+            ),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
             ),
         )
 
@@ -647,6 +685,9 @@ class BookcaseEngine:
                     x_um=divider.placement.x_um,
                     z_um=bottom.placement.z_um + bottom.finished_size.height_um,
                 ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                ),
             )
             join(
                 f"divider-{divider.instance_index}-top",
@@ -657,6 +698,9 @@ class BookcaseEngine:
                 FaceName.TOP,
                 AssemblyDirection.NEG_Z,
                 Point3D(x_um=divider.placement.x_um, z_um=top.placement.z_um),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                ),
             )
 
         supports: list[PartInstance] = [left, *dividers, right]
@@ -685,6 +729,11 @@ class BookcaseEngine:
                     x_um=shelf.placement.x_um + shelf_inset,
                     z_um=shelf.placement.z_um,
                 ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    if shelf_joint_type == JointType.DADO
+                    else None
+                ),
             )
             join(
                 f"shelf-r{row}-b{bay}-right",
@@ -697,6 +746,11 @@ class BookcaseEngine:
                 Point3D(
                     x_um=(shelf.placement.x_um + shelf.finished_size.width_um - shelf_inset),
                     z_um=shelf.placement.z_um,
+                ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    if shelf_joint_type == JointType.DADO
+                    else None
                 ),
             )
 
@@ -726,6 +780,9 @@ class BookcaseEngine:
                         x_um=left_support.placement.x_um + left_support.finished_size.width_um,
                         z_um=base_bottom.placement.z_um,
                     ),
+                    retention_application_class=(
+                        JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    ),
                 )
                 join(
                     f"base-bottom-{cabinet_index}-right-support",
@@ -738,6 +795,9 @@ class BookcaseEngine:
                     Point3D(
                         x_um=right_support.placement.x_um,
                         z_um=base_bottom.placement.z_um,
+                    ),
+                    retention_application_class=(
+                        JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
                     ),
                 )
 
@@ -756,6 +816,9 @@ class BookcaseEngine:
                     Point3D(
                         x_um=base_side.placement.x_um,
                         z_um=bottom.placement.z_um,
+                    ),
+                    retention_application_class=(
+                        JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
                     ),
                 )
 
@@ -829,6 +892,9 @@ class BookcaseEngine:
                         back_face,
                         AssemblyDirection.NEG_Y,
                         origin,
+                        retention_application_class=(
+                            JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
+                        ),
                         first_feature_face=support_face,
                     )
         elif p.back_panel == BackPanelType.SURFACE_MOUNTED:
@@ -913,6 +979,9 @@ class BookcaseEngine:
                     x_um=p.actual_thickness_um,
                     y_um=0,
                     z_um=p.plinth_height_um,
+                ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
                 ),
                 first_feature_face=FaceName.A,
             )

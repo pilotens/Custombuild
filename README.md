@@ -115,7 +115,8 @@ non-PostgreSQL database. The supplied `.env.example` is development-only.
 Even locally, the continuous storage-capacity attestor uses the separate
 `custombuild_storage_attestor` login. Compose runs the one-shot
 `storage-recovery` service with the migrator credential after migrations and
-before the attestor; API, worker and scheduler cannot start unless recovery
+before the attestor; API, the generation worker, the maintenance worker and scheduler
+cannot start unless recovery
 exits successfully and the attestor becomes healthy. The migrator credential
 must never be supplied as `CAPACITY_ATTESTOR_DATABASE_URL` or to a long-running
 service. PostgreSQL intentionally has no container-runtime automatic restart;
@@ -215,7 +216,8 @@ then frozen on the server. This is a reviewed model conversion, not proof that a
 photograph contains hidden joints, hardware or anchors and not a physical release.
 
 CI additionally starts the full Compose topology—PostgreSQL, Redis, SeaweedFS, API,
-worker and web—and verifies tenant isolation, a genuine CadQuery generation and
+generation worker, singleton maintenance worker, beat scheduler and web—and verifies
+tenant isolation, a genuine CadQuery generation and
 package hashes. For the current plain-DADO fixture it also proves that the
 design-review ZIP remains downloadable while CAM approval and release are both
 rejected with the exact retention blocker. A Chromium acceptance drives the

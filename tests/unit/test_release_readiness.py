@@ -278,15 +278,33 @@ OPERATIONS_ENGINE_VERSION = "semantic-operations-1.2.0"
 REQUIRED_REVIEW_PACKAGE_PATHS = frozenset({STOCK_SELECTION_PATH, GENERATION_PLAN_PATH})
 STOCK_PROFILE_MISSING = "STOCK_PROFILE_MISSING"
 DFM_GRAIN_MISSING = "DFM-GRAIN-001"
+TWO_SIDED_REGISTRATION_MISSING = "TWO_SIDED_REGISTRATION_MISSING"
 DADO_RETENTION_EVIDENCE_MISSING = "DADO_RETENTION_EVIDENCE_MISSING"
+BACK_PANEL_RETENTION_EVIDENCE_MISSING = "BACK_PANEL_RETENTION_EVIDENCE_MISSING"
 BLOCKED_CAM_REQUIRED_ACTIONS = {
+    STOCK_PROFILE_MISSING: (
+        "Select and server-bind an exact stock profile for every part material, version, "
+        "thickness, blank size and quantity; do not infer sheet size, stock identity or "
+        "machine capacity."
+    ),
+    DFM_GRAIN_MISSING: (
+        "Bind an exact, structured X or Y stock-grain axis for every directional material "
+        "stock profile; opaque evidence or acknowledgement cannot resolve this blocker."
+    ),
+    TWO_SIDED_REGISTRATION_MISSING: (
+        "Bind an externally specified two-sided registration and fixture plan; "
+        "do not infer WCS, pins, fixtures or registration coordinates."
+    ),
     DADO_RETENTION_EVIDENCE_MISSING: (
-        "The current MVP cannot resolve this blocker because it has no authenticated "
-        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-        "checksum-addressed mechanical retention contract to every DADO joint, including "
-        "exact geometry, hardware quantity, material/thickness applicability and separate "
-        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-        "bearing check is not retention evidence."
+        "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+        "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+        "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+        "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
+    ),
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING: (
+        "Use only the canonical inset back whose four boundary grooves and multi-direction "
+        "closing sequence prove mechanical capture, or bind independently authenticated "
+        "back-panel retention evidence when that application class is implemented."
     ),
 }
 
@@ -376,6 +394,115 @@ def test_minimal_exact_production_semantic_contract_passes(tmp_path: Path) -> No
     write_production_semantic_fixture(tmp_path)
 
     assert production_semantic_contract_issues(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("canonical", "unsafe"),
+    (
+        (
+            "Bind current certifier-signed, checksum-addressed mechanical retention evidence ",
+            "Accept an unsigned retention acknowledgement ",
+        ),
+        (
+            "Use only the canonical inset back whose four boundary grooves and multi-direction ",
+            "Accept any named back-panel arrangement ",
+        ),
+    ),
+)
+def test_production_semantic_contract_rejects_weakened_retention_actions(
+    tmp_path: Path,
+    canonical: str,
+    unsafe: str,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    assert canonical in sources[relative]
+    sources[relative] = sources[relative].replace(canonical, unsafe, 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "retention blockers to canonical actions" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def test_production_semantic_contract_requires_every_supported_blocked_cam_action(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    back_panel_action = '''    BACK_PANEL_RETENTION_EVIDENCE_MISSING: (
+        "Use only the canonical inset back whose four boundary grooves and multi-direction "
+        "closing sequence prove mechanical capture, or bind independently authenticated "
+        "back-panel retention evidence when that application class is implemented."
+    ),
+'''
+    assert back_panel_action in sources[relative]
+    sources[relative] = sources[relative].replace(back_panel_action, "", 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    issues = production_semantic_contract_issues(tmp_path)
+
+    assert any(
+        relative in issue and "exact supported blocked-CAM action set" in issue
+        for issue in issues
+    )
+    assert any(
+        relative in issue and "retention blockers to canonical actions" in issue
+        for issue in issues
+    )
+
+
+def test_production_semantic_contract_rejects_an_extra_blocked_cam_action(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    anchor = "\n}\n\ndef verify_workshop_readiness"
+    assert anchor in sources[relative]
+    sources[relative] = sources[relative].replace(
+        anchor,
+        '\n    "UNREVIEWED_BLOCKER": "Treat the package as accepted.",\n}'
+        "\n\ndef verify_workshop_readiness",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "exact supported blocked-CAM action set" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def test_production_semantic_contract_requires_a_statically_provable_action_map(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    source = sources[relative].replace(
+        "BLOCKED_CAM_REQUIRED_ACTIONS = {",
+        "BLOCKED_CAM_REQUIRED_ACTIONS = dict({",
+        1,
+    )
+    anchor = "\n}\n\ndef verify_workshop_readiness"
+    assert anchor in source
+    sources[relative] = source.replace(
+        anchor,
+        "\n})\n\ndef verify_workshop_readiness",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    issues = production_semantic_contract_issues(tmp_path)
+
+    assert any(
+        relative in issue and "exact supported blocked-CAM action set" in issue
+        for issue in issues
+    )
+    assert any(
+        relative in issue and "retention blockers to canonical actions" in issue
+        for issue in issues
+    )
 
 
 @pytest.mark.parametrize("relative", PRODUCTION_SEMANTIC_SOURCE_PATHS)
@@ -576,6 +703,18 @@ def test_production_semantic_contract_requires_every_source(tmp_path: Path, rela
             'idempotency_key=f"imported:{asset_id}"',
             'idempotency_key=f"imported:{digest}"',
             "UUID key incarnation",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[4],
+            'TWO_SIDED_REGISTRATION_MISSING = "TWO_SIDED_REGISTRATION_MISSING"',
+            'TWO_SIDED_REGISTRATION_MISSING = "UNBOUND_REGISTRATION"',
+            "unsafe or missing TWO_SIDED_REGISTRATION_MISSING",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[4],
+            'BACK_PANEL_RETENTION_EVIDENCE_MISSING = "BACK_PANEL_RETENTION_EVIDENCE_MISSING"',
+            'BACK_PANEL_RETENTION_EVIDENCE_MISSING = "UNBOUND_BACK_PANEL_RETENTION"',
+            "unsafe or missing BACK_PANEL_RETENTION_EVIDENCE_MISSING",
         ),
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[4],
@@ -1107,7 +1246,49 @@ def hardened_compose_config() -> dict[str, object]:
     }
     worker = hardened_service(networks=["backend"]) | {
         "healthcheck": {"test": ["CMD", "worker-probe"]},
-        "environment": {"REDIS_URL": "redis://:strong-secret@redis:6379/0"},
+        "command": ["celery", "worker", "--queues=generation"],
+        "environment": {
+            "REDIS_URL": "redis://:strong-secret@redis:6379/0",
+            "CELERY_EXPECTED_QUEUE": "generation",
+        },
+        "depends_on": {
+            "storage-capacity-attestor": {
+                "condition": "service_healthy",
+                "restart": True,
+            }
+        },
+    }
+    maintenance_worker = hardened_service(networks=["backend"]) | {
+        "healthcheck": {"test": ["CMD", "worker-probe"]},
+        "command": [
+            "celery",
+            "worker",
+            "--concurrency=1",
+            "--queues=maintenance",
+        ],
+        "environment": {
+            "REDIS_URL": "redis://:strong-secret@redis:6379/0",
+            "CELERY_EXPECTED_QUEUE": "maintenance",
+        },
+        "depends_on": {
+            "storage-capacity-attestor": {
+                "condition": "service_healthy",
+                "restart": True,
+            }
+        },
+    }
+    storage_reaper_worker = hardened_service(networks=["backend"]) | {
+        "healthcheck": {"test": ["CMD", "worker-probe"]},
+        "command": [
+            "celery",
+            "worker",
+            "--concurrency=1",
+            "--queues=storage-reaper",
+        ],
+        "environment": {
+            "REDIS_URL": "redis://:strong-secret@redis:6379/0",
+            "CELERY_EXPECTED_QUEUE": "storage-reaper",
+        },
         "depends_on": {
             "storage-capacity-attestor": {
                 "condition": "service_healthy",
@@ -1185,8 +1366,11 @@ def hardened_compose_config() -> dict[str, object]:
         "services": {
             "api": api,
             "worker": worker,
+            "maintenance-worker": maintenance_worker,
+            "storage-reaper-worker": storage_reaper_worker,
             "scheduler": hardened_service(networks=["backend"])
             | {
+                "command": ["celery", "beat"],
                 "depends_on": {
                     "storage-capacity-attestor": {
                         "condition": "service_healthy",
@@ -1214,6 +1398,18 @@ def test_hardened_compose_contract_passes() -> None:
     config = hardened_compose_config()
 
     assert compose_hardening_issues(config) == []
+
+
+def test_hardening_rejects_cross_routed_or_missing_maintenance_worker() -> None:
+    config = hardened_compose_config()
+    maintenance = config["services"]["maintenance-worker"]
+    maintenance["command"] = ["celery", "worker", "--queues=generation"]
+    maintenance["environment"]["CELERY_EXPECTED_QUEUE"] = "generation"
+
+    issues = compose_hardening_issues(config)
+
+    assert "maintenance-worker is not an isolated singleton" in issues
+    assert "maintenance-worker health is not bound to its exact Celery queue" in issues
 
 
 @pytest.mark.parametrize(

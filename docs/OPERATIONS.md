@@ -225,9 +225,9 @@ production_compose=(
   --file compose.external-production.yml
   --file compose.registry.yml
 )
-"${production_compose[@]}" stop --timeout 60 api worker scheduler storage-capacity-attestor
+"${production_compose[@]}" stop --timeout 60 api worker maintenance-worker storage-reaper-worker scheduler storage-capacity-attestor
 "${production_compose[@]}" up --no-build --detach --force-recreate \
-  postgres migrate storage-recovery storage-capacity-attestor api worker scheduler
+  postgres migrate storage-recovery storage-capacity-attestor api worker maintenance-worker storage-reaper-worker scheduler
 "${production_compose[@]}" up --no-build --detach --wait --wait-timeout 900
 ```
 
@@ -261,12 +261,32 @@ events can be correlated.
 
 ## Worker and scheduler topology
 
-Celery workers execute jobs only. Periodic outbox dispatch and recovery run in the
-separate `scheduler` service, which is the single beat instance for one environment.
-Never add `--beat` to a worker command when scaling workers; doing so creates duplicate
-schedulers. Scale with `docker compose up -d --scale worker=3 worker` while keeping
-exactly one `scheduler` service. The scheduler healthcheck verifies that its persistent
-schedule file is being refreshed.
+The `worker` service consumes only the `generation` queue. The singleton
+`maintenance-worker` consumes only the time-critical `maintenance` queue and executes
+transactional outbox dispatch plus stale-lease recovery. The separate singleton
+`storage-reaper-worker` consumes only `storage-reaper`, so slow or unavailable S3
+operations cannot head-of-line block job dispatch or lease recovery. The singleton
+`scheduler` is beat-only: it schedules each periodic task onto its explicit queue but
+executes none of them. Every worker healthcheck verifies the exact active queue as
+well as Celery responsiveness. Unknown tasks route to an intentionally unconsumed
+`unrouted` queue, so a missing route fails closed instead of silently entering a
+worker pool.
+
+Never add `--beat` to a worker command. Scale generation with
+`docker compose up -d --scale worker=3 worker`; keep exactly one
+`maintenance-worker`, one `storage-reaper-worker` and one `scheduler`. Before
+upgrading an environment that used
+the legacy default `celery` queue, pause API and beat, drain that queue completely
+with the old worker image, and then replace all three Celery roles atomically. An
+already-dispatched legacy message has no database outbox row to republish, so leaving
+the old queue behind is not a safe cutover.
+
+Retryable generation failures are requeued through the same PostgreSQL transaction
+that records `queued`. `outbox_events.available_at` preserves storage-lease backoff,
+and failed Redis publication remains pending with bounded exponential delay rather
+than being dead-lettered during an ordinary broker outage. Duplicate publication is
+safe because claiming and completion are fenced by job identity, attempt budget,
+lease token and deadline.
 
 Worker S3 requests use explicit connect/read timeouts and two total attempts. A
 stalled object store therefore becomes a generic, actionable job error well before

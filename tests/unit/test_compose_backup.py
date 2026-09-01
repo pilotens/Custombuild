@@ -34,6 +34,8 @@ IMAGE_ID = "sha256:" + "1" * 64
 SOURCE_MANIFEST_SHA256 = "2" * 64
 GIT_REVISION = "3" * 40
 WORKER_CONTAINER_ID = "4" * 64
+MAINTENANCE_WORKER_CONTAINER_ID = "5" * 64
+STORAGE_REAPER_WORKER_CONTAINER_ID = "6" * 64
 EMPTY_TOMBSTONE_DIGEST = hashlib.sha256(b"[]").hexdigest()
 
 
@@ -53,6 +55,10 @@ def test_backup_runtime_images_match_the_compose_volume_contract() -> None:
 def identity_capture(command: list[str], **_kwargs: object) -> str:
     if command[-1:] == ["worker"] and "ps" in command:
         return WORKER_CONTAINER_ID
+    if command[-1:] == ["maintenance-worker"] and "ps" in command:
+        return MAINTENANCE_WORKER_CONTAINER_ID
+    if command[-1:] == ["storage-reaper-worker"] and "ps" in command:
+        return STORAGE_REAPER_WORKER_CONTAINER_ID
     if "{{json .State}}" in command:
         return json.dumps({"Health": {"Status": "healthy"}, "Status": "running"})
     return IMAGE_ID if "inspect" in command else GIT_REVISION
@@ -101,6 +107,8 @@ def compose_fixture() -> dict[str, object]:
             },
             "api": {"environment": {}},
             "worker": {},
+            "maintenance-worker": {},
+            "storage-reaper-worker": {},
             "scheduler": {},
             "storage-recovery": {},
             "storage-capacity-attestor": {},
@@ -872,7 +880,7 @@ def test_backup_quiesces_storage_and_restores_writers(
     ]
     assert pause_budgets == [compose_backup.SHORT_COMMAND_TIMEOUT_SECONDS] * 3
     assert payload_budgets == [compose_backup.LONG_BACKUP_COMMAND_TIMEOUT_SECONDS] * 2
-    assert recovery_budgets == [compose_backup.RECOVERY_TIMEOUT_SECONDS] * 5
+    assert recovery_budgets == [compose_backup.RECOVERY_TIMEOUT_SECONDS] * 7
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX permission contract")
@@ -1258,6 +1266,8 @@ def test_backup_bounds_archive_hang_after_stop_and_attempts_full_recovery(
     ] == [
         "object-storage",
         WORKER_CONTAINER_ID,
+        MAINTENANCE_WORKER_CONTAINER_ID,
+        STORAGE_REAPER_WORKER_CONTAINER_ID,
     ]
     assert full_inventory_calls == 1
     assert recovery_readiness_budgets == [compose_backup.RECOVERY_TIMEOUT_SECONDS]
@@ -1351,4 +1361,3 @@ def test_worker_health_wait_has_one_bounded_deadline(
 
     assert inspect_budgets == [2, 1]
     assert now == [2.0]
-

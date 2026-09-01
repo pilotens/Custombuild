@@ -528,7 +528,7 @@ export interface components {
              * Evidence Type
              * @enum {string}
              */
-            evidence_type: "wall_anchor" | "hardware" | "material_grain";
+            evidence_type: "wall_anchor" | "hardware" | "material_grain" | "joint_retention";
             /** Expires At */
             expires_at?: string | null;
             /** Rule Id */
@@ -672,6 +672,11 @@ export interface components {
             expected_current_revision: number;
             /** Expected Design Hash */
             expected_design_hash: string;
+            /**
+             * Joint Retention Evidence Id
+             * @description Optional immutable signed retention statement. The server verifies and injects the resulting contract; clients never submit contract fields.
+             */
+            joint_retention_evidence_id?: string | null;
             production_context: components["schemas"]["RevisionProductionContext"];
             source_provenance?: components["schemas"]["ReferenceImageSourceProvenance"] | null;
             spec: components["schemas"]["BookcasePreviewInput"];
@@ -744,7 +749,7 @@ export interface components {
              * Evidence Type
              * @enum {string}
              */
-            evidence_type: "wall_anchor" | "hardware" | "material_grain";
+            evidence_type: "wall_anchor" | "hardware" | "material_grain" | "joint_retention";
             /** Expires At */
             expires_at: string | null;
             /** Id */
@@ -799,7 +804,7 @@ export interface components {
             machine_profile_id: string;
             /**
              * Postprocessor Id
-             * @default linuxcnc-validation-1.0.0
+             * @default linuxcnc-validation-1.1.0
              */
             postprocessor_id: string;
             /**
@@ -872,6 +877,8 @@ export interface components {
             id: string;
             /** Lease Expires At */
             lease_expires_at: string | null;
+            /** Next Attempt At */
+            next_attempt_at: string | null;
             /** Production Context Hash */
             production_context_hash: string;
             /** Production Engine Context Json */
@@ -1452,6 +1459,7 @@ export interface operations {
         parameters: {
             query?: {
                 project_id?: string | null;
+                joint_retention_evidence_id?: string | null;
             };
             header?: never;
             path?: never;

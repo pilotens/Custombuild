@@ -208,7 +208,7 @@ def test_expected_environment_must_match_every_operator_field(tmp_path: Path) ->
 
 def test_deploy_descriptor_is_bound_by_exact_raw_bytes(tmp_path: Path) -> None:
     descriptor = tmp_path / "deploy-descriptor.json"
-    descriptor.write_bytes(b'{"schema_version":"custombuild.deploy-descriptor.v2"}\n')
+    descriptor.write_bytes(b'{"schema_version":"custombuild.deploy-descriptor.v3"}\n')
     digest = hashlib.sha256(descriptor.read_bytes()).hexdigest()
 
     verify_deploy_descriptor(descriptor, digest)

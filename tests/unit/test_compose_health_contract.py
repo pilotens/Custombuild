@@ -24,6 +24,31 @@ def test_scheduler_healthcheck_is_shell_free_and_runs_as_the_container_user() ->
     assert "USER 65532:65532" in worker_image
 
 
+def test_compose_workers_are_isolated_to_exact_celery_queues() -> None:
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    services = compose["services"]
+
+    generation = services["worker"]
+    maintenance = services["maintenance-worker"]
+    storage_reaper = services["storage-reaper-worker"]
+    scheduler = services["scheduler"]
+    assert "--queues=generation" in generation["command"]
+    assert "--queues=maintenance" not in generation["command"]
+    assert generation["environment"]["CELERY_EXPECTED_QUEUE"] == "generation"
+    assert "--queues=maintenance" in maintenance["command"]
+    assert "--queues=generation" not in maintenance["command"]
+    assert "--concurrency=1" in maintenance["command"]
+    assert maintenance["environment"]["CELERY_EXPECTED_QUEUE"] == "maintenance"
+    assert "--queues=storage-reaper" not in maintenance["command"]
+    assert "--queues=storage-reaper" in storage_reaper["command"]
+    assert "--queues=maintenance" not in storage_reaper["command"]
+    assert "--queues=generation" not in storage_reaper["command"]
+    assert "--concurrency=1" in storage_reaper["command"]
+    assert storage_reaper["environment"]["CELERY_EXPECTED_QUEUE"] == "storage-reaper"
+    assert "beat" in scheduler["command"]
+    assert "worker" not in scheduler["command"]
+
+
 def test_compose_acceptance_waits_for_every_healthcheck() -> None:
     for workflow_path in WORKFLOWS:
         workflow = workflow_path.read_text(encoding="utf-8")
@@ -40,7 +65,14 @@ def test_ci_replaces_postgres_and_proves_recovery_before_writers() -> None:
     assert 'stop --timeout 60 "${database_clients[@]}"' in workflow
     assert 'up --detach --force-recreate "${replacement_services[@]}"' in workflow
     database_client_block = workflow.split("database_clients=(", 1)[1].split(")", 1)[0]
-    expected_clients = ("api", "worker", "scheduler", "storage-capacity-attestor")
+    expected_clients = (
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+        "storage-capacity-attestor",
+    )
     actual_clients = tuple(database_client_block.split())
     assert actual_clients == expected_clients
     assert workflow.index('stop --timeout 60 "${database_clients[@]}"') < workflow.index(
@@ -54,6 +86,8 @@ def test_ci_replaces_postgres_and_proves_recovery_before_writers() -> None:
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
     )
     actual_services = tuple(replacement_block.split())
@@ -88,7 +122,14 @@ def test_ci_replaces_postgres_and_proves_recovery_before_writers() -> None:
     assert "recovery_database_started_at = pg_postmaster_start_time()" in workflow
     assert "current_epoch > before_epoch" in workflow
     assert "started >= completed" in workflow
-    for service in ("storage-capacity-attestor", "api", "worker", "scheduler"):
+    for service in (
+        "storage-capacity-attestor",
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         assert f"healthy {service}" in workflow
 
 
@@ -116,7 +157,13 @@ def test_storage_recovery_is_a_required_one_shot_startup_barrier() -> None:
         "condition": "service_completed_successfully",
         "restart": True,
     }
-    for writer in ("api", "worker", "scheduler"):
+    for writer in (
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         assert services[writer]["depends_on"]["storage-capacity-attestor"] == {
             "condition": "service_healthy",
             "restart": True,
@@ -136,7 +183,13 @@ def test_external_overlay_preserves_the_database_restart_fence() -> None:
         services["storage-capacity-attestor"]["depends_on"]["storage-recovery"]["restart"]
         is True
     )
-    for writer in ("api", "worker", "scheduler"):
+    for writer in (
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         assert services[writer]["depends_on"]["storage-capacity-attestor"]["restart"] is True
 
 

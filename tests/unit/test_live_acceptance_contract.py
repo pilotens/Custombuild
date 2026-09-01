@@ -18,6 +18,7 @@ from custombuild_manufacturing.review_status import (
 
 from scripts import live_acceptance as live_acceptance_module
 from scripts.live_acceptance import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING,
     BLOCKED_CAM_REQUIRED_ACTIONS,
     CONTEXT_HASH_FIELDS,
     DADO_RETENTION_EVIDENCE_MISSING,
@@ -1040,16 +1041,25 @@ def test_live_acceptance_keeps_dado_retention_separate_from_dfm(
     )
 
 
-def test_live_acceptance_requires_exact_dado_cam_and_release_rejection() -> None:
+@pytest.mark.parametrize(
+    "blocker_code",
+    (
+        DADO_RETENTION_EVIDENCE_MISSING,
+        BACK_PANEL_RETENTION_EVIDENCE_MISSING,
+    ),
+)
+def test_live_acceptance_requires_exact_retention_cam_and_release_rejection(
+    blocker_code: str,
+) -> None:
     canonical = HttpResult(
         409,
         "http://api.test/review",
         {"content-type": "application/json"},
-        b'{"detail":{"code":"DADO_RETENTION_EVIDENCE_MISSING"}}',
+        (f'{{"detail":{{"code":"{blocker_code}"}}}}').encode(),
     )
     verify_blocked_cam_endpoint_rejection(
         canonical,
-        [DADO_RETENTION_EVIDENCE_MISSING],
+        [blocker_code],
         label="CAM approval",
     )
 
@@ -1062,7 +1072,7 @@ def test_live_acceptance_requires_exact_dado_cam_and_release_rejection() -> None
     with pytest.raises(AcceptanceFailure, match="detail"):
         verify_blocked_cam_endpoint_rejection(
             generic,
-            [DADO_RETENTION_EVIDENCE_MISSING],
+            [blocker_code],
             label="release",
         )
 

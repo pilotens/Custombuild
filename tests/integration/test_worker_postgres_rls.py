@@ -266,6 +266,8 @@ def test_worker_role_is_rls_scoped_and_schedulers_process_two_tenants(
             organization_a,
             organization_b,
         }
+        assert all(item["queue"] == worker_tasks.GENERATION_QUEUE for item in published)
+        assert all(item["retry"] is False for item in published)
 
         with privileged_factory() as session:
             jobs = {

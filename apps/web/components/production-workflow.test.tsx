@@ -71,6 +71,7 @@ const queuedJob: JobRead = {
   started_at: null,
   lease_expires_at: null,
   deadline_at: "2026-08-01T10:01:00Z",
+  next_attempt_at: null,
   finished_at: null,
   created_at: "2026-08-01T08:01:00Z",
   updated_at: "2026-08-01T08:01:00Z",
@@ -1464,14 +1465,35 @@ describe("ProductionWorkflow", () => {
       "14 externa verkstadskrav återstår",
     );
     expect(screen.getByText(/endast avsett för designgranskning och validering/i)).toBeVisible();
+    const releaseBoundary = screen.getByRole("region", {
+      name: "Skillnad mellan designgranskning och fysisk frisläppning",
+    });
+    expect(within(releaseBoundary).getByText("Klar för revision 1")).toBeVisible();
+    expect(within(releaseBoundary).getByText("Ej frisläppt")).toBeVisible();
+    expect(within(releaseBoundary).getByText(/inte en arbetsorder eller skärande CNC-kod/i)).toBeVisible();
     const packageIdentity = screen.getByRole("region", { name: "Paketidentitet" });
     expect(within(packageIdentity).getByText("Designgranskning")).toBeVisible();
+    expect(within(packageIdentity).getByText("Designgranskning klar")).toBeVisible();
+    expect(
+      within(packageIdentity).getByText("Svenska PDF:er · tekniska datafält på engelska"),
+    ).toBeVisible();
     expect(within(packageIdentity).getByText("2.4 MB")).toBeVisible();
     expect(within(packageIdentity).getByText("d".repeat(64))).toBeVisible();
     expect(within(packageIdentity).getByText("Designgranskningspaket (ZIP)")).toBeVisible();
     expect(within(packageIdentity).getByText("Lagerurval")).toBeVisible();
     expect(within(packageIdentity).getByText("Genereringsplan")).toBeVisible();
     expect(within(packageIdentity).getByText("Readinessbevis")).toBeVisible();
+    const customerDocuments = screen.getByRole("region", {
+      name: "Kunddokument i granskningspaketet",
+    });
+    expect(within(customerDocuments).getByText("Monteringsmanual")).toBeVisible();
+    expect(within(customerDocuments).getByText(/inte frisläppt monteringsinstruktion/i)).toBeVisible();
+    expect(within(customerDocuments).getByText(/inte som separata hämtningar/i)).toBeVisible();
+    const serverFiles = screen.getByRole("region", {
+      name: "Separat verifierbara serverfiler",
+    });
+    expect(within(serverFiles).getByRole("button", { name: "Hämta fil – Manifest" })).toBeEnabled();
+    expect(within(serverFiles).getAllByText(/JSON · revision 1 · 2.4 MB · Verifieringsbevis/i).length).toBeGreaterThan(0);
     const workshopRequirements = screen.getByRole("region", {
       name: "Återstående externa verkstadskrav",
     });
@@ -1516,6 +1538,100 @@ describe("ProductionWorkflow", () => {
       "blob:verified-bundle",
     ));
     expect(api.approveVersion).not.toHaveBeenCalled();
+  });
+
+  it("downloads an individually listed server artifact only after re-verifying its identity", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    const manifest = completeArtifacts.find((artifact) => artifact.kind === "manifest")!;
+    const verifiedBlob = new Blob(["{}"], { type: "application/json" });
+    vi.mocked(api.downloadArtifact).mockResolvedValue(verifiedBlob);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-manifest");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    let suggestedFileName: string | undefined;
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      function (this: HTMLAnchorElement) {
+        suggestedFileName = this.download;
+      },
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Hämta fil – Manifest" }));
+
+    await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
+    expect(api.downloadArtifact).toHaveBeenCalledExactlyOnceWith(manifest);
+    expect(anchorClick).toHaveBeenCalledOnce();
+    expect(suggestedFileName).toBe("custombuild-design-review-rev-1-manifest.json");
+    expect(await screen.findByText("Manifest har hämtats för designgranskning.")).toBeVisible();
+  });
+
+  it("fails closed when an individually listed artifact changes before download", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    const changedArtifacts = completeArtifacts.map((artifact) => (
+      artifact.kind === "manifest" ? { ...artifact, sha256: "e".repeat(64) } : artifact
+    ));
+    vi.mocked(api.listArtifacts)
+      .mockResolvedValueOnce(completeArtifacts)
+      .mockResolvedValueOnce(changedArtifacts);
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL");
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Hämta fil – Manifest" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /Filen har ändrats eller är inte längre entydigt bunden till paketet/i,
+    );
+    expect(api.downloadArtifact).not.toHaveBeenCalled();
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(anchorClick).not.toHaveBeenCalled();
   });
 
   it("revokes a pending verified Blob URL exactly once when the workflow unmounts", async () => {

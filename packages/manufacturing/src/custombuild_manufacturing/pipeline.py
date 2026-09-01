@@ -19,7 +19,13 @@ from custombuild_cam import backplot_svg
 from custombuild_postprocessors import LinuxCNCValidationPostprocessor
 
 from .adapters import adapt_design_result
-from .dfm import DFM_ENGINE_VERSION, DFMValidator, stock_profile_missing_issue
+from .dfm import (
+    DFM_ENGINE_VERSION,
+    JOINT_SYSTEM_UNSUPPORTED_CODE,
+    DFMValidator,
+    stock_profile_missing_issue,
+    unsupported_joint_system_issues,
+)
 from .errors import ProductionBlockedError
 from .grain import (
     DFM_GRAIN_BLOCKER_CODE,
@@ -59,10 +65,12 @@ from .package import (
 from .profiles import tool_catalog_fingerprint
 from .readiness import WorkshopReadinessReport, build_workshop_readiness_report
 from .review_status import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DesignReviewPackageStatus,
+    back_panel_retention_evidence_missing,
     blocked_design_review_package_status,
     dado_retention_evidence_missing,
     generated_design_review_package_status,
@@ -71,6 +79,16 @@ from .review_status import (
 PRODUCTION_PIPELINE_VERSION = GENERATION_PLAN_PIPELINE_VERSION
 FROZEN_DESIGN_SPEC_SCHEMA_VERSION = "custombuild.frozen-design-spec.v1"
 DESIGN_RESULT_SUMMARY_SCHEMA_VERSION = "custombuild.design-result-summary.v1"
+
+
+def _retention_blocker_code(design_result: Any) -> str | None:
+    """Resolve retention prerequisites in stable, fail-closed order."""
+
+    if dado_retention_evidence_missing(design_result):
+        return DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    if back_panel_retention_evidence_missing(design_result):
+        return BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,7 +130,9 @@ def build_production_bundle(
     ``allow_blocked_cam`` may only convert an exact missing-stock profile, an
     unbound directional stock axis, unresolved dry/mechanical DADO retention,
     or a missing registration plan into a checksum-bound design-review package.
-    It never invents evidence or emits partial nesting/CAM artifacts.
+    It never invents evidence or emits partial nesting/CAM artifacts. Every
+    other joint-system claim is rejected before feature kinds can be lowered to
+    operation aliases, including RABBET-to-GROOVE lowering.
     """
 
     if include_freecad_project and not include_step:
@@ -208,6 +228,31 @@ def build_production_bundle(
             f"production bundle blocked by DFM: {codes}", report=grain_report
         )
 
+    dado_retention_blocked = dado_retention_evidence_missing(design_result)
+    back_retention_blocked = (
+        not stock_profile_blocked
+        and not grain_profile_blocked
+        and not dado_retention_blocked
+        and back_panel_retention_evidence_missing(design_result)
+    )
+    if not stock_profile_blocked and not grain_profile_blocked and not dado_retention_blocked:
+        joint_support_issues = unsupported_joint_system_issues(
+            design_result,
+            defer_surface_back_to_retention=back_retention_blocked,
+        )
+        if joint_support_issues:
+            report = DFMReport(
+                tuple((*selection_issues, *grain_issues, *joint_support_issues)),
+                engine_version=DFM_ENGINE_VERSION,
+            )
+            joint_types = ", ".join(
+                str(issue.inputs["joint_type"]) for issue in joint_support_issues
+            )
+            raise ProductionBlockedError(
+                "production bundle blocked before CAM by unsupported joint systems: "
+                f"{JOINT_SYSTEM_UNSUPPORTED_CODE} ({joint_types})",
+                report=report,
+            )
     layouts: list[NestingLayout] = []
     operations: OperationsDocument | None = None
     if stock_profile_blocked:
@@ -216,19 +261,24 @@ def build_production_bundle(
     elif grain_profile_blocked:
         report = grain_report
         review_status = blocked_design_review_package_status(grain_blocker_codes)
-    elif dado_retention_evidence_missing(design_result):
+    elif dado_retention_blocked or back_retention_blocked:
+        retention_blocker_code = (
+            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+            if dado_retention_blocked
+            else BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+        )
         report = DFMReport(
             tuple((*selection_issues, *grain_issues)),
             engine_version=DFM_ENGINE_VERSION,
         )
         if not allow_blocked_cam:
             raise ProductionBlockedError(
-                "production bundle blocked by unresolved dry/mechanical DADO retention: "
-                f"{DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE}",
+                "production bundle blocked by unresolved joint retention: "
+                f"{retention_blocker_code}",
                 report=report,
             )
         review_status = blocked_design_review_package_status(
-            (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
+            (retention_blocker_code,)
         )
     else:
         report_issues = list(selection_issues)

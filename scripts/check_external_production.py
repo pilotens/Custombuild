@@ -241,6 +241,8 @@ def external_production_issues(
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
         "web",
     }
@@ -249,6 +251,60 @@ def external_production_issues(
         issues.append(f"required services are missing: {', '.join(missing)}")
         return issues
 
+    def command_text(service_name: str) -> str:
+        value = _mapping(services[service_name]).get("command", [])
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return " ".join(str(item) for item in value)
+        return ""
+
+    worker_command = command_text("worker")
+    maintenance_command = command_text("maintenance-worker")
+    storage_reaper_command = command_text("storage-reaper-worker")
+    scheduler_command = command_text("scheduler")
+    if " worker " not in f" {worker_command} " or "--queues=generation" not in worker_command:
+        issues.append("worker does not consume only the generation queue")
+    if "--queues=maintenance" in worker_command:
+        issues.append("worker consumes the maintenance queue")
+    if (
+        " worker " not in f" {maintenance_command} "
+        or "--queues=maintenance" not in maintenance_command
+        or "--concurrency=1" not in maintenance_command
+    ):
+        issues.append("maintenance-worker is not the singleton maintenance consumer")
+    if "--queues=generation" in maintenance_command:
+        issues.append("maintenance-worker consumes the generation queue")
+    if "--queues=storage-reaper" in maintenance_command:
+        issues.append("maintenance-worker consumes the storage-reaper queue")
+    if (
+        " worker " not in f" {storage_reaper_command} "
+        or "--queues=storage-reaper" not in storage_reaper_command
+        or "--concurrency=1" not in storage_reaper_command
+    ):
+        issues.append("storage-reaper-worker is not the singleton reaper consumer")
+    if "--queues=generation" in storage_reaper_command or "--queues=maintenance" in (
+        storage_reaper_command
+    ):
+        issues.append("storage-reaper-worker consumes a time-critical queue")
+    if " beat " not in f" {scheduler_command} " or " worker " in f" {scheduler_command} ":
+        issues.append("scheduler is not beat-only")
+    for service_name, expected_queue in (
+        ("worker", "generation"),
+        ("maintenance-worker", "maintenance"),
+        ("storage-reaper-worker", "storage-reaper"),
+    ):
+        environment = _environment(_mapping(services[service_name]))
+        if environment.get("CELERY_EXPECTED_QUEUE") != expected_queue:
+            issues.append(f"{service_name} health is not bound to its exact Celery queue")
+    worker_image = str(_mapping(services["worker"]).get("image", ""))
+    if str(_mapping(services["maintenance-worker"]).get("image", "")) != worker_image:
+        issues.append("maintenance-worker does not use the exact worker image")
+    if str(_mapping(services["storage-reaper-worker"]).get("image", "")) != worker_image:
+        issues.append("storage-reaper-worker does not use the exact worker image")
+    if str(_mapping(services["scheduler"]).get("image", "")) != worker_image:
+        issues.append("scheduler does not use the exact worker image")
+
     for name in (
         "postgres",
         "migrate",
@@ -256,6 +312,8 @@ def external_production_issues(
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
         "web",
     ):
@@ -263,7 +321,15 @@ def external_production_issues(
             issues.append(f"{name} does not run with APP_ENV=production")
 
     api_env = _environment(_mapping(services["api"]))
-    for name in ("migrate", "storage-recovery", "api", "worker", "scheduler"):
+    for name in (
+        "migrate",
+        "storage-recovery",
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         if _environment(_mapping(services[name])).get("PRODUCTION_FOUR_EYES_REQUIRED") != "true":
             issues.append(f"{name} does not require four-eyes production approval")
     if api_env.get("AUTH_MODE") != "oidc":
@@ -336,6 +402,8 @@ def external_production_issues(
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
     ):
         service_env = _environment(_mapping(services[name]))
@@ -502,7 +570,14 @@ def external_production_issues(
 
     capacity_environments = {
         name: _environment(_mapping(services[name]))
-        for name in ("storage-capacity-attestor", "api", "worker", "scheduler")
+        for name in (
+            "storage-capacity-attestor",
+            "api",
+            "worker",
+            "maintenance-worker",
+            "storage-reaper-worker",
+            "scheduler",
+        )
     }
     for key in CAPACITY_ENVIRONMENT_KEYS:
         capacity_values = {
@@ -561,7 +636,13 @@ def external_production_issues(
             issues.append("storage capacity headroom does not equal its reserved components")
         if headroom >= provisioned or byte_limit > provisioned - headroom:
             issues.append("storage capacity logical limit exceeds physical usable capacity")
-    for name in ("api", "worker", "scheduler"):
+    for name in (
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         service = _mapping(services[name])
         if _dependency_condition(service, "storage-capacity-attestor") != "service_healthy":
             issues.append(f"{name} does not wait for healthy storage capacity evidence")
@@ -641,6 +722,8 @@ def external_production_issues(
         "storage-recovery": "custombuild_migrator",
         "api": "custombuild_api",
         "worker": "custombuild_worker",
+        "maintenance-worker": "custombuild_worker",
+        "storage-reaper-worker": "custombuild_worker",
         "scheduler": "custombuild_worker",
     }
     for name, expected_role in expected_database_roles.items():
@@ -736,6 +819,8 @@ def external_production_issues(
         "storage-recovery",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
         "web",
     ):
@@ -781,7 +866,15 @@ def external_production_issues(
             and source_manifest_sha256 != expected_source_manifest_sha256
         ):
             issues.append(f"{name} source manifest does not match the checked build/control set")
-    for name in ("migrate", "storage-recovery", "api", "worker", "scheduler"):
+    for name in (
+        "migrate",
+        "storage-recovery",
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         lock_sha256 = str(build_arguments[name].get("DEPENDENCY_LOCK_SHA256", ""))
         if not re.fullmatch(r"[a-f0-9]{64}", lock_sha256):
             issues.append(f"{name} has no exact uv.lock SHA-256")

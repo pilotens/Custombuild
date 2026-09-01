@@ -24,6 +24,11 @@ from app.auth import DEV_ORG_NORDIC, DEV_USER_NORDIC
 from app.config import get_settings
 from app.db import get_session_factory
 from app.design_service import canonical_preview
+from app.joint_retention import (
+    JOINT_GEOMETRY_FINGERPRINT_SCHEMA,
+    SIGNED_EVIDENCE_SCHEMA_VERSION,
+    TRUST_REGISTRY_SCHEMA_VERSION,
+)
 from app.main import app
 from app.models import (
     Approval,
@@ -53,7 +58,10 @@ from app.storage_quota import (
     reserve_storage_batch_in_transaction,
 )
 from botocore.exceptions import ClientError
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from custombuild_manufacturing import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
@@ -93,6 +101,7 @@ HEADERS = {"Authorization": "Bearer demo-nordic-owner"}
 FOUR_EYES_REVIEWER_HEADERS = {"Authorization": "Bearer demo-nordic-four-eyes-reviewer"}
 FOUR_EYES_REVIEWER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 _REAL_DADO_RETENTION_GATE = api_module._require_resolved_dado_retention
+_REAL_DADO_RETENTION_PROJECTION = api_module._frozen_dado_retention_is_unresolved
 
 
 class _SimulatedVerifiedDownload:
@@ -178,6 +187,11 @@ def _avoid_external_object_storage(monkeypatch: pytest.MonkeyPatch) -> None:
         api_module,
         "_require_resolved_dado_retention",
         lambda _version: None,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "_frozen_dado_retention_is_unresolved",
+        lambda _version: False,
     )
 
 
@@ -501,6 +515,496 @@ def test_external_evidence_is_server_hashed_and_bound_to_exact_design(
     assert stored[0][3] == uploaded.json()["sha256"]
     assert wrong_type.status_code == 422
     assert wrong_type.json()["detail"]["code"] == "EXTERNAL_EVIDENCE_TYPE_MISMATCH"
+
+
+def test_signed_retention_preview_create_and_revocation_are_bound_end_to_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    now = datetime.now(UTC)
+    expiry = now + timedelta(days=365)
+    registry = {
+        "schema_version": TRUST_REGISTRY_SCHEMA_VERSION,
+        "issuers": [
+            {
+                "issuer_id": "retention-lab",
+                "key_id": "retention-lab-2026",
+                "role": "joint_retention_certifier",
+                "public_key_base64": base64.b64encode(public_key).decode("ascii"),
+                "not_before": (now - timedelta(days=1)).isoformat(),
+                "not_after": (now + timedelta(days=730)).isoformat(),
+                "revoked_at": None,
+            }
+        ],
+        "revoked_statement_sha256": [],
+        "revoked_system_versions": [],
+    }
+    monkeypatch.setattr(
+        get_settings(),
+        "joint_retention_trust_registry_json",
+        json.dumps(registry, separators=(",", ":"), sort_keys=True),
+    )
+    monkeypatch.setattr(api_module, "store_evidence_object", lambda *_args: None)
+    spec = valid_spec()
+
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": "Signed retention trust binding"},
+        ).json()
+        certification_preview = client.post(
+            "/v1/designs/preview",
+            headers=HEADERS,
+            params={"project_id": project["id"]},
+            json=spec,
+        )
+        assert certification_preview.status_code == 200
+        request = certification_preview.json()["retention_certification_request"]
+        assert request["eligible_for_current_binding"] is True
+        assert request["application_class"] == "load_bearing_carcass_dado"
+        assert request["excluded_applications"] == [
+            {
+                "application_class": "captive_inset_back_groove",
+                "joint_count": 4,
+                "retention_basis": "canonical_four_boundary_geometric_capture",
+                "capture_proven": True,
+            }
+        ]
+        assert request["joint_geometry_fingerprint_schema"] == (JOINT_GEOMETRY_FINGERPRINT_SCHEMA)
+        draft = client.put(
+            f"/v1/projects/{project['id']}/draft",
+            headers=HEADERS,
+            json={
+                "expected_draft_revision": 0,
+                "template_id": "shelving",
+                "spec": spec,
+                "workspace_spec": valid_workspace_intent(),
+            },
+        )
+        assert draft.status_code == 200
+        assert draft.json()["design_hash"] == request["source_design_hash"]
+
+        report_bytes = b"independent exact-geometry retention test report"
+        instruction_bytes = b"exact mechanical retention installation instruction"
+
+        def document(document_id: str, content: bytes) -> dict[str, str]:
+            return {
+                "document_id": document_id,
+                "document_version": "1.0.0",
+                "sha256": hashlib.sha256(content).hexdigest(),
+                "content_base64": base64.b64encode(content).decode("ascii"),
+            }
+
+        safety_factor = int(request["minimum_safety_factor_permille"])
+        load_cases = [
+            {
+                "mode": item["mode"],
+                "rated_design_load_n": item["rated_design_load_n"],
+                "verified_capacity_n": (int(item["rated_design_load_n"]) * safety_factor + 999)
+                // 1_000,
+            }
+            for item in request["required_load_cases"]
+        ]
+        statement: dict[str, Any] = {
+            "schema_version": SIGNED_EVIDENCE_SCHEMA_VERSION,
+            "evidence_id": "retention-lab-report-2026-001",
+            "issuer_id": "retention-lab",
+            "key_id": "retention-lab-2026",
+                "issued_at": now.isoformat(),
+                "expires_at": expiry.isoformat(),
+                "application_class": request["application_class"],
+                "joint_geometry_fingerprint_schema": request["joint_geometry_fingerprint_schema"],
+            "engine_version": request["engine_version"],
+            "template_version": request["template_version"],
+            "joint_geometry_sha256": request["joint_geometry_sha256"],
+            "catalogue_entry": {
+                "system_id": "mechanical-dado-lock",
+                    "system_version": "1.0.0",
+                    "joint_type": "dado",
+                    "application_class": request["application_class"],
+                    "method": "mechanical",
+                "machining_scope": "no_additional_cnc",
+                "hardware_sku": "SCREW-4X40-001",
+                "hardware_count_per_joint": 2,
+                "applicable_materials": [
+                    {
+                        "material_id": item["material_id"],
+                        "material_version": item["material_version"],
+                    }
+                    for item in request["required_materials"]
+                ],
+                "minimum_applicable_thickness_um": min(
+                    int(item["actual_thickness_um"]) for item in request["required_materials"]
+                ),
+                "maximum_applicable_thickness_um": max(
+                    int(item["actual_thickness_um"]) for item in request["required_materials"]
+                ),
+                "load_cases": load_cases,
+                "safety_factor_permille": safety_factor,
+            },
+            "test_report": document("retention-report-001", report_bytes),
+            "installation_instruction": document(
+                "retention-installation-001",
+                instruction_bytes,
+            ),
+        }
+        statement["signature_base64"] = base64.b64encode(
+            private_key.sign(canonical_json_bytes(statement))
+        ).decode("ascii")
+        evidence_bytes = canonical_json_bytes(statement)
+        monkeypatch.setattr(
+            api_module,
+            "read_verified_stored_object",
+            lambda _expectation, *, max_bytes: evidence_bytes,
+        )
+        uploaded = client.post(
+            f"/v1/projects/{project['id']}/evidence",
+            headers=HEADERS,
+            data={
+                "evidence_type": "joint_retention",
+                "rule_id": "CB-JOINT-001",
+                "catalog_id": "mechanical-dado-lock",
+                "catalog_version": "1.0.0",
+                "design_hash": request["source_design_hash"],
+                "expires_at": expiry.isoformat(),
+            },
+            files={
+                "document": (
+                    "signed-retention.json",
+                    evidence_bytes,
+                    "application/json",
+                )
+            },
+        )
+        assert uploaded.status_code == 201, uploaded.text
+
+        bound_preview = client.post(
+            "/v1/designs/preview",
+            headers=HEADERS,
+            params={
+                "project_id": project["id"],
+                "joint_retention_evidence_id": uploaded.json()["id"],
+            },
+            json=spec,
+        )
+        assert bound_preview.status_code == 200, bound_preview.text
+        bound = bound_preview.json()
+        payload = version_payload(project["id"], spec=spec)
+        payload["expected_design_hash"] = bound["design_hash"]
+        payload["joint_retention_evidence_id"] = uploaded.json()["id"]
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=payload,
+        )
+        assert version.status_code == 201, version.text
+        assert version.json()["design_hash"] == bound["design_hash"]
+        assert version.json()["spec_json"]["joint_retention"]["evidence_id"] == (
+            "retention-lab-report-2026-001"
+        )
+        assert (
+            version.json()["result_json"]["retention_trust"]["storage_evidence_id"]
+            == uploaded.json()["id"]
+        )
+        base = f"/v1/projects/{project['id']}/versions/{version.json()['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+
+        with get_session_factory()() as session:
+            evidence = session.get(ExternalEvidence, uploaded.json()["id"])
+            assert evidence is not None
+            evidence.revoked_at = datetime.now(UTC)
+            session.commit()
+
+        rejected = client.post(f"{base}/validate", headers=HEADERS)
+
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] in {
+        "EXTERNAL_EVIDENCE_STALE",
+        "JOINT_RETENTION_BINDING_STALE",
+    }
+
+
+def _create_surface_back_signed_retention_revision(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    """Create one public-API revision with narrow carcass evidence and an unresolved back."""
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    now = datetime.now(UTC)
+    expiry = now + timedelta(days=365)
+    registry = {
+        "schema_version": TRUST_REGISTRY_SCHEMA_VERSION,
+        "issuers": [
+            {
+                "issuer_id": "surface-back-retention-lab",
+                "key_id": "surface-back-retention-lab-2026",
+                "role": "joint_retention_certifier",
+                "public_key_base64": base64.b64encode(public_key).decode("ascii"),
+                "not_before": (now - timedelta(days=1)).isoformat(),
+                "not_after": (now + timedelta(days=730)).isoformat(),
+                "revoked_at": None,
+            }
+        ],
+        "revoked_statement_sha256": [],
+        "revoked_system_versions": [],
+    }
+    monkeypatch.setattr(
+        get_settings(),
+        "joint_retention_trust_registry_json",
+        json.dumps(registry, separators=(",", ":"), sort_keys=True),
+    )
+    monkeypatch.setattr(api_module, "store_evidence_object", lambda *_args: None)
+    spec = valid_spec() | {"back_panel": "surface_mounted"}
+    project = client.post(
+        "/v1/projects",
+        headers=HEADERS,
+        json={"name": "Surface-back retention application split"},
+    ).json()
+    certification_preview = client.post(
+        "/v1/designs/preview",
+        headers=HEADERS,
+        params={"project_id": project["id"]},
+        json=spec,
+    )
+    assert certification_preview.status_code == 200, certification_preview.text
+    request = certification_preview.json()["retention_certification_request"]
+    assert request["eligible_for_current_binding"] is True
+    assert request["excluded_applications"] == [
+        {
+            "application_class": "surface_mounted_back",
+            "joint_count": 4,
+            "retention_basis": "independent_authenticated_evidence_required",
+            "capture_proven": False,
+        }
+    ]
+    draft = client.put(
+        f"/v1/projects/{project['id']}/draft",
+        headers=HEADERS,
+        json={
+            "expected_draft_revision": 0,
+            "template_id": "shelving",
+            "spec": spec,
+            "workspace_spec": valid_workspace_intent(),
+        },
+    )
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["design_hash"] == request["source_design_hash"]
+
+    def embedded_document(document_id: str, content: bytes) -> dict[str, str]:
+        return {
+            "document_id": document_id,
+            "document_version": "1.0.0",
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "content_base64": base64.b64encode(content).decode("ascii"),
+        }
+
+    safety_factor = int(request["minimum_safety_factor_permille"])
+    statement: dict[str, Any] = {
+        "schema_version": SIGNED_EVIDENCE_SCHEMA_VERSION,
+        "evidence_id": "surface-back-carcass-report-2026-001",
+        "issuer_id": "surface-back-retention-lab",
+        "key_id": "surface-back-retention-lab-2026",
+        "issued_at": now.isoformat(),
+        "expires_at": expiry.isoformat(),
+        "application_class": request["application_class"],
+        "joint_geometry_fingerprint_schema": request[
+            "joint_geometry_fingerprint_schema"
+        ],
+        "engine_version": request["engine_version"],
+        "template_version": request["template_version"],
+        "joint_geometry_sha256": request["joint_geometry_sha256"],
+        "catalogue_entry": {
+            "system_id": "surface-back-carcass-lock",
+            "system_version": "1.0.0",
+            "joint_type": "dado",
+            "application_class": request["application_class"],
+            "method": "mechanical",
+            "machining_scope": "no_additional_cnc",
+            "hardware_sku": "SCREW-4X40-SURFACE-BACK-001",
+            "hardware_count_per_joint": 2,
+            "applicable_materials": [
+                {
+                    "material_id": item["material_id"],
+                    "material_version": item["material_version"],
+                }
+                for item in request["required_materials"]
+            ],
+            "minimum_applicable_thickness_um": min(
+                int(item["actual_thickness_um"])
+                for item in request["required_materials"]
+            ),
+            "maximum_applicable_thickness_um": max(
+                int(item["actual_thickness_um"])
+                for item in request["required_materials"]
+            ),
+            "load_cases": [
+                {
+                    "mode": item["mode"],
+                    "rated_design_load_n": item["rated_design_load_n"],
+                    "verified_capacity_n": (
+                        int(item["rated_design_load_n"]) * safety_factor + 999
+                    )
+                    // 1_000,
+                }
+                for item in request["required_load_cases"]
+            ],
+            "safety_factor_permille": safety_factor,
+        },
+        "test_report": embedded_document(
+            "surface-back-carcass-report",
+            b"independent carcass retention report for exact surface-back design",
+        ),
+        "installation_instruction": embedded_document(
+            "surface-back-carcass-instruction",
+            b"carcass-only mechanical retention instruction; excludes back panel",
+        ),
+    }
+    statement["signature_base64"] = base64.b64encode(
+        private_key.sign(canonical_json_bytes(statement))
+    ).decode("ascii")
+    evidence_bytes = canonical_json_bytes(statement)
+    monkeypatch.setattr(
+        api_module,
+        "read_verified_stored_object",
+        lambda _expectation, *, max_bytes: evidence_bytes,
+    )
+    uploaded = client.post(
+        f"/v1/projects/{project['id']}/evidence",
+        headers=HEADERS,
+        data={
+            "evidence_type": "joint_retention",
+            "rule_id": "CB-JOINT-001",
+            "catalog_id": "surface-back-carcass-lock",
+            "catalog_version": "1.0.0",
+            "design_hash": request["source_design_hash"],
+            "expires_at": expiry.isoformat(),
+        },
+        files={
+            "document": (
+                "surface-back-signed-retention.json",
+                evidence_bytes,
+                "application/json",
+            )
+        },
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    bound_preview = client.post(
+        "/v1/designs/preview",
+        headers=HEADERS,
+        params={
+            "project_id": project["id"],
+            "joint_retention_evidence_id": uploaded.json()["id"],
+        },
+        json=spec,
+    )
+    assert bound_preview.status_code == 200, bound_preview.text
+    payload = version_payload(project["id"], spec=spec)
+    payload["expected_design_hash"] = bound_preview.json()["design_hash"]
+    payload["joint_retention_evidence_id"] = uploaded.json()["id"]
+    version = client.post(
+        f"/v1/projects/{project['id']}/versions",
+        headers=HEADERS,
+        json=payload,
+    )
+    assert version.status_code == 201, version.text
+    with get_session_factory()() as session:
+        evidence = session.get(ExternalEvidence, uploaded.json()["id"])
+        assert evidence is not None
+        evidence_object_key = evidence.object_key
+    return SimpleNamespace(
+        project=project,
+        version=version.json(),
+        base=(
+            f"/v1/projects/{project['id']}/versions/"
+            f"{version.json()['revision']}"
+        ),
+        evidence_bytes=evidence_bytes,
+        evidence_object_key=evidence_object_key,
+    )
+
+
+def test_surface_back_blocked_review_package_is_downloadable_but_never_cam_approvable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        fixture = _create_surface_back_signed_retention_revision(client, monkeypatch)
+        assert client.post(f"{fixture.base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, fixture.base)
+        generated = client.post(
+            f"{fixture.base}/generate",
+            headers=HEADERS,
+            json=valid_production_context(),
+        )
+        assert generated.status_code == 202, generated.text
+        documents = _complete_blocked_cam_generation(
+            generated.json()["id"],
+            blocker_code=BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        )
+        documents[fixture.evidence_object_key] = fixture.evidence_bytes
+        calls: list[tuple[str, int]] = []
+        _install_strict_review_reader(monkeypatch, documents, calls)
+
+        listing = client.get(
+            f"/v1/jobs/{generated.json()['id']}/artifacts",
+            headers=HEADERS,
+        )
+        assert listing.status_code == 200, listing.text
+        cam = client.post(
+            f"{fixture.base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Surface-back retention remains unresolved",
+                "generation_job_id": generated.json()["id"],
+            },
+        )
+        release = client.post(
+            f"{fixture.base}/release",
+            headers=HEADERS,
+            json={"release_number": "SURFACE-BACK-BLOCKED", "confirmation": "RELEASE"},
+        )
+
+    assert cam.status_code == release.status_code == 409
+
+
+def test_back_panel_blocker_must_match_the_frozen_application(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": "Forged back-panel blocker"},
+        ).json()
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"]),
+        ).json()
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+        generated = client.post(f"{base}/generate", headers=HEADERS, json={}).json()
+        documents = _complete_blocked_cam_generation(
+            generated["id"],
+            blocker_code=BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        )
+        calls: list[tuple[str, int]] = []
+        _install_strict_review_reader(monkeypatch, documents, calls)
+
+        listing = client.get(f"/v1/jobs/{generated['id']}/artifacts", headers=HEADERS)
+
+    assert listing.status_code == 409
 
 
 def test_generation_rejects_duplicate_evidence_type_before_creating_job(
@@ -1946,7 +2450,7 @@ def test_generation_rejects_stock_or_machine_choices_not_frozen_on_revision() ->
             headers=HEADERS,
             json={
                 **frozen,
-                "postprocessor_id": "linuxcnc-validation-1.0.0",
+                "postprocessor_id": "linuxcnc-validation-1.1.0",
                 "include_step": True,
                 "include_freecad_project": False,
                 "include_validation_program": True,
@@ -5561,6 +6065,7 @@ def test_worker_completion_gate_does_not_require_api_only_runtime_settings(
         SimpleNamespace(
             s3_bucket="production-artifacts",
             build_identity=build_identity,
+            joint_retention_trust_registry_json=None,
         ),
     )
     monkeypatch.setattr(worker_tasks, "_s3_client", object)
@@ -6143,6 +6648,11 @@ def test_plain_dado_retention_is_a_non_overridable_cam_and_release_gate(
             api_module,
             "_require_resolved_dado_retention",
             _REAL_DADO_RETENTION_GATE,
+        )
+        monkeypatch.setattr(
+            api_module,
+            "_frozen_dado_retention_is_unresolved",
+            _REAL_DADO_RETENTION_PROJECTION,
         )
         before = _review_mutation_snapshot(version["id"])
         if endpoint == "cam":

@@ -14,6 +14,7 @@ from custombuild_cad import (
 )
 from custombuild_cad.adapter import _normalise_step
 from custombuild_domain import (
+    BackPanelType,
     BookcaseDesignSpec,
     BookcaseParameters,
     JointType,
@@ -214,6 +215,130 @@ def test_domain_adapter_rejects_unknown_geometry_and_skips_noncutting_mark() -> 
     thickness_grain = namespace_part(grain="z")
     with pytest.raises(ValueError, match="through panel thickness"):
         adapt_domain_part(thickness_grain)
+
+
+@pytest.mark.cad
+@pytest.mark.parametrize(
+    "design_id",
+    (
+        "surface-back-authoritative-cad-a",
+        "surface-back-authoritative-cad-b",
+        "surface-back-authoritative-cad-c",
+    ),
+)
+def test_surface_back_has_four_in_bounds_rabbets_and_authoritative_cad(
+    design_id: str,
+) -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+    design = build_bookcase(
+        BookcaseDesignSpec(
+            design_id=design_id,
+            parameters=BookcaseParameters(back_panel=BackPanelType.SURFACE_MOUNTED),
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    )
+    back_part_ids = {
+        part.part_id for part in design.parts if part.role.value == "back"
+    }
+    back_joints = tuple(
+        joint
+        for joint in design.joints
+        if back_part_ids & {member.part_id for member in joint.members}
+    )
+    assert len(back_joints) == 4
+    assert {joint.joint_type for joint in back_joints} == {JointType.RABBET}
+    back_feature_ids = {
+        feature_id
+        for joint in back_joints
+        for member in joint.members
+        for feature_id in member.feature_ids
+    }
+    assert len(back_feature_ids) == 4
+
+    adapted = adapt_design_result(design)
+    adapted_by_id = {part.part_id: part for part in adapted.parts}
+    rabbet_features = tuple(
+        feature
+        for part in adapted.parts
+        for feature in part.features
+        if feature.feature_id in back_feature_ids
+    )
+    assert len(rabbet_features) == 4
+    for item in rabbet_features:
+        bounds = item.machining_bounds()
+        owner = adapted_by_id[item.part_id]
+        assert bounds.x_um >= 0
+        assert bounds.y_um >= 0
+        assert bounds.x_um + bounds.width_um <= owner.width_um
+        assert bounds.y_um + bounds.height_um <= owner.height_um
+
+    # Fixed-shelf dogbones nearest the rear edge retain their complete cutter
+    # radius inside each side panel; the surface-back RABBET does not act as an
+    # implicit waiver for a breakthrough DADO relief.
+    side_parts = tuple(
+        part
+        for part in design.parts
+        if part.role.value in {"left_side", "right_side"}
+    )
+    rear_ended_dados = tuple(
+        (part, feature, rabbet)
+        for part in side_parts
+        for rabbet in part.features
+        if rabbet.kind.value == "rabbet"
+        for feature in part.features
+        if feature.kind.value == "groove"
+        and feature.dimensions.radius_um is not None
+        and feature.origin.y_um + int(feature.dimensions.width_um or 0)
+        < rabbet.origin.y_um
+    )
+    assert rear_ended_dados
+    assert all(
+        feature.origin.y_um
+        + int(feature.dimensions.width_um or 0)
+        + int(feature.dimensions.radius_um or 0)
+        <= rabbet.origin.y_um
+        for _part, feature, rabbet in rear_ended_dados
+    )
+
+    artifacts = CadQueryAdapter().export_design(design)
+    assert artifacts.authoritative is True
+    assert artifacts.step.startswith(b"ISO-10303-21")
+    assert artifacts.glb.startswith(b"glTF")
+
+
+@pytest.mark.cad
+def test_surface_back_dogbone_overlap_requires_complete_canonical_triangle() -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+    design = build_bookcase(
+        BookcaseDesignSpec(
+            design_id="surface-back-authoritative-cad",
+            parameters=BookcaseParameters(back_panel=BackPanelType.SURFACE_MOUNTED),
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    )
+    back_part_ids = {
+        part.part_id for part in design.parts if part.role.value == "back"
+    }
+    removed_joint = next(
+        joint
+        for joint in design.joints
+        if joint.joint_type == JointType.RABBET
+        and back_part_ids & {member.part_id for member in joint.members}
+    )
+    incomplete = design.model_copy(
+        update={
+            "joints": tuple(
+                joint for joint in design.joints if joint.joint_id != removed_joint.joint_id
+            )
+        }
+    )
+
+    with pytest.raises(CADExportError, match="does not intersect remaining material"):
+        CadQueryAdapter().export_design(incomplete)
 
 
 @pytest.mark.cad

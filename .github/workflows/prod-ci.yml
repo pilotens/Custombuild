@@ -224,6 +224,12 @@ jobs:
           ):
               assert shutil.which(executable) is None, executable
           PY
+          docker compose --file compose.yml exec -T maintenance-worker \
+            /opt/custombuild-venv/bin/python -c \
+            "import os; assert os.getuid() == 65532; assert os.environ['CELERY_EXPECTED_QUEUE'] == 'maintenance'"
+          docker compose --file compose.yml exec -T storage-reaper-worker \
+            /opt/custombuild-venv/bin/python -c \
+            "import os; assert os.getuid() == 65532; assert os.environ['CELERY_EXPECTED_QUEUE'] == 'storage-reaper'"
           docker compose --file compose.yml exec -T scheduler \
             /opt/custombuild-venv/bin/python -c \
             "import os; assert os.getuid() == 65532, os.getuid()"
@@ -483,6 +489,8 @@ jobs:
           test "$api_id" = "$(runtime_id storage-recovery)"
           test "$api_id" = "$(runtime_id storage-capacity-attestor)"
           test "$worker_id" = "$(runtime_id worker)"
+          test "$worker_id" = "$(runtime_id maintenance-worker)"
+          test "$worker_id" = "$(runtime_id storage-reaper-worker)"
           test "$worker_id" = "$(runtime_id scheduler)"
           test "$web_id" = "$(runtime_id web)"
           test "$seaweedfs_id" = "$(runtime_id object-storage)"
