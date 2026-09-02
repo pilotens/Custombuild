@@ -12,6 +12,8 @@ from typing import Any
 import pytest
 from app.workshop_trust import (
     EXECUTABLE_MACHINE_PROGRAM_KIND,
+    MAX_EVIDENCE_CHAIN_BYTES,
+    MAX_EVIDENCE_OBJECT_BYTES,
     SIDECAR_EVIDENCE_PLACEMENT,
     SIGNED_WORKSHOP_ATTESTATION_SCHEMA_VERSION,
     VALIDATION_ONLY_MACHINE_PROGRAM_KIND,
@@ -20,6 +22,8 @@ from app.workshop_trust import (
     WORKSHOP_EVIDENCE_MEDIA_TYPE,
     WORKSHOP_EVIDENCE_RECORD_SCHEMA_VERSION,
     WORKSHOP_MAKER_ROLE,
+    WORKSHOP_RUN_SCHEMA_VERSION,
+    WORKSHOP_SUPERVISOR_ROLE,
     WORKSHOP_TRUST_REGISTRY_SCHEMA_VERSION,
     WORKSHOP_VERIFICATION_POLICY_SCHEMA_VERSION,
     VerifiedWorkshopChain,
@@ -29,7 +33,9 @@ from app.workshop_trust import (
     canonical_json_bytes,
     validate_signed_workshop_attestation_structure,
     verify_workshop_attestation_chain,
+    workshop_evidence_claim_bytes,
     workshop_evidence_claim_sha256,
+    workshop_machine_program_set_sha256,
     workshop_policy_sha256,
     workshop_run_sha256,
 )
@@ -86,14 +92,49 @@ def _reference(
     }
 
 
+def _machine_programs() -> tuple[dict[str, Any], ...]:
+    return (
+        {
+            "program_id": "production-main",
+            "purpose": "PRODUCTION_PART",
+            "relative_path": "machine/production-main.ngc",
+            "setup_id": "setup-01",
+            "wcs_id": "G54",
+            "stock_id": "sheet-001",
+            "part_ids": ["left-side", "right-side"],
+            "operation_set_sha256": _sha("production-main-operations"),
+            "sha256": _sha("production-program-main"),
+            "size_bytes": 12_345,
+            "media_type": "text/x-gcode",
+        },
+        {
+            "program_id": "reference-part-program",
+            "purpose": "REFERENCE_PART",
+            "relative_path": "machine/reference-part.ngc",
+            "setup_id": "setup-01",
+            "wcs_id": "G54",
+            "stock_id": "sheet-001",
+            "part_ids": ["reference-part-001"],
+            "operation_set_sha256": _sha("reference-part-operations"),
+            "sha256": _sha("reference-part-program"),
+            "size_bytes": 2_345,
+            "media_type": "text/x-gcode",
+        },
+    )
+
+
 def _run(*, kind: str = EXECUTABLE_MACHINE_PROGRAM_KIND) -> dict[str, Any]:
     policy_hash = workshop_policy_sha256(WorkshopVerificationPolicy.model_validate(_policy()))
+    machine_programs = _machine_programs()
     return {
+        "schema_version": WORKSHOP_RUN_SCHEMA_VERSION,
         "organization": "org-1",
         "project": "project-1",
         "design_version": "design-v7",
+        "design_review_release": "design-review-release-7",
         "design_hash": _sha("design"),
         "generation_job": "generation-job-42",
+        "generation_finished_at": _utc(NOW - timedelta(days=7)),
         "production_context_hash": _sha("production-context"),
         "manifest_sha256": _sha("base-manifest"),
         "bundle_sha256": _sha("base-bundle"),
@@ -101,7 +142,8 @@ def _run(*, kind: str = EXECUTABLE_MACHINE_PROGRAM_KIND) -> dict[str, Any]:
         "generation_plan_sha256": _sha("generation-plan"),
         "workshop_policy_sha256": policy_hash,
         "machine_program_kind": kind,
-        "machine_program_set_sha256": _sha("executable-machine-program-set"),
+        "machine_programs": list(machine_programs),
+        "machine_program_set_sha256": workshop_machine_program_set_sha256(machine_programs),
         "postprocessor_id": "linuxcnc-production",
         "postprocessor_version": "2.0.0",
         "postprocessor_binary_sha256": _sha("postprocessor-binary"),
@@ -134,7 +176,10 @@ def _setup() -> dict[str, Any]:
             "calibration_id": "cal-2026-08",
             "calibrated_at": _utc(NOW - timedelta(days=7)),
             "calibration_expires_at": _utc(NOW + timedelta(days=30)),
-            "calibration_evidence": _reference("machine-calibration"),
+            "calibration_evidence": _reference(
+                "machine-calibration",
+                observed_at=NOW - timedelta(days=7),
+            ),
         },
         "wcs": {
             "wcs_id": "G54",
@@ -214,6 +259,12 @@ def _policy() -> dict[str, Any]:
         "schema_version": WORKSHOP_VERIFICATION_POLICY_SCHEMA_VERSION,
         "policy_id": "oak-bookcase-workshop",
         "policy_version": "1.0.0",
+        "setup_evidence_not_before": _utc(NOW - timedelta(days=30)),
+        "stage_evidence_not_before": _utc(NOW - timedelta(days=7)),
+        "maximum_setup_evidence_age_seconds": 30 * 24 * 60 * 60,
+        "maximum_stage_evidence_age_seconds": 14 * 24 * 60 * 60,
+        "maximum_attestation_validity_seconds": 14 * 24 * 60 * 60,
+        "maximum_chain_duration_seconds": 7 * 24 * 60 * 60,
         "machine": {
             "machine_id": "cnc-01",
             "manufacturer": "Acme",
@@ -276,6 +327,8 @@ def _policy() -> dict[str, Any]:
                 "maximum_moisture_content_ppm": 100_000,
             }
         ],
+        "machine_programs": list(_machine_programs()),
+        "machine_program_set_sha256": workshop_machine_program_set_sha256(_machine_programs()),
         "coupon_material_batch_ids": ["BATCH-08-31"],
         "coupon_specification_sha256": _sha("coupon-specification"),
         "coupon_measurements": [
@@ -298,6 +351,11 @@ def _policy() -> dict[str, Any]:
         "expected_removal_sha256": _sha("expected-removal"),
         "maximum_removal_deviation_um": 50,
         "minimum_air_cut_clearance_um": 20_000,
+        "air_cut_supervisor": {
+            "principal_id": "supervisor-1",
+            "key_id": "supervisor-key-1",
+        },
+        "reference_part_program_id": "reference-part-program",
         "reference_part_program_sha256": _sha("reference-part-program"),
         "reference_part_measurements": [
             {
@@ -330,12 +388,25 @@ def _bind_reference(
         claim_type=claim_type,
         payload=payload,
     )
+    evidence_id = reference["evidence_id"]
+    evidence_version = reference["evidence_version"]
+    attachment_content = _attachment_content(evidence_id, evidence_version)
     record = {
         "schema_version": WORKSHOP_EVIDENCE_RECORD_SCHEMA_VERSION,
-        "evidence_id": reference["evidence_id"],
-        "evidence_version": reference["evidence_version"],
+        "evidence_id": evidence_id,
+        "evidence_version": evidence_version,
         "claim_type": claim_type,
         "claim_sha256": claim_digest,
+        "observed_at": reference["observed_at"],
+        "attachments": [
+            {
+                "attachment_id": "primary-record",
+                "purpose": "RAW_PHYSICAL_OBSERVATION",
+                "sha256": hashlib.sha256(attachment_content).hexdigest(),
+                "size_bytes": len(attachment_content),
+                "media_type": "application/octet-stream",
+            }
+        ],
     }
     record_bytes = canonical_json_bytes(record)
     reference.update(
@@ -347,6 +418,30 @@ def _bind_reference(
             "media_type": WORKSHOP_EVIDENCE_MEDIA_TYPE,
         }
     )
+
+
+def _attachment_content(evidence_id: object, evidence_version: object) -> bytes:
+    assert isinstance(evidence_id, str)
+    assert isinstance(evidence_version, str)
+    return f"physical-evidence:{evidence_id}:{evidence_version}".encode()
+
+
+class _RejectAttachmentAccess(dict[tuple[str, str, str], bytes]):
+    def __init__(
+        self,
+        values: dict[tuple[str, str, str], bytes],
+        *,
+        forbidden_keys: set[tuple[str, str, str]],
+    ) -> None:
+        super().__init__(values)
+        self.forbidden_keys = forbidden_keys
+        self.forbidden_accesses: list[tuple[str, str, str]] = []
+
+    def __getitem__(self, key: tuple[str, str, str]) -> bytes:
+        if key in self.forbidden_keys:
+            self.forbidden_accesses.append(key)
+            raise AssertionError("attachment bytes were accessed before preflight rejection")
+        return super().__getitem__(key)
 
 
 def _without(value: dict[str, Any], *keys: str) -> dict[str, Any]:
@@ -429,7 +524,11 @@ def _bind_evidence_claims(statements: list[dict[str, Any]]) -> None:
             _bind_reference(
                 air_cut["evidence"],
                 claim_type="supervised-air-cut",
-                payload=_without(air_cut, "evidence"),
+                payload=_without(
+                    air_cut,
+                    "evidence",
+                    "supervisor_signature_base64",
+                ),
             )
         elif statement["reference_part"] is not None:
             reference_part = statement["reference_part"]
@@ -447,6 +546,14 @@ def _bind_evidence_claims(statements: list[dict[str, Any]]) -> None:
                 payload=_without(prototype, "evidence"),
             )
             load_test = final["load_test"]
+            load_test.update(
+                {
+                    "prototype_id": prototype["prototype_id"],
+                    "prototype_build_manifest_sha256": prototype["build_manifest_sha256"],
+                    "prototype_inspection_sha256": prototype["inspection_sha256"],
+                    "prototype_evidence_sha256": prototype["evidence"]["sha256"],
+                }
+            )
             _bind_reference(
                 load_test["evidence"],
                 claim_type="prototype-load-test",
@@ -464,7 +571,9 @@ def _pre_cut(run: dict[str, Any]) -> dict[str, Any]:
             "coupons": [
                 {
                     "coupon_id": "coupon-001",
+                    "stock_id": "sheet-001",
                     "material_batch_id": "BATCH-08-31",
+                    "supplier_lot_id": "LOT-552",
                     "specification_sha256": _sha("coupon-specification"),
                     "measurements": [_measurement("dado-width")],
                     "outcome": "PASS",
@@ -492,7 +601,11 @@ def _pre_cut(run: dict[str, Any]) -> dict[str, Any]:
                 observed_at=NOW - timedelta(days=6, hours=1),
             ),
             "machine_program_set_sha256": run["machine_program_set_sha256"],
-            "supervisor_id": "operator-supervisor-1",
+            "supervisor": {
+                "principal_id": "supervisor-1",
+                "key_id": "supervisor-key-1",
+            },
+            "supervisor_signature_base64": "A" * 88,
             "minimum_clearance_um": 25_000,
             "outcome": "PASS",
         },
@@ -506,6 +619,7 @@ def _reference_part() -> dict[str, Any]:
             observed_at=NOW - timedelta(days=5, hours=1),
         ),
         "part_id": "reference-part-001",
+        "machine_program_id": "reference-part-program",
         "machine_program_sha256": _sha("reference-part-program"),
         "metrology": [_measurement("reference-width")],
         "outcome": "PASS",
@@ -513,17 +627,18 @@ def _reference_part() -> dict[str, Any]:
 
 
 def _final_workshop(run: dict[str, Any]) -> dict[str, Any]:
+    prototype = {
+        "evidence": _reference(
+            "prototype-inspection",
+            observed_at=NOW - timedelta(days=4),
+        ),
+        "prototype_id": "prototype-001",
+        "build_manifest_sha256": run["manifest_sha256"],
+        "inspection_sha256": _sha("prototype-inspection-record"),
+        "outcome": "PASS",
+    }
     return {
-        "prototype_build": {
-            "evidence": _reference(
-                "prototype-inspection",
-                observed_at=NOW - timedelta(days=4),
-            ),
-            "prototype_id": "prototype-001",
-            "build_manifest_sha256": run["manifest_sha256"],
-            "inspection_sha256": _sha("prototype-inspection-record"),
-            "outcome": "PASS",
-        },
+        "prototype_build": prototype,
         "load_test": {
             "evidence": _reference(
                 "prototype-load-test",
@@ -582,6 +697,7 @@ def _keys() -> dict[str, Ed25519PrivateKey]:
     return {
         "maker-1": Ed25519PrivateKey.generate(),
         "checker-1": Ed25519PrivateKey.generate(),
+        "supervisor-1": Ed25519PrivateKey.generate(),
     }
 
 
@@ -592,6 +708,23 @@ def _signed_chain(
     chain: list[bytes] = []
     previous: str | None = None
     for statement in statements:
+        if statement["stage"] == "PRE_CUT":
+            air_cut = statement["pre_cut"]["supervised_air_cut"]
+            supervisor_claim = workshop_evidence_claim_bytes(
+                claim_type="supervised-air-cut-supervision",
+                payload={
+                    "run_sha256": workshop_run_sha256(WorkshopRun.model_validate(statement["run"])),
+                    "evidence": deepcopy(air_cut["evidence"]),
+                    "assessment": _without(
+                        air_cut,
+                        "evidence",
+                        "supervisor_signature_base64",
+                    ),
+                },
+            )
+            air_cut["supervisor_signature_base64"] = base64.b64encode(
+                keys[air_cut["supervisor"]["principal_id"]].sign(supervisor_claim)
+            ).decode("ascii")
         statement["previous_attestation_sha256"] = previous
         statement_bytes = canonical_json_bytes(statement)
         envelope = {
@@ -623,8 +756,11 @@ def _registry(
     *,
     revoked_statement_sha256: tuple[str, ...] = (),
     revoked_run_sha256: tuple[str, ...] = (),
+    revoked_evidence_sha256: tuple[str, ...] = (),
+    revoked_evidence_claim_sha256: tuple[str, ...] = (),
+    revoked_evidence_attachment_sha256: tuple[str, ...] = (),
 ) -> dict[str, Any]:
-    return {
+    registry: dict[str, Any] = {
         "schema_version": WORKSHOP_TRUST_REGISTRY_SCHEMA_VERSION,
         "issuers": [
             {
@@ -634,6 +770,17 @@ def _registry(
                 "role": WORKSHOP_CHECKER_ROLE,
                 "qualified_stages": list(STAGES),
                 "public_key_base64": _public_key(keys["checker-1"]),
+                "not_before": _utc(NOW - timedelta(days=30)),
+                "not_after": _utc(NOW + timedelta(days=365)),
+                "revoked_at": None,
+            },
+            {
+                "organization": "org-1",
+                "principal_id": "supervisor-1",
+                "key_id": "supervisor-key-1",
+                "role": WORKSHOP_SUPERVISOR_ROLE,
+                "qualified_stages": ["PRE_CUT"],
+                "public_key_base64": _public_key(keys["supervisor-1"]),
                 "not_before": _utc(NOW - timedelta(days=30)),
                 "not_after": _utc(NOW + timedelta(days=365)),
                 "revoked_at": None,
@@ -652,7 +799,12 @@ def _registry(
         ],
         "revoked_statement_sha256": list(revoked_statement_sha256),
         "revoked_run_sha256": list(revoked_run_sha256),
+        "revoked_evidence_sha256": list(revoked_evidence_sha256),
+        "revoked_evidence_claim_sha256": list(revoked_evidence_claim_sha256),
+        "revoked_evidence_attachment_sha256": list(revoked_evidence_attachment_sha256),
     }
+    registry["issuers"].sort(key=lambda item: (item["principal_id"], item["key_id"]))
+    return registry
 
 
 def _valid_fixture() -> tuple[
@@ -676,6 +828,7 @@ def _evidence_objects(chain: Sequence[bytes]) -> dict[tuple[str, str], bytes]:
                 evidence_version = value["evidence_version"]
                 assert isinstance(evidence_id, str)
                 assert isinstance(evidence_version, str)
+                attachment_content = _attachment_content(evidence_id, evidence_version)
                 objects[(evidence_id, evidence_version)] = canonical_json_bytes(
                     {
                         "schema_version": WORKSHOP_EVIDENCE_RECORD_SCHEMA_VERSION,
@@ -683,6 +836,16 @@ def _evidence_objects(chain: Sequence[bytes]) -> dict[tuple[str, str], bytes]:
                         "evidence_version": evidence_version,
                         "claim_type": value["claim_type"],
                         "claim_sha256": value["claim_sha256"],
+                        "observed_at": value["observed_at"],
+                        "attachments": [
+                            {
+                                "attachment_id": "primary-record",
+                                "purpose": "RAW_PHYSICAL_OBSERVATION",
+                                "sha256": hashlib.sha256(attachment_content).hexdigest(),
+                                "size_bytes": len(attachment_content),
+                                "media_type": "application/octet-stream",
+                            }
+                        ],
                     }
                 )
             for item in value.values():
@@ -696,6 +859,32 @@ def _evidence_objects(chain: Sequence[bytes]) -> dict[tuple[str, str], bytes]:
     return objects
 
 
+def _evidence_attachments(
+    chain: Sequence[bytes],
+) -> dict[tuple[str, str, str], bytes]:
+    attachments: dict[tuple[str, str, str], bytes] = {}
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            if value.get("status") == "VERIFIED" and "evidence_id" in value:
+                evidence_id = value["evidence_id"]
+                evidence_version = value["evidence_version"]
+                assert isinstance(evidence_id, str)
+                assert isinstance(evidence_version, str)
+                attachments[(evidence_id, evidence_version, "primary-record")] = (
+                    _attachment_content(evidence_id, evidence_version)
+                )
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    for item in chain:
+        visit(json.loads(item)["statement"])
+    return attachments
+
+
 def _verify(
     run: dict[str, Any],
     registry: dict[str, Any],
@@ -703,6 +892,7 @@ def _verify(
     *,
     policy: dict[str, Any] | None = None,
     evidence_objects: dict[tuple[str, str], bytes] | None = None,
+    evidence_attachments: dict[tuple[str, str, str], bytes] | None = None,
 ) -> VerifiedWorkshopChain:
     return verify_workshop_attestation_chain(
         trust_registry=registry,
@@ -712,6 +902,9 @@ def _verify(
         expected_server_nonces=NONCES,
         evidence_objects=(
             _evidence_objects(chain) if evidence_objects is None else evidence_objects
+        ),
+        evidence_attachments=(
+            _evidence_attachments(chain) if evidence_attachments is None else evidence_attachments
         ),
         now=NOW,
     )
@@ -746,6 +939,75 @@ def test_evidence_objects_are_reread_and_checksum_verified() -> None:
     corrupted[("coupon-report", "1.0.0")] = b"corrupt evidence bytes"
     with pytest.raises(WorkshopTrustError, match="does not match its signed identity"):
         _verify(run, registry, chain, evidence_objects=corrupted)
+
+
+def test_raw_physical_attachments_are_required_and_checksum_verified() -> None:
+    run, _keys_by_principal, registry, chain = _valid_fixture()
+    attachments = _evidence_attachments(chain)
+    attachments.pop(("coupon-report", "1.0.0", "primary-record"))
+    with pytest.raises(WorkshopTrustError, match="evidence attachment is unavailable"):
+        _verify(run, registry, chain, evidence_attachments=attachments)
+
+    corrupted = _evidence_attachments(chain)
+    corrupted[("coupon-report", "1.0.0", "primary-record")] = b"corrupt attachment"
+    with pytest.raises(WorkshopTrustError, match="attachment does not match"):
+        _verify(run, registry, chain, evidence_attachments=corrupted)
+
+
+def test_declared_evidence_budget_rejects_before_attachment_byte_access() -> None:
+    run = _run()
+    keys = _keys()
+    statements = _statements(run)
+    reference = statements[0]["pre_cut"]["coupons"]["evidence"]
+    evidence_id = reference["evidence_id"]
+    evidence_version = reference["evidence_version"]
+    assert isinstance(evidence_id, str)
+    assert isinstance(evidence_version, str)
+    attachment_descriptors: list[dict[str, Any]] = [
+        {
+            "attachment_id": f"oversized-{index:02d}",
+            "purpose": "RAW_PHYSICAL_OBSERVATION",
+            "sha256": _sha(f"oversized-attachment-{index}"),
+            "size_bytes": MAX_EVIDENCE_OBJECT_BYTES,
+            "media_type": "application/octet-stream",
+        }
+        for index in range(9)
+    ]
+    assert sum(item["size_bytes"] for item in attachment_descriptors) > (MAX_EVIDENCE_CHAIN_BYTES)
+    record_bytes = canonical_json_bytes(
+        {
+            "schema_version": WORKSHOP_EVIDENCE_RECORD_SCHEMA_VERSION,
+            "evidence_id": evidence_id,
+            "evidence_version": evidence_version,
+            "claim_type": reference["claim_type"],
+            "claim_sha256": reference["claim_sha256"],
+            "observed_at": reference["observed_at"],
+            "attachments": attachment_descriptors,
+        }
+    )
+    reference["sha256"] = hashlib.sha256(record_bytes).hexdigest()
+    reference["size_bytes"] = len(record_bytes)
+    chain = _signed_chain(statements, keys)
+    evidence_objects = _evidence_objects(chain)
+    evidence_objects[(evidence_id, evidence_version)] = record_bytes
+    forbidden_keys = {
+        (evidence_id, evidence_version, item["attachment_id"]) for item in attachment_descriptors
+    }
+    attachments = _RejectAttachmentAccess(
+        _evidence_attachments(chain),
+        forbidden_keys=forbidden_keys,
+    )
+
+    with pytest.raises(WorkshopTrustError, match="exceed their total size limit"):
+        _verify(
+            run,
+            _registry(keys),
+            chain,
+            evidence_objects=evidence_objects,
+            evidence_attachments=attachments,
+        )
+
+    assert attachments.forbidden_accesses == []
 
 
 def test_server_policy_digest_is_part_of_the_immutable_run() -> None:
@@ -784,6 +1046,56 @@ def test_noncanonical_attestation_and_timestamp_bytes_fail_closed() -> None:
         _verify(run, registry, malformed)
 
 
+def test_legacy_v1_trust_documents_fail_closed_after_v2_semantic_upgrade() -> None:
+    run, keys, registry, chain = _valid_fixture()
+    legacy_registry = deepcopy(registry)
+    legacy_registry["schema_version"] = "custombuild.workshop-trust-registry.v1"
+    with pytest.raises(WorkshopTrustError, match="trust registry is invalid"):
+        _verify(run, legacy_registry, chain)
+
+    legacy_policy = _policy()
+    legacy_policy["schema_version"] = "custombuild.workshop-verification-policy.v1"
+    with pytest.raises(WorkshopTrustError, match="policy is invalid"):
+        _verify(run, _registry(keys), chain, policy=legacy_policy)
+
+    legacy_envelope = json.loads(chain[0])
+    legacy_envelope["schema_version"] = "custombuild.signed-workshop-attestation.v1"
+    with pytest.raises(WorkshopTrustError, match="attestation has an invalid schema"):
+        _verify(
+            run,
+            _registry(keys),
+            (canonical_json_bytes(legacy_envelope), chain[1], chain[2]),
+        )
+
+
+@pytest.mark.parametrize(
+    "revocation_field",
+    (
+        "revoked_statement_sha256",
+        "revoked_run_sha256",
+        "revoked_evidence_sha256",
+        "revoked_evidence_claim_sha256",
+        "revoked_evidence_attachment_sha256",
+    ),
+)
+def test_registry_requires_a_complete_current_revocation_snapshot(
+    revocation_field: str,
+) -> None:
+    run, _keys_by_principal, registry, chain = _valid_fixture()
+    del registry[revocation_field]
+
+    with pytest.raises(WorkshopTrustError, match="trust registry is invalid"):
+        _verify(run, registry, chain)
+
+
+def test_registry_requires_explicit_revocation_state_for_every_issuer() -> None:
+    run, _keys_by_principal, registry, chain = _valid_fixture()
+    del registry["issuers"][0]["revoked_at"]
+
+    with pytest.raises(WorkshopTrustError, match="trust registry is invalid"):
+        _verify(run, registry, chain)
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     (
@@ -804,7 +1116,10 @@ def test_chain_cannot_replay_across_run_design_manifest_or_executable_identity(
     another_expected_run = deepcopy(run)
     another_expected_run[field] = replacement
 
-    with pytest.raises(WorkshopTrustError, match="another immutable run"):
+    with pytest.raises(
+        WorkshopTrustError,
+        match="another immutable run|expected workshop run is invalid",
+    ):
         _verify(another_expected_run, registry, chain)
 
 
@@ -820,6 +1135,7 @@ def test_server_nonce_replay_and_nonce_aliasing_fail_closed() -> None:
             expected_policy=_policy(),
             expected_server_nonces=replay_nonces,
             evidence_objects=_evidence_objects(chain),
+            evidence_attachments=_evidence_attachments(chain),
             now=NOW,
         )
 
@@ -833,6 +1149,7 @@ def test_server_nonce_replay_and_nonce_aliasing_fail_closed() -> None:
             expected_policy=_policy(),
             expected_server_nonces=aliased_nonces,
             evidence_objects=_evidence_objects(chain),
+            evidence_attachments=_evidence_attachments(chain),
             now=NOW,
         )
 
@@ -907,6 +1224,90 @@ def test_revoked_run_and_statement_fail_closed() -> None:
             _registry(keys, revoked_statement_sha256=(statement_digest,)),
             chain,
         )
+
+
+@pytest.mark.parametrize("revocation_kind", ("record", "claim"))
+def test_revoked_evidence_record_or_claim_cannot_be_reissued(
+    revocation_kind: str,
+) -> None:
+    run, keys, _registry_value, chain = _valid_fixture()
+    reference = json.loads(chain[0])["statement"]["pre_cut"]["coupons"]["evidence"]
+    registry_kwargs = (
+        {"revoked_evidence_sha256": (reference["sha256"],)}
+        if revocation_kind == "record"
+        else {"revoked_evidence_claim_sha256": (reference["claim_sha256"],)}
+    )
+
+    with pytest.raises(
+        WorkshopTrustError,
+        match="evidence record is revoked|evidence claim is revoked",
+    ):
+        _verify(run, _registry(keys, **registry_kwargs), chain)
+
+
+def test_revoked_attachment_digest_cannot_be_rewrapped_in_a_new_record() -> None:
+    run = _run()
+    keys = _keys()
+    statements = _statements(run)
+    reference = statements[0]["pre_cut"]["coupons"]["evidence"]
+    original_record_sha256 = reference["sha256"]
+    original_claim_sha256 = reference["claim_sha256"]
+    attachment_content = _attachment_content("coupon-report", "1.0.0")
+    attachment_sha256 = hashlib.sha256(attachment_content).hexdigest()
+    reference.update(
+        {
+            "evidence_id": "coupon-report-rewrapped",
+            "evidence_version": "2.0.0",
+        }
+    )
+    record_bytes = canonical_json_bytes(
+        {
+            "schema_version": WORKSHOP_EVIDENCE_RECORD_SCHEMA_VERSION,
+            "evidence_id": reference["evidence_id"],
+            "evidence_version": reference["evidence_version"],
+            "claim_type": reference["claim_type"],
+            "claim_sha256": reference["claim_sha256"],
+            "observed_at": reference["observed_at"],
+            "attachments": [
+                {
+                    "attachment_id": "primary-record",
+                    "purpose": "RAW_PHYSICAL_OBSERVATION",
+                    "sha256": attachment_sha256,
+                    "size_bytes": len(attachment_content),
+                    "media_type": "application/octet-stream",
+                }
+            ],
+        }
+    )
+    reference["sha256"] = hashlib.sha256(record_bytes).hexdigest()
+    reference["size_bytes"] = len(record_bytes)
+    assert reference["sha256"] != original_record_sha256
+    assert reference["claim_sha256"] == original_claim_sha256
+    chain = _signed_chain(statements, keys)
+    rewrapped_key = ("coupon-report-rewrapped", "2.0.0")
+    evidence_objects = _evidence_objects(chain)
+    evidence_objects[rewrapped_key] = record_bytes
+    attachment_key = (*rewrapped_key, "primary-record")
+    attachment_values = _evidence_attachments(chain)
+    attachment_values[attachment_key] = attachment_content
+    attachments = _RejectAttachmentAccess(
+        attachment_values,
+        forbidden_keys={attachment_key},
+    )
+
+    with pytest.raises(WorkshopTrustError, match="evidence attachment is revoked"):
+        _verify(
+            run,
+            _registry(
+                keys,
+                revoked_evidence_attachment_sha256=(attachment_sha256,),
+            ),
+            chain,
+            evidence_objects=evidence_objects,
+            evidence_attachments=attachments,
+        )
+
+    assert attachments.forbidden_accesses == []
 
 
 def test_broken_prior_hash_chain_and_changed_setup_fail_closed() -> None:
@@ -1010,8 +1411,137 @@ def test_load_test_must_follow_prototype_and_support_its_claimed_duration() -> N
     before_prototype = _statements(run)
     prototype_evidence = before_prototype[2]["final_workshop"]["prototype_build"]["evidence"]
     prototype_evidence["observed_at"] = _utc(NOW - timedelta(days=3, hours=22))
+    _bind_evidence_claims(before_prototype)
     with pytest.raises(WorkshopTrustError, match="load test does not match server policy"):
         _verify(run, registry, _signed_chain(before_prototype, keys))
+
+
+def test_load_test_record_cannot_be_rebound_to_another_prototype() -> None:
+    run = _run()
+    keys = _keys()
+    statements = _statements(run)
+    final = statements[2]["final_workshop"]
+    prototype = final["prototype_build"]
+    prototype["prototype_id"] = "prototype-substituted"
+    prototype["inspection_sha256"] = _sha("substituted-prototype-inspection")
+    _bind_reference(
+        prototype["evidence"],
+        claim_type="prototype-build",
+        payload=_without(prototype, "evidence"),
+    )
+
+    with pytest.raises(WorkshopTrustError, match="load test does not match server policy"):
+        _verify(run, _registry(keys), _signed_chain(statements, keys))
+
+
+def test_reference_program_must_be_a_member_of_the_executable_program_set() -> None:
+    policy = _policy()
+    policy["reference_part_program_sha256"] = _sha("unlisted-reference-program")
+    run = _run()
+    run["workshop_policy_sha256"] = workshop_policy_sha256(
+        WorkshopVerificationPolicy.model_validate(policy)
+    )
+    keys = _keys()
+    statements = _statements(run)
+    statements[1]["reference_part"]["machine_program_sha256"] = policy[
+        "reference_part_program_sha256"
+    ]
+    _bind_evidence_claims(statements)
+
+    with pytest.raises(WorkshopTrustError, match="reference part does not match"):
+        _verify(run, _registry(keys), _signed_chain(statements, keys), policy=policy)
+
+
+def test_program_set_digest_binds_logical_path_purpose_and_multiplicity() -> None:
+    programs = deepcopy(_run()["machine_programs"])
+    original = workshop_machine_program_set_sha256(programs)
+
+    renamed = deepcopy(programs)
+    renamed[0]["relative_path"] = "machine/renamed-production-main.ngc"
+    assert workshop_machine_program_set_sha256(renamed) != original
+
+    swapped = deepcopy(programs)
+    swapped[0]["purpose"], swapped[1]["purpose"] = (
+        swapped[1]["purpose"],
+        swapped[0]["purpose"],
+    )
+    assert workshop_machine_program_set_sha256(swapped) != original
+
+    identical_bytes = deepcopy(programs)
+    identical_bytes[1]["sha256"] = identical_bytes[0]["sha256"]
+    assert workshop_machine_program_set_sha256(identical_bytes) != original
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("program_id", "production-main-substituted"),
+        ("setup_id", "setup-00"),
+        ("wcs_id", "G53"),
+        ("stock_id", "unapproved-stock"),
+        ("purpose", "UNREVIEWED_PURPOSE"),
+        ("media_type", "application/octet-stream"),
+        ("relative_path", "machine/substituted-production.ngc"),
+        ("part_ids", ["unapproved-part"]),
+        ("operation_set_sha256", _sha("substituted-operation-set")),
+        ("sha256", _sha("substituted-program-bytes")),
+        ("size_bytes", 99_999),
+    ),
+)
+def test_server_policy_exactly_binds_every_executable_program_field(
+    field: str,
+    replacement: object,
+) -> None:
+    run = _run()
+    run["machine_programs"][0][field] = replacement
+    run["machine_program_set_sha256"] = workshop_machine_program_set_sha256(run["machine_programs"])
+    keys = _keys()
+    chain = _signed_chain(_statements(run), keys)
+
+    with pytest.raises(WorkshopTrustError, match="manifest does not match server policy"):
+        _verify(run, _registry(keys), chain)
+
+
+def test_server_policy_exactly_covers_the_executable_program_inventory() -> None:
+    run = _run()
+    extra_program = deepcopy(run["machine_programs"][1])
+    extra_program.update(
+        {
+            "program_id": "wasteboard-check",
+            "purpose": "SETUP_CHECK",
+            "relative_path": "machine/wasteboard-check.ngc",
+            "part_ids": ["wasteboard"],
+            "operation_set_sha256": _sha("wasteboard-check-operations"),
+            "sha256": _sha("wasteboard-check-program"),
+        }
+    )
+    run["machine_programs"].append(extra_program)
+    run["machine_program_set_sha256"] = workshop_machine_program_set_sha256(run["machine_programs"])
+    keys = _keys()
+
+    with pytest.raises(WorkshopTrustError, match="manifest does not match server policy"):
+        _verify(run, _registry(keys), _signed_chain(_statements(run), keys))
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "machine/a/../../evil.ngc",
+        "machine/./evil.ngc",
+        "machine//evil.ngc",
+        "C:/evil.ngc",
+        "/absolute/evil.ngc",
+        "machine\\evil.ngc",
+    ),
+)
+def test_machine_program_paths_must_be_canonical_safe_posix_relative_paths(
+    relative_path: str,
+) -> None:
+    programs = deepcopy(_machine_programs())
+    programs[0]["relative_path"] = relative_path
+
+    with pytest.raises(WorkshopTrustError, match="invalid entry"):
+        workshop_machine_program_set_sha256(programs)
 
 
 @pytest.mark.parametrize(
@@ -1064,7 +1594,8 @@ def test_one_evidence_blob_cannot_satisfy_two_workshop_roles() -> None:
 @pytest.mark.parametrize(
     ("target", "error"),
     (
-        ("coupon_batch", "coupon material batches"),
+        ("coupon_batch", "coupon stock, batch and lot"),
+        ("coupon_lot", "coupon stock, batch and lot"),
         ("reference_program", "reference part does not match"),
         ("prototype_manifest", "prototype was built from another manifest"),
     ),
@@ -1077,14 +1608,14 @@ def test_physical_results_are_cross_bound_to_authoritative_run_and_policy(
     keys = _keys()
     statements = _statements(run)
     if target == "coupon_batch":
-        statements[0]["pre_cut"]["coupons"]["coupons"][0]["material_batch_id"] = (
-            "OTHER-BATCH"
-        )
+        statements[0]["pre_cut"]["coupons"]["coupons"][0]["material_batch_id"] = "OTHER-BATCH"
+    elif target == "coupon_lot":
+        statements[0]["pre_cut"]["coupons"]["coupons"][0]["supplier_lot_id"] = "OTHER-LOT"
     elif target == "reference_program":
         statements[1]["reference_part"]["machine_program_sha256"] = _sha("other-program")
     else:
-        statements[2]["final_workshop"]["prototype_build"]["build_manifest_sha256"] = (
-            _sha("other-manifest")
+        statements[2]["final_workshop"]["prototype_build"]["build_manifest_sha256"] = _sha(
+            "other-manifest"
         )
     _bind_evidence_claims(statements)
 
@@ -1134,6 +1665,7 @@ def test_validation_only_or_missing_program_identity_never_derives_eligibility()
             expected_policy=_policy(),
             expected_server_nonces=NONCES,
             evidence_objects=_evidence_objects(chain),
+            evidence_attachments=_evidence_attachments(chain),
             now=NOW,
         )
 
@@ -1188,12 +1720,156 @@ def test_expired_attestation_and_expired_calibration_fail_closed() -> None:
 
     expired_calibration = _statements(run)
     for statement in expired_calibration:
-        statement["setup"]["machine"]["calibration_expires_at"] = _utc(
-            NOW - timedelta(minutes=1)
-        )
+        statement["setup"]["machine"]["calibration_expires_at"] = _utc(NOW - timedelta(minutes=1))
     _bind_evidence_claims(expired_calibration)
     with pytest.raises(WorkshopTrustError, match="calibration is not valid"):
         _verify(run, _registry(keys), _signed_chain(expired_calibration, keys))
+
+
+def test_calibration_record_cannot_predate_the_claimed_calibration() -> None:
+    run = _run()
+    keys = _keys()
+    statements = _statements(run)
+    for statement in statements:
+        statement["setup"]["machine"]["calibration_evidence"]["observed_at"] = _utc(
+            NOW - timedelta(days=8)
+        )
+    _bind_evidence_claims(statements)
+
+    with pytest.raises(WorkshopTrustError, match="calibration is not valid"):
+        _verify(run, _registry(keys), _signed_chain(statements, keys))
+
+
+def test_air_cut_supervisor_is_server_policy_owned() -> None:
+    run = _run()
+    keys = _keys()
+    statements = _statements(run)
+    statements[0]["pre_cut"]["supervised_air_cut"]["supervisor"] = {
+        "principal_id": "supervisor-1",
+        "key_id": "unknown-supervisor-key",
+    }
+    _bind_evidence_claims(statements)
+
+    with pytest.raises(
+        WorkshopTrustError,
+        match="not trusted for its signer role|does not match server policy",
+    ):
+        _verify(run, _registry(keys), _signed_chain(statements, keys))
+
+
+def test_air_cut_supervisor_must_cryptographically_sign_the_exact_claim() -> None:
+    run = _run()
+    keys = _keys()
+    chain = _signed_chain(_statements(run), keys)
+    tampered = json.loads(chain[0])
+    statement = tampered["statement"]
+    statement["pre_cut"]["supervised_air_cut"]["supervisor_signature_base64"] = base64.b64encode(
+        b"\x00" * 64
+    ).decode("ascii")
+    statement_bytes = canonical_json_bytes(statement)
+    tampered["maker_signature_base64"] = base64.b64encode(
+        keys["maker-1"].sign(statement_bytes)
+    ).decode("ascii")
+    tampered["checker_signature_base64"] = base64.b64encode(
+        keys["checker-1"].sign(statement_bytes)
+    ).decode("ascii")
+
+    with pytest.raises(WorkshopTrustError, match="air-cut supervisor signature is invalid"):
+        _verify(
+            run,
+            _registry(keys),
+            (canonical_json_bytes(tampered), chain[1], chain[2]),
+        )
+
+
+def test_air_cut_supervision_signature_cannot_replay_across_runs() -> None:
+    original_run = _run()
+    keys = _keys()
+    original_chain = _signed_chain(_statements(original_run), keys)
+    original_signature = json.loads(original_chain[0])["statement"]["pre_cut"][
+        "supervised_air_cut"
+    ]["supervisor_signature_base64"]
+
+    another_run = deepcopy(original_run)
+    another_run["design_review_release"] = "design-review-release-8"
+    another_statements = _statements(another_run)
+    another_chain = _signed_chain(another_statements, keys)
+    first = json.loads(another_chain[0])
+    first["statement"]["pre_cut"]["supervised_air_cut"]["supervisor_signature_base64"] = (
+        original_signature
+    )
+    statement_bytes = canonical_json_bytes(first["statement"])
+    first["maker_signature_base64"] = base64.b64encode(
+        keys["maker-1"].sign(statement_bytes)
+    ).decode("ascii")
+    first["checker_signature_base64"] = base64.b64encode(
+        keys["checker-1"].sign(statement_bytes)
+    ).decode("ascii")
+
+    with pytest.raises(WorkshopTrustError, match="air-cut supervisor signature is invalid"):
+        _verify(
+            another_run,
+            _registry(keys),
+            (canonical_json_bytes(first), another_chain[1], another_chain[2]),
+        )
+
+
+def test_versioned_freshness_policy_can_precede_a_later_generated_run() -> None:
+    policy = _policy()
+    policy["setup_evidence_not_before"] = _utc(NOW - timedelta(days=365))
+    policy["stage_evidence_not_before"] = _utc(NOW - timedelta(days=365))
+    run = _run()
+    run["workshop_policy_sha256"] = workshop_policy_sha256(
+        WorkshopVerificationPolicy.model_validate(policy)
+    )
+    keys = _keys()
+
+    result = _verify(
+        run,
+        _registry(keys),
+        _signed_chain(_statements(run), keys),
+        policy=policy,
+    )
+
+    assert result.final_eligibility == "VERIFIED_FOR_RELEASE_REVIEW"
+
+
+def test_server_policy_caps_evidence_age_attestation_ttl_and_chain_duration() -> None:
+    keys = _keys()
+
+    stale_policy = _policy()
+    stale_policy["maximum_setup_evidence_age_seconds"] = 60
+    stale_run = _run()
+    stale_run["workshop_policy_sha256"] = workshop_policy_sha256(
+        WorkshopVerificationPolicy.model_validate(stale_policy)
+    )
+    with pytest.raises(WorkshopTrustError, match="exceeds server-policy age"):
+        _verify(
+            stale_run,
+            _registry(keys),
+            _signed_chain(_statements(stale_run), keys),
+            policy=stale_policy,
+        )
+
+    ttl_run = _run()
+    ttl_statements = _statements(ttl_run)
+    ttl_statements[0]["expires_at"] = _utc(NOW + timedelta(days=30))
+    with pytest.raises(WorkshopTrustError, match="validity exceeds server policy"):
+        _verify(ttl_run, _registry(keys), _signed_chain(ttl_statements, keys))
+
+    duration_policy = _policy()
+    duration_policy["maximum_chain_duration_seconds"] = 24 * 60 * 60
+    duration_run = _run()
+    duration_run["workshop_policy_sha256"] = workshop_policy_sha256(
+        WorkshopVerificationPolicy.model_validate(duration_policy)
+    )
+    with pytest.raises(WorkshopTrustError, match="chain exceeds server-policy duration"):
+        _verify(
+            duration_run,
+            _registry(keys),
+            _signed_chain(_statements(duration_run), keys),
+            policy=duration_policy,
+        )
 
 
 def test_later_stage_evidence_cannot_predate_the_prior_attestation() -> None:
@@ -1203,6 +1879,7 @@ def test_later_stage_evidence_cannot_predate_the_prior_attestation() -> None:
     statements[1]["reference_part"]["evidence"]["observed_at"] = _utc(
         NOW - timedelta(days=6, minutes=1)
     )
+    _bind_evidence_claims(statements)
 
     with pytest.raises(WorkshopTrustError, match="predates its prior workshop stage"):
         _verify(run, _registry(keys), _signed_chain(statements, keys))
@@ -1218,6 +1895,7 @@ def test_chain_length_stage_order_and_future_issue_time_fail_closed() -> None:
             expected_policy=_policy(),
             expected_server_nonces=NONCES,
             evidence_objects=_evidence_objects(chain),
+            evidence_attachments=_evidence_attachments(chain),
             now=NOW,
         )
 

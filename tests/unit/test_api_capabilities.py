@@ -1,0 +1,125 @@
+from __future__ import annotations
+
+import pytest
+from app.auth import (
+    ROLE_CAPABILITIES,
+    Capability,
+    Principal,
+    capabilities_for_role,
+    require_capability,
+)
+from app.models import Role
+from fastapi import HTTPException
+
+
+def _principal(role: Role) -> Principal:
+    return Principal(
+        user_id=f"user-{role.value}",
+        organization_id="11111111-1111-4111-8111-111111111111",
+        role=role,
+        subject=f"test:{role.value}",
+        email=f"{role.value}@example.test",
+        name=role.value.title(),
+    )
+
+
+EXPECTED_NON_ADMIN_CAPABILITIES: dict[Role, frozenset[Capability]] = {
+    Role.viewer: frozenset({Capability.READ}),
+    Role.operator: frozenset(
+        {
+            Capability.READ,
+            Capability.WORKSHOP_CHALLENGE,
+            Capability.WORKSHOP_EVIDENCE,
+            Capability.WORKSHOP_ATTEST,
+        }
+    ),
+    Role.designer: frozenset(
+        {
+            Capability.READ,
+            Capability.DESIGN,
+            Capability.GENERATE,
+        }
+    ),
+    Role.production: frozenset(
+        {
+            Capability.READ,
+            Capability.PRODUCTION_RELEASE,
+            Capability.WORKSHOP_PREPARE,
+            Capability.WORKSHOP_CHALLENGE,
+            Capability.WORKSHOP_EVIDENCE,
+            Capability.WORKSHOP_ATTEST,
+        }
+    ),
+    Role.reviewer: frozenset(
+        {
+            Capability.READ,
+            Capability.REVIEW,
+            Capability.WORKSHOP_VERIFY,
+        }
+    ),
+}
+
+
+def test_every_role_has_a_closed_explicit_capability_set() -> None:
+    assert set(ROLE_CAPABILITIES) == set(Role)
+    for role, expected in EXPECTED_NON_ADMIN_CAPABILITIES.items():
+        assert capabilities_for_role(role) == expected
+
+    assert capabilities_for_role(Role.admin) == frozenset(Capability)
+    assert capabilities_for_role(Role.owner) == frozenset(Capability)
+
+
+@pytest.mark.parametrize("role", (Role.reviewer, Role.production, Role.operator, Role.viewer))
+@pytest.mark.parametrize("capability", (Capability.DESIGN, Capability.GENERATE))
+def test_non_design_roles_cannot_design_or_generate(
+    role: Role,
+    capability: Capability,
+) -> None:
+    with pytest.raises(HTTPException) as caught:
+        require_capability(capability)(_principal(role))
+
+    assert caught.value.status_code == 403
+    assert caught.value.detail == f"Capability {capability.value} required"
+
+
+@pytest.mark.parametrize("role", (Role.designer, Role.production, Role.operator, Role.viewer))
+def test_only_review_roles_can_review(role: Role) -> None:
+    with pytest.raises(HTTPException, match="Capability review required"):
+        require_capability(Capability.REVIEW)(_principal(role))
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    (
+        (Role.viewer, False),
+        (Role.designer, False),
+        (Role.reviewer, False),
+        (Role.operator, True),
+        (Role.production, True),
+        (Role.admin, True),
+        (Role.owner, True),
+    ),
+)
+def test_workshop_attestation_is_granted_without_role_inheritance(
+    role: Role,
+    allowed: bool,
+) -> None:
+    dependency = require_capability(Capability.WORKSHOP_ATTEST)
+    if allowed:
+        assert dependency(_principal(role)).role is role
+    else:
+        with pytest.raises(HTTPException):
+            dependency(_principal(role))
+
+
+def test_workshop_checker_and_revocation_are_separate() -> None:
+    reviewer = _principal(Role.reviewer)
+    assert require_capability(Capability.WORKSHOP_VERIFY)(reviewer) is reviewer
+    with pytest.raises(HTTPException):
+        require_capability(Capability.WORKSHOP_ATTEST)(reviewer)
+    with pytest.raises(HTTPException):
+        require_capability(Capability.WORKSHOP_REVOKE)(reviewer)
+
+    for role in (Role.admin, Role.owner):
+        principal = _principal(role)
+        assert require_capability(Capability.WORKSHOP_REVOKE)(principal) is principal

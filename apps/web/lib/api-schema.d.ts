@@ -399,6 +399,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/versions/{revision}/workshop-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Prepare Workshop Run
+         * @description Prepare no physical state until a real executable package exists.
+         *
+         *     Clients can name only a generation job plus an explicit confirmation. The
+         *     tenant revision, job result and release binding are resolved by the server;
+         *     hashes, policies, machine identity and evidence cannot be supplied here.
+         */
+        post: operations["prepare_workshop_run_v1_projects__project_id__versions__revision__workshop_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/releases/{release_id}/artifacts": {
         parameters: {
             query?: never;
@@ -1157,6 +1181,57 @@ export interface components {
             reason: string;
             /** Rule Id */
             rule_id: string;
+        };
+        /** WorkshopRunBlockedResponse */
+        WorkshopRunBlockedResponse: {
+            detail: components["schemas"]["WorkshopRunBlockerDetail"];
+        };
+        /**
+         * WorkshopRunBlockerDetail
+         * @description Truthful current-state result for the blocker-only workshop endpoint.
+         */
+        WorkshopRunBlockerDetail: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "EXECUTABLE_MACHINE_PROGRAM_MISSING" | "WORKSHOP_EXECUTABLE_PACKAGE_MISSING" | "WORKSHOP_GENERATION_JOB_NOT_READY";
+            /** Cutting Blocker Codes */
+            cutting_blocker_codes: [
+                "EXECUTABLE_MACHINE_PROGRAM_MISSING" | "WORKSHOP_EXECUTABLE_PACKAGE_MISSING" | "WORKSHOP_GENERATION_JOB_NOT_READY"
+            ];
+            /** Message */
+            message: string;
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /**
+             * Release Review Eligible
+             * @constant
+             */
+            release_review_eligible: false;
+            /** Solution */
+            solution: string;
+            /**
+             * Workshop Status
+             * @constant
+             */
+            workshop_status: "BLOCKED";
+        };
+        /**
+         * WorkshopRunPrepare
+         * @description Non-authoritative request to prepare one server-derived workshop run.
+         */
+        WorkshopRunPrepare: {
+            /**
+             * Confirmation
+             * @constant
+             */
+            confirmation: "PREPARE_WORKSHOP_RUN";
+            /** Generation Job Id */
+            generation_job_id: string;
         };
         /** WorkspaceIntentV1 */
         WorkspaceIntentV1: {
@@ -2084,6 +2159,63 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DesignVersionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    prepare_workshop_run_v1_projects__project_id__versions__revision__workshop_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                revision: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WorkshopRunPrepare"];
+            };
+        };
+        responses: {
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The active role lacks workshop preparation capability. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The tenant-scoped project or revision was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The server-owned generation/release is not an immutable executable workshop package. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkshopRunBlockedResponse"];
                 };
             };
             /** @description Validation Error */

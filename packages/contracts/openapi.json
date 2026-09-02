@@ -1697,6 +1697,110 @@
         "title": "WarningOverrideCreate",
         "type": "object"
       },
+      "WorkshopRunBlockedResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/WorkshopRunBlockerDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "WorkshopRunBlockedResponse",
+        "type": "object"
+      },
+      "WorkshopRunBlockerDetail": {
+        "additionalProperties": false,
+        "description": "Truthful current-state result for the blocker-only workshop endpoint.",
+        "properties": {
+          "code": {
+            "enum": [
+              "EXECUTABLE_MACHINE_PROGRAM_MISSING",
+              "WORKSHOP_EXECUTABLE_PACKAGE_MISSING",
+              "WORKSHOP_GENERATION_JOB_NOT_READY"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "cutting_blocker_codes": {
+            "maxItems": 1,
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "enum": [
+                  "EXECUTABLE_MACHINE_PROGRAM_MISSING",
+                  "WORKSHOP_EXECUTABLE_PACKAGE_MISSING",
+                  "WORKSHOP_GENERATION_JOB_NOT_READY"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Cutting Blocker Codes",
+            "type": "array"
+          },
+          "message": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "release_review_eligible": {
+            "const": false,
+            "title": "Release Review Eligible",
+            "type": "boolean"
+          },
+          "solution": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Solution",
+            "type": "string"
+          },
+          "workshop_status": {
+            "const": "BLOCKED",
+            "title": "Workshop Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "solution",
+          "workshop_status",
+          "release_review_eligible",
+          "cutting_blocker_codes",
+          "physical_cutting_authorized"
+        ],
+        "title": "WorkshopRunBlockerDetail",
+        "type": "object"
+      },
+      "WorkshopRunPrepare": {
+        "additionalProperties": false,
+        "description": "Non-authoritative request to prepare one server-derived workshop run.",
+        "properties": {
+          "confirmation": {
+            "const": "PREPARE_WORKSHOP_RUN",
+            "title": "Confirmation",
+            "type": "string"
+          },
+          "generation_job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Generation Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "generation_job_id",
+          "confirmation"
+        ],
+        "title": "WorkshopRunPrepare",
+        "type": "object"
+      },
       "WorkspaceIntentV1": {
         "additionalProperties": false,
         "properties": {
@@ -3302,6 +3406,81 @@
           }
         ],
         "summary": "Validate Version"
+      }
+    },
+    "/v1/projects/{project_id}/versions/{revision}/workshop-runs": {
+      "post": {
+        "description": "Prepare no physical state until a real executable package exists.\n\nClients can name only a generation job plus an explicit confirmation. The\ntenant revision, job result and release binding are resolved by the server;\nhashes, policies, machine identity and evidence cannot be supplied here.",
+        "operationId": "prepare_workshop_run_v1_projects__project_id__versions__revision__workshop_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkshopRunPrepare"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The active role lacks workshop preparation capability."
+          },
+          "404": {
+            "description": "The tenant-scoped project or revision was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkshopRunBlockedResponse"
+                }
+              }
+            },
+            "description": "The server-owned generation/release is not an immutable executable workshop package."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Prepare Workshop Run"
       }
     },
     "/v1/releases/{release_id}/artifacts": {

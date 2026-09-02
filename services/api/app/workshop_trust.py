@@ -36,15 +36,18 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-WORKSHOP_TRUST_REGISTRY_SCHEMA_VERSION = "custombuild.workshop-trust-registry.v1"
-SIGNED_WORKSHOP_ATTESTATION_SCHEMA_VERSION = "custombuild.signed-workshop-attestation.v1"
-WORKSHOP_ATTESTATION_STATEMENT_SCHEMA_VERSION = "custombuild.workshop-attestation.v1"
-WORKSHOP_VERIFICATION_POLICY_SCHEMA_VERSION = "custombuild.workshop-verification-policy.v1"
-WORKSHOP_EVIDENCE_RECORD_SCHEMA_VERSION = "custombuild.workshop-evidence-record.v1"
+WORKSHOP_TRUST_REGISTRY_SCHEMA_VERSION = "custombuild.workshop-trust-registry.v2"
+SIGNED_WORKSHOP_ATTESTATION_SCHEMA_VERSION = "custombuild.signed-workshop-attestation.v2"
+WORKSHOP_ATTESTATION_STATEMENT_SCHEMA_VERSION = "custombuild.workshop-attestation.v2"
+WORKSHOP_VERIFICATION_POLICY_SCHEMA_VERSION = "custombuild.workshop-verification-policy.v2"
+WORKSHOP_EVIDENCE_RECORD_SCHEMA_VERSION = "custombuild.workshop-evidence-record.v2"
+WORKSHOP_RUN_SCHEMA_VERSION = "custombuild.workshop-run.v2"
+WORKSHOP_MACHINE_PROGRAM_SET_SCHEMA_VERSION = "custombuild.workshop-machine-program-set.v1"
 WORKSHOP_EVIDENCE_CLAIM_SCHEMA_VERSION = "custombuild.workshop-evidence-claim.v1"
 WORKSHOP_EVIDENCE_MEDIA_TYPE = "application/vnd.custombuild.workshop-evidence+json"
 WORKSHOP_MAKER_ROLE = "workshop_maker"
 WORKSHOP_CHECKER_ROLE = "workshop_checker"
+WORKSHOP_SUPERVISOR_ROLE = "workshop_supervisor"
 SIDECAR_EVIDENCE_PLACEMENT = "SIDECAR_OUTSIDE_BASE_BUNDLE"
 EXECUTABLE_MACHINE_PROGRAM_KIND = "EXECUTABLE"
 VALIDATION_ONLY_MACHINE_PROGRAM_KIND = "VALIDATION_ONLY"
@@ -58,6 +61,8 @@ MAX_STOCK_ITEMS = 1_024
 MAX_KEEPOUTS = 1_024
 MAX_MEASUREMENTS = 2_048
 MAX_COUPONS = 256
+MAX_MACHINE_PROGRAMS = 4_096
+MAX_EVIDENCE_ATTACHMENTS = 256
 MAX_EVIDENCE_OBJECT_BYTES = 32 * 1024 * 1024
 MAX_EVIDENCE_CHAIN_BYTES = 256 * 1024 * 1024
 
@@ -171,24 +176,56 @@ class EvidenceReference(_StrictModel):
         return self
 
 
+class EvidenceAttachment(_StrictModel):
+    attachment_id: Token
+    purpose: Token
+    sha256: Sha256
+    size_bytes: StrictPositiveInt
+    media_type: Token
+
+
 class WorkshopEvidenceRecord(_StrictModel):
-    schema_version: Literal["custombuild.workshop-evidence-record.v1"]
+    schema_version: Literal["custombuild.workshop-evidence-record.v2"]
     evidence_id: Token
     evidence_version: Token
     claim_type: Token
     claim_sha256: Sha256
+    observed_at: datetime
+    attachments: tuple[EvidenceAttachment, ...] = Field(
+        min_length=1,
+        max_length=MAX_EVIDENCE_ATTACHMENTS,
+    )
+
+    @field_validator("observed_at", mode="before")
+    @classmethod
+    def canonical_observed_at(cls, value: object) -> object:
+        return _canonical_utc_before(value)
+
+    @field_validator("attachments")
+    @classmethod
+    def canonical_attachments(
+        cls,
+        value: tuple[EvidenceAttachment, ...],
+    ) -> tuple[EvidenceAttachment, ...]:
+        ids = tuple(item.attachment_id for item in value)
+        digests = tuple(item.sha256 for item in value)
+        if ids != tuple(sorted(set(ids))) or len(set(digests)) != len(digests):
+            raise ValueError("evidence attachments must be sorted with unique IDs and digests")
+        return value
 
 
 class TrustedWorkshopIssuer(_StrictModel):
     organization: Token
     principal_id: Token
     key_id: Token
-    role: Literal["workshop_maker", "workshop_checker"]
+    role: Literal["workshop_maker", "workshop_checker", "workshop_supervisor"]
     qualified_stages: tuple[WorkshopStage, ...] = Field(min_length=1, max_length=3)
     public_key_base64: str = Field(min_length=44, max_length=44)
     not_before: datetime
     not_after: datetime
-    revoked_at: datetime | None = None
+    # Required even when null: omitting revocation state must never silently
+    # reactivate a key while hydrating an immutable registry snapshot.
+    revoked_at: datetime | None
 
     @field_validator("not_before", "not_after", "revoked_at", mode="before")
     @classmethod
@@ -206,15 +243,29 @@ class TrustedWorkshopIssuer(_StrictModel):
 
 
 class WorkshopTrustRegistry(_StrictModel):
-    schema_version: Literal["custombuild.workshop-trust-registry.v1"]
+    schema_version: Literal["custombuild.workshop-trust-registry.v2"]
     issuers: tuple[TrustedWorkshopIssuer, ...] = Field(max_length=MAX_REGISTRY_ISSUERS)
     revoked_statement_sha256: tuple[Sha256, ...] = Field(
-        default=(),
         max_length=MAX_REVOCATIONS,
     )
-    revoked_run_sha256: tuple[Sha256, ...] = Field(default=(), max_length=MAX_REVOCATIONS)
+    revoked_run_sha256: tuple[Sha256, ...] = Field(max_length=MAX_REVOCATIONS)
+    revoked_evidence_sha256: tuple[Sha256, ...] = Field(
+        max_length=MAX_REVOCATIONS,
+    )
+    revoked_evidence_claim_sha256: tuple[Sha256, ...] = Field(
+        max_length=MAX_REVOCATIONS,
+    )
+    revoked_evidence_attachment_sha256: tuple[Sha256, ...] = Field(
+        max_length=MAX_REVOCATIONS,
+    )
 
-    @field_validator("revoked_statement_sha256", "revoked_run_sha256")
+    @field_validator(
+        "revoked_statement_sha256",
+        "revoked_run_sha256",
+        "revoked_evidence_sha256",
+        "revoked_evidence_claim_sha256",
+        "revoked_evidence_attachment_sha256",
+    )
     @classmethod
     def canonical_revocations(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if value != tuple(sorted(set(value))):
@@ -222,14 +273,52 @@ class WorkshopTrustRegistry(_StrictModel):
         return value
 
 
+class MachineProgramIdentity(_StrictModel):
+    """One logical executable with path, setup and coordinate-system identity."""
+
+    program_id: Token
+    purpose: Token
+    relative_path: Token
+    setup_id: Token
+    wcs_id: Token
+    stock_id: Token
+    part_ids: tuple[Token, ...] = Field(min_length=1, max_length=MAX_STOCK_ITEMS)
+    operation_set_sha256: Sha256
+    sha256: Sha256
+    size_bytes: StrictPositiveInt
+    media_type: Token
+
+    @field_validator("relative_path")
+    @classmethod
+    def canonical_relative_path(cls, value: str) -> str:
+        if "\\" in value or ":" in value or value.startswith("/"):
+            raise ValueError("machine program path must be a safe POSIX relative path")
+        segments = value.split("/")
+        if any(segment in {"", ".", ".."} for segment in segments):
+            raise ValueError("machine program path must be a canonical POSIX relative path")
+        if "/".join(segments) != value:
+            raise ValueError("machine program path must be a canonical POSIX relative path")
+        return value
+
+    @field_validator("part_ids")
+    @classmethod
+    def canonical_part_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if value != tuple(sorted(set(value))):
+            raise ValueError("machine program part IDs must be sorted and unique")
+        return value
+
+
 class WorkshopRun(_StrictModel):
     """Exact immutable identity of one generated production run."""
 
+    schema_version: Literal["custombuild.workshop-run.v2"]
     organization: Token
     project: Token
     design_version: Token
+    design_review_release: Token
     design_hash: Sha256
     generation_job: Token
+    generation_finished_at: datetime
     production_context_hash: Sha256
     manifest_sha256: Sha256
     bundle_sha256: Sha256
@@ -237,11 +326,41 @@ class WorkshopRun(_StrictModel):
     generation_plan_sha256: Sha256
     workshop_policy_sha256: Sha256
     machine_program_kind: Literal["EXECUTABLE", "VALIDATION_ONLY"]
+    machine_programs: tuple[MachineProgramIdentity, ...] = Field(
+        min_length=1,
+        max_length=MAX_MACHINE_PROGRAMS,
+    )
     machine_program_set_sha256: Sha256
     postprocessor_id: Token
     postprocessor_version: Token
     postprocessor_binary_sha256: Sha256
     postprocessor_config_sha256: Sha256
+
+    @field_validator("generation_finished_at", mode="before")
+    @classmethod
+    def canonical_generation_finished_at(cls, value: object) -> object:
+        return _canonical_utc_before(value)
+
+    @model_validator(mode="after")
+    def validate_program_set(self) -> Self:
+        keys = tuple(
+            (item.setup_id, item.wcs_id, item.program_id, item.relative_path)
+            for item in self.machine_programs
+        )
+        if keys != tuple(sorted(keys)):
+            raise ValueError("workshop machine programs must use canonical order")
+        if len({item.program_id for item in self.machine_programs}) != len(
+            self.machine_programs
+        ) or len({item.relative_path for item in self.machine_programs}) != len(
+            self.machine_programs
+        ):
+            raise ValueError("workshop machine program IDs and paths must be unique")
+        if (
+            workshop_machine_program_set_sha256(self.machine_programs)
+            != self.machine_program_set_sha256
+        ):
+            raise ValueError("workshop machine program set digest does not match its members")
+        return self
 
 
 class SignerIdentity(_StrictModel):
@@ -536,14 +655,25 @@ class RequiredIndependentEngine(_StrictModel):
 class WorkshopVerificationPolicy(_StrictModel):
     """Server-owned acceptance criteria bound into ``WorkshopRun`` by hash."""
 
-    schema_version: Literal["custombuild.workshop-verification-policy.v1"]
+    schema_version: Literal["custombuild.workshop-verification-policy.v2"]
     policy_id: Token
     policy_version: Token
+    setup_evidence_not_before: datetime
+    stage_evidence_not_before: datetime
+    maximum_setup_evidence_age_seconds: StrictPositiveInt
+    maximum_stage_evidence_age_seconds: StrictPositiveInt
+    maximum_attestation_validity_seconds: StrictPositiveInt
+    maximum_chain_duration_seconds: StrictPositiveInt
     machine: RequiredMachine
     wcs: RequiredWcs
     fixture: RequiredFixture
     tools: tuple[RequiredTool, ...] = Field(min_length=1, max_length=MAX_TOOLS)
     stock: tuple[RequiredStock, ...] = Field(min_length=1, max_length=MAX_STOCK_ITEMS)
+    machine_programs: tuple[MachineProgramIdentity, ...] = Field(
+        min_length=1,
+        max_length=MAX_MACHINE_PROGRAMS,
+    )
+    machine_program_set_sha256: Sha256
     coupon_material_batch_ids: tuple[Token, ...] = Field(min_length=1, max_length=MAX_COUPONS)
     coupon_specification_sha256: Sha256
     coupon_measurements: tuple[MeasurementRequirement, ...] = Field(
@@ -554,6 +684,8 @@ class WorkshopVerificationPolicy(_StrictModel):
     expected_removal_sha256: Sha256
     maximum_removal_deviation_um: NonNegativeLengthUm
     minimum_air_cut_clearance_um: PositiveLengthUm
+    air_cut_supervisor: SignerIdentity
+    reference_part_program_id: Token
     reference_part_program_sha256: Sha256
     reference_part_measurements: tuple[MeasurementRequirement, ...] = Field(
         min_length=1,
@@ -565,14 +697,42 @@ class WorkshopVerificationPolicy(_StrictModel):
     maximum_deflection_um: NonNegativeLengthUm
     maximum_residual_deflection_um: NonNegativeLengthUm
 
+    @field_validator(
+        "setup_evidence_not_before",
+        "stage_evidence_not_before",
+        mode="before",
+    )
+    @classmethod
+    def canonical_evidence_boundaries(cls, value: object) -> object:
+        return _canonical_utc_before(value)
+
     @model_validator(mode="after")
     def validate_canonical_collections(self) -> Self:
+        if self.setup_evidence_not_before > self.stage_evidence_not_before:
+            raise ValueError("setup evidence boundary cannot follow the stage evidence boundary")
         tool_keys = tuple((item.pocket_number, item.tool_id) for item in self.tools)
         if tool_keys != tuple(sorted(set(tool_keys))):
             raise ValueError("policy tools must be sorted and unique")
         stock_keys = tuple(item.stock_id for item in self.stock)
         if stock_keys != tuple(sorted(set(stock_keys))):
             raise ValueError("policy stock must be sorted and unique")
+        program_keys = tuple(
+            (item.setup_id, item.wcs_id, item.program_id, item.relative_path)
+            for item in self.machine_programs
+        )
+        if (
+            program_keys != tuple(sorted(program_keys))
+            or len({item.program_id for item in self.machine_programs})
+            != len(self.machine_programs)
+            or len({item.relative_path for item in self.machine_programs})
+            != len(self.machine_programs)
+        ):
+            raise ValueError("policy machine programs must be canonical and unique")
+        if (
+            workshop_machine_program_set_sha256(self.machine_programs)
+            != self.machine_program_set_sha256
+        ):
+            raise ValueError("policy machine program set digest does not match its members")
         if self.coupon_material_batch_ids != tuple(sorted(set(self.coupon_material_batch_ids))):
             raise ValueError("policy coupon batches must be sorted and unique")
         stock_batches = tuple(sorted(set(item.supplier_batch_id for item in self.stock)))
@@ -590,7 +750,9 @@ class WorkshopVerificationPolicy(_StrictModel):
 
 class CouponResult(_StrictModel):
     coupon_id: Token
+    stock_id: Token
     material_batch_id: Token
+    supplier_lot_id: Token
     specification_sha256: Sha256
     measurements: tuple[DimensionalMeasurement, ...] = Field(
         min_length=1,
@@ -667,7 +829,8 @@ class RemovalComparison(_StrictModel):
 class AirCutAssessment(_StrictModel):
     evidence: EvidenceReference
     machine_program_set_sha256: Sha256 | None = None
-    supervisor_id: Token | None = None
+    supervisor: SignerIdentity | None = None
+    supervisor_signature_base64: str | None = Field(default=None, min_length=88, max_length=88)
     minimum_clearance_um: PositiveLengthUm | None = None
     outcome: Literal["PASS", "FAIL"] | None = None
 
@@ -675,7 +838,8 @@ class AirCutAssessment(_StrictModel):
     def validate_state(self) -> Self:
         values = (
             self.machine_program_set_sha256,
-            self.supervisor_id,
+            self.supervisor,
+            self.supervisor_signature_base64,
             self.minimum_clearance_um,
             self.outcome,
         )
@@ -696,6 +860,7 @@ class PreCutEvidence(_StrictModel):
 class ReferencePartAssessment(_StrictModel):
     evidence: EvidenceReference
     part_id: Token | None = None
+    machine_program_id: Token | None = None
     machine_program_sha256: Sha256 | None = None
     metrology: tuple[DimensionalMeasurement, ...] = Field(default=(), max_length=MAX_MEASUREMENTS)
     outcome: Literal["PASS", "FAIL"] | None = None
@@ -703,7 +868,12 @@ class ReferencePartAssessment(_StrictModel):
     @model_validator(mode="after")
     def validate_state(self) -> Self:
         if self.evidence.status == "VERIFIED":
-            if self.part_id is None or self.machine_program_sha256 is None or self.outcome is None:
+            if (
+                self.part_id is None
+                or self.machine_program_id is None
+                or self.machine_program_sha256 is None
+                or self.outcome is None
+            ):
                 raise ValueError("verified reference part requires complete identity and result")
             if not self.metrology:
                 raise ValueError("verified reference part requires metrology")
@@ -715,6 +885,7 @@ class ReferencePartAssessment(_StrictModel):
         elif any(
             (
                 self.part_id is not None,
+                self.machine_program_id is not None,
                 self.machine_program_sha256 is not None,
                 bool(self.metrology),
                 self.outcome is not None,
@@ -749,6 +920,10 @@ class PrototypeAssessment(_StrictModel):
 
 class LoadTestAssessment(_StrictModel):
     evidence: EvidenceReference
+    prototype_id: Token | None = None
+    prototype_build_manifest_sha256: Sha256 | None = None
+    prototype_inspection_sha256: Sha256 | None = None
+    prototype_evidence_sha256: Sha256 | None = None
     test_plan_sha256: Sha256 | None = None
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -768,6 +943,10 @@ class LoadTestAssessment(_StrictModel):
     @model_validator(mode="after")
     def validate_state(self) -> Self:
         values = (
+            self.prototype_id,
+            self.prototype_build_manifest_sha256,
+            self.prototype_inspection_sha256,
+            self.prototype_evidence_sha256,
             self.test_plan_sha256,
             self.started_at,
             self.completed_at,
@@ -816,7 +995,7 @@ class FinalWorkshopEvidence(_StrictModel):
 
 
 class WorkshopAttestationStatement(_StrictModel):
-    schema_version: Literal["custombuild.workshop-attestation.v1"]
+    schema_version: Literal["custombuild.workshop-attestation.v2"]
     attestation_id: Token
     stage: WorkshopStage
     run: WorkshopRun
@@ -864,7 +1043,7 @@ class WorkshopAttestationStatement(_StrictModel):
 
 
 class SignedWorkshopAttestation(_StrictModel):
-    schema_version: Literal["custombuild.signed-workshop-attestation.v1"]
+    schema_version: Literal["custombuild.signed-workshop-attestation.v2"]
     statement: WorkshopAttestationStatement
     maker_signature_base64: str = Field(min_length=88, max_length=88)
     checker_signature_base64: str = Field(min_length=88, max_length=88)
@@ -905,12 +1084,12 @@ def canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
         raise WorkshopTrustError("value is not canonical JSON data") from exc
 
 
-def workshop_evidence_claim_sha256(
+def workshop_evidence_claim_bytes(
     *,
     claim_type: str,
     payload: Mapping[str, Any],
-) -> str:
-    """Hash one typed structured claim with explicit domain separation."""
+) -> bytes:
+    """Serialize one typed structured claim with explicit domain separation."""
 
     if re.fullmatch(_SAFE_ID_PATTERN, claim_type) is None:
         raise WorkshopTrustError("workshop evidence claim type is invalid")
@@ -919,7 +1098,54 @@ def workshop_evidence_claim_sha256(
         "claim_type": claim_type,
         "payload": payload,
     }
-    return hashlib.sha256(canonical_json_bytes(claim)).hexdigest()
+    return canonical_json_bytes(claim)
+
+
+def workshop_evidence_claim_sha256(
+    *,
+    claim_type: str,
+    payload: Mapping[str, Any],
+) -> str:
+    """Hash one typed structured claim with explicit domain separation."""
+
+    return hashlib.sha256(
+        workshop_evidence_claim_bytes(claim_type=claim_type, payload=payload)
+    ).hexdigest()
+
+
+def workshop_machine_program_set_sha256(
+    programs: Sequence[MachineProgramIdentity | Mapping[str, Any]],
+) -> str:
+    """Hash the exact canonical executable-program inventory for one run."""
+
+    if isinstance(programs, str | bytes | bytearray):
+        raise WorkshopTrustError("machine program inventory must be a sequence of objects")
+    raw_programs = tuple(programs)
+    if not raw_programs or len(raw_programs) > MAX_MACHINE_PROGRAMS:
+        raise WorkshopTrustError("machine program inventory size is invalid")
+    try:
+        parsed = tuple(
+            item
+            if isinstance(item, MachineProgramIdentity)
+            else MachineProgramIdentity.model_validate(item)
+            for item in raw_programs
+        )
+    except ValidationError as exc:
+        raise WorkshopTrustError("machine program inventory has an invalid entry") from exc
+    keys = tuple(
+        (item.setup_id, item.wcs_id, item.program_id, item.relative_path) for item in parsed
+    )
+    if (
+        keys != tuple(sorted(keys))
+        or len({item.program_id for item in parsed}) != len(parsed)
+        or len({item.relative_path for item in parsed}) != len(parsed)
+    ):
+        raise WorkshopTrustError("machine program inventory must be canonical and unique")
+    payload = {
+        "schema_version": WORKSHOP_MACHINE_PROGRAM_SET_SCHEMA_VERSION,
+        "programs": [item.model_dump(mode="json") for item in parsed],
+    }
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def workshop_run_sha256(run: WorkshopRun) -> str:
@@ -980,10 +1206,7 @@ def _decode_canonical_base64(value: str, *, label: str, expected_bytes: int) -> 
         decoded = base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:
         raise WorkshopTrustError(f"{label} is not canonical base64") from exc
-    if (
-        len(decoded) != expected_bytes
-        or base64.b64encode(decoded).decode("ascii") != value
-    ):
+    if len(decoded) != expected_bytes or base64.b64encode(decoded).decode("ascii") != value:
         raise WorkshopTrustError(f"{label} is not canonical {expected_bytes}-byte material")
     return decoded
 
@@ -1148,6 +1371,42 @@ def _verify_signature(
         raise WorkshopTrustError(f"{label} signature is invalid") from exc
 
 
+def _verify_air_cut_supervisor(
+    registry: WorkshopTrustRegistry,
+    statement: WorkshopAttestationStatement,
+    *,
+    now: datetime,
+) -> None:
+    if statement.stage is not WorkshopStage.PRE_CUT or statement.pre_cut is None:
+        return
+    air_cut = statement.pre_cut.supervised_air_cut
+    if air_cut.supervisor is None or air_cut.supervisor_signature_base64 is None:
+        raise WorkshopTrustError("supervised air cut lacks an authenticated supervisor")
+    issuer = _find_issuer(
+        registry,
+        air_cut.supervisor,
+        required_role=WORKSHOP_SUPERVISOR_ROLE,
+        organization=statement.run.organization,
+        stage=statement.stage,
+        issued_at=statement.issued_at,
+        now=now,
+    )
+    claim_bytes = workshop_evidence_claim_bytes(
+        claim_type="supervised-air-cut-supervision",
+        payload={
+            "run_sha256": workshop_run_sha256(statement.run),
+            "evidence": air_cut.evidence.model_dump(mode="json"),
+            "assessment": _air_cut_claim_payload(air_cut),
+        },
+    )
+    _verify_signature(
+        issuer,
+        air_cut.supervisor_signature_base64,
+        claim_bytes,
+        label="air-cut supervisor",
+    )
+
+
 def _all_setup_references(setup: WorkshopSetup) -> tuple[tuple[str, EvidenceReference], ...]:
     references: list[tuple[str, EvidenceReference]] = [
         ("machine calibration", setup.machine.calibration_evidence),
@@ -1156,8 +1415,7 @@ def _all_setup_references(setup: WorkshopSetup) -> tuple[tuple[str, EvidenceRefe
         ("keepout review", setup.keepouts.review_evidence),
     ]
     references.extend(
-        (f"tool measurement {tool.tool_id}", tool.measurement_evidence)
-        for tool in setup.tools
+        (f"tool measurement {tool.tool_id}", tool.measurement_evidence) for tool in setup.tools
     )
     for stock in setup.stock:
         references.extend(
@@ -1189,6 +1447,13 @@ def _stage_references(
             ("prototype load test", statement.final_workshop.load_test.evidence),
         )
     return ()
+
+
+def _air_cut_claim_payload(air_cut: AirCutAssessment) -> Mapping[str, Any]:
+    return air_cut.model_dump(
+        mode="json",
+        exclude={"evidence", "supervisor_signature_base64"},
+    )
 
 
 def _claim_bindings(
@@ -1280,10 +1545,7 @@ def _claim_bindings(
                     "supervised air cut",
                     statement.pre_cut.supervised_air_cut.evidence,
                     "supervised-air-cut",
-                    statement.pre_cut.supervised_air_cut.model_dump(
-                        mode="json",
-                        exclude={"evidence"},
-                    ),
+                    _air_cut_claim_payload(statement.pre_cut.supervised_air_cut),
                 ),
             )
         )
@@ -1339,7 +1601,13 @@ def _verify_evidence_object(
     *,
     label: str,
     evidence_objects: Mapping[tuple[str, str], bytes],
+    evidence_attachments: Mapping[tuple[str, str, str], bytes],
+    revoked_evidence_sha256: frozenset[str],
+    revoked_evidence_claim_sha256: frozenset[str],
+    revoked_evidence_attachment_sha256: frozenset[str],
+    remaining_evidence_bytes: int,
     verified_keys: set[tuple[str, str]],
+    verified_attachment_keys: set[tuple[str, str, str]],
     role_by_key: dict[tuple[str, str], str],
     role_by_digest: dict[str, str],
 ) -> int:
@@ -1354,6 +1622,10 @@ def _verify_evidence_object(
         or reference.size_bytes is None
     ):
         raise WorkshopTrustError("verified evidence reference is incomplete")
+    if reference.sha256 in revoked_evidence_sha256:
+        raise WorkshopTrustError("workshop evidence record is revoked")
+    if reference.claim_sha256 in revoked_evidence_claim_sha256:
+        raise WorkshopTrustError("workshop evidence claim is revoked")
     key = (reference.evidence_id, reference.evidence_version)
     try:
         content = evidence_objects[key]
@@ -1380,11 +1652,13 @@ def _verify_evidence_object(
         record.evidence_version,
         record.claim_type,
         record.claim_sha256,
+        record.observed_at,
     ) != (
         reference.evidence_id,
         reference.evidence_version,
         reference.claim_type,
         reference.claim_sha256,
+        reference.observed_at,
     ):
         raise WorkshopTrustError("workshop evidence record does not match its typed claim")
     previous_key_role = role_by_key.setdefault(key, label)
@@ -1393,8 +1667,48 @@ def _verify_evidence_object(
         raise WorkshopTrustError("one workshop evidence record cannot satisfy different roles")
     if key in verified_keys:
         return 0
+
+    declared_bytes = len(content)
+    for attachment in record.attachments:
+        if attachment.sha256 in revoked_evidence_attachment_sha256:
+            raise WorkshopTrustError("workshop evidence attachment is revoked")
+        if attachment.size_bytes > MAX_EVIDENCE_OBJECT_BYTES:
+            raise WorkshopTrustError(
+                "workshop evidence attachment is empty or exceeds its size limit"
+            )
+        declared_bytes += attachment.size_bytes
+    if declared_bytes > remaining_evidence_bytes:
+        raise WorkshopTrustError("workshop evidence objects exceed their total size limit")
+
+    verified_bytes = len(content)
+    for attachment in record.attachments:
+        attachment_key = (*key, attachment.attachment_id)
+        try:
+            attachment_content = evidence_attachments[attachment_key]
+        except KeyError as exc:
+            raise WorkshopTrustError(
+                "required workshop evidence attachment is unavailable"
+            ) from exc
+        if (
+            type(attachment_content) is not bytes
+            or not attachment_content
+            or len(attachment_content) > MAX_EVIDENCE_OBJECT_BYTES
+            or len(attachment_content) != attachment.size_bytes
+            or hashlib.sha256(attachment_content).hexdigest() != attachment.sha256
+        ):
+            raise WorkshopTrustError(
+                "workshop evidence attachment does not match its signed identity"
+            )
+        previous_attachment_role = role_by_digest.setdefault(attachment.sha256, label)
+        if previous_attachment_role != label:
+            raise WorkshopTrustError(
+                "one workshop evidence attachment cannot satisfy different roles"
+            )
+        if attachment_key not in verified_attachment_keys:
+            verified_attachment_keys.add(attachment_key)
+            verified_bytes += len(attachment_content)
     verified_keys.add(key)
-    return len(content)
+    return verified_bytes
 
 
 def _require_verified(
@@ -1403,6 +1717,8 @@ def _require_verified(
     label: str,
     issued_at: datetime,
     observed_after: datetime | None = None,
+    observed_not_before: datetime | None = None,
+    maximum_age_seconds: int | None = None,
 ) -> None:
     if reference.status != "VERIFIED":
         raise WorkshopTrustError(f"required {label} evidence is {reference.status.lower()}")
@@ -1410,6 +1726,12 @@ def _require_verified(
         raise WorkshopTrustError(f"required {label} evidence was not observed before attestation")
     if observed_after is not None and reference.observed_at <= observed_after:
         raise WorkshopTrustError(f"required {label} evidence predates its prior workshop stage")
+    if observed_not_before is not None and reference.observed_at < observed_not_before:
+        raise WorkshopTrustError(f"required {label} evidence predates server policy")
+    if maximum_age_seconds is not None and issued_at - reference.observed_at > timedelta(
+        seconds=maximum_age_seconds
+    ):
+        raise WorkshopTrustError(f"required {label} evidence exceeds server-policy age")
 
 
 def _measurement_specifications(
@@ -1471,9 +1793,7 @@ def _verify_setup_policy(setup: WorkshopSetup, policy: WorkshopVerificationPolic
         raise WorkshopTrustError("workshop WCS does not match server policy")
     fixture = setup.fixture
     required_fixture = policy.fixture
-    keepout_payload = {
-        "volumes": [item.model_dump(mode="json") for item in setup.keepouts.volumes]
-    }
+    keepout_payload = {"volumes": [item.model_dump(mode="json") for item in setup.keepouts.volumes]}
     keepout_digest = hashlib.sha256(canonical_json_bytes(keepout_payload)).hexdigest()
     if (
         fixture.fixture_id,
@@ -1527,8 +1847,7 @@ def _verify_setup_policy(setup: WorkshopSetup, policy: WorkshopVerificationPolic
             or not required_tool.minimum_stickout_um
             <= tool.measured_stickout_um
             <= required_tool.maximum_stickout_um
-            or tool.measured_usable_flute_length_um
-            < required_tool.minimum_usable_flute_length_um
+            or tool.measured_usable_flute_length_um < required_tool.minimum_usable_flute_length_um
         ):
             raise WorkshopTrustError("physical tool measurements violate server policy")
 
@@ -1582,8 +1901,18 @@ def _verify_stage_evidence(
     policy: WorkshopVerificationPolicy,
 ) -> None:
     setup = statement.setup
+    stage_evidence_not_before = max(
+        policy.stage_evidence_not_before,
+        statement.run.generation_finished_at,
+    )
     for label, reference in _all_setup_references(setup):
-        _require_verified(reference, label=label, issued_at=statement.issued_at)
+        _require_verified(
+            reference,
+            label=label,
+            issued_at=statement.issued_at,
+            observed_not_before=policy.setup_evidence_not_before,
+            maximum_age_seconds=policy.maximum_setup_evidence_age_seconds,
+        )
     _verify_setup_policy(setup, policy)
     calibration_expires_at = setup.machine.calibration_expires_at
     calibrated_at = setup.machine.calibrated_at
@@ -1592,6 +1921,8 @@ def _verify_stage_evidence(
         or calibration_expires_at is None
         or not calibrated_at <= statement.issued_at <= calibration_expires_at
         or now > calibration_expires_at
+        or setup.machine.calibration_evidence.observed_at is None
+        or setup.machine.calibration_evidence.observed_at < calibrated_at
     ):
         raise WorkshopTrustError("machine calibration is not valid for final eligibility")
 
@@ -1604,16 +1935,26 @@ def _verify_stage_evidence(
             label="coupon qualification",
             issued_at=statement.issued_at,
             observed_after=previous_issued_at,
+            observed_not_before=stage_evidence_not_before,
+            maximum_age_seconds=policy.maximum_stage_evidence_age_seconds,
         )
         if not evidence.coupons.coupons or any(
             item.outcome != "PASS" for item in evidence.coupons.coupons
         ):
             raise WorkshopTrustError("every required coupon must pass")
-        coupon_batches = tuple(
-            sorted(set(item.material_batch_id for item in evidence.coupons.coupons))
+        coupon_stock = tuple(
+            sorted(
+                set(
+                    (item.stock_id, item.material_batch_id, item.supplier_lot_id)
+                    for item in evidence.coupons.coupons
+                )
+            )
         )
-        if coupon_batches != policy.coupon_material_batch_ids:
-            raise WorkshopTrustError("coupon material batches do not match server policy")
+        required_coupon_stock = tuple(
+            (item.stock_id, item.supplier_batch_id, item.supplier_lot_id) for item in policy.stock
+        )
+        if coupon_stock != required_coupon_stock:
+            raise WorkshopTrustError("coupon stock, batch and lot do not match server policy")
         expected_coupon_measurements = _measurement_specifications(policy.coupon_measurements)
         if any(
             item.specification_sha256 != policy.coupon_specification_sha256
@@ -1627,6 +1968,8 @@ def _verify_stage_evidence(
             label="independent removal comparison",
             issued_at=statement.issued_at,
             observed_after=previous_issued_at,
+            observed_not_before=stage_evidence_not_before,
+            maximum_age_seconds=policy.maximum_stage_evidence_age_seconds,
         )
         if comparison.outcome != "PASS":
             raise WorkshopTrustError("independent removal comparison did not pass")
@@ -1661,9 +2004,13 @@ def _verify_stage_evidence(
             label="supervised air cut",
             issued_at=statement.issued_at,
             observed_after=previous_issued_at,
+            observed_not_before=stage_evidence_not_before,
+            maximum_age_seconds=policy.maximum_stage_evidence_age_seconds,
         )
         if air_cut.outcome != "PASS":
             raise WorkshopTrustError("supervised air cut did not pass")
+        if air_cut.supervisor != policy.air_cut_supervisor:
+            raise WorkshopTrustError("air cut supervisor does not match server policy")
         if air_cut.machine_program_set_sha256 != statement.run.machine_program_set_sha256:
             raise WorkshopTrustError("air cut used another machine program set")
         if (
@@ -1680,11 +2027,22 @@ def _verify_stage_evidence(
             label="reference part and metrology",
             issued_at=statement.issued_at,
             observed_after=previous_issued_at,
+            observed_not_before=stage_evidence_not_before,
+            maximum_age_seconds=policy.maximum_stage_evidence_age_seconds,
         )
         if reference_part.outcome != "PASS" or not reference_part.metrology:
             raise WorkshopTrustError("reference part and metrology did not pass")
         if (
-            reference_part.machine_program_sha256 != policy.reference_part_program_sha256
+            reference_part.machine_program_id != policy.reference_part_program_id
+            or reference_part.machine_program_sha256 != policy.reference_part_program_sha256
+            or not any(
+                program.program_id == policy.reference_part_program_id
+                and program.purpose == "REFERENCE_PART"
+                and program.sha256 == policy.reference_part_program_sha256
+                and program.wcs_id == policy.wcs.wcs_id
+                and reference_part.part_id in program.part_ids
+                for program in statement.run.machine_programs
+            )
             or _measurement_specifications(reference_part.metrology)
             != _measurement_specifications(policy.reference_part_measurements)
         ):
@@ -1698,12 +2056,16 @@ def _verify_stage_evidence(
             label="prototype build",
             issued_at=statement.issued_at,
             observed_after=previous_issued_at,
+            observed_not_before=stage_evidence_not_before,
+            maximum_age_seconds=policy.maximum_stage_evidence_age_seconds,
         )
         _require_verified(
             final.load_test.evidence,
             label="prototype load test",
             issued_at=statement.issued_at,
             observed_after=previous_issued_at,
+            observed_not_before=stage_evidence_not_before,
+            maximum_age_seconds=policy.maximum_stage_evidence_age_seconds,
         )
         if final.prototype_build.outcome != "PASS" or final.load_test.outcome != "PASS":
             raise WorkshopTrustError("prototype build and load test must both pass")
@@ -1713,7 +2075,12 @@ def _verify_stage_evidence(
         prototype_observed_at = final.prototype_build.evidence.observed_at
         load_observed_at = load_test.evidence.observed_at
         if (
-            load_test.test_plan_sha256 != policy.load_test_plan_sha256
+            load_test.prototype_id != final.prototype_build.prototype_id
+            or load_test.prototype_build_manifest_sha256
+            != final.prototype_build.build_manifest_sha256
+            or load_test.prototype_inspection_sha256 != final.prototype_build.inspection_sha256
+            or load_test.prototype_evidence_sha256 != final.prototype_build.evidence.sha256
+            or load_test.test_plan_sha256 != policy.load_test_plan_sha256
             or load_test.applied_load_n is None
             or load_test.applied_load_n < policy.minimum_applied_load_n
             or load_test.duration_seconds is None
@@ -1738,6 +2105,7 @@ def verify_workshop_attestation_chain(
     expected_policy: WorkshopVerificationPolicy | Mapping[str, Any],
     expected_server_nonces: Mapping[str | WorkshopStage, str],
     evidence_objects: Mapping[tuple[str, str], bytes],
+    evidence_attachments: Mapping[tuple[str, str, str], bytes],
     now: datetime | None = None,
 ) -> VerifiedWorkshopChain:
     """Verify the exact three-stage sidecar chain and derive review eligibility.
@@ -1754,10 +2122,21 @@ def verify_workshop_attestation_chain(
     policy = _load_expected_policy(expected_policy)
     if workshop_policy_sha256(policy) != run.workshop_policy_sha256:
         raise WorkshopTrustError("workshop verification policy does not match the immutable run")
+    if run.generation_finished_at > current_time:
+        raise WorkshopTrustError("workshop run generation finished in the future")
     if run.machine_program_kind != EXECUTABLE_MACHINE_PROGRAM_KIND:
         raise WorkshopTrustError("an executable machine program identity is required")
+    if (
+        run.machine_programs != policy.machine_programs
+        or run.machine_program_set_sha256 != policy.machine_program_set_sha256
+    ):
+        raise WorkshopTrustError(
+            "workshop executable program manifest does not match server policy"
+        )
     if len(evidence_objects) > 100_000:
         raise WorkshopTrustError("workshop evidence object index exceeds its size limit")
+    if len(evidence_attachments) > 100_000:
+        raise WorkshopTrustError("workshop evidence attachment index exceeds its size limit")
     expected_nonces = _expected_nonces(expected_server_nonces)
     if isinstance(attestation_bytes, bytes | bytearray | str):
         raise WorkshopTrustError("workshop attestation chain must be a sequence of three bytes")
@@ -1775,12 +2154,17 @@ def verify_workshop_attestation_chain(
     attestation_digests: list[str] = []
     statement_digests: list[str] = []
     previous_issued_at: datetime | None = None
+    first_issued_at: datetime | None = None
     previous_attestation_digest: str | None = None
     shared_setup: WorkshopSetup | None = None
     attestation_ids: set[str] = set()
     verified_evidence_keys: set[tuple[str, str]] = set()
+    verified_attachment_keys: set[tuple[str, str, str]] = set()
     evidence_role_by_key: dict[tuple[str, str], str] = {}
     evidence_role_by_digest: dict[str, str] = {}
+    revoked_evidence_sha256 = frozenset(registry.revoked_evidence_sha256)
+    revoked_evidence_claim_sha256 = frozenset(registry.revoked_evidence_claim_sha256)
+    revoked_evidence_attachment_sha256 = frozenset(registry.revoked_evidence_attachment_sha256)
     verified_evidence_bytes = 0
 
     for expected_stage, item in zip(STAGE_ORDER, chain, strict=True):
@@ -1803,10 +2187,22 @@ def verify_workshop_attestation_chain(
             raise WorkshopTrustError("workshop attestation hash chain is broken")
         if previous_issued_at is not None and statement.issued_at <= previous_issued_at:
             raise WorkshopTrustError("workshop stage issue times must be strictly increasing")
+        if statement.issued_at <= run.generation_finished_at:
+            raise WorkshopTrustError("workshop attestation predates executable generation")
         if statement.issued_at > current_time:
             raise WorkshopTrustError("workshop attestation was issued in the future")
         if statement.expires_at <= current_time:
             raise WorkshopTrustError("workshop attestation is expired")
+        if statement.expires_at - statement.issued_at > timedelta(
+            seconds=policy.maximum_attestation_validity_seconds
+        ):
+            raise WorkshopTrustError("workshop attestation validity exceeds server policy")
+        if first_issued_at is None:
+            first_issued_at = statement.issued_at
+        elif statement.issued_at - first_issued_at > timedelta(
+            seconds=policy.maximum_chain_duration_seconds
+        ):
+            raise WorkshopTrustError("workshop attestation chain exceeds server-policy duration")
         if shared_setup is None:
             shared_setup = statement.setup
         elif statement.setup != shared_setup:
@@ -1846,6 +2242,7 @@ def verify_workshop_attestation_chain(
             statement_bytes,
             label="workshop checker",
         )
+        _verify_air_cut_supervisor(registry, statement, now=current_time)
         _verify_claim_bindings(statement)
         for evidence_label, reference in (
             *_all_setup_references(statement.setup),
@@ -1855,7 +2252,13 @@ def verify_workshop_attestation_chain(
                 reference,
                 label=evidence_label,
                 evidence_objects=evidence_objects,
+                evidence_attachments=evidence_attachments,
+                revoked_evidence_sha256=revoked_evidence_sha256,
+                revoked_evidence_claim_sha256=revoked_evidence_claim_sha256,
+                revoked_evidence_attachment_sha256=revoked_evidence_attachment_sha256,
+                remaining_evidence_bytes=(MAX_EVIDENCE_CHAIN_BYTES - verified_evidence_bytes),
                 verified_keys=verified_evidence_keys,
+                verified_attachment_keys=verified_attachment_keys,
                 role_by_key=evidence_role_by_key,
                 role_by_digest=evidence_role_by_digest,
             )

@@ -16,6 +16,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 from .models import DesignStatus, JobStatus
+from .workshop_readiness_service import WorkshopPreparationBlockerCode
 
 
 class ProjectCreate(BaseModel):
@@ -814,6 +815,49 @@ class ApprovalCreate(BaseModel):
 class ReleaseCreate(BaseModel):
     release_number: str = Field(pattern=r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
     confirmation: Literal["RELEASE"]
+
+
+class WorkshopRunPrepare(BaseModel):
+    """Non-authoritative request to prepare one server-derived workshop run."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    generation_job_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    confirmation: Literal["PREPARE_WORKSHOP_RUN"]
+
+
+class WorkshopRunBlockerDetail(BaseModel):
+    """Truthful current-state result for the blocker-only workshop endpoint."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    code: WorkshopPreparationBlockerCode
+    message: str = Field(min_length=1, max_length=500)
+    solution: str = Field(min_length=1, max_length=500)
+    workshop_status: Literal["BLOCKED"]
+    release_review_eligible: Literal[False]
+    cutting_blocker_codes: tuple[WorkshopPreparationBlockerCode] = Field(
+        min_length=1,
+        max_length=1,
+    )
+    physical_cutting_authorized: Literal[False]
+
+    @model_validator(mode="after")
+    def blocker_code_is_canonical(self) -> WorkshopRunBlockerDetail:
+        if self.cutting_blocker_codes != (self.code,):
+            raise ValueError("cutting blocker codes must contain the exact primary blocker")
+        return self
+
+
+class WorkshopRunBlockedResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    detail: WorkshopRunBlockerDetail
 
 
 class ReleaseRead(BaseModel):

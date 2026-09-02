@@ -38,6 +38,9 @@ API_TABLE_PRIVILEGES: dict[str, tuple[str, ...]] = {
     "storage_global_quotas": ("SELECT",),
     "storage_tenant_quotas": ("SELECT",),
     "stored_objects": ("SELECT",),
+    # Workshop trust persistence is omitted deliberately: neither untrusted
+    # runtime has a reviewed read or write path yet.  Add only narrow access
+    # together with the future verifier/finalizer boundary.
     # Audit rows are append-only for every application runtime.
     "audit_events": ("INSERT",),
 }

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from threading import Lock
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, NoReturn
 from uuid import uuid4
 
 from custombuild_domain import (
@@ -79,7 +79,7 @@ from custombuild_manufacturing.readiness import (
     normalize_workshop_readiness_report,
 )
 from custombuild_rules import RULES_VERSION
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, UploadFile, status
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy import delete, select, text
@@ -97,7 +97,7 @@ from .artifact_operations import (
     InMemoryArtifactOperationStore,
     RedisArtifactOperationStore,
 )
-from .auth import Principal, get_principal, require_minimum_role
+from .auth import Capability, Principal, get_principal, require_capability
 from .config import get_settings
 from .config_guards import BuildIdentityValues
 from .db import get_session_factory
@@ -135,7 +135,6 @@ from .models import (
     OutboxEvent,
     Project,
     Release,
-    Role,
     StoredObject,
 )
 from .repository import audit, canonical_hash, tenant_project, tenant_session, tenant_version
@@ -158,6 +157,9 @@ from .schemas import (
     ReleaseCreate,
     ReleaseRead,
     RevisionProductionContext,
+    WorkshopRunBlockedResponse,
+    WorkshopRunBlockerDetail,
+    WorkshopRunPrepare,
 )
 from .security import validate_upload
 from .storage import (
@@ -190,6 +192,10 @@ from .storage_quota import (
     reserve_storage_batch,
     reserve_storage_batch_in_transaction,
 )
+from .workshop_readiness_service import (
+    WorkshopPreparationBlocker,
+    require_workshop_preparation_source,
+)
 
 router = APIRouter(prefix="/v1")
 # The transaction must commit before FastAPI starts sending the response.  The
@@ -199,8 +205,13 @@ router = APIRouter(prefix="/v1")
 SessionDep = Annotated[Session, Depends(tenant_session, scope="function")]
 DownloadSessionDep = Annotated[Session, Depends(tenant_session, scope="request")]
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
-DesignerDep = Annotated[Principal, Depends(require_minimum_role(Role.designer))]
-ReviewerDep = Annotated[Principal, Depends(require_minimum_role(Role.reviewer))]
+DesignerDep = Annotated[Principal, Depends(require_capability(Capability.DESIGN))]
+GeneratorDep = Annotated[Principal, Depends(require_capability(Capability.GENERATE))]
+ReviewerDep = Annotated[Principal, Depends(require_capability(Capability.REVIEW))]
+WorkshopPreparerDep = Annotated[
+    Principal,
+    Depends(require_capability(Capability.WORKSHOP_PREPARE)),
+]
 
 EVIDENCE_RULE_TYPES: dict[str, str] = {
     "CB-TIP-001": "wall_anchor",
@@ -4997,7 +5008,7 @@ def generate_version(
     revision: int,
     payload: GenerationRequest,
     session: SessionDep,
-    principal: DesignerDep,
+    principal: GeneratorDep,
 ) -> GenerationJob:
     version = tenant_version(session, principal, project_id, revision)
     session.refresh(version, with_for_update=True)
@@ -5664,6 +5675,76 @@ def approve_version(
         },
     )
     return version
+
+
+@router.post(
+    "/projects/{project_id}/versions/{revision}/workshop-runs",
+    status_code=status.HTTP_409_CONFLICT,
+    response_model=WorkshopRunBlockedResponse,
+    response_description=(
+        "The server-owned generation/release is not an immutable executable "
+        "workshop package."
+    ),
+    responses={
+        status.HTTP_401_UNAUTHORIZED: {"description": "Authentication required."},
+        status.HTTP_403_FORBIDDEN: {
+            "description": "The active role lacks workshop preparation capability."
+        },
+        status.HTTP_404_NOT_FOUND: {
+            "description": "The tenant-scoped project or revision was not found."
+        },
+    },
+)
+def prepare_workshop_run(
+    project_id: Annotated[
+        str,
+        Path(pattern=rf"^{_CANONICAL_UUID_PATTERN.pattern}$"),
+    ],
+    revision: Annotated[int, Path(ge=1)],
+    payload: WorkshopRunPrepare,
+    session: SessionDep,
+    principal: WorkshopPreparerDep,
+) -> NoReturn:
+    """Prepare no physical state until a real executable package exists.
+
+    Clients can name only a generation job plus an explicit confirmation. The
+    tenant revision, job result and release binding are resolved by the server;
+    hashes, policies, machine identity and evidence cannot be supplied here.
+    """
+
+    version = tenant_version(session, principal, project_id, revision)
+    try:
+        require_workshop_preparation_source(
+            session,
+            organization_id=principal.organization_id,
+            version=version,
+            generation_job_id=payload.generation_job_id,
+        )
+        # The helper is intentionally ``NoReturn`` while executable package
+        # persistence does not exist.  Keep the HTTP boundary fail-closed even
+        # if a future refactor accidentally changes that internal contract.
+        raise WorkshopPreparationBlocker(
+            code="WORKSHOP_EXECUTABLE_PACKAGE_MISSING",
+            message=(
+                "Workshop preparation returned without creating a verified immutable "
+                "executable package."
+            ),
+            solution=(
+                "Keep preparation blocked until the server can persist and reread an "
+                "exact executable program inventory."
+            ),
+        )
+    except WorkshopPreparationBlocker as exc:
+        # HTTPException payloads bypass FastAPI response-model validation.
+        # Validate explicitly so a future internal blocker cannot drift from
+        # the public enum/envelope while still returning a plausible 409.
+        detail = WorkshopRunBlockerDetail.model_validate(exc.as_detail()).model_dump(
+            mode="json"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=detail,
+        ) from exc
 
 
 @router.post(

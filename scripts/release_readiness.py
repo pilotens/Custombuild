@@ -2693,6 +2693,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "services/api/alembic/versions/0013_storage_quota_security_functions.py",
         "services/api/alembic/versions/0014_release_generation_binding.py",
         "services/api/alembic/versions/0015_outbox_retry_schedule.py",
+        "services/api/alembic/versions/0016_workshop_trust_persistence.py",
         "services/api/app/artifact_operations.py",
         "services/api/app/storage_capacity.py",
         "services/api/app/storage_quota.py",
