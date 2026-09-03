@@ -467,13 +467,24 @@ def upgrade() -> None:
             name="ck_joint_retention_registry_state_operator_sha256",
         ),
         sa.PrimaryKeyConstraint("id"),
+        # The preceding OIDC migration deliberately freezes the transaction-local
+        # search_path to ``pg_catalog,public``.  An unqualified CREATE TABLE would
+        # therefore target pg_catalog on PostgreSQL and fail for the least-
+        # privilege migrator.  Keep the persistence boundary explicit instead of
+        # depending on whichever migration happened to run immediately before us.
+        schema="public" if bind.dialect.name == "postgresql" else None,
     )
-    op.execute(
-        sa.text(
+    if bind.dialect.name == "postgresql":
+        insert_statement = sa.text(
+            "INSERT INTO public.joint_retention_registry_state "
+            "(id, transition_epoch, updated_at) VALUES (1, 0, CURRENT_TIMESTAMP)"
+        )
+    else:
+        insert_statement = sa.text(
             "INSERT INTO joint_retention_registry_state "
             "(id, transition_epoch, updated_at) VALUES (1, 0, CURRENT_TIMESTAMP)"
         )
-    )
+    op.execute(insert_statement)
     if bind.dialect.name == "postgresql":
         _configure_postgresql_security()
 
@@ -488,9 +499,15 @@ def downgrade() -> None:
             sa.text("SELECT pg_catalog.pg_advisory_xact_lock(:lock_id)"),
             {"lock_id": REGISTRY_ACTIVATION_LOCK_ID},
         )
-    epoch = bind.scalar(
-        sa.text("SELECT transition_epoch FROM joint_retention_registry_state WHERE id = 1")
-    )
+    if bind.dialect.name == "postgresql":
+        epoch_query = sa.text(
+            "SELECT transition_epoch FROM public.joint_retention_registry_state WHERE id = 1"
+        )
+    else:
+        epoch_query = sa.text(
+            "SELECT transition_epoch FROM joint_retention_registry_state WHERE id = 1"
+        )
+    epoch = bind.scalar(epoch_query)
     if epoch != 0:
         raise RuntimeError(
             "JOINT_RETENTION_REGISTRY_DOWNGRADE_BLOCKED: activated trust high-water "
@@ -504,4 +521,7 @@ def downgrade() -> None:
             "DROP FUNCTION IF EXISTS "
             "public.custombuild_joint_retention_install_registry(jsonb,text,text,text)"
         )
-    op.drop_table(TABLE_NAME)
+    op.drop_table(
+        TABLE_NAME,
+        schema="public" if bind.dialect.name == "postgresql" else None,
+    )

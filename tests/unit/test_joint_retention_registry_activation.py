@@ -533,3 +533,5 @@ def test_migration_has_global_locked_function_only_acl_and_downgrade_guard() -> 
     assert "issuer key material is duplicated" in source
     assert "!~ '^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$'" in source
     assert "JOINT_RETENTION_REGISTRY_DOWNGRADE_BLOCKED" in source
+    assert 'schema="public" if bind.dialect.name == "postgresql" else None' in source
+    assert '"INSERT INTO public.joint_retention_registry_state "' in source
