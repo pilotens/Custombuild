@@ -41,6 +41,7 @@ class ProjectRead(BaseModel):
 WORKSPACE_INTENT_SCHEMA_V1 = "custombuild.workspace-intent.v1"
 MAX_WORKSPACE_INTENT_BYTES = 128 * 1024
 MAX_WORKSPACE_CUSTOM_PART_IDS = 1_024
+RATIO_COMPARISON_TOLERANCE = 1e-9
 
 WorkspacePartId = Annotated[
     str,
@@ -168,9 +169,13 @@ def _validate_workspace_ratios(
         if len(shelf_height_ratios) != shelf_count:
             raise ValueError("shelf_height_ratios must match shelf_count")
         if any(
-            value < 0.05
-            or value > 0.95
-            or (index > 0 and value - shelf_height_ratios[index - 1] < 0.05)
+            value < 0.05 - RATIO_COMPARISON_TOLERANCE
+            or value > 0.95 + RATIO_COMPARISON_TOLERANCE
+            or (
+                index > 0
+                and value - shelf_height_ratios[index - 1]
+                < 0.05 - RATIO_COMPARISON_TOLERANCE
+            )
             for index, value in enumerate(shelf_height_ratios)
         ):
             raise ValueError(
@@ -283,6 +288,12 @@ class BookcasePreviewInput(BaseModel):
     def validate_custom_layout(self) -> BookcasePreviewInput:
         if not _legacy_back_panel_enabled(self.back_panel) and self.back_material_id is not None:
             raise ValueError("back_material_id requires an enabled back panel")
+        if self.plinth_height_mm is not None and (
+            self.plinth != (self.plinth_height_mm > 0)
+        ):
+            raise ValueError(
+                "plinth must be true exactly when explicit plinth_height_mm is greater than zero"
+            )
         if self.bay_width_ratios:
             if len(self.bay_width_ratios) != self.divider_count + 1:
                 raise ValueError("bay_width_ratios must match divider_count + 1")
@@ -295,9 +306,13 @@ class BookcasePreviewInput(BaseModel):
             if len(self.shelf_height_ratios) != self.shelf_count:
                 raise ValueError("shelf_height_ratios must match shelf_count")
             if any(
-                value < 0.05
-                or value > 0.95
-                or (index > 0 and value - self.shelf_height_ratios[index - 1] < 0.05)
+                value < 0.05 - RATIO_COMPARISON_TOLERANCE
+                or value > 0.95 + RATIO_COMPARISON_TOLERANCE
+                or (
+                    index > 0
+                    and value - self.shelf_height_ratios[index - 1]
+                    < 0.05 - RATIO_COMPARISON_TOLERANCE
+                )
                 for index, value in enumerate(self.shelf_height_ratios)
             ):
                 raise ValueError(
@@ -682,14 +697,19 @@ class DesignVersionRead(BaseModel):
 
 
 class GenerationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     stock_width_mm: float = Field(default=2440, gt=0, le=10_000)
     stock_height_mm: float = Field(default=1220, gt=0, le=5_000)
     stock_count: int = Field(default=4, ge=1, le=100)
     back_stock_width_mm: float = Field(default=2440, gt=0, le=10_000)
     back_stock_height_mm: float = Field(default=1220, gt=0, le=5_000)
     back_stock_count: int = Field(default=2, ge=1, le=100)
-    machine_profile_id: str = "custombuild-router-1325-linuxcnc"
-    postprocessor_id: str = "linuxcnc-validation-1.1.0"
+    machine_profile_id: Literal[
+        "custombuild-router-1325-linuxcnc",
+        "custombuild-router-5125-linuxcnc",
+    ] = "custombuild-router-1325-linuxcnc"
+    postprocessor_id: Literal["linuxcnc-validation-1.1.0"] = "linuxcnc-validation-1.1.0"
     include_step: bool = True
     include_freecad_project: bool = False
     include_validation_program: bool = True

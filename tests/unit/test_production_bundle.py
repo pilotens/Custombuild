@@ -21,6 +21,7 @@ from custombuild_domain import (
     BookcaseDesignSpec,
     BookcaseParameters,
     JointType,
+    PartRole,
     build_bookcase,
     screening_birch_plywood_6,
     screening_birch_plywood_18,
@@ -45,6 +46,7 @@ from custombuild_manufacturing import (
     StockSheet,
     TwoSidedRegistration,
     build_production_bundle,
+    canonical_json_bytes,
     linuxcnc_reference_router_1325,
     read_and_verify_package,
 )
@@ -277,11 +279,107 @@ def test_plain_dado_yields_review_package_but_never_cam_artifacts(
     assert bundle.layouts == ()
     paths = {artifact.path for artifact in bundle.artifacts}
     assert not any(path.startswith(("cam/", "nesting/", "machine-validation/")) for path in paths)
+    assert "manufacturing/manufacturing-intent.json" in paths
+    assert "shop/supplier-handoff.json" in paths
+    by_path = {artifact.path: artifact.data for artifact in bundle.artifacts}
+    handoff = json.loads(by_path["shop/supplier-handoff.json"])
+    assert handoff["supplier_stages"] == {
+        "available_for_quote_review": True,
+        "quote_review_scope": "SUPPLIER_ESTIMATION_ONLY_SUBJECT_TO_ALL_NAMED_BLOCKERS",
+        "available_for_geometry_review": True,
+        "geometry_review_scope": "IMPORT_AND_DIMENSIONAL_REVIEW_ONLY",
+        "available_for_cam_intake_review": True,
+        "cam_intake_review_scope": (
+            "IMPORT_AND_REVIEW_OF_MACHINE_NEUTRAL_GEOMETRY_AND_INTENT_ONLY"
+        ),
+        "shop_review_required": True,
+        "manufacturing_approval_granted": False,
+        "cut_authorized": False,
+    }
+    assert handoff["readiness"]["cam_status"] == "BLOCKED"
+    assert handoff["unresolved_inputs_and_decisions"][0]["code"] == (
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    )
+    assert handoff["unresolved_inputs_and_decisions"][0]["category"] == (
+        "STRUCTURAL_RETENTION"
+    )
+    assert handoff["unresolved_inputs_and_decisions"][0]["resolved"] is False
+    assert [item["code"] for item in handoff["known_unresolved_decisions"]] == [
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    ]
+    expected_inventory = [
+        entry
+        for entry in bundle.manifest["artifacts"]
+        if entry["path"] != "shop/supplier-handoff.json"
+    ]
+    inventory_binding = handoff["payload_inventory_binding"]
+    assert inventory_binding["artifact_count"] == len(expected_inventory)
+    assert inventory_binding["artifacts"] == expected_inventory
+    assert inventory_binding["payload_inventory_sha256"] == hashlib.sha256(
+        canonical_json_bytes(expected_inventory)
+    ).hexdigest()
+    intent = json.loads(by_path["manufacturing/manufacturing-intent.json"])
+    assert intent["document_purpose"] == "MACHINE_NEUTRAL_DESIGN_INTENT"
+    assert intent["physical_cutting_authorized"] is False
+    assert intent["parts"]
     assert bundle.workshop_readiness.physical_cutting_authorized is False
 
 
+def test_retention_blocker_cannot_hide_invalid_manufacturing_geometry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    design, machine, stock, context = design_and_request()
+    adapted = adapt_design_result(design)
+    target = adapted.parts[0]
+    outside_feature = ManufacturingFeature(
+        feature_id="malicious-outside-pocket",
+        part_id=target.part_id,
+        kind=FeatureKind.POCKET,
+        side=Side.A,
+        x_um=target.width_um - 1_000,
+        y_um=10_000,
+        depth_um=1_000,
+        width_um=5_000,
+        length_um=5_000,
+    )
+    invalid_target = replace(target, features=(*target.features, outside_feature))
+    invalid_adapted = replace(
+        adapted,
+        parts=tuple(
+            invalid_target if part.part_id == target.part_id else part
+            for part in adapted.parts
+        ),
+    )
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        _REAL_DADO_RETENTION_CHECK,
+    )
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "adapt_design_result",
+        lambda _design: invalid_adapted,
+    )
+
+    with pytest.raises(ProductionBlockedError, match="FEATURE_OUTSIDE_PART") as caught:
+        build_production_bundle(
+            design,
+            stock=stock,
+            machine=machine,
+            context=context,
+            include_step=True,
+            allow_blocked_cam=True,
+            two_sided_registration_by_stock=explicit_two_sided_registration(stock),
+        )
+
+    assert caught.value.report is not None
+    assert "FEATURE_OUTSIDE_PART" in {
+        issue.code for issue in caught.value.report.blocking_issues
+    }
+
+
 @pytest.mark.parametrize("allow_blocked_cam", (False, True))
-def test_surface_back_rabbet_is_deferred_only_to_its_retention_blocker(
+def test_surface_back_retention_blocker_cannot_hide_feature_collisions(
     monkeypatch: pytest.MonkeyPatch,
     allow_blocked_cam: bool,
 ) -> None:
@@ -312,36 +410,21 @@ def test_surface_back_rabbet_is_deferred_only_to_its_retention_blocker(
         lambda **_kwargs: pytest.fail("unsupported RABBET reached CAM generation"),
     )
 
-    if not allow_blocked_cam:
-        with pytest.raises(
-            ProductionBlockedError,
-            match=BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
-        ):
-            build_production_bundle(
-                design,
-                stock=stock,
-                machine=machine,
-                context=context,
-                include_step=True,
-                allow_blocked_cam=False,
-                two_sided_registration_by_stock=explicit_two_sided_registration(stock),
-            )
-        return
+    with pytest.raises(ProductionBlockedError, match="FEATURE_COLLISION") as caught:
+        build_production_bundle(
+            design,
+            stock=stock,
+            machine=machine,
+            context=context,
+            include_step=True,
+            allow_blocked_cam=allow_blocked_cam,
+            two_sided_registration_by_stock=explicit_two_sided_registration(stock),
+        )
 
-    bundle = build_production_bundle(
-        design,
-        stock=stock,
-        machine=machine,
-        context=context,
-        include_step=True,
-        allow_blocked_cam=True,
-        two_sided_registration_by_stock=explicit_two_sided_registration(stock),
-    )
-    assert bundle.review_status.blocker_codes == (
-        BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
-    )
-    assert bundle.operations is None
-    assert bundle.layouts == ()
+    assert caught.value.report is not None
+    assert {issue.code for issue in caught.value.report.blocking_issues} == {
+        "FEATURE_COLLISION"
+    }
 
 
 def test_surface_back_deferral_does_not_hide_an_unrelated_rabbet(
@@ -467,7 +550,19 @@ def test_missing_registration_can_yield_only_a_truthful_design_review_package(
 def test_missing_stock_profile_yields_only_a_stockless_design_review_package(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    design, machine, stock, context = design_and_request()
+    design, machine, stock, context = design_and_request(
+        BookcaseParameters(back_panel=BackPanelType.SURFACE_MOUNTED)
+    )
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        _REAL_DADO_RETENTION_CHECK,
+    )
+    monkeypatch.setattr(
+        review_status_contract,
+        "dado_retention_evidence_missing",
+        _REAL_DADO_RETENTION_CHECK,
+    )
     undersized_stock = tuple(
         replace(item, width_um=600_000, height_um=600_000, quantity=24) for item in stock
     )
@@ -508,6 +603,20 @@ def test_missing_stock_profile_yields_only_a_stockless_design_review_package(
     assert "labels/label-index.csv" not in paths
     assert "quality/measurement-plan.json" not in paths
     assert not any(path.startswith(("cam/", "nesting/", "machine-validation/")) for path in paths)
+    handoff = json.loads(
+        next(
+            artifact.data
+            for artifact in bundle.artifacts
+            if artifact.path == "shop/supplier-handoff.json"
+        )
+    )
+    assert [item["code"] for item in handoff["unresolved_inputs_and_decisions"]] == [
+        "STOCK_PROFILE_MISSING"
+    ]
+    assert [item["code"] for item in handoff["known_unresolved_decisions"]] == [
+        BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    ]
     by_code = {item.code: item.status.value for item in bundle.workshop_readiness.software_evidence}
     assert by_code == {
         "AUTHORITATIVE_CAD": "VERIFIED",
@@ -1049,13 +1158,24 @@ def test_dado_dimensions_propagate_to_bom_cam_and_assembly(
         "shelf-r0-b0": ("435", "298"),
         "shelf-r0-b1": ("435", "298"),
         "plinth": ("864", "86"),
-        "back-b0": ("435", "1896"),
-        "back-b1": ("435", "1896"),
+        # Each outer edge retains the structural 6 mm capture; each
+        # divider-facing edge uses 5.95 mm so adjacent back grooves have the
+        # versioned 6.1 mm nominal R3/tolerance spacing.
+        "back-b0": ("434.95", "1896"),
+        "back-b1": ("434.95", "1896"),
     }
     for key, (width_mm, height_mm) in expected_panel_dimensions.items():
         row = bom_rows[by_key[key].part_id]
         assert row["finished_width_mm"] == width_mm
         assert row["finished_height_mm"] == height_mm
+
+    backs = sorted(
+        (part for part in design.parts if part.role == PartRole.BACK),
+        key=lambda part: part.instance_index,
+    )
+    assert backs[1].placement.x_um - (
+        backs[0].placement.x_um + backs[0].finished_size.width_um
+    ) == 6_100
 
     left_bottom_joint = next(
         joint
@@ -1074,7 +1194,7 @@ def test_dado_dimensions_propagate_to_bom_cam_and_assembly(
     assert sorted((groove_operation.width_um, groove_operation.length_um)) == [18_500, 320_000]
     assert groove_operation.tolerance_um == 50
     assert groove_operation.fit_clearance_um == 500
-    assert groove_operation.corner_strategy == "dogbone-v1"
+    assert groove_operation.corner_strategy == "dogbone-v2"
     assert groove_operation.corner_relief_radius_um == 3_000
     assert groove_operation.open_end_reliefs
     assert groove_operation.cutter_envelope_width_um is not None
@@ -1095,7 +1215,7 @@ def test_dado_dimensions_propagate_to_bom_cam_and_assembly(
     side_svg = artifact_by_path[f"drawings/{left_side_id}/B.svg"].decode("utf-8")
     dxf_document = ezdxf.read(io.StringIO(side_dxf))
     assert len(dxf_document.modelspace().query('CIRCLE[layer=="GROOVE"]')) >= 4
-    assert 'data-corner-strategy="dogbone-v1"' in side_svg
+    assert 'data-corner-strategy="dogbone-v2"' in side_svg
 
 
 def test_domain_to_multistock_bundle_is_safe_complete_and_reproducible(
@@ -1196,6 +1316,23 @@ def test_domain_to_multistock_bundle_is_safe_complete_and_reproducible(
         assert readiness["design_review_ready"] is True
         assert readiness["physical_cutting_authorized"] is False
         assert readiness["missing_evidence_count"] > 0
+        handoff = json.loads(archive.read("shop/supplier-handoff.json"))
+        assert handoff["package_identity"] == {
+            "project_id": "project-fixture",
+            "revision": "1",
+            "design_hash": design.design_hash,
+        }
+        assert handoff["operation_binding"]["status"] == (
+            "MACHINE_NEUTRAL_VALIDATION_ONLY"
+        )
+        assert handoff["supplier_stages"]["cut_authorized"] is False
+        manifest_inventory = {
+            entry["path"]: entry for entry in first.manifest["artifacts"]
+        }
+        assert set(manifest_inventory) == set(archive.namelist()) - {"manifest.json"}
+        assert manifest_inventory["shop/supplier-handoff.json"]["sha256"] == (
+            hashlib.sha256(archive.read("shop/supplier-handoff.json")).hexdigest()
+        )
         programs = [name for name in archive.namelist() if name.endswith(".validation.ngc")]
         assert programs
         for program in programs:

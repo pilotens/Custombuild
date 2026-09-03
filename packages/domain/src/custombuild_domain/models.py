@@ -46,8 +46,8 @@ BaseCabinetHeightUm = Annotated[int, Field(strict=True, ge=0, le=mm(2_000))]
 BaseCabinetDepthUm = Annotated[int, Field(strict=True, ge=0, le=mm(1_200))]
 BaseCabinetCount = Annotated[int, Field(strict=True, ge=0, le=17)]
 
-BOOKCASE_ENGINE_VERSION = "0.8.0"
-BOOKCASE_TEMPLATE_VERSION = "2.0.0"
+BOOKCASE_ENGINE_VERSION = "0.9.0"
+BOOKCASE_TEMPLATE_VERSION = "2.1.0"
 
 
 class FrozenModel(BaseModel):
@@ -308,7 +308,7 @@ class BookcaseParameters(FrozenModel):
                     "custom shelf centres must be ordered and separated by at least 5 percent"
                 )
         minimum_shelf_width = 2 * self.shelf_side_clearance_um + mm(40)
-        if inner_width // bay_count <= minimum_shelf_width:
+        if inner_width // bay_count < minimum_shelf_width:
             raise ValueError("divider layout leaves an unmanufacturable shelf width")
         shelf_zone_bottom = (
             self.plinth_height_um + self.base_cabinet_height_um
@@ -556,8 +556,8 @@ class ManufacturingFeature(FrozenModel):
             raise ValueError("a feature pattern with multiple items needs a pitch")
         if len(set(self.open_end_reliefs)) != len(self.open_end_reliefs):
             raise ValueError("open-end relief declarations must be unique")
-        if self.open_end_reliefs and self.corner_strategy != "dogbone-v1":
-            raise ValueError("open-end reliefs require the versioned dogbone-v1 strategy")
+        if self.open_end_reliefs and self.corner_strategy not in {"dogbone-v1", "dogbone-v2"}:
+            raise ValueError("open-end reliefs require a supported versioned dogbone strategy")
         return self
 
 

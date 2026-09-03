@@ -11,6 +11,7 @@ import {
   buildInstancedPartRenderData,
   buildSortableTransparentMaterialCatalog,
   buildSortableTransparentPartRenderData,
+  buildViewerMachiningSummary,
   cameraPositionForView,
   cameraProjectionForView,
   centeredFrontProjectionRect,
@@ -29,6 +30,7 @@ import {
   horizontalPositionAfterDrag,
   hoveredPartAfterInstanceOut,
   LARGE_SCENE_PART_THRESHOLD,
+  ManufacturingFeatureOverlay,
   PartMoveFeedbackOverlay,
   partForInstancedBatch,
   partDragThresholdReached,
@@ -41,6 +43,7 @@ import {
   verticalPositionAfterDrag,
   verticalDragBoundsForPart,
   VIEWER_FRAMELOOP,
+  VIEWER_FEATURE_GEOMETRY_LIMITATION,
   VIEWER_MODEL_ROOT_ATTRIBUTE,
   VIEWER_RENDER_COMMIT_ATTRIBUTE,
   ViewerDemandInvalidator,
@@ -48,6 +51,7 @@ import {
   viewerPartAppearance,
   viewerPartRenderMode,
   viewerPartTransform,
+  viewerFeatureAccessibilityDescription,
   viewerMaterialVisual,
 } from "./furniture-viewer";
 
@@ -815,6 +819,64 @@ describe("viewerMaterialVisual", () => {
   });
 });
 
+describe("manufacturing feature disclosure", () => {
+  it("summarizes only resolved feature metadata in a stable manufacturing order", () => {
+    const parts = resolveDesign(DEFAULT_DESIGN_SPEC).parts;
+    const side = parts.find((part) => part.part_id === "side-left")!;
+    const summary = buildViewerMachiningSummary([side]);
+
+    expect(summary).toMatchObject({
+      featureCount: 8,
+      joineryFeatureCount: 6,
+      partsWithFeatures: 1,
+      partsWithJoineryFeatures: 1,
+    });
+    expect(summary.kinds).toEqual([
+      { kind: "groove", label: "Spår", count: 6 },
+      { kind: "outline", label: "Kontur", count: 1 },
+      { kind: "label", label: "Märkning", count: 1 },
+    ]);
+    expect(buildViewerMachiningSummary([{ ...side, features: [] }])).toEqual({
+      featureCount: 0,
+      joineryFeatureCount: 0,
+      partsWithFeatures: 0,
+      partsWithJoineryFeatures: 0,
+      kinds: [],
+    });
+  });
+
+  it("exposes exact selected-part metadata while refusing invented feature geometry", () => {
+    const parts = resolveDesign(DEFAULT_DESIGN_SPEC).parts;
+    const side = parts.find((part) => part.part_id === "side-left")!;
+    render(createElement(ManufacturingFeatureOverlay, { parts, selectedPart: side }));
+
+    const overlay = screen.getByRole("region", { name: "Bearbetningsöversikt" });
+    expect(overlay).toHaveAttribute("aria-live", "polite");
+    expect(overlay).toHaveAttribute("data-geometry-source", "metadata-only");
+    expect(overlay.querySelector("details")).toHaveAttribute("open");
+    expect(within(overlay).getByText("side-left")).toBeInTheDocument();
+    expect(within(overlay).getByRole("list", { name: "Bearbetningsposter för Vänster gavel" }))
+      .toBeInTheDocument();
+    expect(within(overlay).getByLabelText(/Not för bakstycke.*Spår, sida B.*verktyg diameter 6 millimeter/u))
+      .toBeInTheDocument();
+    expect(screen.getByTestId("viewer-feature-geometry-limitation"))
+      .toHaveTextContent(VIEWER_FEATURE_GEOMETRY_LIMITATION);
+  });
+
+  it("produces an explicit screen-reader description for edge features without a tool", () => {
+    expect(viewerFeatureAccessibilityDescription({
+      id: "part:feature",
+      kind: "pocket",
+      face: "EDGE",
+      depth_mm: 4.25,
+      description: "Infälld beslagspunkt",
+    })).toBe(
+      "Infälld beslagspunkt. Ficka, kant, djup 4,25 millimeter, "
+      + "verktygsdiameter saknas i förhandsvisningen.",
+    );
+  });
+});
+
 describe("partSupportsVerticalDrag", () => {
   it("offers handles only for moves implemented by the parametric engine", () => {
     const bookcaseParts = resolveDesign(DEFAULT_DESIGN_SPEC).parts;
@@ -867,6 +929,31 @@ describe("browserSupportsWebGL", () => {
 });
 
 describe("FrontProjectionFallback", () => {
+  it("keeps the manufacturing disclosure available when WebGL is unavailable", () => {
+    const parts = resolveDesign(DEFAULT_DESIGN_SPEC).parts;
+    const target = parts.find((part) => part.part_id === "side-left")!;
+    render(createElement(FrontProjectionFallback, {
+      parts,
+      designSize: {
+        widthMm: DEFAULT_DESIGN_SPEC.width_mm,
+        heightMm: DEFAULT_DESIGN_SPEC.height_mm,
+        depthMm: DEFAULT_DESIGN_SPEC.depth_mm,
+      },
+      selectedPartId: target.part_id,
+      viewMode: "front",
+      exploded: false,
+      transparent: false,
+      isolateSelection: false,
+      onSelectPart: vi.fn(),
+    }));
+
+    const overlay = screen.getByRole("region", { name: "Bearbetningsöversikt" });
+    expect(within(overlay).getByText(target.part_id)).toBeInTheDocument();
+    expect(within(overlay).getByText("8 poster · 6 fog/hål")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Förenklad interaktiv frontvy av möbeln" }))
+      .toBeInTheDocument();
+  });
+
   it("preserves click, Enter and Space selection parity", () => {
     const parts = resolveDesign(DEFAULT_DESIGN_SPEC).parts;
     const target = parts.find((part) => part.part_id === "side-left")!;

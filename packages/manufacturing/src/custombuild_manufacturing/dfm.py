@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from math import isqrt
 from typing import Any
 
 from .grain import stock_grain_binding_issues
@@ -44,8 +45,7 @@ FEATURE_TO_OPERATION: dict[FeatureKind, OperationKind] = {
 DFM_ENGINE_VERSION = "dfm-1.3.0"
 JOINT_SYSTEM_UNSUPPORTED_CODE = "JOINT_SYSTEM_UNSUPPORTED"
 JOINT_SYSTEM_UNSUPPORTED_MESSAGE = (
-    "The frozen design contains a joint system without verified end-to-end "
-    "manufacturing support."
+    "The frozen design contains a joint system without verified end-to-end manufacturing support."
 )
 JOINT_SYSTEM_UNSUPPORTED_REQUIRED_ACTION = (
     "Use only a joint system whose versioned capability claim is supported for the exact "
@@ -58,6 +58,16 @@ STOCK_PROFILE_MISSING_MESSAGE = (
 STOCK_PROFILE_MISSING_REQUIRED_ACTION = (
     "Select matching stock whose usable area fits one part exemplar; "
     "total quantity is checked by nesting."
+)
+ADJACENT_RELIEF_CLEARANCE_WARNING_CODE = "ADJACENT_RELIEF_CLEARANCE_REQUIRES_SHOP_VALIDATION"
+ADJACENT_RELIEF_CLEARANCE_WARNING_MESSAGE = (
+    "Adjacent cutter reliefs have no conservative clearance after the declared feature, "
+    "machine and tool uncertainty allowances."
+)
+ADJACENT_RELIEF_CLEARANCE_WARNING_REQUIRED_ACTION = (
+    "Require the CNC supplier to review actual cutter diameter/runout and calibrated machine "
+    "accuracy, then prove the remaining web with a coupon and measured first article before "
+    "any physical release."
 )
 _STOCK_PROFILE_MISSING_INPUT_KEYS = frozenset(
     {"material_id", "material_version", "thickness_um", "blank_um"}
@@ -167,8 +177,7 @@ def unsupported_joint_system_issues(
     deferred_joint_ids: frozenset[str] = frozenset()
     if (
         defer_surface_back_to_retention
-        and _enum_value(getattr(canonical.spec.parameters, "back_panel", None))
-        == "surface_mounted"
+        and _enum_value(getattr(canonical.spec.parameters, "back_panel", None)) == "surface_mounted"
     ):
         back_part_ids = {
             str(part.part_id)
@@ -300,6 +309,7 @@ class DFMValidator:
                 issues.extend(self._validate_keepouts(instance.part, placement, layout, machine))
 
         issues.extend(self._validate_feature_collisions(instances))
+        issues.extend(self._validate_adjacent_relief_clearance(instances, machine))
         return DFMReport(
             tuple(
                 sorted(
@@ -546,7 +556,10 @@ class DFMValidator:
                         suggestion="Select and validate an internal-corner relief strategy.",
                     )
                 )
-            elif feature.corner_strategy != "dogbone-v1" or feature.corner_relief_radius_um is None:
+            elif (
+                feature.corner_strategy not in {"dogbone-v1", "dogbone-v2"}
+                or feature.corner_relief_radius_um is None
+            ):
                 issues.append(
                     DFMIssue(
                         "INNER_CORNER_STRATEGY_UNSUPPORTED",
@@ -589,7 +602,7 @@ class DFMValidator:
                 )
             )
         elif (
-            feature.corner_strategy == "dogbone-v1"
+            feature.corner_strategy in {"dogbone-v1", "dogbone-v2"}
             and feature.corner_relief_radius_um is not None
             and 2 * feature.corner_relief_radius_um < tool.effective_diameter_um
         ):
@@ -827,6 +840,135 @@ class DFMValidator:
                                     inputs={"other_feature_id": second.feature_id},
                                 )
                             )
+        return issues
+
+    def _validate_adjacent_relief_clearance(
+        self,
+        instances: Iterable[PartInstance],
+        machine: MachineProfile,
+    ) -> list[DFMIssue]:
+        """Warn when declared uncertainties consume the gap between cutter reliefs.
+
+        This is deliberately a supplier-review warning rather than invented physical
+        evidence.  The calculation uses the versioned nominal relief geometry and the
+        selected validation-machine/tool snapshots.  It cannot account for the shop's
+        actual material, calibration, cutter wear or chip-out behaviour.
+        """
+
+        issues: list[DFMIssue] = []
+        checked_parts: set[str] = set()
+        for instance in instances:
+            part = instance.part
+            if part.part_id in checked_parts:
+                continue
+            checked_parts.add(part.part_id)
+            per_side: dict[Side, list[ManufacturingFeature]] = defaultdict(list)
+            for feature in part.features:
+                per_side[feature.side].append(feature)
+            for features in per_side.values():
+                ordered = sorted(features, key=lambda item: item.feature_id)
+                for index, first in enumerate(ordered):
+                    for second in ordered[index + 1 :]:
+                        if FeatureKind.OUTER_CONTOUR in {first.kind, second.kind}:
+                            continue
+                        first_allowed = set(first.metadata.get("allow_overlap_with", ()))
+                        second_allowed = set(second.metadata.get("allow_overlap_with", ()))
+                        if second.feature_id in first_allowed or first.feature_id in second_allowed:
+                            continue
+                        if _machining_features_intersect(first, second):
+                            continue
+                        first_tool = select_tool(first, machine)
+                        second_tool = select_tool(second, machine)
+                        first_circles = first.relief_circles()
+                        second_circles = second.relief_circles()
+                        if (
+                            first_tool is None
+                            or second_tool is None
+                            or not first_circles
+                            or not second_circles
+                        ):
+                            continue
+                        closest = min(
+                            (
+                                isqrt(
+                                    (first_point.x_um - second_point.x_um) ** 2
+                                    + (first_point.y_um - second_point.y_um) ** 2
+                                )
+                                - first_radius_um
+                                - second_radius_um,
+                                first_point.x_um,
+                                first_point.y_um,
+                                first_radius_um,
+                                second_point.x_um,
+                                second_point.y_um,
+                                second_radius_um,
+                            )
+                            for first_point, first_radius_um in first_circles
+                            for second_point, second_radius_um in second_circles
+                        )
+                        (
+                            nominal_clearance_um,
+                            first_x_um,
+                            first_y_um,
+                            first_radius_um,
+                            second_x_um,
+                            second_y_um,
+                            second_radius_um,
+                        ) = closest
+                        combined_feature_tolerance_um = first.tolerance_um + second.tolerance_um
+                        combined_machine_accuracy_allowance_um = 2 * machine.accuracy_um
+                        combined_tool_runout_um = first_tool.runout_um + second_tool.runout_um
+                        remaining_margin_um = nominal_clearance_um - (
+                            combined_feature_tolerance_um
+                            + combined_machine_accuracy_allowance_um
+                            + combined_tool_runout_um
+                        )
+                        if remaining_margin_um > 0:
+                            continue
+                        issues.append(
+                            DFMIssue(
+                                ADJACENT_RELIEF_CLEARANCE_WARNING_CODE,
+                                Severity.WARNING,
+                                ADJACENT_RELIEF_CLEARANCE_WARNING_MESSAGE,
+                                part_id=part.part_id,
+                                feature_id=first.feature_id,
+                                inputs={
+                                    "other_feature_id": second.feature_id,
+                                    "first_relief_center_um": (first_x_um, first_y_um),
+                                    "other_relief_center_um": (second_x_um, second_y_um),
+                                    "first_relief_radius_um": first_radius_um,
+                                    "other_relief_radius_um": second_radius_um,
+                                    "nominal_relief_clearance_um": nominal_clearance_um,
+                                    "first_feature_tolerance_um": first.tolerance_um,
+                                    "other_feature_tolerance_um": second.tolerance_um,
+                                    "combined_feature_tolerance_um": (
+                                        combined_feature_tolerance_um
+                                    ),
+                                    "machine_profile_id": machine.profile_id,
+                                    "machine_profile_version": machine.version,
+                                    "machine_accuracy_um": machine.accuracy_um,
+                                    "combined_machine_accuracy_allowance_um": (
+                                        combined_machine_accuracy_allowance_um
+                                    ),
+                                    "first_tool_id": first_tool.tool_id,
+                                    "first_tool_version": first_tool.version,
+                                    "first_tool_effective_diameter_um": (
+                                        first_tool.effective_diameter_um
+                                    ),
+                                    "first_tool_runout_um": first_tool.runout_um,
+                                    "other_tool_id": second_tool.tool_id,
+                                    "other_tool_version": second_tool.version,
+                                    "other_tool_effective_diameter_um": (
+                                        second_tool.effective_diameter_um
+                                    ),
+                                    "other_tool_runout_um": second_tool.runout_um,
+                                    "combined_tool_runout_um": combined_tool_runout_um,
+                                    "remaining_conservative_margin_um": remaining_margin_um,
+                                    "physical_validation_required": True,
+                                },
+                                suggestion=(ADJACENT_RELIEF_CLEARANCE_WARNING_REQUIRED_ACTION),
+                            )
+                        )
         return issues
 
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 import json
+from dataclasses import replace
 from itertools import combinations
 from types import SimpleNamespace
 
+import ezdxf
 import pytest
 from custombuild_cad import (
     CADAssemblyCollisionError,
@@ -26,13 +29,17 @@ from custombuild_domain import (
     screening_mdf_18,
 )
 from custombuild_manufacturing import (
+    ADJACENT_RELIEF_CLEARANCE_WARNING_CODE,
     DeterministicNester,
     DFMValidator,
     StockSheet,
     linuxcnc_reference_router_1325,
 )
 from custombuild_manufacturing.adapters import adapt_design_result, adapt_domain_part
+from custombuild_manufacturing.dfm import _machining_features_intersect, select_tool
+from custombuild_manufacturing.exporters import dxf_for_part, svg_for_part
 from custombuild_manufacturing.model import FeatureKind, Side
+from ezdxf import bbox
 
 
 def namespace_part(*, features=(), role: str = "shelf", grain: str = "x"):
@@ -138,48 +145,251 @@ def test_domain_adapter_handles_adjustable_patterns_physical_sides_and_grain_axe
         adapt_design_result(duplicate)
 
 
-def test_thin_domain_divider_is_blocked_when_opposing_dados_leave_two_mm_core() -> None:
-    material = screening_mdf_6()
+@pytest.mark.cad
+def test_non_default_parametric_bookcase_has_deterministic_exact_supplier_geometry() -> None:
+    if not CadQueryAdapter.available():
+        pytest.skip("CadQuery/OpenCascade is not installed")
+    parameters = BookcaseParameters(
+        width_um=1_234_000,
+        height_um=2_147_000,
+        depth_um=347_000,
+        shelf_count=4,
+        vertical_divider_count=1,
+        bay_width_ratios_ppm=(420_000, 580_000),
+        shelf_height_ratios_ppm=(160_000, 360_000, 620_000, 850_000),
+    )
     design = build_bookcase(
         BookcaseDesignSpec(
-            design_id="thin-opposing-wall",
-            parameters=BookcaseParameters(
-                nominal_thickness_um=6_000,
-                actual_thickness_um=6_000,
-                back_thickness_um=6_000,
-                shelf_count=1,
-                vertical_divider_count=1,
-            ),
-            material=material,
-            back_material=material,
+            design_id="non-default-supplier-geometry",
+            parameters=parameters,
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
         )
     )
     adapted = adapt_design_result(design)
-    stock = StockSheet(
-        "thin-stock",
-        material.material_id,
-        material.version,
-        2_440_000,
-        1_220_000,
-        6_000,
-        quantity=4,
-        grain_direction="NONE",
+
+    first = CadQueryAdapter().export_design(design)
+    second = CadQueryAdapter().export_design(design)
+    assert first.step == second.step
+    assert first.glb == second.glb
+    assert len(design.parts) == 16
+
+    left_side = next(part for part in adapted.parts if part.name == "LEFT_SIDE")
+    assert (left_side.width_um, left_side.height_um, left_side.thickness_um) == (
+        parameters.depth_um,
+        parameters.height_um,
+        parameters.actual_thickness_um,
     )
-    layout = DeterministicNester().nest(adapted.parts, stock)
-    report = DFMValidator().validate(
-        adapted.parts,
-        layout,
-        linuxcnc_reference_router_1325(),
+    drawing_sets = tuple(
+        (
+            part.part_id,
+            side,
+            dxf_for_part(part, side),
+            svg_for_part(part, side),
+        )
+        for part in adapted.parts
+        for side in (Side.A, Side.B)
+    )
+    assert drawing_sets == tuple(
+        (
+            part.part_id,
+            side,
+            dxf_for_part(part, side),
+            svg_for_part(part, side),
+        )
+        for part in adapted.parts
+        for side in (Side.A, Side.B)
     )
 
-    issue = next(
-        issue
-        for issue in report.blocking_issues
-        if issue.code == "OPPOSING_FEATURE_WALL_TOO_THIN"
+    left_dxf = next(
+        payload
+        for part_id, side, payload, _ in drawing_sets
+        if part_id == left_side.part_id and side == Side.A
     )
-    divider = next(part for part in adapted.parts if part.name == "DIVIDER")
-    assert issue.part_id == divider.part_id
-    assert issue.inputs["remaining_um"] == 2_000
+    document = ezdxf.read(io.StringIO(left_dxf.decode("utf-8")))
+    bounds = bbox.extents(document.modelspace().query('LWPOLYLINE[layer=="OUTLINE"]'), fast=True)
+    assert tuple(bounds.extmin) == pytest.approx((0.0, 0.0, 0.0))
+    assert tuple(bounds.extmax) == pytest.approx((347.0, 2147.0, 0.0))
+    left_svg = next(
+        payload
+        for part_id, side, _, payload in drawing_sets
+        if part_id == left_side.part_id and side == Side.B
+    ).decode("utf-8")
+    assert 'data-coordinate-system="LOCAL_UV_MM_V_UP_NOT_MIRRORED"' in left_svg
+    assert 'data-thickness-mm="18"' in left_svg
+    assert 'data-depth-mm="6"' in left_svg
+    assert 'data-tolerance-mm="0.05"' in left_svg
+
+
+@pytest.mark.parametrize("actual_thickness_um", (17_000, 17_600, 18_000, 19_000))
+def test_supported_measured_stock_caps_divider_capture_without_back_field_collision(
+    actual_thickness_um: int,
+) -> None:
+    """Keep every screened MDF thickness compatible with the existing cutter.
+
+    Divider-facing capture is capped to retain a 6.1 mm nominal endpoint gap.
+    That is only 0.1 mm between the existing T06R/R3 relief envelopes: both
+    0.05 mm feature limits consume it before machine accuracy is considered.
+    DFM therefore preserves design-review output but emits an explicit supplier
+    warning. Outer side, top and bottom capture remains structural, and DFM's
+    exact collision check is not suppressed.
+    """
+
+    parameters = BookcaseParameters(
+        width_um=1_437_000,
+        height_um=2_187_000,
+        depth_um=347_000,
+        nominal_thickness_um=18_000,
+        actual_thickness_um=actual_thickness_um,
+        shelf_count=4,
+        vertical_divider_count=2,
+        bay_width_ratios_ppm=(210_000, 470_000, 320_000),
+        shelf_height_ratios_ppm=(140_000, 370_000, 630_000, 860_000),
+        edge_band_thickness_um=0,
+    )
+    design = build_bookcase(
+        BookcaseDesignSpec(
+            design_id=f"minimum-stock-relief-{actual_thickness_um}",
+            parameters=parameters,
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    )
+    adapted = adapt_design_result(design)
+    machine = linuxcnc_reference_router_1325()
+    top_and_bottom = tuple(part for part in adapted.parts if part.name in {"TOP", "BOTTOM"})
+    stock = StockSheet(
+        "screened-mdf-18",
+        design.spec.material.material_id,
+        design.spec.material.version,
+        2_440_000,
+        1_220_000,
+        actual_thickness_um,
+        quantity=2,
+        grain_direction="X",
+    )
+    layout = DeterministicNester().nest(top_and_bottom, stock)
+    report = DFMValidator().validate(top_and_bottom, layout, machine)
+    assert not [issue for issue in report.blocking_issues if issue.code == "FEATURE_COLLISION"]
+    clearance_warnings = tuple(
+        issue for issue in report.issues if issue.code == ADJACENT_RELIEF_CLEARANCE_WARNING_CODE
+    )
+    if actual_thickness_um <= 18_000:
+        assert len(clearance_warnings) == 4
+        for issue in clearance_warnings:
+            assert issue.part_id is not None
+            assert issue.feature_id is not None
+            assert issue.inputs["other_feature_id"] != issue.feature_id
+            assert issue.inputs["nominal_relief_clearance_um"] == 100
+            assert issue.inputs["combined_feature_tolerance_um"] == 100
+            assert issue.inputs["machine_accuracy_um"] == 100
+            assert issue.inputs["combined_machine_accuracy_allowance_um"] == 200
+            assert issue.inputs["first_tool_id"] == "T06R"
+            assert issue.inputs["other_tool_id"] == "T06R"
+            assert issue.inputs["first_tool_runout_um"] == 0
+            assert issue.inputs["other_tool_runout_um"] == 0
+            assert issue.inputs["combined_tool_runout_um"] == 0
+            assert issue.inputs["remaining_conservative_margin_um"] == -200
+            assert issue.inputs["physical_validation_required"] is True
+    else:
+        assert clearance_warnings == ()
+
+    if actual_thickness_um == 17_600:
+        runout_machine = replace(
+            machine,
+            tools=tuple(
+                replace(tool, runout_um=25) if tool.tool_id == "T06R" else tool
+                for tool in machine.tools
+            ),
+        )
+        runout_report = DFMValidator().validate(top_and_bottom, layout, runout_machine)
+        runout_warnings = tuple(
+            issue
+            for issue in runout_report.issues
+            if issue.code == ADJACENT_RELIEF_CLEARANCE_WARNING_CODE
+        )
+        assert len(runout_warnings) == 4
+        assert {
+            (
+                issue.inputs["first_tool_runout_um"],
+                issue.inputs["other_tool_runout_um"],
+                issue.inputs["combined_tool_runout_um"],
+                issue.inputs["remaining_conservative_margin_um"],
+            )
+            for issue in runout_warnings
+        } == {(25, 25, 50, -250)}
+
+    all_dogbones = tuple(
+        feature
+        for part in adapted.parts
+        for feature in part.features
+        if feature.corner_strategy == "dogbone-v2"
+    )
+    assert all_dogbones
+    selected_dogbone_tools = tuple(select_tool(feature, machine) for feature in all_dogbones)
+    assert all(tool is not None for tool in selected_dogbone_tools)
+    assert {tool.tool_id for tool in selected_dogbone_tools if tool is not None} == {"T06R"}
+    assert all(
+        tool is not None
+        and feature.corner_relief_radius_um is not None
+        and tool.effective_diameter_um == 2 * feature.corner_relief_radius_um
+        for feature, tool in zip(all_dogbones, selected_dogbone_tools, strict=True)
+    )
+
+    back_part_ids = {part.part_id for part in design.parts if part.role.value == "back"}
+    back_feature_ids = {
+        feature_id
+        for joint in design.joints
+        if back_part_ids & {member.part_id for member in joint.members}
+        for member in joint.members
+        for feature_id in member.feature_ids
+    }
+    structural_depth = max(1_000, min(12_000, actual_thickness_um // 3))
+    divider_capture = min(structural_depth, (actual_thickness_um - 6_100) // 2)
+    domain_parts = {part.part_id: part for part in design.parts}
+    adapted_parts = {part.part_id: part for part in adapted.parts}
+    for joint in design.joints:
+        if not (back_part_ids & {member.part_id for member in joint.members}):
+            continue
+        cut_member = next(member for member in joint.members if member.feature_ids)
+        feature = next(
+            item
+            for item in adapted_parts[cut_member.part_id].features
+            if item.feature_id == cut_member.feature_ids[0]
+        )
+        owner = domain_parts[cut_member.part_id]
+        expected_depth = divider_capture if owner.role.value == "divider" else structural_depth
+        assert feature.depth_um == expected_depth
+
+    for part in top_and_bottom:
+        back_grooves = sorted(
+            (feature for feature in part.features if feature.feature_id in back_feature_ids),
+            key=lambda feature: feature.x_um,
+        )
+        assert len(back_grooves) == 3
+        assert {feature.corner_relief_radius_um for feature in back_grooves} == {3_000}
+        for first, second in zip(back_grooves, back_grooves[1:], strict=False):
+            assert second.bounds().x_um - first.bounds().right_um >= 6_100
+            assert not _machining_features_intersect(first, second)
+
+
+def test_multi_bay_inset_back_rejects_stock_too_thin_for_versioned_relief_spacing() -> None:
+    material = screening_mdf_6()
+    with pytest.raises(ValueError, match="stock is too thin for multi-bay inset-back"):
+        build_bookcase(
+            BookcaseDesignSpec(
+                design_id="thin-opposing-wall",
+                parameters=BookcaseParameters(
+                    nominal_thickness_um=6_000,
+                    actual_thickness_um=6_000,
+                    back_thickness_um=6_000,
+                    shelf_count=1,
+                    vertical_divider_count=1,
+                ),
+                material=material,
+                back_material=material,
+            )
+        )
 
 
 def test_domain_adapter_rejects_unknown_geometry_and_skips_noncutting_mark() -> None:
@@ -239,9 +449,7 @@ def test_surface_back_has_four_in_bounds_rabbets_and_authoritative_cad(
             back_material=screening_mdf_6(),
         )
     )
-    back_part_ids = {
-        part.part_id for part in design.parts if part.role.value == "back"
-    }
+    back_part_ids = {part.part_id for part in design.parts if part.role.value == "back"}
     back_joints = tuple(
         joint
         for joint in design.joints
@@ -278,9 +486,7 @@ def test_surface_back_has_four_in_bounds_rabbets_and_authoritative_cad(
     # radius inside each side panel; the surface-back RABBET does not act as an
     # implicit waiver for a breakthrough DADO relief.
     side_parts = tuple(
-        part
-        for part in design.parts
-        if part.role.value in {"left_side", "right_side"}
+        part for part in design.parts if part.role.value in {"left_side", "right_side"}
     )
     rear_ended_dados = tuple(
         (part, feature, rabbet)
@@ -290,8 +496,7 @@ def test_surface_back_has_four_in_bounds_rabbets_and_authoritative_cad(
         for feature in part.features
         if feature.kind.value == "groove"
         and feature.dimensions.radius_um is not None
-        and feature.origin.y_um + int(feature.dimensions.width_um or 0)
-        < rabbet.origin.y_um
+        and feature.origin.y_um + int(feature.dimensions.width_um or 0) < rabbet.origin.y_um
     )
     assert rear_ended_dados
     assert all(
@@ -320,9 +525,27 @@ def test_surface_back_dogbone_overlap_requires_complete_canonical_triangle() -> 
             back_material=screening_mdf_6(),
         )
     )
-    back_part_ids = {
-        part.part_id for part in design.parts if part.role.value == "back"
-    }
+    # Legacy v1 retains its historical mouth scallops and therefore still
+    # requires the complete topology-proven crossing-joint triangle. V2's
+    # open-slot semantics are tested separately below.
+    design = design.model_copy(
+        update={
+            "parts": tuple(
+                part.model_copy(
+                    update={
+                        "features": tuple(
+                            feature.model_copy(update={"corner_strategy": "dogbone-v1"})
+                            if feature.corner_strategy == "dogbone-v2"
+                            else feature
+                            for feature in part.features
+                        )
+                    }
+                )
+                for part in design.parts
+            )
+        }
+    )
+    back_part_ids = {part.part_id for part in design.parts if part.role.value == "back"}
     removed_joint = next(
         joint
         for joint in design.joints
@@ -472,9 +695,7 @@ def test_exact_assembly_gate_blocks_injected_undeclared_collision_before_export(
 
     report = blocked.value.report
     collided_shelf_ids = tuple(sorted(part.part_id for part in shelves))
-    collision = next(
-        item for item in report.collisions if item.part_ids == collided_shelf_ids
-    )
+    collision = next(item for item in report.collisions if item.part_ids == collided_shelf_ids)
     first = shelves[0]
     expected_bounds = (
         first.placement.x_um / 1_000,
@@ -499,10 +720,7 @@ def test_exact_assembly_gate_blocks_injected_undeclared_collision_before_export(
     assert serialised == json.dumps(
         report.as_dict(), ensure_ascii=True, sort_keys=True, separators=(",", ":")
     )
-    assert (
-        f'"part_ids":["{collision.part_ids[0]}","{collision.part_ids[1]}"]'
-        in serialised
-    )
+    assert f'"part_ids":["{collision.part_ids[0]}","{collision.part_ids[1]}"]' in serialised
 
 
 @pytest.mark.cad
@@ -526,15 +744,12 @@ def test_exact_assembly_gate_does_not_treat_a_declared_joint_as_a_collision_waiv
     )
     shelf = next(part for part in design.parts if part.semantic_key.startswith("shelf-"))
     left_side = next(part for part in design.parts if part.semantic_key == "left-side")
-    shifted_placement = shelf.placement.model_copy(
-        update={"x_um": shelf.placement.x_um - 2_000}
-    )
+    shifted_placement = shelf.placement.model_copy(update={"x_um": shelf.placement.x_um - 2_000})
     shifted_shelf = shelf.model_copy(update={"placement": shifted_placement})
     injected = design.model_copy(
         update={
             "parts": tuple(
-                shifted_shelf if part.part_id == shelf.part_id else part
-                for part in design.parts
+                shifted_shelf if part.part_id == shelf.part_id else part for part in design.parts
             )
         }
     )
@@ -732,6 +947,41 @@ def test_cadquery_accepts_only_exact_declared_open_end_relief() -> None:
     result = CadQueryAdapter()._part_shape(cq, namespace_part(features=(exact_open_end,)))
     assert result.isValid()
     assert result.Volume() > 0
+
+    current_open_end = feature(
+        "exact-open-end-v2",
+        "groove",
+        x_um=0,
+        y_um=50_000,
+        feature_dimensions=dimensions(
+            width_um=20_000,
+            length_um=80_000,
+            depth_um=6_000,
+            radius_um=3_000,
+        ),
+        corner_strategy="dogbone-v2",
+        open_end_reliefs=("u_min",),
+    )
+    current_result = CadQueryAdapter()._part_shape(cq, namespace_part(features=(current_open_end,)))
+    rectangular_result = CadQueryAdapter()._part_shape(
+        cq,
+        namespace_part(
+            features=(
+                feature(
+                    "exact-open-end-rectangle",
+                    "groove",
+                    x_um=0,
+                    y_um=50_000,
+                    feature_dimensions=dimensions(
+                        width_um=20_000,
+                        length_um=80_000,
+                        depth_um=6_000,
+                    ),
+                ),
+            )
+        ),
+    )
+    assert result.Volume() < current_result.Volume() < rectangular_result.Volume()
 
 
 @pytest.mark.cad

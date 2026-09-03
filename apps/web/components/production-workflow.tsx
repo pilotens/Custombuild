@@ -7,6 +7,7 @@ import {
   CustombuildApiClient,
   type ArtifactRead,
   type DesignVersionRead,
+  type GenerationRequest,
   type JobRead,
   versionProductionContextMatches,
 } from "@/lib/api-client";
@@ -18,7 +19,10 @@ import {
   writeProductionSession,
 } from "@/lib/production-session-storage";
 import type { WorkspaceIdentity } from "@/lib/workspace-draft-storage";
-import type { FurnitureTemplateId } from "@/lib/furniture-templates";
+import {
+  hasPartCustomization,
+  type FurnitureTemplateId,
+} from "@/lib/furniture-templates";
 import {
   permitsStocklessDesignReview,
   validationGuidance,
@@ -157,6 +161,16 @@ const BLOCKED_CAM_REQUIRED_ACTIONS: Record<string, string> = {
 
 function productionErrorHasCode(message: string | null | undefined, code: string): boolean {
   return message?.split(/[^A-Za-z0-9_]+/).includes(code) ?? false;
+}
+
+function generationMachineProfileId(value: string): GenerationRequest["machine_profile_id"] {
+  if (
+    value === "custombuild-router-1325-linuxcnc"
+    || value === "custombuild-router-5125-linuxcnc"
+  ) return value;
+  throw new ApiError(
+    "Den valda maskinprofilen ingår inte i serverns versionslåsta genereringskontrakt.",
+  );
 }
 
 function productionFailureMessage(message: string): string {
@@ -494,6 +508,8 @@ export function workshopRequirementPresentation(
 const GENERATED_CAM_REVIEW_ARTIFACT_KINDS = [
   "production_bundle",
   "manifest",
+  "manufacturing_intent",
+  "supplier_handoff",
   "dfm_report",
   "stock_selection",
   "generation_plan",
@@ -507,6 +523,8 @@ const GENERATED_CAM_REVIEW_ARTIFACT_KINDS = [
 const BLOCKED_CAM_REVIEW_ARTIFACT_KINDS = [
   "production_bundle",
   "manifest",
+  "manufacturing_intent",
+  "supplier_handoff",
   "dfm_report",
   "stock_selection",
   "generation_plan",
@@ -518,6 +536,8 @@ const BLOCKED_CAM_REVIEW_ARTIFACT_KINDS = [
 const BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS = new Set([
   "production_bundle",
   "manifest",
+  "manufacturing_intent",
+  "supplier_handoff",
   "dfm_report",
   "stock_selection",
   "generation_plan",
@@ -790,7 +810,7 @@ function formatArtifactSize(sizeBytes: number): string {
   return `${(sizeBytes / 1_000_000).toFixed(1)} MB`;
 }
 
-function artifactRoleLabel(kind: string): string {
+export function artifactRoleLabel(kind: string): string {
   if (kind === "production_bundle") return "Designgranskningspaket (ZIP)";
   if (kind === "manifest") return "Manifest";
   if (kind === "dfm_report") return "Tillverkningsbarhetskontroll";
@@ -805,6 +825,8 @@ function artifactRoleLabel(kind: string): string {
   if (kind === "workshop_readiness") return "Readinessbevis";
   if (kind === "design_review_package_status") return "Status för designgranskningspaket";
   if (kind === "assembly_readiness") return "Monteringskontroll";
+  if (kind === "supplier_handoff") return "Leverantörsöverlämning";
+  if (kind === "manufacturing_intent") return "Maskinneutralt bearbetningsunderlag";
   if (kind.startsWith("setup_sheet_")) return "Setupblad";
   return kind.replaceAll("_", " ");
 }
@@ -820,17 +842,28 @@ function artifactFormatLabel(artifact: Pick<ArtifactRead, "kind" | "content_type
   return artifact.content_type;
 }
 
-function artifactReviewUseLabel(kind: string): string {
+export function artifactReviewUseLabel(kind: string): string {
   if (kind === "production_bundle") return "Samlat underlag för designgranskning";
   if (kind === "design_glb") return "Visuell 3D-granskning";
   if (kind === "design_fcstd") return "Valfri CAD-granskning";
   if (kind === "validation_backplot") return "Icke-skärande validering";
   if (kind.startsWith("setup_sheet_")) return "Setupgranskning – inte arbetsorder";
   if (kind === "operations") return "Semantisk kontroll – inte körbar CNC-kod";
+  if (kind === "supplier_handoff") {
+    return "Överlämning till CNC-verkstad för granskning – inte arbetsorder eller körbar CNC-kod";
+  }
+  if (kind === "manufacturing_intent") {
+    return "Maskinneutralt bearbetningsunderlag för CNC-verkstadens granskning – inte körbar CNC-kod";
+  }
   return "Verifieringsbevis för designgranskning";
 }
 
-function artifactFileExtension(artifact: Pick<ArtifactRead, "kind" | "content_type">): string {
+export function artifactFileExtension(
+  artifact: Pick<ArtifactRead, "kind" | "content_type">,
+): string {
+  if (artifact.kind === "supplier_handoff" || artifact.kind === "manufacturing_intent") {
+    return "json";
+  }
   if (artifact.kind === "design_fcstd") return "FCStd";
   if (artifact.kind === "design_glb" || artifact.content_type === "model/gltf-binary") return "glb";
   if (artifact.content_type === "application/zip") return "zip";
@@ -841,7 +874,7 @@ function artifactFileExtension(artifact: Pick<ArtifactRead, "kind" | "content_ty
   return "bin";
 }
 
-function artifactDownloadFileName(
+export function artifactDownloadFileName(
   artifact: Pick<ArtifactRead, "kind" | "content_type">,
   revision: number,
 ): string {
@@ -850,6 +883,8 @@ function artifactDownloadFileName(
     manifest: `custombuild-design-review-rev-${revision}-manifest.json`,
     stock_selection: `custombuild-stock-selection-rev-${revision}.json`,
     generation_plan: `custombuild-generation-plan-rev-${revision}.json`,
+    supplier_handoff: `custombuild-cnc-shop-handoff-rev-${revision}.json`,
+    manufacturing_intent: `custombuild-manufacturing-intent-rev-${revision}.json`,
   };
   const canonicalApiName = canonicalApiNames[artifact.kind];
   if (canonicalApiName) return canonicalApiName;
@@ -1130,6 +1165,10 @@ export function ProductionWorkflow({
     .filter((evaluation) => evaluation.status === "BLOCK");
   const stocklessReviewExpected = permitsStocklessDesignReview(design.rule_evaluations);
   const hardBlockingEvaluations = stocklessReviewExpected ? [] : blockingEvaluations;
+  const partCustomizationBlocked = hasPartCustomization(spec);
+  const partCustomizationBlockReason = partCustomizationBlocked
+    ? "Fria deländringar ingår bara i arbetsytans konceptmodell och är inte serverauktoritativa. Återställ deländringarna eller bygg samma ändring med de parametriska möbelvalen innan du sparar en revision eller skapar CNC-verkstadsunderlag."
+    : undefined;
   const current = Boolean(version && !stale);
   const stockProfileBlockedFailure = Boolean(
     job?.status === "failed" && productionErrorHasCode(job.error, STOCK_PROFILE_MISSING_CODE),
@@ -1216,11 +1255,12 @@ export function ProductionWorkflow({
   const completedArtifactSet = Boolean(
     job?.status === "succeeded" && requiredArtifactsComplete && productionBundle,
   );
-  const designApprovalBlockReason = hardBlockingEvaluations.length > 0
+  const designApprovalBlockReason = partCustomizationBlockReason
+    ?? (hardBlockingEvaluations.length > 0
     ? `${hardBlockingEvaluations.length} blockerande krav måste åtgärdas i ritningen och kontrolleras igen innan underlaget kan skapas.`
     : acknowledgementWarningRuleIds.length > 0 && !warningsAcknowledged
       ? "Bekräfta att du har läst och kontrollerat varningarna för att fortsätta."
-      : undefined;
+      : undefined);
   const designReviewReady = Boolean(
     completedArtifactSet
     && workshopReadiness
@@ -1249,6 +1289,8 @@ export function ProductionWorkflow({
       : 2;
   const saveBlockReason = busy
     ? "En serveråtgärd pågår. Vänta tills den är klar."
+    : partCustomizationBlockReason
+      ? partCustomizationBlockReason
     : !serverSynchronized
       ? "Hämtar projektet från servern."
       : design.source !== "server-preview"
@@ -1318,6 +1360,11 @@ export function ProductionWorkflow({
   }
 
   function saveRevision() {
+    if (partCustomizationBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
+      return;
+    }
     if (design.source !== "server-preview") {
       setError(undefined);
       setActionFeedback({
@@ -1393,6 +1440,11 @@ export function ProductionWorkflow({
   }
 
   function validateRevision() {
+    if (partCustomizationBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
+      return;
+    }
     void perform("validate", "Kontrollerar den sparade modellen…", async () => {
       if (!version) throw new ApiError("Ingen sparad modell finns att kontrollera.");
       const validated = await api.validateVersion(version.project_id, version.revision);
@@ -1402,6 +1454,11 @@ export function ProductionWorkflow({
   }
 
   function approveDesign() {
+    if (partCustomizationBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
+      return;
+    }
     void perform("design-approval", "Godkänner kontrollen och skapar underlaget…", async () => {
       if (!version) throw new ApiError("Ingen kontrollerad modell finns att godkänna.");
       if (hardBlockingEvaluations.length > 0) {
@@ -1433,7 +1490,7 @@ export function ProductionWorkflow({
         back_stock_width_mm: spec.back_stock_width_mm,
         back_stock_height_mm: spec.back_stock_height_mm,
         back_stock_count: spec.back_stock_count,
-        machine_profile_id: spec.machine_profile_id,
+        machine_profile_id: generationMachineProfileId(spec.machine_profile_id),
         postprocessor_id: "linuxcnc-validation-1.1.0",
         include_step: true,
         include_freecad_project: false,
@@ -1447,6 +1504,11 @@ export function ProductionWorkflow({
   }
 
   function generatePackage() {
+    if (partCustomizationBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
+      return;
+    }
     void perform("generation", "Skapar ett nytt underlag…", async () => {
       if (!version) throw new ApiError("Ingen kontrollerad modell finns att skapa underlag för.");
       const queued = await api.generateVersion(version.project_id, version.revision, {
@@ -1456,7 +1518,7 @@ export function ProductionWorkflow({
         back_stock_width_mm: spec.back_stock_width_mm,
         back_stock_height_mm: spec.back_stock_height_mm,
         back_stock_count: spec.back_stock_count,
-        machine_profile_id: spec.machine_profile_id,
+        machine_profile_id: generationMachineProfileId(spec.machine_profile_id),
         postprocessor_id: "linuxcnc-validation-1.1.0",
         include_step: true,
         include_freecad_project: false,
@@ -1608,6 +1670,12 @@ export function ProductionWorkflow({
           Modellen har ändrats. Spara och kontrollera den igen innan du skapar ett nytt underlag.
         </p>
       ) : null}
+      {partCustomizationBlockReason ? (
+        <p className="production-warning" role="alert">
+          <strong>Deländringarna ingår inte i serverunderlaget.</strong>{" "}
+          {partCustomizationBlockReason}
+        </p>
+      ) : null}
       {blockingEvaluations.length > 0 ? (
         <section
           className="production-blocking-rules"
@@ -1710,7 +1778,7 @@ export function ProductionWorkflow({
               type="button"
               className="production-primary-action"
               onClick={saveRevision}
-              disabled={Boolean(busy)}
+              disabled={Boolean(busy) || partCustomizationBlocked}
               aria-busy={busy === "save"}
               aria-describedby={saveBlockReason ? saveBlockReasonId : undefined}
             >
@@ -1736,7 +1804,7 @@ export function ProductionWorkflow({
                   type="button"
                   className="production-primary-action"
                   onClick={validateRevision}
-                  disabled={Boolean(busy)}
+                  disabled={Boolean(busy) || partCustomizationBlocked}
                   aria-busy={busy === "validate"}
                 >
                   {busy === "validate" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
@@ -1841,7 +1909,7 @@ export function ProductionWorkflow({
                   type="button"
                   className="production-primary-action"
                   onClick={generatePackage}
-                  disabled={Boolean(busy)}
+                  disabled={Boolean(busy) || partCustomizationBlocked}
                   aria-busy={busy === "generation"}
                 >
                   {busy === "generation" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
@@ -1865,7 +1933,7 @@ export function ProductionWorkflow({
                   type="button"
                   className="production-primary-action"
                   onClick={generatePackage}
-                  disabled={Boolean(busy)}
+                  disabled={Boolean(busy) || partCustomizationBlocked}
                   aria-busy={busy === "generation"}
                 >
                   {busy === "generation" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
@@ -2146,7 +2214,7 @@ export function ProductionWorkflow({
                   {busy === "download" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
                   Ladda ned granskningspaket (.zip)
                 </button>
-                <button type="button" onClick={generatePackage} disabled={Boolean(busy)}>
+                <button type="button" onClick={generatePackage} disabled={Boolean(busy) || partCustomizationBlocked}>
                   <RefreshCw aria-hidden="true" size={15} /> Skapa om granskningspaket
                 </button>
               </>

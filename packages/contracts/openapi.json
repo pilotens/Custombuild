@@ -738,6 +738,7 @@
         "type": "object"
       },
       "GenerationRequest": {
+        "additionalProperties": false,
         "properties": {
           "back_stock_count": {
             "default": 2,
@@ -785,10 +786,15 @@
           },
           "machine_profile_id": {
             "default": "custombuild-router-1325-linuxcnc",
+            "enum": [
+              "custombuild-router-1325-linuxcnc",
+              "custombuild-router-5125-linuxcnc"
+            ],
             "title": "Machine Profile Id",
             "type": "string"
           },
           "postprocessor_id": {
+            "const": "linuxcnc-validation-1.1.0",
             "default": "linuxcnc-validation-1.1.0",
             "title": "Postprocessor Id",
             "type": "string"

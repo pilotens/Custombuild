@@ -61,8 +61,14 @@ from .package import (
     generation_plan_artifact,
     read_and_verify_package,
     stock_selection_artifact,
+    supplier_handoff_manifest_context,
 )
 from .profiles import tool_catalog_fingerprint
+from .quality import (
+    SUPPLIER_HANDOFF_PATH,
+    SUPPLIER_HANDOFF_ROLE,
+    supplier_handoff_json,
+)
 from .readiness import WorkshopReadinessReport, build_workshop_readiness_report
 from .review_status import (
     BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
@@ -81,12 +87,24 @@ FROZEN_DESIGN_SPEC_SCHEMA_VERSION = "custombuild.frozen-design-spec.v1"
 DESIGN_RESULT_SUMMARY_SCHEMA_VERSION = "custombuild.design-result-summary.v1"
 
 
-def _retention_blocker_code(design_result: Any) -> str | None:
-    """Resolve retention prerequisites in stable, fail-closed order."""
+def _known_retention_decision_codes(design_result: Any) -> tuple[str, ...]:
+    """Return every unresolved retention decision, independent of stage precedence."""
 
+    codes: list[str] = []
     if dado_retention_evidence_missing(design_result):
-        return DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+        codes.append(DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE)
     if back_panel_retention_evidence_missing(design_result):
+        codes.append(BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE)
+    return tuple(sorted(codes))
+
+
+def _retention_blocker_code(design_result: Any) -> str | None:
+    """Resolve the active retention prerequisite in stable, fail-closed order."""
+
+    codes = _known_retention_decision_codes(design_result)
+    if DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE in codes:
+        return DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    if BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE in codes:
         return BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
     return None
 
@@ -101,6 +119,36 @@ class ProductionBundle:
     operations: OperationsDocument | None
     workshop_readiness: WorkshopReadinessReport
     review_status: DesignReviewPackageStatus
+
+
+def _run_dfm_screen(
+    *,
+    grouped_parts: Iterable[tuple[StockSheet, tuple[PartSpec, ...]]],
+    selection_issues: Iterable[DFMIssue],
+    machine: MachineProfile,
+) -> tuple[
+    DFMReport,
+    tuple[tuple[StockSheet, tuple[PartSpec, ...], NestingLayout], ...],
+]:
+    """Run the complete applicable DFM screen before any later-stage blocker wins.
+
+    Retention evidence controls whether semantic CAM may be generated; it must
+    never suppress geometry, tooling, nesting, keep-out, or feature-collision
+    checks for the supplier review package that remains available.
+    """
+
+    report_issues = list(selection_issues)
+    validated_groups: list[tuple[StockSheet, tuple[PartSpec, ...], NestingLayout]] = []
+    validator = DFMValidator()
+    for selected_stock, selected_parts in grouped_parts:
+        current_layout = DeterministicNester().nest(selected_parts, selected_stock)
+        validated_groups.append((selected_stock, selected_parts, current_layout))
+        current_report = validator.validate(selected_parts, current_layout, machine)
+        report_issues.extend(current_report.issues)
+    return (
+        DFMReport(tuple(report_issues), engine_version=validator.engine_version),
+        tuple(validated_groups),
+    )
 
 
 def build_production_bundle(
@@ -228,17 +276,25 @@ def build_production_bundle(
             f"production bundle blocked by DFM: {codes}", report=grain_report
         )
 
-    dado_retention_blocked = dado_retention_evidence_missing(design_result)
+    known_retention_decision_codes = _known_retention_decision_codes(design_result)
+    retention_blocker_code = _retention_blocker_code(design_result)
+    dado_retention_blocked = (
+        retention_blocker_code == DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    )
+    back_retention_missing = (
+        BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+        in known_retention_decision_codes
+    )
     back_retention_blocked = (
         not stock_profile_blocked
         and not grain_profile_blocked
-        and not dado_retention_blocked
-        and back_panel_retention_evidence_missing(design_result)
+        and retention_blocker_code
+        == BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
     )
-    if not stock_profile_blocked and not grain_profile_blocked and not dado_retention_blocked:
+    if not stock_profile_blocked and not grain_profile_blocked:
         joint_support_issues = unsupported_joint_system_issues(
             design_result,
-            defer_surface_back_to_retention=back_retention_blocked,
+            defer_surface_back_to_retention=back_retention_missing,
         )
         if joint_support_issues:
             report = DFMReport(
@@ -262,15 +318,17 @@ def build_production_bundle(
         report = grain_report
         review_status = blocked_design_review_package_status(grain_blocker_codes)
     elif dado_retention_blocked or back_retention_blocked:
-        retention_blocker_code = (
-            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
-            if dado_retention_blocked
-            else BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+        report, _validated_groups = _run_dfm_screen(
+            grouped_parts=grouped_parts,
+            selection_issues=(*selection_issues, *grain_issues),
+            machine=machine,
         )
-        report = DFMReport(
-            tuple((*selection_issues, *grain_issues)),
-            engine_version=DFM_ENGINE_VERSION,
-        )
+        if report.blocking_issues:
+            codes = ", ".join(sorted({issue.code for issue in report.blocking_issues}))
+            raise ProductionBlockedError(
+                f"production bundle blocked by DFM: {codes}", report=report
+            )
+        assert retention_blocker_code is not None
         if not allow_blocked_cam:
             raise ProductionBlockedError(
                 "production bundle blocked by unresolved joint retention: "
@@ -281,19 +339,12 @@ def build_production_bundle(
             (retention_blocker_code,)
         )
     else:
-        report_issues = list(selection_issues)
-        validated_groups: list[tuple[StockSheet, tuple[PartSpec, ...], NestingLayout]] = []
-        validator = DFMValidator()
-        for selected_stock, selected_parts in grouped_parts:
-            current_layout = DeterministicNester().nest(selected_parts, selected_stock)
-            layouts.append(current_layout)
-            validated_groups.append((selected_stock, selected_parts, current_layout))
-            current_report = validator.validate(selected_parts, current_layout, machine)
-            report_issues.extend(current_report.issues)
-        report = DFMReport(
-            tuple(report_issues),
-            engine_version=validator.engine_version,
+        report, validated_groups = _run_dfm_screen(
+            grouped_parts=grouped_parts,
+            selection_issues=(*selection_issues, *grain_issues),
+            machine=machine,
         )
+        layouts.extend(layout for _, _, layout in validated_groups)
         if report.blocking_issues:
             codes = ", ".join(sorted({issue.code for issue in report.blocking_issues}))
             raise ProductionBlockedError(
@@ -520,14 +571,56 @@ def build_production_bundle(
         cad_status=cad_status,
     )
     if operations is None:
-        artifacts = design_review_artifacts(parts=adapted.parts, additional=additional)
+        artifacts = design_review_artifacts(
+            parts=adapted.parts,
+            project_id=frozen_context.project_id,
+            revision=frozen_context.revision,
+            design_hash=frozen_context.design_hash,
+            additional=additional,
+        )
     else:
         artifacts = default_artifacts(
             parts=adapted.parts,
             layout=tuple(layouts),
             operations=operations,
+            project_id=frozen_context.project_id,
+            revision=frozen_context.revision,
+            design_hash=frozen_context.design_hash,
             additional=additional,
         )
+    supplier_handoff = ArtifactFile(
+        SUPPLIER_HANDOFF_PATH,
+        supplier_handoff_json(
+            project_id=frozen_context.project_id,
+            revision=frozen_context.revision,
+            design_hash=frozen_context.design_hash,
+            machine=machine,
+            stocks=stocks,
+            operations=operations,
+            cam_status=review_status.cam_status.value,
+            blocker_codes=review_status.blocker_codes,
+            cam_required_action=review_status.required_action,
+            design_review_ready=workshop_readiness.design_review_ready,
+            manifest_context_projection=supplier_handoff_manifest_context(frozen_context),
+            payload_inventory_entries=(
+                {
+                    "path": artifact.path,
+                    "media_type": artifact.media_type,
+                    "role": artifact.role,
+                    "size_bytes": len(artifact.data),
+                    "sha256": sha256_hex(artifact.data),
+                }
+                for artifact in artifacts
+            ),
+            known_unresolved_decision_codes=known_retention_decision_codes,
+            dfm_warning_issues=(
+                issue for issue in report.issues if issue.severity is Severity.WARNING
+            ),
+        ),
+        "application/json",
+        SUPPLIER_HANDOFF_ROLE,
+    )
+    artifacts = tuple(sorted((*artifacts, supplier_handoff), key=lambda item: item.path))
     payload = build_deterministic_zip(
         frozen_context,
         artifacts,

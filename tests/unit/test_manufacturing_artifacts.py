@@ -5,6 +5,7 @@ import io
 import json
 import zipfile
 from dataclasses import replace
+from xml.etree import ElementTree
 
 import ezdxf
 import pytest
@@ -45,6 +46,27 @@ def _raw_builder_manifest(payload: bytes) -> dict[str, object]:
         value = json.loads(archive.read("manifest.json"))
     assert isinstance(value, dict)
     return value
+
+
+def _dxf_json_comment_payload(source: str, label: str) -> dict[str, object]:
+    lines = source.splitlines()
+    comments = [
+        lines[index + 1]
+        for index, value in enumerate(lines[:-1])
+        if value == "999" and lines[index + 1].startswith(f"{label}:")
+    ]
+    assert comments
+    chunks: dict[int, str] = {}
+    expected_count: int | None = None
+    for comment in comments:
+        sequence, chunk = comment.removeprefix(f"{label}:").split(":", 1)
+        raw_index, raw_count = sequence.split("/", 1)
+        expected_count = int(raw_count)
+        chunks[int(raw_index)] = chunk
+    assert expected_count == len(chunks)
+    payload = json.loads("".join(chunks[index] for index in range(1, expected_count + 1)))
+    assert isinstance(payload, dict)
+    return payload
 
 
 def manufacturing_values():
@@ -183,10 +205,245 @@ def test_dxf_declares_millimetres_and_an_independent_parser_confirms_bounds() ->
     assert document.units == units.MM
     assert document.header["$INSUNITS"] == units.MM
     assert document.header["$MEASUREMENT"] == 1
+    assert document.header["$LUNITS"] == 2
+    assert document.header["$LUPREC"] == 3
     assert audit.errors == []
     assert audit.fixes == []
     assert tuple(bounds.extmin) == pytest.approx((0.0, 0.0, 0.0))
     assert tuple(bounds.extmax) == pytest.approx((300.0, 200.0, 0.0))
+
+
+def test_part_drawings_bind_supplier_datums_axes_depth_tolerance_and_blank_size() -> None:
+    panel, _, _, _ = manufacturing_values()
+    hole = replace(panel.features[0], tolerance_um=50, fit_clearance_um=100)
+    panel = replace(
+        panel,
+        raw_width_um=304_000,
+        raw_height_um=204_000,
+        features=(hole, panel.features[1]),
+        metadata={"domain_a_side": "BOTTOM", "domain_b_side": "TOP"},
+    )
+
+    first_dxf = dxf_for_part(panel, Side.A)
+    assert first_dxf == dxf_for_part(panel, Side.A)
+    dxf = first_dxf.decode("utf-8")
+    drawing = _dxf_json_comment_payload(dxf, "CUSTOMBUILD_DRAWING_JSON")
+    feature = _dxf_json_comment_payload(dxf, "CUSTOMBUILD_FEATURE_0001_JSON")
+
+    assert drawing["schema_version"] == "custombuild.part-drawing.v2"
+    assert drawing["physical_face"] == "BOTTOM"
+    assert drawing["coordinate_system"] == "LOCAL_UV_MM_V_UP_NOT_MIRRORED"
+    assert drawing["coordinates_mirrored"] is False
+    assert drawing["origin"] == "FINISHED_PART_U_MIN_V_MIN"
+    assert drawing["material"] == {"id": "mdf", "version": "v1"}
+    assert drawing["grain_direction"] == "NONE"
+    assert drawing["edge_bands"] == []
+    assert drawing["datums"] == {
+        "primary": "BOTTOM_FINISHED_SURFACE",
+        "secondary": "U_MIN_FINISHED_EDGE",
+        "tertiary": "V_MIN_FINISHED_EDGE",
+    }
+    assert drawing["finished_size_mm"] == {"u": "300", "v": "200", "thickness": "18"}
+    assert drawing["raw_blank_size_mm"] == {"u": "304", "v": "204", "thickness": "18"}
+    assert drawing["emitted_geometry_extents_mm"] == {
+        "u_min": "0",
+        "v_min": "0",
+        "u_max": "300",
+        "v_max": "200",
+    }
+    assert feature["feature_id"] == "a-hole"
+    assert feature["origin_semantics"] == "FIRST_CENTRE"
+    assert feature["origin_mm"] == {"u": "50", "v": "50"}
+    assert feature["depth_mm"] == "10"
+    assert feature["dimensions_mm"] == {"diameter": "8"}
+    assert feature["tolerance_mm"] == "0.05"
+    assert feature["tolerance_status"] == "DECLARED_IN_DESIGN"
+    assert feature["fit_clearance_mm"] == "0.1"
+
+    svg_bytes = svg_for_part(panel, Side.A)
+    assert svg_bytes == svg_for_part(panel, Side.A)
+    root = ElementTree.fromstring(svg_bytes)  # noqa: S314 -- trusted locally generated SVG
+    namespace = {"svg": "http://www.w3.org/2000/svg"}
+    metadata = root.find("svg:metadata", namespace)
+    geometry = root.find("svg:g[@class='machining-geometry']", namespace)
+    circles = root.findall(".//svg:circle[@data-feature-id='a-hole']", namespace)
+    assert metadata is not None and json.loads(metadata.text or "") == drawing
+    assert geometry is not None and geometry.attrib["transform"] == "translate(0 200) scale(1 -1)"
+    assert root.attrib["data-physical-face"] == "BOTTOM"
+    assert root.attrib["data-material-id"] == "mdf"
+    assert root.attrib["data-material-version"] == "v1"
+    assert root.attrib["data-grain-direction"] == "NONE"
+    assert root.attrib["data-u-axis"] == "x"
+    assert root.attrib["data-v-axis"] == "y"
+    assert root.attrib["data-thickness-axis"] == "z"
+    assert len(circles) == 1
+    assert circles[0].attrib["data-depth-mm"] == "10"
+    assert circles[0].attrib["data-tolerance-mm"] == "0.05"
+    assert circles[0].attrib["data-tolerance-status"] == "DECLARED_IN_DESIGN"
+    assert circles[0].attrib["data-fit-clearance-mm"] == "0.1"
+
+
+def test_unspecified_outer_contour_tolerance_is_explicit_and_never_numeric_zero() -> None:
+    panel, _, _, _ = manufacturing_values()
+    outline = ManufacturingFeature(
+        "outline:panel",
+        "panel",
+        FeatureKind.OUTER_CONTOUR,
+        Side.A,
+        0,
+        0,
+        panel.thickness_um,
+        width_um=panel.width_um,
+        length_um=panel.height_um,
+        through=True,
+    )
+    panel = replace(panel, features=(*panel.features, outline))
+
+    for side, source in (
+        (Side.A, "SEMANTIC_OUTER_CONTOUR"),
+        (Side.B, "FINISHED_PART_RECTANGULAR_FALLBACK"),
+    ):
+        dxf = dxf_for_part(panel, side).decode("utf-8")
+        drawing = _dxf_json_comment_payload(dxf, "CUSTOMBUILD_DRAWING_JSON")
+        finished_outline = drawing["finished_outline"]
+        assert finished_outline["source"] == source
+        assert finished_outline["tolerance_mm"] is None
+        assert finished_outline["tolerance_status"] == "EXTERNAL_TOLERANCE_REQUIRED"
+        if side is Side.A:
+            assert finished_outline["feature"]["feature_id"] == "outline:panel"
+        else:
+            assert finished_outline["feature"] is None
+
+        root = ElementTree.fromstring(  # noqa: S314 -- trusted locally generated SVG
+            svg_for_part(panel, side)
+        )
+        svg_outline = next(
+            (
+                element
+                for element in root.iter()
+                if element.attrib.get("class") == "outline"
+            ),
+            None,
+        )
+        assert svg_outline is not None
+        assert svg_outline.attrib["data-outline-source"] == source
+        assert svg_outline.attrib["data-tolerance-status"] == (
+            "EXTERNAL_TOLERANCE_REQUIRED"
+        )
+        assert "data-tolerance-mm" not in svg_outline.attrib
+
+
+@pytest.mark.parametrize("exporter", (dxf_for_part, svg_for_part))
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    (
+        (lambda feature: replace(feature, side=Side.EDGE), "edge-machining features"),
+        (lambda feature: replace(feature, kind=FeatureKind.COUNTERSINK), "no versioned angle"),
+        (lambda feature: replace(feature, diameter_um=None), "has no diameter"),
+        (lambda feature: replace(feature, through=True), "does not reach the full"),
+        (lambda feature: replace(feature, depth_um=18_000), "reaches or exceeds"),
+    ),
+)
+def test_part_drawings_fail_closed_instead_of_omitting_or_guessing_geometry(
+    exporter,
+    mutate,
+    message: str,
+) -> None:
+    panel, _, _, _ = manufacturing_values()
+    panel = replace(panel, features=(mutate(panel.features[0]), panel.features[1]))
+
+    with pytest.raises(ValueError, match=message):
+        exporter(panel, Side.A)
+
+
+@pytest.mark.parametrize("exporter", (dxf_for_part, svg_for_part))
+def test_part_drawings_reject_a_misstated_outer_perimeter(exporter) -> None:
+    panel, _, _, _ = manufacturing_values()
+    outline = ManufacturingFeature(
+        "outline:wrong",
+        panel.part_id,
+        FeatureKind.OUTER_CONTOUR,
+        Side.A,
+        10_000,
+        0,
+        panel.thickness_um,
+        width_um=panel.width_um - 10_000,
+        length_um=panel.height_um,
+        through=True,
+    )
+    panel = replace(panel, features=(*panel.features, outline))
+
+    with pytest.raises(ValueError, match="does not exactly match"):
+        exporter(panel, Side.A)
+
+
+def test_dxf_extents_include_declared_dogbone_cutter_overhang() -> None:
+    panel, _, _, _ = manufacturing_values()
+    open_groove = ManufacturingFeature(
+        "edge-groove",
+        panel.part_id,
+        FeatureKind.GROOVE,
+        Side.A,
+        0,
+        50_000,
+        6_000,
+        width_um=20_000,
+        length_um=80_000,
+        corner_strategy="dogbone-v1",
+        corner_relief_radius_um=3_000,
+        open_end_reliefs=("u_min",),
+    )
+    panel = replace(panel, features=(open_groove, panel.features[1]))
+
+    dxf = dxf_for_part(panel, Side.A).decode("utf-8")
+    document = ezdxf.read(io.StringIO(dxf))
+    drawing = _dxf_json_comment_payload(dxf, "CUSTOMBUILD_DRAWING_JSON")
+
+    assert tuple(document.header["$EXTMIN"]) == pytest.approx((-3.0, 0.0, 0.0))
+    assert tuple(document.header["$EXTMAX"]) == pytest.approx((300.0, 200.0, 0.0))
+    assert drawing["emitted_geometry_extents_mm"] == {
+        "u_min": "-3",
+        "v_min": "0",
+        "u_max": "300",
+        "v_max": "200",
+    }
+
+
+def test_dogbone_v2_omits_open_slot_mouth_scallops_but_v1_remains_stable() -> None:
+    panel, _, _, _ = manufacturing_values()
+    legacy = ManufacturingFeature(
+        "legacy-edge-groove",
+        panel.part_id,
+        FeatureKind.GROOVE,
+        Side.A,
+        0,
+        50_000,
+        6_000,
+        width_um=20_000,
+        length_um=80_000,
+        corner_strategy="dogbone-v1",
+        corner_relief_radius_um=3_000,
+        open_end_reliefs=("u_min",),
+    )
+    current = replace(
+        legacy,
+        feature_id="current-edge-groove",
+        corner_strategy="dogbone-v2",
+    )
+    assert len(legacy.relief_circles()) == 4
+    assert len(current.relief_circles()) == 2
+
+    current_panel = replace(panel, features=(current, panel.features[1]))
+    dxf = dxf_for_part(current_panel, Side.A).decode("utf-8")
+    document = ezdxf.read(io.StringIO(dxf))
+    drawing = _dxf_json_comment_payload(dxf, "CUSTOMBUILD_DRAWING_JSON")
+    svg = svg_for_part(current_panel, Side.A).decode("utf-8")
+
+    assert len(document.modelspace().query('CIRCLE[layer=="GROOVE"]')) == 2
+    assert tuple(document.header["$EXTMIN"]) == pytest.approx((0.0, 0.0, 0.0))
+    assert drawing["emitted_geometry_extents_mm"]["u_min"] == "0"
+    assert svg.count('class="groove corner-relief"') == 2
+    assert 'data-corner-strategy="dogbone-v2"' in svg
 
 
 def test_bom_exposes_edge_band_thickness_and_unresolved_procurement() -> None:

@@ -243,6 +243,12 @@ BLOCKED_CAM_ALLOWED_ARTIFACTS: Final = frozenset(
             "application/json",
         ),
         ("validation/dfm-report.json", "DFM_VALIDATION_REPORT", "application/json"),
+        (
+            "manufacturing/manufacturing-intent.json",
+            "MACHINE_NEUTRAL_MANUFACTURING_INTENT",
+            "application/json",
+        ),
+        ("shop/supplier-handoff.json", "CNC_SHOP_HANDOFF", "application/json"),
         (STOCK_SELECTION_PATH, STOCK_SELECTION_ROLE, "application/json"),
         (GENERATION_PLAN_PATH, GENERATION_PLAN_ROLE, "application/json"),
         ("validation/source-provenance.json", "SOURCE_PROVENANCE", "application/json"),
@@ -257,6 +263,8 @@ BLOCKED_CAM_ALLOWED_EVIDENCE_KINDS: Final = frozenset(
     {
         "production_bundle",
         "manifest",
+        "manufacturing_intent",
+        "supplier_handoff",
         "dfm_report",
         "stock_selection",
         "generation_plan",
@@ -1713,6 +1721,8 @@ def download_artifact(
         "manifest": f"custombuild-design-review-rev-{revision}-manifest.json",
         "stock_selection": f"custombuild-stock-selection-rev-{revision}.json",
         "generation_plan": f"custombuild-generation-plan-rev-{revision}.json",
+        "manufacturing_intent": f"custombuild-manufacturing-intent-rev-{revision}.json",
+        "supplier_handoff": f"custombuild-cnc-shop-handoff-rev-{revision}.json",
     }.get(artifact_kind)
     require(
         type(revision) is int
@@ -2080,6 +2090,8 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         {
             "production_bundle",
             "manifest",
+            "manufacturing_intent",
+            "supplier_handoff",
             "cad_interchange_status",
             "dfm_report",
             "stock_selection",
@@ -2103,6 +2115,8 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         "manifest": "application/json",
         "stock_selection": "application/json",
         "generation_plan": "application/json",
+        "manufacturing_intent": "application/json",
+        "supplier_handoff": "application/json",
     }
     for kind, expected_content_type in downloadable_content_types.items():
         artifact = by_kind[kind]

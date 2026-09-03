@@ -65,8 +65,12 @@ from custombuild_manufacturing import (
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     GENERATION_PLAN_ARTIFACT_PATH,
     GENERATION_PLAN_ARTIFACT_ROLE,
+    MANUFACTURING_INTENT_PATH,
+    MANUFACTURING_INTENT_ROLE,
     MAX_EVIDENCE_ARTIFACTS,
     MAX_EVIDENCE_TOTAL_BYTES,
+    SUPPLIER_HANDOFF_PATH,
+    SUPPLIER_HANDOFF_ROLE,
     ArtifactFile,
     CAMStageStatus,
     ManifestContext,
@@ -114,6 +118,16 @@ IMMEDIATE_TERMINAL_GENERATION_ERRORS = (
     ReadinessValidationError,
 )
 _EVIDENCE_ARTIFACT_CONTRACTS: Mapping[str, tuple[str, str, str]] = {
+    MANUFACTURING_INTENT_PATH: (
+        "manufacturing_intent",
+        "application/json",
+        MANUFACTURING_INTENT_ROLE,
+    ),
+    SUPPLIER_HANDOFF_PATH: (
+        "supplier_handoff",
+        "application/json",
+        SUPPLIER_HANDOFF_ROLE,
+    ),
     "validation/dfm-report.json": (
         "dfm_report",
         "application/json",

@@ -230,6 +230,131 @@ def test_operations_json_parser_accepts_canonical_document() -> None:
     assert parsed["design_hash"] == document.design_hash
 
 
+def _versioned_dogbone_document(corner_strategy: str) -> OperationsDocument:
+    feature = ManufacturingFeature(
+        f"edge-groove-{corner_strategy}",
+        "panel",
+        FeatureKind.GROOVE,
+        Side.A,
+        0,
+        50_000,
+        6_000,
+        width_um=20_000,
+        length_um=80_000,
+        corner_strategy=corner_strategy,
+        corner_relief_radius_um=3_000,
+        open_end_reliefs=("u_min",),
+        metadata={"requires_square_corners": True},
+    )
+    panel = PartSpec(
+        "panel",
+        "Panel",
+        300_000,
+        200_000,
+        18_000,
+        "mdf",
+        "v1",
+        features=(feature,),
+        grain_direction="NONE",
+    )
+    stock = StockSheet(
+        "sheet",
+        "mdf",
+        "v1",
+        1_000_000,
+        600_000,
+        18_000,
+        grain_direction="NONE",
+    )
+    machine = linuxcnc_reference_router_1325()
+    layout = DeterministicNester().nest((panel,), stock)
+    return generate_operations_document(
+        design_hash="e" * 64,
+        parts=(panel,),
+        layout=layout,
+        machine=machine,
+    )
+
+
+@pytest.mark.parametrize(
+    ("corner_strategy", "expected_envelope_width_um"),
+    (("dogbone-v1", 26_000), ("dogbone-v2", 23_000)),
+)
+def test_cam_accepts_versioned_legacy_and_open_slot_dogbone_semantics(
+    corner_strategy: str,
+    expected_envelope_width_um: int,
+) -> None:
+    machine = linuxcnc_reference_router_1325()
+    document = _versioned_dogbone_document(corner_strategy)
+
+    operation = document.operations[0]
+    assert operation.corner_strategy == corner_strategy
+    assert operation.cutter_envelope_width_um == expected_envelope_width_um
+    assert validate_operations_document(document, machine=machine).valid is True
+
+
+def test_cam_rejects_forged_versioned_dogbone_cutter_envelopes() -> None:
+    machine = linuxcnc_reference_router_1325()
+    v2_document = _versioned_dogbone_document("dogbone-v2")
+    v2_operation = v2_document.operations[0]
+    nominal_forgery = replace(
+        v2_operation,
+        cutter_envelope_x_um=v2_operation.x_um,
+        cutter_envelope_y_um=v2_operation.y_um,
+        cutter_envelope_width_um=v2_operation.width_um,
+        cutter_envelope_length_um=v2_operation.length_um,
+    )
+    nominal_result = validate_operations_document(
+        replace(v2_document, operations=(nominal_forgery,)),
+        machine=machine,
+    )
+    assert any(
+        "cutter envelope does not match versioned corner semantics" in error
+        for error in nominal_result.errors
+    )
+
+    v1_document = _versioned_dogbone_document("dogbone-v1")
+    v1_operation = v1_document.operations[0]
+    v2_shaped_forgery = replace(
+        v1_operation,
+        cutter_envelope_x_um=v2_operation.cutter_envelope_x_um,
+        cutter_envelope_y_um=v2_operation.cutter_envelope_y_um,
+        cutter_envelope_width_um=v2_operation.cutter_envelope_width_um,
+        cutter_envelope_length_um=v2_operation.cutter_envelope_length_um,
+    )
+    legacy_result = validate_operations_document(
+        replace(v1_document, operations=(v2_shaped_forgery,)),
+        machine=machine,
+    )
+    assert any(
+        "cutter envelope does not match versioned corner semantics" in error
+        for error in legacy_result.errors
+    )
+
+
+def test_cam_rejects_incomplete_corner_contract_fields() -> None:
+    document = _versioned_dogbone_document("dogbone-v2")
+    operation = document.operations[0]
+
+    missing_radius = replace(operation, corner_relief_radius_um=None)
+    missing_radius_result = validate_operations_document(
+        replace(document, operations=(missing_radius,))
+    )
+    assert any(
+        "corner strategy requires a relief radius" in error
+        for error in missing_radius_result.errors
+    )
+
+    missing_strategy = replace(operation, corner_strategy=None, open_end_reliefs=())
+    missing_strategy_result = validate_operations_document(
+        replace(document, operations=(missing_strategy,))
+    )
+    assert any(
+        "corner relief radius requires a supported strategy" in error
+        for error in missing_strategy_result.errors
+    )
+
+
 def test_cam_validator_rejects_tool_snapshot_tampering_and_non_exact_snapshots() -> None:
     document = valid_document()
     fingerprint_tamper = copy.copy(document)
@@ -305,8 +430,7 @@ def test_machine_bound_validation_rejects_profile_setup_and_tool_drift() -> None
     spoofed_machine = replace(machine, work_width_um=machine.work_width_um + 1)
     spoofed_result = validate_operations_document(document, machine=spoofed_machine)
     assert any(
-        "differs from the trusted canonical profile" in error
-        for error in spoofed_result.errors
+        "differs from the trusted canonical profile" in error for error in spoofed_result.errors
     )
 
 
@@ -532,13 +656,9 @@ def test_cam_validation_rejects_depth_stepdown_cutter_and_keepout_tampering() ->
 
     keepout_setup = replace(
         document.setups[0],
-        keep_out_zones=(
-            Rect(operation.x_um - 5_000, operation.y_um - 5_000, 10_000, 10_000),
-        ),
+        keep_out_zones=(Rect(operation.x_um - 5_000, operation.y_um - 5_000, 10_000, 10_000),),
     )
-    keepout_result = validate_operations_document(
-        replace(document, setups=(keepout_setup,))
-    )
+    keepout_result = validate_operations_document(replace(document, setups=(keepout_setup,)))
     assert any("intersects setup keep-out zone" in e for e in keepout_result.errors)
 
     area_tool = replace(
@@ -586,9 +706,7 @@ def test_cam_boundary_rejects_empty_documents_and_untraceable_identities() -> No
     for field in ("operation_id", "part_id", "instance_id", "feature_id"):
         invalid_operation = copy.copy(operation)
         object.__setattr__(invalid_operation, field, "")
-        result = validate_operations_document(
-            replace(document, operations=(invalid_operation,))
-        )
+        result = validate_operations_document(replace(document, operations=(invalid_operation,)))
         assert any(f"non-canonical {field}" in error for error in result.errors)
 
     untraceable = replace(operation, operation_id="op:another-instance:another-feature")
@@ -661,9 +779,7 @@ def test_cam_boundary_requires_canonical_compensation_and_release_holding() -> N
     assert any("compensation is unsupported" in error for error in injected_result.errors)
 
     unheld = replace(contour, holding_strategy=None)
-    unheld_result = validate_operations_document(
-        replace(contour_document, operations=(unheld,))
-    )
+    unheld_result = validate_operations_document(replace(contour_document, operations=(unheld,)))
     assert any("release holding strategy" in error for error in unheld_result.errors)
 
     drill_with_contour_claims = replace(

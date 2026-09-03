@@ -22,7 +22,6 @@ const BACK_THICKNESS_MM = 6;
 const BACK_INSET_MM = 12;
 const DOGBONE_BACK_CLEARANCE_MM = 4;
 const OPEN_BACK_EDGE_CLEARANCE_MM = 2;
-const PLINTH_HEIGHT_MM = 80;
 const NESTING_GAP_MM = 8;
 const SHELF_SIDE_CLEARANCE_MM = 1;
 const RATIO_COMPARISON_TOLERANCE = 1e-9;
@@ -331,7 +330,7 @@ function shelfHeightRatios(spec: DesignSpec): number[] {
 
 function shelfVerticalBounds(spec: DesignSpec): { bottomMm: number; topMm: number; thicknessMm: number } {
   const thicknessMm = Math.max(spec.measured_thickness_mm, 0.1);
-  const plinthHeight = spec.plinth ? PLINTH_HEIGHT_MM : 0;
+  const plinthHeight = spec.plinth ? spec.plinth_height_mm : 0;
   const bottomMm = spec.furniture_type === "wall_library" && spec.base_cabinet_count > 0
     ? plinthHeight + spec.base_cabinet_height_mm
     : plinthHeight + thicknessMm;
@@ -507,7 +506,7 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
   const shelfCount = Math.max(0, Math.trunc(spec.shelf_count));
   const hasBaseCabinets = spec.furniture_type === "wall_library" && spec.base_cabinet_count > 0;
   const baseCabinetCount = hasBaseCabinets ? Math.max(1, Math.trunc(spec.base_cabinet_count)) : 0;
-  const plinthHeight = spec.plinth ? PLINTH_HEIGHT_MM : 0;
+  const plinthHeight = spec.plinth ? spec.plinth_height_mm : 0;
   const shelfZoneBottom = hasBaseCabinets
     ? plinthHeight + spec.base_cabinet_height_mm
     : plinthHeight + thickness;
@@ -870,7 +869,7 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
 
   if (spec.plinth) {
     const partId = "plinth-front";
-    const plinthPanelHeight = hasBaseCabinets ? PLINTH_HEIGHT_MM : PLINTH_HEIGHT_MM + dadoDepth;
+    const plinthPanelHeight = hasBaseCabinets ? plinthHeight : plinthHeight + dadoDepth;
     addPart({
       part_id: partId,
       name: "Främre sockel",
@@ -1158,13 +1157,18 @@ export interface PartVerticalMoveResult {
 }
 
 function minimumFurnitureHeightMm(spec: DesignSpec): number {
+  const plinthHeight = spec.plinth ? spec.plinth_height_mm : 0;
   if (spec.furniture_type !== "wall_library" || spec.base_cabinet_count < 1) {
-    return DESIGN_CONSTRAINTS.heightMm.minimum;
+    return Math.max(
+      DESIGN_CONSTRAINTS.heightMm.minimum,
+      Math.floor(plinthHeight + 2 * spec.measured_thickness_mm) + 1,
+    );
   }
   return Math.max(
     DESIGN_CONSTRAINTS.heightMm.minimum,
     Math.floor(
-      spec.base_cabinet_height_mm
+      plinthHeight
+      + spec.base_cabinet_height_mm
       + spec.measured_thickness_mm
       + DESIGN_CONSTRAINTS.baseCabinetUpperClearanceMm,
     ) + 1,
@@ -1185,7 +1189,7 @@ export function movePartVertically(spec: DesignSpec, partId: string, targetZMm: 
     }
     const shelfIndex = Math.min(spec.shelf_count - 1, Math.max(0, Number(shelfMatch[1]) - 1));
     const thickness = Math.max(spec.measured_thickness_mm, 0.1);
-    const plinthHeight = spec.plinth ? PLINTH_HEIGHT_MM : 0;
+    const plinthHeight = spec.plinth ? spec.plinth_height_mm : 0;
     const shelfZoneBottom = spec.furniture_type === "wall_library" && spec.base_cabinet_count > 0
       ? plinthHeight + spec.base_cabinet_height_mm
       : plinthHeight + thickness;
@@ -1227,7 +1231,7 @@ export function movePartVertically(spec: DesignSpec, partId: string, targetZMm: 
 
   if (partId === "bottom" && spec.furniture_type === "wall_library" && spec.base_cabinet_count > 0) {
     const thickness = Math.max(spec.measured_thickness_mm, 0.1);
-    const plinthHeight = spec.plinth ? PLINTH_HEIGHT_MM : 0;
+    const plinthHeight = spec.plinth ? spec.plinth_height_mm : 0;
     const baseHeight = Math.min(
       maximumBaseCabinetHeightMm(spec.height_mm, thickness),
       Math.max(
@@ -1503,7 +1507,9 @@ function invalidGeometryRule(spec: DesignSpec): RuleEvaluation {
   if (outsideConstraintRange(spec.height_mm, DESIGN_CONSTRAINTS.heightMm)) failures.push("höjden måste vara mellan 300 och 4000 mm");
   if (outsideConstraintRange(spec.depth_mm, DESIGN_CONSTRAINTS.depthMm)) failures.push("djupet måste vara mellan 100 och 1200 mm");
   if (spec.width_mm <= 2 * spec.measured_thickness_mm) failures.push("bredden måste överstiga två materialtjocklekar");
-  if (spec.height_mm <= 2 * spec.measured_thickness_mm + (spec.plinth ? PLINTH_HEIGHT_MM : 0)) failures.push("höjden lämnar inget användbart innerutrymme");
+  if (!Number.isFinite(spec.plinth_height_mm) || spec.plinth_height_mm < 0 || spec.plinth_height_mm > 500) failures.push("sockelhöjden måste vara mellan 0 och 500 mm");
+  if (spec.plinth !== (spec.plinth_height_mm > 0)) failures.push("sockelval och sockelhöjd måste stämma överens");
+  if (spec.height_mm <= 2 * spec.measured_thickness_mm + (spec.plinth ? spec.plinth_height_mm : 0)) failures.push("höjden lämnar inget användbart innerutrymme");
   if (spec.depth_mm <= spec.measured_thickness_mm) failures.push("djupet måste överstiga materialtjockleken");
   if (!Number.isFinite(spec.measured_thickness_mm) || spec.measured_thickness_mm <= 0) failures.push("uppmätt tjocklek måste vara ett ändligt värde större än noll");
   if (!Number.isInteger(spec.shelf_count) || outsideConstraintRange(spec.shelf_count, DESIGN_CONSTRAINTS.shelfCount)) failures.push("antal hyllor måste vara ett heltal mellan 0 och 40");

@@ -198,6 +198,18 @@ def _generation_ready_job_and_version() -> tuple[GenerationJob, DesignVersion]:
 
 _EVIDENCE_IDENTITY_CASES = (
     (
+        "manufacturing/manufacturing-intent.json",
+        "manufacturing_intent",
+        "application/json",
+        "MACHINE_NEUTRAL_MANUFACTURING_INTENT",
+    ),
+    (
+        "shop/supplier-handoff.json",
+        "supplier_handoff",
+        "application/json",
+        "CNC_SHOP_HANDOFF",
+    ),
+    (
         "validation/dfm-report.json",
         "dfm_report",
         "application/json",
@@ -403,6 +415,8 @@ def test_worker_returns_review_package_when_two_sided_cam_registration_is_missin
     assert result["nesting_utilization_ppm"] is None
     assert result["nesting_layouts"] == []
     evidence_kinds = {item["kind"] for item in result["evidence_artifacts"]}
+    assert "manufacturing_intent" in evidence_kinds
+    assert "supplier_handoff" in evidence_kinds
     assert "design_review_package_status" in evidence_kinds
     assert "stock_selection" in evidence_kinds
     assert "generation_plan" in evidence_kinds
@@ -787,6 +801,8 @@ def test_worker_returns_stockless_review_package_when_stock_profile_is_missing(
     assert software_status["DFM_SCREEN"] == "MISSING"
     assert readiness["physical_cutting_authorized"] is False
     evidence_kinds = {item["kind"] for item in result["evidence_artifacts"]}
+    assert "manufacturing_intent" in evidence_kinds
+    assert "supplier_handoff" in evidence_kinds
     assert "dfm_report" in evidence_kinds
     assert "design_review_package_status" in evidence_kinds
     assert "stock_selection" in evidence_kinds

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   CustombuildApiClient,
+  designSpecFromServer,
   normalizePreviewResponse,
   productionContextFromSpec,
   toPreviewRequest,
@@ -281,6 +282,8 @@ describe("API preview normalization", () => {
       bay_sizing_mode: "target_width",
       target_bay_width_mm: 300,
       divider_count: 2,
+      plinth_height_mm: 125,
+      wall_anchor_required: true,
       wall_anchor_verified: true,
       reference_image_import: {
         source: "reference_image",
@@ -312,6 +315,8 @@ describe("API preview normalization", () => {
     expect(request.joint_system).toBe("dado");
     expect(request.back_material_id).toBe(DEFAULT_DESIGN_SPEC.back_material_id);
     expect(request.back_panel).toBe("inset_groove");
+    expect(request.plinth_height_mm).toBe(125);
+    expect(request.wall_anchor_required).toBe(true);
     expect(request.wall_anchor_verified).toBe(false);
     expect(request.divider_count).toBe(2);
     expect(request).not.toHaveProperty("schema_version");
@@ -485,7 +490,8 @@ describe("API preview normalization", () => {
             shelf_mount: "fixed",
             shelf_load_n: 314,
             back_panel: "inset_groove",
-            plinth_height_um: 80_000,
+            plinth_height_um: 125_000,
+            wall_anchor: { required: true, verified: false },
             vertical_divider_count: 1,
             reinforcement_mode: "auto",
             joint_system: "dado",
@@ -531,6 +537,8 @@ describe("API preview normalization", () => {
     expect(result.spec.divider_count).toBe(1);
     expect(result.spec.reinforcement_mode).toBe("auto");
     expect(result.spec.back_material_id).toBe("mdf-6");
+    expect(result.spec.plinth_height_mm).toBe(125);
+    expect(result.spec.wall_anchor_required).toBe(true);
     expect(result.rule_evaluations).toHaveLength(1);
     expect(result.rule_evaluations[0]?.calculation).toContain("5wL^4");
     expect(result.rule_evaluations[0]?.affected_part_ids).toEqual(["server-shelf-id"]);
@@ -554,6 +562,19 @@ describe("API preview normalization", () => {
       },
       DEFAULT_DESIGN_SPEC,
     )).toThrow(/förbandssystemet dowel.*inte stöds/i);
+  });
+
+  it.each([
+    [true, /återställa väggförankringsbevis/i],
+    ["false", /wall_anchor\.verified/i],
+  ])("rejects non-editable wall-anchor verification returned as %j", (verified, message) => {
+    expect(() => designSpecFromServer({
+      back_material: { material_id: DEFAULT_DESIGN_SPEC.back_material_id },
+      parameters: {
+        back_panel: DEFAULT_DESIGN_SPEC.back_panel_type,
+        wall_anchor: { required: true, verified },
+      },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(message);
   });
 
   it("rejects unknown, incomplete and backless server back-material identities", () => {

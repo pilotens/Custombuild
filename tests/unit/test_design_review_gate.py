@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,30 @@ from scripts.design_review_gate import (
 REPO = Path(__file__).resolve().parents[2]
 FIXTURE = REPO / "tests/fixtures/design-review-gate.v1.json"
 CONTRACT = REPO / "packages/contracts/screened-template-defaults.v1.json"
+
+
+def test_checked_in_gate_cli_bootstraps_repository_imports_from_any_directory(
+    tmp_path: Path,
+) -> None:
+    environment = dict(os.environ)
+    environment.pop("PYTHONPATH", None)
+    environment.pop("COVERAGE_PROCESS_START", None)
+    for key in tuple(environment):
+        if key.startswith("COV_CORE_"):
+            environment.pop(key)
+
+    completed = subprocess.run(  # noqa: S603 - fixed interpreter and repository script path
+        [sys.executable, str(REPO / "scripts/design_review_gate.py"), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "--fixture" in completed.stdout
 
 
 def _run_actual_default_with_presented_status(
@@ -82,7 +109,7 @@ def test_screened_defaults_contract_is_pinned_and_rejects_tampering(
 ) -> None:
     contract = load_screened_defaults_contract(CONTRACT)
 
-    assert contract.contract_version == "1.2.0"
+    assert contract.contract_version == "1.3.0"
     assert contract.fingerprint == SCREENED_DEFAULTS_CONTRACT_FINGERPRINT
     assert [item.template_id for item in contract.templates] == ["shelving"]
     assert all(
@@ -91,6 +118,10 @@ def test_screened_defaults_contract_is_pinned_and_rejects_tampering(
     assert all(
         item.effective_design_spec["wall_anchor_verified"] is False for item in contract.templates
     )
+    assert all(
+        item.effective_design_spec["wall_anchor_required"] is False for item in contract.templates
+    )
+    assert all(item.effective_design_spec["plinth_height_mm"] == 80 for item in contract.templates)
 
     raw = json.loads(CONTRACT.read_text(encoding="utf-8"))
     raw["purpose"] += " Tampered without a version or fingerprint bump."
@@ -212,7 +243,7 @@ def test_full_gate_separates_mdf_smoke_from_grain_blocked_actual_birch_defaults(
     assert report["physical_cutting_authorized"] is False
     assert report["screened_template_defaults_contract"] == {
         "schema_version": "custombuild.screened-template-defaults.v1",
-        "contract_version": "1.2.0",
+        "contract_version": "1.3.0",
         "fingerprint": SCREENED_DEFAULTS_CONTRACT_FINGERPRINT,
         "physical_cutting_authorized": False,
     }

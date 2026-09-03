@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import zipfile
+from collections.abc import Iterable
 from dataclasses import replace
 from functools import lru_cache
 from typing import Any
@@ -23,12 +24,15 @@ from custombuild_domain import (
     screening_mdf_18,
 )
 from custombuild_manufacturing import (
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DFM_GRAIN_BLOCKER_CODE,
     MANIFEST_CONTEXT_HASH_FIELDS,
+    MANUFACTURING_INTENT_PATH,
     MAX_CORE_DOCUMENT_BYTES,
     MAX_PRODUCTION_BUNDLE_BYTES,
+    SUPPLIER_HANDOFF_PATH,
     ArtifactFile,
     DFMIssue,
     DFMReport,
@@ -246,6 +250,35 @@ def _review_case(
         json.dumps(external_evidence, sort_keys=True),
         include_worker_note,
     )
+
+
+@lru_cache(maxsize=1)
+def _dado_review_case():
+    design = _review_design()
+    machine = linuxcnc_reference_router_1325()
+    stocks = _review_stocks(design, mode=DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE)
+    with (
+        patch.object(
+            manufacturing_pipeline,
+            "dado_retention_evidence_missing",
+            lambda _design: True,
+        ),
+        patch.object(
+            review_status_contract,
+            "dado_retention_evidence_missing",
+            lambda _design: True,
+        ),
+        patch.object(CadQueryAdapter, "export_design", return_value=_review_cad(False)),
+    ):
+        return build_production_bundle(
+            design,
+            stock=stocks,
+            machine=machine,
+            context=_review_context(design),
+            include_step=True,
+            include_validation_program=True,
+            allow_blocked_cam=True,
+        )
 
 
 def package_fixture():
@@ -466,6 +499,48 @@ def status_review_core_artifacts(
     )
 
 
+def rebind_supplier_handoff_inventory(
+    artifacts: Iterable[ArtifactFile],
+) -> tuple[ArtifactFile, ...]:
+    """Rebuild the handoff inventory after a test appends safe worker evidence."""
+
+    values = tuple(artifacts)
+    handoffs = tuple(
+        artifact for artifact in values if artifact.path == SUPPLIER_HANDOFF_PATH
+    )
+    assert len(handoffs) == 1
+    handoff = handoffs[0]
+    payload = json.loads(handoff.data)
+    entries = sorted(
+        (
+            {
+                "path": artifact.path,
+                "media_type": artifact.media_type,
+                "role": artifact.role,
+                "size_bytes": len(artifact.data),
+                "sha256": sha256_hex(artifact.data),
+            }
+            for artifact in values
+            if artifact.path != SUPPLIER_HANDOFF_PATH
+        ),
+        key=lambda entry: entry["path"],
+    )
+    binding = payload["payload_inventory_binding"]
+    binding["artifact_count"] = len(entries)
+    binding["artifacts"] = entries
+    binding["payload_inventory_sha256"] = sha256_hex(canonical_json_bytes(entries))
+    rebound = replace(handoff, data=canonical_json_bytes(payload))
+    return tuple(
+        sorted(
+            (
+                rebound if artifact.path == SUPPLIER_HANDOFF_PATH else artifact
+                for artifact in values
+            ),
+            key=lambda artifact: artifact.path,
+        )
+    )
+
+
 def test_reader_rejects_statusless_review_only_downgrade() -> None:
     context, _, _ = package_fixture()
     payload = build_deterministic_zip(
@@ -648,15 +723,17 @@ def test_blocked_cam_allowlist_rejects_noncanonical_review_aliases(
 def test_reader_accepts_blocked_package_with_machine_independent_worker_document() -> None:
     context, _, _ = package_fixture()
     context = replace(context, cad_status="GENERATED")
-    artifacts = (
-        *status_review_core_artifacts(),
-        review_status_artifact(),
-        ArtifactFile(
-            "assembly/assembly-manual.pdf",
-            b"%PDF-1.4\n",
-            "application/pdf",
-            "ASSEMBLY_REVIEW_MANUAL",
-        ),
+    artifacts = rebind_supplier_handoff_inventory(
+        (
+            *status_review_core_artifacts(),
+            review_status_artifact(),
+            ArtifactFile(
+                "assembly/assembly-manual.pdf",
+                b"%PDF-1.4\n",
+                "application/pdf",
+                "ASSEMBLY_REVIEW_MANUAL",
+            ),
+        )
     )
     payload = build_deterministic_zip(context, artifacts)
 
@@ -668,21 +745,23 @@ def test_reader_accepts_blocked_package_with_machine_independent_worker_document
 def test_reader_accepts_stockless_review_with_safe_labels_and_empty_qa_protocol() -> None:
     context, _, _ = package_fixture()
     context = replace(context, cad_status="GENERATED")
-    artifacts = (
-        *status_review_core_artifacts(blocker_code="STOCK_PROFILE_MISSING"),
-        review_status_artifact(blocker_code="STOCK_PROFILE_MISSING"),
-        ArtifactFile(
-            "labels/part-labels.pdf",
-            b"%PDF-1.4\n",
-            "application/pdf",
-            "PART_LABELS",
-        ),
-        ArtifactFile(
-            "qa/measurement-protocol.pdf",
-            b"%PDF-1.4\n",
-            "application/pdf",
-            "QA_PROTOCOL",
-        ),
+    artifacts = rebind_supplier_handoff_inventory(
+        (
+            *status_review_core_artifacts(blocker_code="STOCK_PROFILE_MISSING"),
+            review_status_artifact(blocker_code="STOCK_PROFILE_MISSING"),
+            ArtifactFile(
+                "labels/part-labels.pdf",
+                b"%PDF-1.4\n",
+                "application/pdf",
+                "PART_LABELS",
+            ),
+            ArtifactFile(
+                "qa/measurement-protocol.pdf",
+                b"%PDF-1.4\n",
+                "application/pdf",
+                "QA_PROTOCOL",
+            ),
+        )
     )
 
     manifest = read_and_verify_package(build_deterministic_zip(context, artifacts))
@@ -1545,6 +1624,104 @@ def rehash_package_artifacts(
     return make_zip(sorted(files.items()))
 
 
+def test_supplier_handoff_inventory_digest_is_semantically_rebuilt() -> None:
+    _, _, payload = package_fixture()
+    files = zip_entries(payload)
+    handoff = json.loads(files[SUPPLIER_HANDOFF_PATH])
+    handoff["payload_inventory_binding"]["payload_inventory_sha256"] = "0" * 64
+    forged = rehash_package_artifacts(
+        payload,
+        replacements={SUPPLIER_HANDOFF_PATH: canonical_json_bytes(handoff)},
+    )
+
+    with pytest.raises(ArtifactError, match="supplier handoff does not match"):
+        read_and_verify_package(forged)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    (
+        "GENERATED",
+        "TWO_SIDED_REGISTRATION_MISSING",
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    ),
+)
+def test_reader_rejects_rehashed_coordinated_dfm_and_handoff_warning_drift(
+    mode: str,
+) -> None:
+    if mode == DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE:
+        payload = _dado_review_case().zip_bytes
+    else:
+        _, _, payload = _review_case(mode)
+    files = zip_entries(payload)
+    report = json.loads(files["validation/dfm-report.json"])
+    forged_issue = {
+        "code": "DFM-FORGED-WARNING",
+        "severity": "WARNING",
+        "message": "Attacker-authored review warning.",
+        "part_id": None,
+        "feature_id": None,
+        "setup_id": None,
+        "inputs": {"attacker_authored": True},
+        "suggestion": "Do not trust this forged warning.",
+    }
+    report["issues"].append(forged_issue)
+    report_bytes = canonical_json_bytes(report)
+
+    handoff = json.loads(files[SUPPLIER_HANDOFF_PATH])
+    handoff["dfm_review_warnings"].append(
+        {
+            "issue": {
+                key: value for key, value in forged_issue.items() if key != "severity"
+            },
+            "source": "validation/dfm-report.json",
+            "status": "UNRESOLVED_SUPPLIER_REVIEW_WARNING",
+            "resolved": False,
+            "boundary": (
+                "Review the referenced structured DFM issue and close it with supplier "
+                "evidence before physical release. This warning is not cutting approval."
+            ),
+        }
+    )
+    binding = handoff["payload_inventory_binding"]
+    dfm_entry = next(
+        entry
+        for entry in binding["artifacts"]
+        if entry["path"] == "validation/dfm-report.json"
+    )
+    dfm_entry["size_bytes"] = len(report_bytes)
+    dfm_entry["sha256"] = sha256_hex(report_bytes)
+    binding["payload_inventory_sha256"] = sha256_hex(
+        canonical_json_bytes(binding["artifacts"])
+    )
+    forged = rehash_package_artifacts(
+        payload,
+        replacements={
+            "validation/dfm-report.json": report_bytes,
+            SUPPLIER_HANDOFF_PATH: canonical_json_bytes(handoff),
+        },
+    )
+
+    retention_check = (
+        patch.object(
+            review_status_contract,
+            "dado_retention_evidence_missing",
+            lambda _design: True,
+        )
+        if mode == DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+        else patch.object(
+            review_status_contract,
+            "dado_retention_evidence_missing",
+            lambda _design: False,
+        )
+    )
+    with retention_check, pytest.raises(
+        ArtifactError,
+        match="DFM report differs from deterministic reconstruction",
+    ):
+        read_and_verify_package(forged)
+
+
 def _render_bom_rows(fieldnames: list[str], rows: list[dict[str, str]]) -> bytes:
     output = io.StringIO(newline="")
     writer = csv.DictWriter(output, fieldnames=fieldnames, lineterminator="\n")
@@ -1986,6 +2163,17 @@ def test_package_reader_applies_canonical_manifest_limit_before_reading_entry() 
 
 
 @pytest.mark.parametrize(
+    "path",
+    (MANUFACTURING_INTENT_PATH, SUPPLIER_HANDOFF_PATH),
+)
+def test_package_reader_applies_core_document_limit_to_supplier_json(path: str) -> None:
+    payload = make_zip([(path, b"x" * (MAX_CORE_DOCUMENT_BYTES + 1))])
+
+    with pytest.raises(ArtifactError, match=f"entry is too large: {path}"):
+        read_and_verify_package(payload)
+
+
+@pytest.mark.parametrize(
     "symlink_path",
     ("model/design.step", "assembly/assembly-manual.pdf"),
 )
@@ -2181,6 +2369,18 @@ def test_package_reader_rejects_rehashed_invalid_context_fields(mutation) -> Non
 
     with pytest.raises(ArtifactError, match="context|capability|engine|profile|provenance"):
         read_and_verify_package(mutate_manifest(payload, mutation))
+
+
+def test_package_reader_rejects_rehashed_manifest_context_with_stale_handoff() -> None:
+    """A detached handoff must select one exact accepted manifest context."""
+
+    _, _, payload = package_fixture()
+
+    def change_builder_identity(manifest: dict[str, Any]) -> None:
+        manifest["app_version"] = "attacker-rehashed-app-version"
+
+    with pytest.raises(ArtifactError, match="supplier handoff does not match"):
+        read_and_verify_package(mutate_manifest(payload, change_builder_identity))
 
 
 @pytest.mark.parametrize(

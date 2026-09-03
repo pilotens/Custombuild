@@ -40,12 +40,16 @@ from custombuild_manufacturing import (
     GENERATION_PLAN_ARTIFACT_PATH,
     GENERATION_PLAN_ARTIFACT_ROLE,
     MANIFEST_CONTEXT_HASH_FIELDS,
+    MANUFACTURING_INTENT_PATH,
+    MANUFACTURING_INTENT_ROLE,
     MAX_CATALOG_SOURCE_BYTES,
     MAX_CORE_DOCUMENT_BYTES,
     MAX_EVIDENCE_ARTIFACTS,
     MAX_EVIDENCE_TOTAL_BYTES,
     MAX_READINESS_STATUS_BYTES,
     STOCK_PROFILE_MISSING_CODE,
+    SUPPLIER_HANDOFF_PATH,
+    SUPPLIER_HANDOFF_ROLE,
     ArtifactError,
     CAMStageStatus,
     DesignReviewPackageStatus,
@@ -255,6 +259,16 @@ _MANIFEST_TOP_LEVEL_KEYS = frozenset(
 )
 _MANIFEST_ARTIFACT_ENTRY_KEYS = frozenset({"path", "media_type", "role", "size_bytes", "sha256"})
 _EVIDENCE_MANIFEST_IDENTITIES: dict[str, tuple[str, str, str]] = {
+    "manufacturing_intent": (
+        MANUFACTURING_INTENT_PATH,
+        MANUFACTURING_INTENT_ROLE,
+        "application/json",
+    ),
+    "supplier_handoff": (
+        SUPPLIER_HANDOFF_PATH,
+        SUPPLIER_HANDOFF_ROLE,
+        "application/json",
+    ),
     "dfm_report": (
         "validation/dfm-report.json",
         "DFM_VALIDATION_REPORT",
@@ -316,6 +330,8 @@ _BLOCKED_CAM_ALLOWED_EVIDENCE_KINDS = frozenset(
     {
         "production_bundle",
         "manifest",
+        "manufacturing_intent",
+        "supplier_handoff",
         "dfm_report",
         "design_review_package_status",
         "stock_selection",
@@ -1573,6 +1589,8 @@ def _artifact_filename(kind: str, revision: int) -> str | None:
         "manifest": f"custombuild-design-review-rev-{revision}-manifest.json",
         "stock_selection": f"custombuild-stock-selection-rev-{revision}.json",
         "generation_plan": f"custombuild-generation-plan-rev-{revision}.json",
+        "manufacturing_intent": f"custombuild-manufacturing-intent-rev-{revision}.json",
+        "supplier_handoff": f"custombuild-cnc-shop-handoff-rev-{revision}.json",
     }.get(kind)
 
 
@@ -3495,6 +3513,8 @@ def _review_evidence_issues_owned(
     required = {
         "production_bundle",
         "manifest",
+        "manufacturing_intent",
+        "supplier_handoff",
         "dfm_report",
         "stock_selection",
         "generation_plan",

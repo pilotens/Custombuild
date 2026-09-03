@@ -6,9 +6,9 @@ from custombuild_templates import load_bookcase_template
 def test_bookcase_template_is_versioned_and_complete() -> None:
     template = load_bookcase_template()
     assert template.template_id == "bookcase"
-    assert template.template_version == "2.0.0"
+    assert template.template_version == "2.1.0"
     assert template.assembly_graph_version == "2.0.0"
-    assert template.manufacturing_feature_version == "2.0.0"
+    assert template.manufacturing_feature_version == "2.1.0"
     assert template.persisted_unit == "um"
     assert {item.role for item in template.components} >= {
         "left_side",

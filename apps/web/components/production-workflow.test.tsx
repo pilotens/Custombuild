@@ -14,6 +14,10 @@ import { DEFAULT_DESIGN_SPEC, type ResolvedDesign, type RuleEvaluation } from "@
 import { productionSessionKey, readProductionSession } from "@/lib/production-session-storage";
 import {
   ProductionWorkflow,
+  artifactDownloadFileName,
+  artifactFileExtension,
+  artifactReviewUseLabel,
+  artifactRoleLabel,
   blockedCamEvidenceKindIsForbidden,
   designReviewPackageStatusFromJob,
   generationProgressMessage,
@@ -372,6 +376,18 @@ const bundle: ArtifactRead = {
 const completeArtifacts: ArtifactRead[] = [
   bundle,
   { ...bundle, id: "manifest", kind: "manifest", content_type: "application/json" },
+  {
+    ...bundle,
+    id: "manufacturing-intent",
+    kind: "manufacturing_intent",
+    content_type: "application/json",
+  },
+  {
+    ...bundle,
+    id: "supplier-handoff",
+    kind: "supplier_handoff",
+    content_type: "application/json",
+  },
   { ...bundle, id: "dfm", kind: "dfm_report", content_type: "application/json" },
   { ...bundle, id: "stock-selection", kind: "stock_selection", content_type: "application/json" },
   { ...bundle, id: "generation-plan", kind: "generation_plan", content_type: "application/json" },
@@ -386,6 +402,18 @@ const completeArtifacts: ArtifactRead[] = [
 const blockedReviewArtifacts: ArtifactRead[] = [
   bundle,
   { ...bundle, id: "manifest", kind: "manifest", content_type: "application/json" },
+  {
+    ...bundle,
+    id: "manufacturing-intent",
+    kind: "manufacturing_intent",
+    content_type: "application/json",
+  },
+  {
+    ...bundle,
+    id: "supplier-handoff",
+    kind: "supplier_handoff",
+    content_type: "application/json",
+  },
   { ...bundle, id: "dfm", kind: "dfm_report", content_type: "application/json" },
   { ...bundle, id: "stock-selection", kind: "stock_selection", content_type: "application/json" },
   { ...bundle, id: "generation-plan", kind: "generation_plan", content_type: "application/json" },
@@ -765,7 +793,61 @@ describe("designReviewPackageStatusFromJob", () => {
   });
 });
 
+describe("CNC-shop review artifact presentation", () => {
+  it.each([
+    {
+      kind: "supplier_handoff",
+      role: "Leverantörsöverlämning",
+      use: "Överlämning till CNC-verkstad för granskning – inte arbetsorder eller körbar CNC-kod",
+      fileName: "custombuild-cnc-shop-handoff-rev-12.json",
+    },
+    {
+      kind: "manufacturing_intent",
+      role: "Maskinneutralt bearbetningsunderlag",
+      use: "Maskinneutralt bearbetningsunderlag för CNC-verkstadens granskning – inte körbar CNC-kod",
+      fileName: "custombuild-manufacturing-intent-rev-12.json",
+    },
+  ])("presents $kind as review material rather than executable machine code", ({
+    kind,
+    role,
+    use,
+    fileName,
+  }) => {
+    const artifact = {
+      kind,
+      content_type: "application/octet-stream",
+    } satisfies Pick<ArtifactRead, "kind" | "content_type">;
+
+    expect(artifactRoleLabel(kind)).toBe(role);
+    expect(artifactReviewUseLabel(kind)).toBe(use);
+    expect(artifactFileExtension(artifact)).toBe("json");
+    expect(artifactDownloadFileName(artifact, 12)).toBe(fileName);
+  });
+});
+
 describe("review package artifact inventory", () => {
+  it.each([
+    "manufacturing_intent",
+    "supplier_handoff",
+  ])("allows and requires the CNC-shop review artifact %s", (kind) => {
+    expect(blockedCamEvidenceKindIsForbidden(kind)).toBe(false);
+    expect(reviewPackageArtifactInventoryIsTruthful(
+      blockedReviewArtifacts,
+      blockedCamPackageStatusFixture(),
+      true,
+    )).toBe(true);
+    expect(reviewPackageArtifactInventoryIsTruthful(
+      blockedReviewArtifacts.filter((artifact) => artifact.kind !== kind),
+      blockedCamPackageStatusFixture(),
+      true,
+    )).toBe(false);
+    expect(reviewPackageArtifactInventoryIsTruthful(
+      completeArtifacts.filter((artifact) => artifact.kind !== kind),
+      generatedCamPackageStatusFixture(),
+      true,
+    )).toBe(false);
+  });
+
   it("allows and requires the checksum-bound stock-selection snapshot", () => {
     expect(blockedCamEvidenceKindIsForbidden("stock_selection")).toBe(false);
     expect(reviewPackageArtifactInventoryIsTruthful(
@@ -1145,6 +1227,59 @@ describe("ProductionWorkflow", () => {
     expect(create).toBeDisabled();
     expect(screen.getByRole("alert", { name: "Krav som måste lösas" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Status för verifieringen" })).toHaveTextContent("Måste lösas");
+    fireEvent.click(create);
+    expect(api.approveVersion).not.toHaveBeenCalled();
+    expect(api.generateVersion).not.toHaveBeenCalled();
+  });
+
+  it("never saves a revision whose free part edits would be dropped by the server", async () => {
+    const api = apiClient();
+    const customizedSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      part_overrides: { "side-left": { width_mm: 2_000 } },
+    };
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={customizedSpec}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    const save = await screen.findByRole("button", { name: "Spara och kontrollera" });
+    const alert = screen.getByRole("alert");
+    expect(save).toBeDisabled();
+    expect(alert).toHaveTextContent(
+      /Deländringarna ingår inte i serverunderlaget/,
+    );
+    expect(alert).toHaveTextContent(/bygg samma ändring med de parametriska möbelvalen/i);
+    fireEvent.click(save);
+    expect(api.createVersion).not.toHaveBeenCalled();
+  });
+
+  it("never approves or generates from a revision when current part edits are local-only", async () => {
+    const api = apiClient({ version: version("design_validated") });
+    const customizedSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      removed_part_ids: ["shelf-1-bay-1"],
+    };
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={customizedSpec}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    const create = await screen.findByRole("button", { name: "Skapa underlag" });
+    expect(create).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /inte serverauktoritativa/,
+    );
     fireEvent.click(create);
     expect(api.approveVersion).not.toHaveBeenCalled();
     expect(api.generateVersion).not.toHaveBeenCalled();
@@ -1692,7 +1827,7 @@ describe("ProductionWorkflow", () => {
       latest_job: succeededJob,
     });
     vi.mocked(api.downloadArtifact).mockRejectedValue(new ApiError(
-      "Artefaktens innehåll matchar inte den signerade SHA-256-identiteten.",
+      "Artefaktens innehåll matchar inte den förväntade SHA-256-identiteten.",
       409,
     ));
     const createObjectUrl = vi.spyOn(URL, "createObjectURL");
@@ -1774,10 +1909,10 @@ describe("ProductionWorkflow", () => {
       latest_job: blockedCamJob,
     });
     vi.mocked(api.listArtifacts).mockResolvedValue(blockedReviewArtifacts);
-    let suggestedFileName: string | undefined;
+    const suggestedFileNames: string[] = [];
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
       function (this: HTMLAnchorElement) {
-        suggestedFileName = this.download;
+        suggestedFileNames.push(this.download);
       },
     );
 
@@ -1805,14 +1940,34 @@ describe("ProductionWorkflow", () => {
     expect(physicalStatus).toHaveTextContent("inga CAM- eller maskinvalideringsfiler");
     const packageIdentity = screen.getByRole("region", { name: "Paketidentitet" });
     expect(within(packageIdentity).getByText("Status för designgranskningspaket")).toBeVisible();
+    expect(within(packageIdentity).getByText("Leverantörsöverlämning")).toBeVisible();
+    expect(within(packageIdentity).getByText("Maskinneutralt bearbetningsunderlag")).toBeVisible();
+    expect(within(packageIdentity).getByRole("button", {
+      name: "Hämta fil – Leverantörsöverlämning",
+    })).toBeEnabled();
+    expect(within(packageIdentity).getByRole("button", {
+      name: "Hämta fil – Maskinneutralt bearbetningsunderlag",
+    })).toBeEnabled();
     expect(within(packageIdentity).queryByText("Semantiska operationer")).not.toBeInTheDocument();
     expect(within(packageIdentity).queryByText("Valideringsbackplot")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Skapa om underlag" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+    fireEvent.click(within(packageIdentity).getByRole("button", {
+      name: "Hämta fil – Leverantörsöverlämning",
+    }));
     await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
-    expect(anchorClick).toHaveBeenCalledOnce();
-    expect(suggestedFileName).toBe("custombuild-design-review-rev-1.zip");
+    expect(api.downloadArtifact).toHaveBeenLastCalledWith(
+      blockedReviewArtifacts.find((artifact) => artifact.kind === "supplier_handoff"),
+    );
+    expect(suggestedFileNames).toEqual(["custombuild-cnc-shop-handoff-rev-1.json"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+    await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(3));
+    expect(anchorClick).toHaveBeenCalledTimes(2);
+    expect(suggestedFileNames).toEqual([
+      "custombuild-cnc-shop-handoff-rev-1.json",
+      "custombuild-design-review-rev-1.zip",
+    ]);
     expect(api.approveVersion).not.toHaveBeenCalled();
   });
 

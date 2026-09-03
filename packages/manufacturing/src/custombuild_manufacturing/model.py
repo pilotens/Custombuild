@@ -210,8 +210,8 @@ class ManufacturingFeature:
             raise ValueError("open-end relief declarations must be unique")
         if not set(self.open_end_reliefs) <= allowed_open_ends:
             raise ValueError("open-end relief declaration is unsupported")
-        if self.open_end_reliefs and self.corner_strategy != "dogbone-v1":
-            raise ValueError("open-end reliefs require the versioned dogbone-v1 strategy")
+        if self.open_end_reliefs and self.corner_strategy not in {"dogbone-v1", "dogbone-v2"}:
+            raise ValueError("open-end reliefs require a supported versioned dogbone strategy")
         if self.tolerance_um < 0 or self.fit_clearance_um < 0:
             raise ValueError("feature tolerance and fit clearance cannot be negative")
 
@@ -270,9 +270,12 @@ class ManufacturingFeature:
         )
 
     def relief_circles(self) -> tuple[tuple[Point2D, int], ...]:
-        """Exact local dogbone cutter circles represented by the v1 strategy."""
+        """Exact local cutter circles under the declared versioned dogbone semantics."""
 
-        if self.corner_strategy != "dogbone-v1" or self.corner_relief_radius_um is None:
+        if (
+            self.corner_strategy not in {"dogbone-v1", "dogbone-v2"}
+            or self.corner_relief_radius_um is None
+        ):
             return ()
         nominal = self.bounds()
         declared = set(self.open_end_reliefs)
@@ -290,7 +293,11 @@ class ManufacturingFeature:
                 ("u_min", "v_max"),
                 ("u_max", "v_max"),
             )
-            if not {u_boundary, v_boundary} <= declared
+            if not (
+                {u_boundary, v_boundary} <= declared
+                if self.corner_strategy == "dogbone-v1"
+                else bool({u_boundary, v_boundary} & declared)
+            )
         )
 
 

@@ -14,6 +14,7 @@ from custombuild_manufacturing.model import (
     OperationsDocument,
     Rect,
     Setup,
+    Side,
     ToolSpec,
     canonical_json_bytes,
     sha256_hex,
@@ -28,7 +29,7 @@ from custombuild_manufacturing.profiles import (
 
 from .model import MoveKind, RemovalEnvelope, ValidationBackplot, ValidationMove
 
-CAM_VALIDATION_VERSION = "cam-validation-1.2.0"
+CAM_VALIDATION_VERSION = "cam-validation-1.3.0"
 CAM_BACKPLOT_VERSION = "validation-backplot-1.0.0"
 OPERATIONS_SCHEMA_VERSION = "custombuild.operations.v2"
 _DESIGN_HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -49,6 +50,7 @@ _SIDE_B_ORIENTATION = "FLIP_STOCK_ABOUT_X_AXIS; MACHINE_Y=STOCK_HEIGHT-DESIGN_Y"
 _RELEASE_HOLDING_STRATEGY = "TABS_OR_ONION_SKIN_REQUIRES_SETUP_APPROVAL"
 _ALLOWED_COMPENSATION = frozenset({"CENTER", "INSIDE", "OUTSIDE"})
 _ALLOWED_OPEN_END_RELIEFS = frozenset({"u_min", "u_max", "v_min", "v_max"})
+_ALLOWED_CORNER_STRATEGIES = frozenset({"dogbone-v1", "dogbone-v2"})
 
 
 class CAMValidationError(ValueError):
@@ -353,15 +355,11 @@ def _validate_setup(
     errors: list[str] = []
     if not _is_canonical_id(setup.setup_id) or not _is_canonical_id(setup.stock_id):
         errors.append("setup and stock identity are required")
-    if not _is_canonical_id(setup.material_id) or not _is_canonical_id(
-        setup.material_version
-    ):
+    if not _is_canonical_id(setup.material_id) or not _is_canonical_id(setup.material_version):
         errors.append(f"setup material identity is required: {setup.setup_id}")
     if setup.sheet_index < 0:
         errors.append(f"negative setup sheet index: {setup.setup_id}")
-    expected_setup_id = (
-        f"setup:{setup.stock_id}:{setup.sheet_index + 1:03d}:{setup.side.value}"
-    )
+    expected_setup_id = f"setup:{setup.stock_id}:{setup.sheet_index + 1:03d}:{setup.side.value}"
     if setup.setup_id != expected_setup_id:
         errors.append(f"setup identity is not traceable to stock, sheet and side: {setup.setup_id}")
     if min(setup.stock_width_um, setup.stock_height_um, setup.stock_thickness_um) <= 0:
@@ -382,9 +380,7 @@ def _validate_setup(
         errors.append(f"setup has an unsupported reference surface: {setup.setup_id}")
     if setup.fixture != _EXTERNAL_FIXTURE:
         errors.append(f"setup has an unsupported or blank fixture declaration: {setup.setup_id}")
-    expected_orientation = (
-        _SIDE_B_ORIENTATION if setup.side.value == "B" else _SIDE_A_ORIENTATION
-    )
+    expected_orientation = _SIDE_B_ORIENTATION if setup.side.value == "B" else _SIDE_A_ORIENTATION
     if setup.orientation != expected_orientation:
         errors.append(f"setup orientation does not match its side: {setup.setup_id}")
     errors.extend(_validate_probe_method(setup))
@@ -521,16 +517,12 @@ def _validate_probe_method(setup: Setup) -> list[str]:
     if match is None:
         return [f"setup probe method is unsupported or blank: {setup.setup_id}"]
     coordinates = tuple(
-        tuple(int(value) for value in point.split(","))
-        for point in match.group(2).split("|")
+        tuple(int(value) for value in point.split(",")) for point in match.group(2).split("|")
     )
     if len(coordinates) < 2 or len(set(coordinates)) != len(coordinates):
         return [f"setup probe coordinates are not unique: {setup.setup_id}"]
     if any(
-        x_um < 0
-        or y_um < 0
-        or x_um > setup.stock_width_um
-        or y_um > setup.stock_height_um
+        x_um < 0 or y_um < 0 or x_um > setup.stock_width_um or y_um > setup.stock_height_um
         for x_um, y_um in coordinates
     ):
         return [f"setup probe coordinates are outside stock: {setup.setup_id}"]
@@ -567,8 +559,7 @@ def _validate_operation(
         pass
     elif not re.fullmatch(r":[0-9]{3}", operation_suffix):
         errors.append(
-            f"operation identity is not traceable to instance and feature: "
-            f"{operation.operation_id}"
+            f"operation identity is not traceable to instance and feature: {operation.operation_id}"
         )
     if operation.side != setup.side:
         errors.append(f"operation/setup side mismatch: {operation.operation_id}")
@@ -612,14 +603,34 @@ def _validate_operation(
             )
     elif operation.holding_strategy is not None:
         errors.append(f"operation holding strategy is unsupported: {operation.operation_id}")
-    if operation.corner_strategy not in {None, "dogbone-v1"}:
+    if operation.corner_strategy is not None and operation.corner_strategy not in (
+        _ALLOWED_CORNER_STRATEGIES
+    ):
         errors.append(f"operation corner strategy is unsupported: {operation.operation_id}")
     if operation.corner_relief_radius_um is not None and operation.corner_relief_radius_um <= 0:
         errors.append(f"operation corner relief radius is invalid: {operation.operation_id}")
     if (
+        operation.corner_strategy in _ALLOWED_CORNER_STRATEGIES
+        and operation.corner_relief_radius_um is None
+    ):
+        errors.append(
+            f"operation corner strategy requires a relief radius: {operation.operation_id}"
+        )
+    if (
+        operation.corner_relief_radius_um is not None
+        and operation.corner_strategy not in _ALLOWED_CORNER_STRATEGIES
+    ):
+        errors.append(
+            f"operation corner relief radius requires a supported strategy: "
+            f"{operation.operation_id}"
+        )
+    if (
         len(set(operation.open_end_reliefs)) != len(operation.open_end_reliefs)
         or not set(operation.open_end_reliefs) <= _ALLOWED_OPEN_END_RELIEFS
-        or (operation.open_end_reliefs and operation.corner_strategy != "dogbone-v1")
+        or (
+            operation.open_end_reliefs
+            and operation.corner_strategy not in _ALLOWED_CORNER_STRATEGIES
+        )
     ):
         errors.append(f"operation open-end relief declaration is invalid: {operation.operation_id}")
 
@@ -632,6 +643,20 @@ def _validate_operation(
             )
         if operation.stepdown_um is not None and operation.stepdown_um > tool.effective_diameter_um:
             errors.append(f"operation stepdown exceeds cutter diameter: {operation.operation_id}")
+        if (
+            operation.corner_strategy in _ALLOWED_CORNER_STRATEGIES
+            and operation.corner_relief_radius_um is not None
+            and 2 * operation.corner_relief_radius_um < tool.effective_diameter_um
+        ):
+            errors.append(
+                f"operation corner relief is smaller than selected tool: {operation.operation_id}"
+            )
+    if operation.kind in {OperationKind.DRILL, OperationKind.COUNTERSINK} and (
+        operation.corner_strategy is not None
+        or operation.corner_relief_radius_um is not None
+        or operation.open_end_reliefs
+    ):
+        errors.append(f"drilling operation declares area-corner relief: {operation.operation_id}")
     if machine is not None:
         if operation.kind not in machine.supported_operations:
             errors.append(f"operation is unsupported by machine profile: {operation.operation_id}")
@@ -697,8 +722,10 @@ def _validate_operation(
                 envelope_length,
             )
             stock_envelope = Rect(0, 0, setup.stock_width_um, setup.stock_height_um)
-            if envelope_width <= 0 or envelope_length <= 0 or not stock_envelope.contains(
-                cutter_envelope
+            if (
+                envelope_width <= 0
+                or envelope_length <= 0
+                or not stock_envelope.contains(cutter_envelope)
             ):
                 errors.append(f"operation cutter envelope outside stock: {operation.operation_id}")
             if (
@@ -719,6 +746,16 @@ def _validate_operation(
                     errors.append(
                         f"cutter envelope does not contain operation: {operation.operation_id}"
                     )
+                if (
+                    operation.corner_strategy in _ALLOWED_CORNER_STRATEGIES
+                    and operation.corner_relief_radius_um is not None
+                    and cutter_envelope
+                    != _expected_versioned_dogbone_envelope(operation, nominal_envelope)
+                ):
+                    errors.append(
+                        "operation cutter envelope does not match versioned corner semantics: "
+                        f"{operation.operation_id}"
+                    )
             operation_envelope = cutter_envelope
 
     if operation_envelope is not None and any(
@@ -726,6 +763,72 @@ def _validate_operation(
     ):
         errors.append(f"operation intersects setup keep-out zone: {operation.operation_id}")
     return errors
+
+
+def _expected_versioned_dogbone_envelope(
+    operation: CAMOperation,
+    nominal: Rect,
+) -> Rect:
+    """Derive the cutter AABB from nominal geometry and dogbone contract fields.
+
+    ``open_end_reliefs`` stays in source-part U/V coordinates in an operations
+    document.  Map each active source corner through the declared nesting
+    rotation and B-side flip before expanding the machine-coordinate envelope.
+    """
+
+    strategy = operation.corner_strategy
+    radius_um = operation.corner_relief_radius_um
+    if strategy not in _ALLOWED_CORNER_STRATEGIES or radius_um is None:
+        return nominal
+    declared = set(operation.open_end_reliefs)
+    left = nominal.x_um
+    right = nominal.right_um
+    bottom = nominal.y_um
+    top = nominal.top_um
+    for u_boundary, v_boundary in (
+        ("u_min", "v_min"),
+        ("u_max", "v_min"),
+        ("u_min", "v_max"),
+        ("u_max", "v_max"),
+    ):
+        suppressed = (
+            {u_boundary, v_boundary} <= declared
+            if strategy == "dogbone-v1"
+            else bool({u_boundary, v_boundary} & declared)
+        )
+        if suppressed:
+            continue
+        x_boundary, y_boundary = _source_corner_machine_boundaries(
+            u_boundary,
+            v_boundary,
+            rotated_90=operation.source_rotation_90,
+            side=operation.side,
+        )
+        x_um = nominal.x_um if x_boundary == "x_min" else nominal.right_um
+        y_um = nominal.y_um if y_boundary == "y_min" else nominal.top_um
+        left = min(left, x_um - radius_um)
+        right = max(right, x_um + radius_um)
+        bottom = min(bottom, y_um - radius_um)
+        top = max(top, y_um + radius_um)
+    return Rect(left, bottom, right - left, top - bottom)
+
+
+def _source_corner_machine_boundaries(
+    u_boundary: str,
+    v_boundary: str,
+    *,
+    rotated_90: bool,
+    side: Side,
+) -> tuple[str, str]:
+    if rotated_90:
+        x_boundary = "x_max" if v_boundary == "v_min" else "x_min"
+        y_boundary = "y_min" if u_boundary == "u_min" else "y_max"
+    else:
+        x_boundary = "x_min" if u_boundary == "u_min" else "x_max"
+        y_boundary = "y_min" if v_boundary == "v_min" else "y_max"
+    if side == Side.B:
+        y_boundary = "y_max" if y_boundary == "y_min" else "y_min"
+    return x_boundary, y_boundary
 
 
 def _validation_xy_points(operation: CAMOperation) -> tuple[tuple[int, int], ...]:

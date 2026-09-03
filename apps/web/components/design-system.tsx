@@ -280,6 +280,7 @@ export interface DimensionInputProps {
   min: number;
   max: number;
   step?: number;
+  commitMode?: "clamp" | "reject";
   hint?: ReactNode;
   error?: ReactNode;
   disabled?: boolean;
@@ -301,6 +302,7 @@ export function DimensionInput({
   min,
   max,
   step = 1,
+  commitMode = "clamp",
   hint,
   error,
   disabled,
@@ -313,13 +315,38 @@ export function DimensionInput({
   const errorId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const [draft, setDraft] = useState(String(value));
+  const [validationError, setValidationError] = useState<string>();
 
   useEffect(() => {
-    if (document.activeElement !== inputRef.current) setDraft(String(value));
+    if (document.activeElement !== inputRef.current) {
+      setDraft(String(value));
+      setValidationError(undefined);
+    }
   }, [value]);
+
+  const rejectedValueMessage = (raw: string): string | undefined => {
+    const parsed = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(parsed)) return `Ange ${label.toLocaleLowerCase("sv-SE")} som ett tal.`;
+    if (parsed < min || parsed > max) {
+      return `Ange ett värde mellan ${min.toLocaleString("sv-SE")} och ${max.toLocaleString("sv-SE")} ${unit}.`;
+    }
+    const steps = (parsed - min) / step;
+    if (Math.abs(steps - Math.round(steps)) > 1e-7) {
+      return `Ange värdet i steg om ${step.toLocaleString("sv-SE")} ${unit}.`;
+    }
+    return undefined;
+  };
 
   const commit = () => {
     const parsed = Number(draft);
+    if (commitMode === "reject") {
+      const nextError = rejectedValueMessage(draft);
+      setValidationError(nextError);
+      if (nextError) return;
+      setDraft(String(parsed));
+      onCommit?.(parsed);
+      return;
+    }
     if (!Number.isFinite(parsed) || draft.trim() === "") {
       setDraft(String(value));
       return;
@@ -329,9 +356,10 @@ export function DimensionInput({
     onCommit?.(next);
   };
 
-  const describedBy = [hint ? hintId : undefined, error ? errorId : undefined].filter(Boolean).join(" ") || undefined;
+  const renderedError = error ?? validationError;
+  const describedBy = [hint ? hintId : undefined, renderedError ? errorId : undefined].filter(Boolean).join(" ") || undefined;
   return (
-    <div className={cx("cb-dimension-input", Boolean(error) && "has-error", className)}>
+    <div className={cx("cb-dimension-input", Boolean(renderedError) && "has-error", className)}>
       <label htmlFor={inputId}>{label}</label>
       <div className="cb-dimension-input__control">
         <input
@@ -344,11 +372,12 @@ export function DimensionInput({
           step={step}
           value={draft}
           disabled={disabled}
-          aria-invalid={Boolean(error)}
+          aria-invalid={Boolean(renderedError)}
           aria-describedby={describedBy}
           onChange={(event) => {
             const nextDraft = event.target.value;
             setDraft(nextDraft);
+            if (commitMode === "reject") setValidationError(rejectedValueMessage(nextDraft));
             const parsed = Number(nextDraft);
             if (nextDraft.trim() !== "" && Number.isFinite(parsed)) onPreview?.(parsed);
           }}
@@ -361,6 +390,7 @@ export function DimensionInput({
             if (event.key === "Escape") {
               event.preventDefault();
               setDraft(String(value));
+              setValidationError(undefined);
               event.currentTarget.blur();
             }
           }}
@@ -368,7 +398,7 @@ export function DimensionInput({
         <span aria-hidden="true">{unit}</span>
       </div>
       {hint ? <small id={hintId} className="cb-dimension-input__hint">{hint}</small> : null}
-      {error ? <small id={errorId} className="cb-dimension-input__error">{error}</small> : null}
+      {renderedError ? <small id={errorId} className="cb-dimension-input__error">{renderedError}</small> : null}
     </div>
   );
 }

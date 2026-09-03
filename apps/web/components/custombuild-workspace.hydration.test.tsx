@@ -440,6 +440,33 @@ describe("fail-closed project hydration", () => {
     }
   });
 
+  it("switches to a compatible template identity when a semantic edit changes furniture family", async () => {
+    vi.useFakeTimers();
+    render(<CustombuildWorkspace />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("furniture-viewer")).toBeInTheDocument();
+    apiMock.updates.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /Underskåp/ }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+
+    expect(apiMock.updates).toHaveBeenCalledWith(
+      "project-good",
+      "wall-library",
+      expect.objectContaining({
+        furniture_type: "wall_library",
+        base_cabinet_count: 2,
+        base_cabinet_depth_mm: DEFAULT_DESIGN_SPEC.depth_mm,
+      }),
+      1,
+    );
+    expect(screen.getByText("Konceptdesign – underlag spärrat")).toBeVisible();
+  });
+
   it("requires another name for project conflicts while preserving generic errors", async () => {
     apiMock.createProject.mockRejectedValueOnce(new ApiError("Namnkonflikt", 409));
     render(<CustombuildWorkspace />);

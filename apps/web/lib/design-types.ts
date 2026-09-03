@@ -84,6 +84,8 @@ export interface DesignSpec {
   back_panel: boolean;
   back_panel_type: BackPanelType;
   plinth: boolean;
+  /** Exact plinth height sent to the canonical API contract. Zero disables the plinth. */
+  plinth_height_mm: number;
   divider_count: number;
   /** Workspace intent. Production APIs receive only the deterministically resolved divider count. */
   bay_sizing_mode: BaySizingMode;
@@ -107,6 +109,8 @@ export interface DesignSpec {
   reinforcement_mode: ReinforcementMode;
   joint_system: JointSystem;
   edge_band_mm: number;
+  /** Design intent only; verification is always server/evidence bound. */
+  wall_anchor_required: boolean;
   wall_anchor_verified: boolean;
   stock_width_mm: number;
   stock_height_mm: number;
@@ -346,6 +350,7 @@ export const DEFAULT_DESIGN_SPEC: DesignSpec = {
   back_panel: true,
   back_panel_type: "inset_groove",
   plinth: true,
+  plinth_height_mm: 80,
   divider_count: 0,
   bay_sizing_mode: "count",
   target_bay_width_mm: 300,
@@ -360,6 +365,7 @@ export const DEFAULT_DESIGN_SPEC: DesignSpec = {
   reinforcement_mode: "auto",
   joint_system: "dado",
   edge_band_mm: 1,
+  wall_anchor_required: false,
   wall_anchor_verified: false,
   stock_width_mm: 2_440,
   stock_height_mm: 1_220,

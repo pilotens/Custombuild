@@ -15,11 +15,11 @@ test-web:
 
 coverage-gates:
 	uv run coverage erase
-	uv run pytest tests/unit -q --cov=packages/domain/src/custombuild_domain --cov=cad/src/custombuild_cad --cov-fail-under=90
+	uv run pytest tests/unit -q --cov-reset --cov=packages/domain/src/custombuild_domain --cov=cad/src/custombuild_cad --cov-fail-under=90
 	uv run coverage erase
-	uv run pytest tests/unit -q --cov=packages/rule-engine/src/custombuild_rules --cov-fail-under=90
+	uv run pytest tests/unit -q --cov-reset --cov=packages/rule-engine/src/custombuild_rules --cov-fail-under=90
 	uv run coverage erase
-	uv run pytest tests/unit -q --cov=packages/manufacturing/src/custombuild_manufacturing --cov=cam/src/custombuild_cam --cov=postprocessors/src/custombuild_postprocessors --cov-fail-under=90
+	uv run pytest tests/unit -q --cov-reset --cov=packages/manufacturing/src/custombuild_manufacturing --cov=cam/src/custombuild_cam --cov=postprocessors/src/custombuild_postprocessors --cov-fail-under=90
 
 lint:
 	uv run ruff check .

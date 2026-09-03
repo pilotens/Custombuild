@@ -21,6 +21,45 @@ describe("StudioInspector", () => {
     expect(screen.getByLabelText("Höjd")).toHaveAttribute("max", "4000");
     expect(screen.getByLabelText("Djup")).toHaveAttribute("min", "100");
     expect(screen.getByLabelText("Djup")).toHaveAttribute("max", "1200");
+    expect(screen.getByLabelText("Bredd")).toHaveAttribute("step", "0.001");
+    expect(screen.getByText(/samma servermodell som skapar granskningsunderlaget/i)).toBeVisible();
+  });
+
+  it("preserves an exact millimetre value instead of snapping it to ten millimetres", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    const depth = screen.getByLabelText("Djup");
+    fireEvent.change(depth, { target: { value: "397.125" } });
+    fireEvent.blur(depth);
+
+    expect(onChange).toHaveBeenCalledWith(
+      { depth_mm: 397.125 },
+      "Djup ändrades",
+    );
+  });
+
+  it("shows concept scope before the user reaches package generation", () => {
+    render(<StudioInspector
+      spec={{
+        ...DEFAULT_DESIGN_SPEC,
+        furniture_type: "wall_library",
+        base_cabinet_height_mm: 680,
+        base_cabinet_depth_mm: DEFAULT_DESIGN_SPEC.depth_mm,
+        base_cabinet_count: 1,
+      }}
+      status="WARNING"
+      partCount={22}
+      templateName="Väggbibliotek"
+      productionLevel="concept"
+      onChange={vi.fn()}
+      onOpenExplore={vi.fn()}
+      onOpenCheck={vi.fn()}
+    />);
+
+    expect(screen.getByText("Konceptdesign – underlag spärrat")).toBeVisible();
+    expect(screen.getByText(/kan inte bli ett produktionsunderlag/i)).toBeVisible();
+    expect(screen.getByText(/inte ett godkännande för skärande CNC/i)).toBeVisible();
   });
 
   it("maximizes equal bays from a requested clear width", () => {
@@ -47,6 +86,29 @@ describe("StudioInspector", () => {
 
     fireEvent.click(screen.getByLabelText(/Manuellt/));
     expect(onChange).toHaveBeenCalledWith({ reinforcement_mode: "manual" }, expect.stringContaining("Manuella"));
+  });
+
+  it("edits the exact sockel height and carries wall-anchor intent without claiming verification", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    const plinthHeight = screen.getByLabelText("Sockelhöjd");
+    expect(plinthHeight).toHaveAttribute("step", "0.001");
+    fireEvent.change(plinthHeight, { target: { value: "125.5" } });
+    fireEvent.blur(plinthHeight);
+    expect(onChange).toHaveBeenCalledWith(
+      { plinth_height_mm: 125.5 },
+      "Sockelhöjden ändrades",
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Planera väggförankring/ }));
+    expect(onChange).toHaveBeenCalledWith(
+      { wall_anchor_required: true },
+      "Planera väggförankring ändrades",
+    );
+
+    rerender(<StudioInspector spec={{ ...DEFAULT_DESIGN_SPEC, wall_anchor_required: true }} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+    expect(screen.getByText(/inte ett verifierat montagebevis/i)).toBeVisible();
   });
 
   it("edits the explicit back-panel mounting and 6 mm material contract", () => {

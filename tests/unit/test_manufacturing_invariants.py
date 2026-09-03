@@ -643,16 +643,6 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
             pitch_um=32_000,
         ),
         ManufacturingFeature(
-            "counter",
-            "panel",
-            FeatureKind.COUNTERSINK,
-            Side.A,
-            80_000,
-            20_000,
-            5_000,
-            diameter_um=8_000,
-        ),
-        ManufacturingFeature(
             "pocket",
             "panel",
             FeatureKind.POCKET,
@@ -692,11 +682,11 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
             "panel",
             FeatureKind.OUTER_CONTOUR,
             Side.A,
-            140_000,
-            60_000,
+            0,
+            0,
             18_000,
-            width_um=20_000,
-            length_um=20_000,
+            width_um=300_000,
+            length_um=200_000,
             through=True,
         ),
         ManufacturingFeature(
@@ -709,6 +699,17 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
             1_000,
             width_um=10_000,
             length_um=5_000,
+        ),
+        ManufacturingFeature(
+            "engrave",
+            "panel",
+            FeatureKind.ENGRAVE,
+            Side.A,
+            220_000,
+            60_000,
+            1_000,
+            width_um=30_000,
+            length_um=10_000,
         ),
     )
     edge_band_details = tuple(
@@ -728,11 +729,29 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
     dxf = dxf_for_part(part, Side.A).decode("utf-8")
     svg = svg_for_part(part, Side.A).decode("utf-8")
 
-    assert all(layer in dxf for layer in ("DRILL", "POCKET", "GROOVE", "EDGE_BAND", "LABEL"))
+    assert all(
+        layer in dxf
+        for layer in (
+            "DRILL",
+            "POCKET",
+            "GROOVE",
+            "RABBET",
+            "INNER_CONTOUR",
+            "ENGRAVE",
+            "EDGE_BAND",
+            "LABEL",
+        )
+    )
     assert 'data-feature-id="pattern"' in svg
     dxf_document = ezdxf.read(io.StringIO(dxf))
-    assert len(dxf_document.modelspace().query('CIRCLE[layer=="GROOVE"]')) == 4
+    modelspace = dxf_document.modelspace()
+    assert len(modelspace.query('CIRCLE[layer=="RABBET"]')) == 4
+    assert len(modelspace.query('LWPOLYLINE[layer=="POCKET"]')) == 1
+    assert len(modelspace.query('LWPOLYLINE[layer=="INNER_CONTOUR"]')) == 1
+    assert len(modelspace.query('LWPOLYLINE[layer=="ENGRAVE"]')) == 1
     assert 'data-corner-strategy="dogbone-v1"' in svg
+    assert 'class="inner-contour" data-feature-id="inner"' in svg
+    assert 'class="engrave" data-feature-id="engrave"' in svg
     assert b"finished_width_mm" in bom_csv((part,))
     assert b"instance_id" in cut_list_csv((part,))
     with pytest.raises(ValueError):

@@ -136,6 +136,24 @@ def test_bookcase_geometry_rejects_unsafe_but_field_valid_combinations(
         BookcaseParameters.model_validate(payload)
 
 
+def test_bookcase_geometry_accepts_exact_minimum_shelf_width_only() -> None:
+    exact_minimum = BookcaseParameters(
+        width_um=mm(318),
+        vertical_divider_count=4,
+    )
+
+    assert (
+        exact_minimum.width_um
+        - (exact_minimum.vertical_divider_count + 2) * exact_minimum.actual_thickness_um
+    ) // (exact_minimum.vertical_divider_count + 1) == mm(42)
+
+    with pytest.raises(ValidationError, match="unmanufacturable shelf width"):
+        BookcaseParameters(
+            width_um=mm("317.999"),
+            vertical_divider_count=4,
+        )
+
+
 @pytest.mark.parametrize(
     ("changes", "family", "message"),
     (
@@ -221,7 +239,7 @@ def test_feature_dimension_and_pattern_contracts_fail_closed() -> None:
 
     unversioned_relief = _valid_feature_payload()
     unversioned_relief.update(open_end_reliefs=("u_min",), corner_strategy=None)
-    with pytest.raises(ValidationError, match="require the versioned dogbone-v1"):
+    with pytest.raises(ValidationError, match="require a supported versioned dogbone"):
         ManufacturingFeature.model_validate(unversioned_relief)
 
 

@@ -141,6 +141,70 @@ describe("strict server draft hydration", () => {
     }), "INVALID_SERVER_DRAFT");
   });
 
+  it("round-trips canonical plinth height and wall-anchor intent without treating intent as evidence", () => {
+    const draft = serverDraft({
+      ...DEFAULT_DESIGN_SPEC,
+      plinth_height_mm: 125,
+      wall_anchor_required: true,
+    });
+    const parsed = parseServerProjectDraft(draft);
+
+    expect(parsed.kind).toBe("ready");
+    if (parsed.kind !== "ready") return;
+    expect(parsed.spec).toMatchObject({
+      plinth: true,
+      plinth_height_mm: 125,
+      wall_anchor_required: true,
+      wall_anchor_verified: false,
+    });
+    expect(toPreviewRequest(parsed.spec)).toMatchObject({
+      plinth: true,
+      plinth_height_mm: 125,
+      wall_anchor_required: true,
+      wall_anchor_verified: false,
+    });
+  });
+
+  it("derives the historical plinth height only when the canonical field is absent", () => {
+    const legacyWithPlinth = serverDraft(DEFAULT_DESIGN_SPEC);
+    const legacyWithPlinthSpec = { ...(legacyWithPlinth.specJson as Record<string, unknown>) };
+    delete legacyWithPlinthSpec.plinth_height_mm;
+    const withPlinth = parseServerProjectDraft({ ...legacyWithPlinth, specJson: legacyWithPlinthSpec });
+    expect(withPlinth.kind).toBe("ready");
+    if (withPlinth.kind === "ready") {
+      expect(withPlinth.spec.plinth_height_mm).toBe(DEFAULT_DESIGN_SPEC.plinth_height_mm);
+    }
+
+    const legacyWithoutPlinth = serverDraft({
+      ...DEFAULT_DESIGN_SPEC,
+      plinth: false,
+      plinth_height_mm: 0,
+    });
+    const legacyWithoutPlinthSpec = { ...(legacyWithoutPlinth.specJson as Record<string, unknown>) };
+    delete legacyWithoutPlinthSpec.plinth_height_mm;
+    const withoutPlinth = parseServerProjectDraft({
+      ...legacyWithoutPlinth,
+      specJson: legacyWithoutPlinthSpec,
+    });
+    expect(withoutPlinth.kind).toBe("ready");
+    if (withoutPlinth.kind === "ready") expect(withoutPlinth.spec.plinth_height_mm).toBe(0);
+  });
+
+  it.each([
+    [false, 80],
+    [true, 0],
+  ])("rejects contradictory canonical plinth state %j/%d", (plinth, plinthHeightMm) => {
+    const draft = serverDraft(DEFAULT_DESIGN_SPEC);
+    expectHydrationCode(() => parseServerProjectDraft({
+      ...draft,
+      specJson: {
+        ...(draft.specJson as Record<string, unknown>),
+        plinth,
+        plinth_height_mm: plinthHeightMm,
+      },
+    }), "INVALID_SERVER_DRAFT");
+  });
+
   it.each([
     ["width_mm", 249],
     ["height_mm", 4_001],
@@ -371,6 +435,38 @@ describe("local legacy parsing and reference provenance", () => {
     expectHydrationCode(() => parseLocalDesignSpec({ wall_anchor_verified: true }), "INVALID_LOCAL_DESIGN");
   });
 
+  it("defaults and strictly parses plinth height and wall-anchor intent", () => {
+    expect(parseLocalDesignSpec({})).toMatchObject({
+      plinth: true,
+      plinth_height_mm: 80,
+      wall_anchor_required: false,
+      wall_anchor_verified: false,
+    });
+    expect(parseLocalDesignSpec({
+      plinth_height_mm: 125.5,
+      wall_anchor_required: true,
+    })).toMatchObject({
+      plinth_height_mm: 125.5,
+      wall_anchor_required: true,
+      wall_anchor_verified: false,
+    });
+    expect(parseLocalDesignSpec({ plinth: false })).toMatchObject({
+      plinth: false,
+      plinth_height_mm: 0,
+    });
+    expectHydrationCode(() => parseLocalDesignSpec({ plinth_height_mm: 501 }), "INVALID_LOCAL_DESIGN");
+    expectHydrationCode(() => parseLocalDesignSpec({ plinth_height_mm: "125" }), "INVALID_LOCAL_DESIGN");
+    expectHydrationCode(() => parseLocalDesignSpec({ wall_anchor_required: 1 }), "INVALID_LOCAL_DESIGN");
+    expectHydrationCode(
+      () => parseLocalDesignSpec({ plinth: false, plinth_height_mm: 80 }),
+      "INVALID_LOCAL_DESIGN",
+    );
+    expectHydrationCode(
+      () => parseLocalDesignSpec({ plinth: true, plinth_height_mm: 0 }),
+      "INVALID_LOCAL_DESIGN",
+    );
+  });
+
   it("accepts the exact nineteen-level five-percent boundary despite floating-point noise", () => {
     const shelfHeightRatios = Array.from({ length: 19 }, (_, index) => (index + 1) / 20);
 
@@ -409,6 +505,23 @@ describe("local legacy parsing and reference provenance", () => {
       depth_mm: 400,
       base_cabinet_depth_mm: 399,
     }), "INVALID_LOCAL_DESIGN");
+  });
+
+  it("applies a plinth toggle and its default height as one local transaction", () => {
+    const withoutPlinth = parseLocalDesignPatch({
+      ...DEFAULT_DESIGN_SPEC,
+      plinth_height_mm: 125,
+    }, { plinth: false });
+    expect(withoutPlinth).toMatchObject({ plinth: false, plinth_height_mm: 0 });
+
+    expect(parseLocalDesignPatch(withoutPlinth, { plinth: true })).toMatchObject({
+      plinth: true,
+      plinth_height_mm: DEFAULT_DESIGN_SPEC.plinth_height_mm,
+    });
+    expect(parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, {
+      plinth: true,
+      plinth_height_mm: 140,
+    })).toMatchObject({ plinth: true, plinth_height_mm: 140 });
   });
 
   it("rejects an out-of-envelope live patch instead of returning persistable state", () => {

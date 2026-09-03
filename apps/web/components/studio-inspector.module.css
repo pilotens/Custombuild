@@ -41,6 +41,29 @@
 .status[data-status="warning"] { color: #7b4910; background: #fff7e8; border-color: #e4c38e; }
 .status[data-status="block"] { color: #8b2f28; background: #fff1ef; border-color: #e2b2ad; }
 
+.scopeCard {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+  margin-top: 16px;
+  padding: 12px;
+  color: #315341;
+  background: #eef7f1;
+  border: 1px solid #bed5c7;
+  border-radius: 9px;
+}
+
+.scopeCard[data-level="concept"] {
+  color: #7b4910;
+  background: #fff7e8;
+  border-color: #e4c38e;
+}
+
+.scopeCard > span { display: grid; gap: 4px; }
+.scopeCard strong { color: inherit; font-size: 13px; }
+.scopeCard small { color: inherit; font-size: 11px; line-height: 1.45; }
+
 .section {
   display: grid;
   gap: 14px;

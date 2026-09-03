@@ -824,13 +824,15 @@ export interface components {
             /**
              * Machine Profile Id
              * @default custombuild-router-1325-linuxcnc
+             * @enum {string}
              */
-            machine_profile_id: string;
+            machine_profile_id: "custombuild-router-1325-linuxcnc" | "custombuild-router-5125-linuxcnc";
             /**
              * Postprocessor Id
              * @default linuxcnc-validation-1.1.0
+             * @constant
              */
-            postprocessor_id: string;
+            postprocessor_id: "linuxcnc-validation-1.1.0";
             /**
              * Stock Count
              * @default 4

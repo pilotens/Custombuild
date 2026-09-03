@@ -132,6 +132,9 @@ function dimensionError(value: string, min: number, max: number): string | undef
   if (parsed < min || parsed > max) {
     return `Tillåtet intervall är ${min.toLocaleString("sv-SE")}–${max.toLocaleString("sv-SE")} mm.`;
   }
+  if (!Number.isInteger(parsed * 1_000)) {
+    return "Ange högst tre decimaler (en tusendels millimeter).";
+  }
   return undefined;
 }
 
@@ -403,9 +406,9 @@ function OpenTemplatePicker({
     if (!dimensionsValid) return;
     setPlanningError(undefined);
     const dimensions = {
-      width_mm: Math.round(Number(dimensionDrafts.width_mm)),
-      height_mm: Math.round(Number(dimensionDrafts.height_mm)),
-      depth_mm: Math.round(Number(dimensionDrafts.depth_mm)),
+      width_mm: Number(dimensionDrafts.width_mm),
+      height_mm: Number(dimensionDrafts.height_mm),
+      depth_mm: Number(dimensionDrafts.depth_mm),
     };
     const next = updateBrief({
       ...inferIntent(intent),
@@ -473,7 +476,7 @@ function OpenTemplatePicker({
               </button>
               <button type="button" className={styles.routeCard} onClick={startFromScratch}>
                 <span className={styles.routeIcon}><Sparkles aria-hidden="true" /></span>
-                <span><strong>Börja tomt</strong><small>Öppna en tom stomme och forma den fritt i Studio.</small></span>
+                <span><strong>Börja tomt</strong><small>Öppna en tom, screenad hyllstomme och lägg själv till fack och hyllnivåer.</small></span>
                 <ArrowRight aria-hidden="true" size={20} />
               </button>
             </div>
@@ -535,7 +538,7 @@ function OpenTemplatePicker({
                 <small>Beskrivningen översätts till valen nedan. Den sparade briefen är strukturerad och går att ändra i Studio.</small>
               </label>
               <fieldset className={styles.dimensionGroup}>
-                <legend>Ungefärligt utrymme</legend>
+                <legend>Dina exakta yttermått</legend>
                 {(Object.keys(DIMENSION_LIMITS) as PlanningDimension[]).map((field) => {
                   const limits = DIMENSION_LIMITS[field];
                   const errorId = `explore-${field}-error`;
@@ -545,9 +548,10 @@ function OpenTemplatePicker({
                       <span className={styles.dimensionInput}>
                         <input
                           type="number"
-                          inputMode="numeric"
+                          inputMode="decimal"
                           min={limits.min}
                           max={limits.max}
+                          step={0.001}
                           value={dimensionDrafts[field]}
                           aria-label={`Planerad ${limits.label.toLocaleLowerCase("sv-SE")}`}
                           aria-invalid={Boolean(dimensionErrors[field])}
@@ -563,6 +567,7 @@ function OpenTemplatePicker({
                     </label>
                   );
                 })}
+                <small className={styles.truthNote}>Måtten används i Studio utan avrundning, med högst tre decimaler.</small>
               </fieldset>
               <div className={styles.choiceSections}>
                 <fieldset>

@@ -1309,6 +1309,7 @@ describe("deterministic bookcase preview", () => {
       base_cabinet_count: 5,
       base_cabinet_height_mm: 720,
       base_cabinet_depth_mm: 320,
+      plinth_height_mm: 125,
       reinforcement_mode: "manual" as const,
     };
     const result = resolveDesign(spec);
@@ -1431,7 +1432,7 @@ describe("deterministic bookcase preview", () => {
 
     expect(edited.supported).toBe(true);
     expect(after.width_mm).toBeCloseTo(requestedPanelHeight, 3);
-    expect(after.position_mm.z - after.width_mm / 2).toBeCloseTo(spec.plinth ? 80 : 0, 3);
+    expect(after.position_mm.z - after.width_mm / 2).toBeCloseTo(spec.plinth_height_mm, 3);
   });
 
   it("treats an edited base-side depth as the furniture outer depth", () => {

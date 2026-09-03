@@ -123,6 +123,29 @@ def test_explicit_exact_legacy_workspace_is_migrated_to_v1_only() -> None:
     assert "design_id" not in stored
 
 
+def test_workspace_accepts_binary_float_five_percent_shelf_spacing() -> None:
+    shelf_ratios = [0.1, 0.15]
+    topology_baseline = {
+        "divider_count": 0,
+        "shelf_count": 2,
+        "base_cabinet_count": 0,
+        "bay_width_ratios": [],
+        "shelf_height_ratios": shelf_ratios,
+        "reinforcement_mode": "manual",
+    }
+
+    parsed = ProjectDraftUpdate.model_validate(
+        draft_payload(
+            workspace_intent(topology_baseline=topology_baseline),
+            shelf_height_ratios=shelf_ratios,
+        )
+    )
+
+    assert parsed.spec.shelf_height_ratios == shelf_ratios
+    assert parsed.workspace_spec.topology_baseline is not None
+    assert parsed.workspace_spec.topology_baseline.shelf_height_ratios == shelf_ratios
+
+
 def test_explicit_back_material_is_preserved_but_legacy_workspace_must_match() -> None:
     parsed = ProjectDraftUpdate.model_validate(
         draft_payload(

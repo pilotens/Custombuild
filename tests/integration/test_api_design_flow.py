@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import csv
 import hashlib
+import io
 import json
+import zipfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from threading import Event, Thread, current_thread
 from types import SimpleNamespace
 from typing import Any
@@ -70,15 +74,20 @@ from custombuild_manufacturing import (
     DFM_GRAIN_REQUIRED_ACTION,
     DFM_GRAIN_RULE_MESSAGE,
     MANIFEST_CONTEXT_HASH_FIELDS,
+    MANUFACTURING_INTENT_PATH,
+    MANUFACTURING_INTENT_ROLE,
     MAX_CORE_DOCUMENT_BYTES,
     MAX_EVIDENCE_ARTIFACTS,
     MAX_EVIDENCE_TOTAL_BYTES,
+    SUPPLIER_HANDOFF_PATH,
+    SUPPLIER_HANDOFF_ROLE,
     DFMIssue,
     DFMReport,
     Severity,
     blocked_design_review_package_status,
     canonical_json_bytes,
     generated_design_review_package_status,
+    read_and_verify_package,
     stock_profile_missing_issue,
 )
 from custombuild_manufacturing.package import PRODUCTION_MANIFEST_SCHEMA_VERSION
@@ -1423,6 +1432,61 @@ def test_preview_is_reproducible() -> None:
             for item in first.json()["rule_evaluations"]
             if item["status"] == "WARNING"
         ] == ["CB-JOINT-001"]
+
+
+def test_preview_accepts_binary_float_five_percent_shelf_spacing() -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/designs/preview",
+            headers=HEADERS,
+            json=valid_spec()
+            | {
+                "shelf_count": 2,
+                "shelf_height_ratios": [0.1, 0.15],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["spec"]["parameters"]["shelf_height_ratios_ppm"] == [
+        100_000,
+        150_000,
+    ]
+
+
+def test_preview_accepts_exact_minimum_shelf_width_but_rejects_below_it() -> None:
+    exact_minimum = valid_spec() | {"width_mm": 318, "divider_count": 4}
+    below_minimum = exact_minimum | {"width_mm": 317.999}
+
+    with TestClient(app) as client:
+        accepted = client.post("/v1/designs/preview", headers=HEADERS, json=exact_minimum)
+        rejected = client.post("/v1/designs/preview", headers=HEADERS, json=below_minimum)
+
+    assert accepted.status_code == 200
+    assert rejected.status_code == 422
+    assert "unmanufacturable shelf width" in str(rejected.json()["detail"])
+
+
+@pytest.mark.parametrize(
+    "contradictory_plinth",
+    (
+        {"plinth": False, "plinth_height_mm": 80},
+        {"plinth": True, "plinth_height_mm": 0},
+    ),
+)
+def test_preview_rejects_contradictory_plinth_intent(
+    contradictory_plinth: dict[str, bool | int],
+) -> None:
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/designs/preview",
+            headers=HEADERS,
+            json=valid_spec() | contradictory_plinth,
+        )
+
+    assert response.status_code == 422
+    assert "plinth must be true exactly when explicit plinth_height_mm" in str(
+        response.json()["detail"]
+    )
 
 
 def test_server_preview_projects_grain_control_only_for_directional_material() -> None:
@@ -2837,14 +2901,16 @@ def test_failed_generation_retry_maps_a_late_trigger_and_rolls_back(
 
 
 @pytest.mark.parametrize(
-    "invalid_selection",
+    ("invalid_selection", "error_type"),
     (
-        {"machine_profile_id": "unknown-machine"},
-        {"postprocessor_id": "unknown-postprocessor"},
+        ({"machine_profile_id": "unknown-machine"}, "literal_error"),
+        ({"postprocessor_id": "unknown-postprocessor"}, "literal_error"),
+        ({"unexpected": "field"}, "extra_forbidden"),
     ),
 )
 def test_generation_rejects_unversioned_catalog_selection(
     invalid_selection: dict[str, str],
+    error_type: str,
 ) -> None:
     with TestClient(app) as client:
         project = client.post(
@@ -2861,14 +2927,8 @@ def test_generation_rejects_unversioned_catalog_selection(
 
         response = client.post(f"{base}/generate", headers=HEADERS, json=invalid_selection)
 
-        expected_status = 409 if "machine_profile_id" in invalid_selection else 422
-        assert response.status_code == expected_status
-        expected_detail = (
-            "FROZEN_PRODUCTION_CONTEXT_MISMATCH"
-            if expected_status == 409
-            else "unknown or unverified"
-        )
-        assert expected_detail in str(response.json()["detail"])
+        assert response.status_code == 422
+        assert {error["type"] for error in response.json()["detail"]} == {error_type}
 
 
 def test_generation_requires_a_new_revision_after_design_library_drift() -> None:
@@ -3180,6 +3240,16 @@ def _manifest_document_for_job(
         )
     )
     static_identities = {
+        "manufacturing_intent": (
+            MANUFACTURING_INTENT_PATH,
+            MANUFACTURING_INTENT_ROLE,
+            "application/json",
+        ),
+        "supplier_handoff": (
+            SUPPLIER_HANDOFF_PATH,
+            SUPPLIER_HANDOFF_ROLE,
+            "application/json",
+        ),
         "dfm_report": (
             "validation/dfm-report.json",
             "DFM_VALIDATION_REPORT",
@@ -3513,6 +3583,35 @@ def _complete_generation(
         assert stock_selection_payload is not None
         generation_plan_payload = api_module._frozen_generation_plan_snapshot(job, version)
         assert generation_plan_payload is not None
+        manufacturing_intent_payload = canonical_json_bytes(
+            {
+                "schema_version": "custombuild.manufacturing-intent.v1",
+                "document_identity": {
+                    "project_id": version.project_id,
+                    "revision": str(version.revision),
+                    "design_hash": version.design_hash,
+                    "parts_sha256": "d" * 64,
+                },
+                "document_purpose": "MACHINE_NEUTRAL_DESIGN_INTENT",
+                "physical_cutting_authorized": False,
+            }
+        )
+        supplier_handoff_payload = canonical_json_bytes(
+            {
+                "schema_version": "custombuild.supplier-handoff.v2",
+                "package_identity": {
+                    "project_id": version.project_id,
+                    "revision": str(version.revision),
+                    "design_hash": version.design_hash,
+                },
+                "supplier_stages": {
+                    "available_for_quote_review": True,
+                    "available_for_cam_intake_review": True,
+                    "shop_review_required": True,
+                    "cut_authorized": False,
+                },
+            }
+        )
         package_status = generated_design_review_package_status(
             validation_program_included=True
         ).as_dict()
@@ -3539,6 +3638,18 @@ def _complete_generation(
             object_key=f"evidence/{job.id}/generation_plan",
             sha256=hashlib.sha256(generation_plan_payload).hexdigest(),
             size_bytes=len(generation_plan_payload),
+            content_type="application/json",
+        )
+        manufacturing_intent_expectation = storage_module.StoredObjectExpectation(
+            object_key=f"evidence/{job.id}/manufacturing_intent",
+            sha256=hashlib.sha256(manufacturing_intent_payload).hexdigest(),
+            size_bytes=len(manufacturing_intent_payload),
+            content_type="application/json",
+        )
+        supplier_handoff_expectation = storage_module.StoredObjectExpectation(
+            object_key=f"evidence/{job.id}/supplier_handoff",
+            sha256=hashlib.sha256(supplier_handoff_payload).hexdigest(),
+            size_bytes=len(supplier_handoff_payload),
             content_type="application/json",
         )
         package_status_expectation = storage_module.StoredObjectExpectation(
@@ -3592,6 +3703,24 @@ def _complete_generation(
                 ),
             )
         ]
+        evidence_artifacts.extend(
+            (
+                {
+                    "kind": "manufacturing_intent",
+                    "object_key": manufacturing_intent_expectation.object_key,
+                    "sha256": manufacturing_intent_expectation.sha256,
+                    "size_bytes": manufacturing_intent_expectation.size_bytes,
+                    "content_type": manufacturing_intent_expectation.content_type,
+                },
+                {
+                    "kind": "supplier_handoff",
+                    "object_key": supplier_handoff_expectation.object_key,
+                    "sha256": supplier_handoff_expectation.sha256,
+                    "size_bytes": supplier_handoff_expectation.size_bytes,
+                    "content_type": supplier_handoff_expectation.content_type,
+                },
+            )
+        )
         manifest_payload = canonical_json_bytes(
             _manifest_document_for_job(
                 job,
@@ -3699,6 +3828,35 @@ def _complete_blocked_cam_generation(
         assert stock_selection_payload is not None
         generation_plan_payload = api_module._frozen_generation_plan_snapshot(job, version)
         assert generation_plan_payload is not None
+        manufacturing_intent_payload = canonical_json_bytes(
+            {
+                "schema_version": "custombuild.manufacturing-intent.v1",
+                "document_identity": {
+                    "project_id": version.project_id,
+                    "revision": str(version.revision),
+                    "design_hash": version.design_hash,
+                    "parts_sha256": "d" * 64,
+                },
+                "document_purpose": "MACHINE_NEUTRAL_DESIGN_INTENT",
+                "physical_cutting_authorized": False,
+            }
+        )
+        supplier_handoff_payload = canonical_json_bytes(
+            {
+                "schema_version": "custombuild.supplier-handoff.v2",
+                "package_identity": {
+                    "project_id": version.project_id,
+                    "revision": str(version.revision),
+                    "design_hash": version.design_hash,
+                },
+                "supplier_stages": {
+                    "available_for_quote_review": True,
+                    "available_for_cam_intake_review": True,
+                    "shop_review_required": True,
+                    "cut_authorized": False,
+                },
+            }
+        )
         readiness_expectation = storage_module.StoredObjectExpectation(
             object_key=f"evidence/{job.id}/workshop_readiness",
             sha256=hashlib.sha256(readiness_payload).hexdigest(),
@@ -3729,7 +3887,33 @@ def _complete_blocked_cam_generation(
             size_bytes=len(generation_plan_payload),
             content_type="application/json",
         )
+        manufacturing_intent_expectation = storage_module.StoredObjectExpectation(
+            object_key=f"evidence/{job.id}/manufacturing_intent",
+            sha256=hashlib.sha256(manufacturing_intent_payload).hexdigest(),
+            size_bytes=len(manufacturing_intent_payload),
+            content_type="application/json",
+        )
+        supplier_handoff_expectation = storage_module.StoredObjectExpectation(
+            object_key=f"evidence/{job.id}/supplier_handoff",
+            sha256=hashlib.sha256(supplier_handoff_payload).hexdigest(),
+            size_bytes=len(supplier_handoff_payload),
+            content_type="application/json",
+        )
         evidence_artifacts = [
+            {
+                "kind": "manufacturing_intent",
+                "object_key": manufacturing_intent_expectation.object_key,
+                "sha256": manufacturing_intent_expectation.sha256,
+                "size_bytes": manufacturing_intent_expectation.size_bytes,
+                "content_type": manufacturing_intent_expectation.content_type,
+            },
+            {
+                "kind": "supplier_handoff",
+                "object_key": supplier_handoff_expectation.object_key,
+                "sha256": supplier_handoff_expectation.sha256,
+                "size_bytes": supplier_handoff_expectation.size_bytes,
+                "content_type": supplier_handoff_expectation.content_type,
+            },
             {
                 "kind": "dfm_report",
                 "object_key": dfm_expectation.object_key,
@@ -3831,6 +4015,8 @@ def _complete_blocked_cam_generation(
         ]
         _persist_committed_artifact_records(session, job, records)
         return {
+            manufacturing_intent_expectation.object_key: manufacturing_intent_payload,
+            supplier_handoff_expectation.object_key: supplier_handoff_payload,
             readiness_expectation.object_key: readiness_payload,
             dfm_expectation.object_key: dfm_payload,
             stock_selection_expectation.object_key: stock_selection_payload,
@@ -4062,12 +4248,62 @@ def _persist_strict_review_documents(
         job = session.get(GenerationJob, job_id)
         assert job is not None
         assert isinstance(job.result_json, dict)
+        version = session.get(DesignVersion, job.design_version_id)
+        assert version is not None
         result = deepcopy(job.result_json)
         if readiness is not None:
             result["workshop_readiness"] = deepcopy(readiness)
         if omit_program_fields:
             result.pop("machine_program_mode", None)
             result.pop("production_machine_program", None)
+
+        standalone_payloads = {
+            "manufacturing_intent": canonical_json_bytes(
+                {
+                    "schema_version": "custombuild.manufacturing-intent.v1",
+                    "document_identity": {
+                        "project_id": version.project_id,
+                        "revision": str(version.revision),
+                        "design_hash": version.design_hash,
+                        "parts_sha256": "d" * 64,
+                    },
+                    "document_purpose": "MACHINE_NEUTRAL_DESIGN_INTENT",
+                    "physical_cutting_authorized": False,
+                }
+            ),
+            "supplier_handoff": canonical_json_bytes(
+                {
+                    "schema_version": "custombuild.supplier-handoff.v2",
+                    "package_identity": {
+                        "project_id": version.project_id,
+                        "revision": str(version.revision),
+                        "design_hash": version.design_hash,
+                    },
+                    "supplier_stages": {
+                        "available_for_quote_review": True,
+                        "available_for_cam_intake_review": True,
+                        "shop_review_required": True,
+                        "cut_authorized": False,
+                    },
+                }
+            ),
+        }
+        new_records: list[dict[str, Any]] = []
+        for kind, payload in standalone_payloads.items():
+            if not any(item["kind"] == kind for item in result["evidence_artifacts"]):
+                record = {
+                    "kind": kind,
+                    "object_key": f"evidence/{job.id}/{kind}",
+                    "sha256": hashlib.sha256(payload).hexdigest(),
+                    "size_bytes": len(payload),
+                    "content_type": "application/json",
+                }
+                result["evidence_artifacts"].append(record)
+                new_records.append(record)
+        if new_records:
+            job.result_json = result
+            flag_modified(job, "result_json")
+            _persist_committed_artifact_records(session, job, new_records)
 
         readiness_payload = canonical_json_bytes(result["workshop_readiness"])
         readiness_sha = hashlib.sha256(readiness_payload).hexdigest()
@@ -4127,8 +4363,6 @@ def _persist_strict_review_documents(
             size_bytes=int(generation_plan_item["size_bytes"]),
             content_type=str(generation_plan_item["content_type"]),
         )
-        version = session.get(DesignVersion, job.design_version_id)
-        assert version is not None
         stock_selection_payload = api_module._frozen_stock_selection_snapshot(version)
         assert stock_selection_payload is not None
         generation_plan_payload = api_module._frozen_generation_plan_snapshot(job, version)
@@ -4183,6 +4417,16 @@ def _persist_strict_review_documents(
         job.result_json = result
         flag_modified(job, "result_json")
         return {
+            **{
+                str(
+                    next(
+                        item["object_key"]
+                        for item in result["evidence_artifacts"]
+                        if item["kind"] == kind
+                    )
+                ): payload
+                for kind, payload in standalone_payloads.items()
+            },
             readiness_expectation.object_key: readiness_payload,
             dfm_expectation.object_key: dfm_payload,
             stock_selection_expectation.object_key: stock_selection_payload,
@@ -6583,6 +6827,8 @@ def test_blocked_cam_review_package_is_downloadable_but_cannot_be_cam_approved(
         assert kinds == {
             "production_bundle",
             "manifest",
+            "manufacturing_intent",
+            "supplier_handoff",
             "dfm_report",
             "stock_selection",
             "generation_plan",
@@ -7929,7 +8175,11 @@ def test_cam_and_release_accept_exact_checksum_bound_readiness_documents(
     assert len(calls) == 12
     assert [max_bytes for _key, max_bytes in calls].count(64 * 1024) == 4
     assert [max_bytes for _key, max_bytes in calls].count(MAX_CORE_DOCUMENT_BYTES) == 8
-    assert set(documents).isdisjoint(separately_verified)
+    assert set(documents) & set(separately_verified) == {
+        key
+        for key in documents
+        if key.endswith(("/manufacturing_intent", "/supplier_handoff"))
+    }
     with get_session_factory()() as session:
         persisted = session.get(DesignVersion, version["id"])
         assert persisted is not None
@@ -8313,7 +8563,7 @@ def test_cam_endpoint_rejects_malformed_readiness_without_mutation(
         assert len(approval_snapshot) == 1
         assert approval_snapshot[0][1] == "design"
         assert artifact_snapshot == artifacts_after
-        assert len(artifact_snapshot) == 11
+        assert len(artifact_snapshot) == 13
         assert release_snapshot == releases_after == []
         assert version_after is not None
         assert version_after.status == DesignStatus.design_validated
@@ -8745,7 +8995,7 @@ def test_generate_keeps_complete_succeeded_job_and_cam_approval_idempotent() -> 
         assert persisted_version is not None
         assert persisted_version.status == DesignStatus.approved
         assert approval is not None and approval.generation_job_id == generated["id"]
-        assert len(artifacts) == 11
+        assert len(artifacts) == 13
         assert repair_events == []
 
 
@@ -8924,7 +9174,7 @@ def test_succeeded_evidence_repair_waits_for_active_storage_claim_without_mutati
         assert job_after is not None and job_after.status == JobStatus.succeeded
         assert job_after.result_json is not None
         assert version_after is not None and version_after.status == DesignStatus.approved
-        assert len(artifacts_after) == 10
+        assert len(artifacts_after) == 12
         assert approval_after is not None
         assert approval_after.generation_job_id == generated["id"]
         assert repair_events == []
@@ -9085,7 +9335,7 @@ def test_missing_bucket_does_not_repair_or_mutate_reviewed_job(
         assert persisted_job.result_json is not None
         assert persisted_version is not None
         assert persisted_version.status == DesignStatus.approved
-        assert len(artifacts) == 11
+        assert len(artifacts) == 13
         assert cam_approval is not None and cam_approval.generation_job_id == job["id"]
         assert repairs == []
 
@@ -9315,8 +9565,8 @@ def test_repair_rejects_older_job_and_preserves_latest_cam_production_state() ->
 
         assert persisted_older is not None
         assert persisted_older.status == JobStatus.succeeded
-        assert len(older_artifacts) == 10
-        assert len(newer_artifacts) == 11
+        assert len(older_artifacts) == 12
+        assert len(newer_artifacts) == 13
         assert repair_audit is None
         assert repair_outbox == []
 
@@ -10222,3 +10472,335 @@ def test_reverting_to_an_older_design_creates_a_new_revision() -> None:
             "superseded",
             "superseded",
         ]
+
+
+class _MultiObjectImmutableStorage:
+    """Small faithful S3 boundary for one real API-to-worker integration test."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, tuple[bytes, str, dict[str, str]]] = {}
+
+    def head_bucket(self, **_kwargs: Any) -> None:
+        return None
+
+    def put_object(self, **kwargs: Any) -> dict[str, str]:
+        key = str(kwargs["Key"])
+        if key in self.objects:
+            raise ClientError(
+                {
+                    "Error": {"Code": "PreconditionFailed", "Message": "already exists"},
+                    "ResponseMetadata": {"HTTPStatusCode": 412},
+                },
+                "PutObject",
+            )
+        assert kwargs["IfNoneMatch"] == "*"
+        payload = bytes(kwargs["Body"])
+        assert kwargs["ContentLength"] == len(payload)
+        self.objects[key] = (
+            payload,
+            str(kwargs["ContentType"]),
+            {str(name): str(value) for name, value in kwargs["Metadata"].items()},
+        )
+        return {"ETag": '"created"'}
+
+    def head_object(self, **kwargs: Any) -> dict[str, Any]:
+        payload, content_type, metadata = self._object(str(kwargs["Key"]), "HeadObject")
+        return {
+            "ContentLength": len(payload),
+            "ContentType": content_type,
+            "Metadata": metadata,
+        }
+
+    def get_object(self, **kwargs: Any) -> dict[str, Any]:
+        payload, content_type, metadata = self._object(str(kwargs["Key"]), "GetObject")
+        return {
+            "ContentLength": len(payload),
+            "ContentType": content_type,
+            "Metadata": metadata,
+            "Body": io.BytesIO(payload),
+        }
+
+    def _object(self, key: str, operation: str) -> tuple[bytes, str, dict[str, str]]:
+        try:
+            return self.objects[key]
+        except KeyError as exc:
+            raise ClientError(
+                {
+                    "Error": {"Code": "NoSuchKey", "Message": "missing"},
+                    "ResponseMetadata": {"HTTPStatusCode": 404},
+                },
+                operation,
+            ) from exc
+
+
+@pytest.mark.integration
+@pytest.mark.cad
+def test_public_custom_shelving_reaches_verified_supplier_review_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prove custom public inputs survive HTTP, worker, storage and download.
+
+    No synthetic retention contract is injected. The useful supplier geometry
+    must still be delivered while CAM remains explicitly and verifiably blocked.
+    """
+
+    custom_spec: dict[str, object] = {
+        "width_mm": 1_437,
+        "height_mm": 2_187,
+        "depth_mm": 347,
+        "furniture_type": "bookcase",
+        "material_id": "mdf",
+        "back_material_id": "mdf-6",
+        "nominal_thickness_mm": 18,
+        "measured_thickness_mm": 17.6,
+        "shelf_count": 4,
+        "shelf_mount": "fixed",
+        "load_per_shelf_kg": 20,
+        "back_panel": "inset_groove",
+        "plinth": True,
+        "plinth_height_mm": 93,
+        "divider_count": 2,
+        "bay_width_ratios": [0.21, 0.47, 0.32],
+        "shelf_height_ratios": [0.14, 0.37, 0.63, 0.86],
+        "edge_band_mm": 0,
+        "joint_system": "dado",
+        "reinforcement_mode": "manual",
+        "wall_anchor_required": False,
+    }
+    production_context = valid_production_context()
+    object_storage = _MultiObjectImmutableStorage()
+    monkeypatch.setattr(worker_tasks, "SessionFactory", get_session_factory())
+    monkeypatch.setattr(worker_tasks, "_s3_client", lambda: object_storage)
+    monkeypatch.setattr(storage_module, "internal_s3_client", lambda: object_storage)
+    # The module's autouse fixture isolates most API tests from object storage.
+    # This regression deliberately restores the production readers so both the
+    # worker completion gate and public downloads verify the persisted bytes.
+    monkeypatch.setattr(api_module, "verify_stored_object", storage_module.verify_stored_object)
+    monkeypatch.setattr(
+        api_module,
+        "read_verified_stored_object",
+        storage_module.read_verified_stored_object,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "open_verified_stored_object",
+        storage_module.open_verified_stored_object,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "_require_resolved_dado_retention",
+        _REAL_DADO_RETENTION_GATE,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "_frozen_dado_retention_is_unresolved",
+        _REAL_DADO_RETENTION_PROJECTION,
+    )
+
+    with TestClient(app) as client:
+        project_response = client.post(
+            "/v1/projects",
+            headers=HEADERS,
+            json={"name": "Public custom shelving export chain"},
+        )
+        assert project_response.status_code == 201, project_response.text
+        project = project_response.json()
+        preview = client.post(
+            "/v1/designs/preview",
+            headers=HEADERS,
+            params={"project_id": project["id"]},
+            json=custom_spec,
+        )
+        assert preview.status_code == 200, preview.text
+        version_response = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json={
+                "template_id": "shelving",
+                "spec": custom_spec,
+                "production_context": production_context,
+                "expected_design_hash": preview.json()["design_hash"],
+                "expected_current_revision": 0,
+            },
+        )
+        assert version_response.status_code == 201, version_response.text
+        version = version_response.json()
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+        generated_response = client.post(f"{base}/generate", headers=HEADERS, json={})
+        assert generated_response.status_code == 202, generated_response.text
+        generated = generated_response.json()
+
+        result = worker_tasks.generate_package.run(
+            job_id=generated["id"],
+            organization_id=DEV_ORG_NORDIC,
+        )
+        assert result["design_review_package_status"]["cam_status"] == "BLOCKED"
+        assert result["design_review_package_status"]["blocker_codes"] == [
+            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+        ]
+        assert result["machine_program_mode"] == "CAM_BLOCKED"
+        assert result["production_machine_program"] is False
+
+        with get_session_factory()() as session:
+            persisted_version = session.get(DesignVersion, version["id"])
+            persisted_job = session.get(GenerationJob, generated["id"])
+            assert persisted_version is not None
+            assert persisted_job is not None
+            assert persisted_job.status is JobStatus.succeeded
+            frozen_parameters = persisted_version.spec_json["parameters"]
+            assert frozen_parameters["width_um"] == 1_437_000
+            assert frozen_parameters["height_um"] == 2_187_000
+            assert frozen_parameters["depth_um"] == 347_000
+            assert frozen_parameters["actual_thickness_um"] == 17_600
+            assert frozen_parameters["plinth_height_um"] == 93_000
+            assert frozen_parameters["vertical_divider_count"] == 2
+            assert frozen_parameters["bay_width_ratios_ppm"] == [210_000, 470_000, 320_000]
+            assert frozen_parameters["shelf_height_ratios_ppm"] == [
+                140_000,
+                370_000,
+                630_000,
+                860_000,
+            ]
+
+        listing = client.get(f"/v1/jobs/{generated['id']}/artifacts", headers=HEADERS)
+        assert listing.status_code == 200, listing.text
+        artifacts = {item["kind"]: item for item in listing.json()}
+        assert {
+            "production_bundle",
+            "manifest",
+            "manufacturing_intent",
+            "supplier_handoff",
+        } <= set(artifacts)
+        assert not ({"operations", "validation_backplot"} & set(artifacts))
+        assert not any(kind.startswith("setup_sheet_") for kind in artifacts)
+
+        downloaded: dict[str, bytes] = {}
+        for kind in (
+            "production_bundle",
+            "manifest",
+            "manufacturing_intent",
+            "supplier_handoff",
+        ):
+            artifact = artifacts[kind]
+            response = client.get(
+                artifact["download_path"],
+                headers=HEADERS,
+                follow_redirects=False,
+            )
+            assert response.status_code == 200, response.text
+            assert hashlib.sha256(response.content).hexdigest() == artifact["sha256"]
+            assert len(response.content) == artifact["size_bytes"]
+            downloaded[kind] = response.content
+
+        bundle_bytes = downloaded["production_bundle"]
+        verified_manifest = read_and_verify_package(bundle_bytes)
+        assert downloaded["manifest"] == canonical_json_bytes(verified_manifest)
+        with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
+            names = set(archive.namelist())
+            assert not any(
+                name.startswith(("cam/", "nesting/", "machine-validation/"))
+                for name in names
+            )
+            frozen_spec = json.loads(archive.read("design/design-spec.json"))
+            intent_bytes = archive.read(MANUFACTURING_INTENT_PATH)
+            handoff_bytes = archive.read(SUPPLIER_HANDOFF_PATH)
+            assert intent_bytes == downloaded["manufacturing_intent"]
+            assert handoff_bytes == downloaded["supplier_handoff"]
+            intent = json.loads(intent_bytes)
+            handoff = json.loads(handoff_bytes)
+            bom_rows = list(
+                csv.DictReader(io.StringIO(archive.read("bom/bom.csv").decode("utf-8")))
+            )
+
+            assert frozen_spec["spec"]["parameters"] == frozen_parameters
+            assert intent["document_identity"] == {
+                **intent["document_identity"],
+                "project_id": project["id"],
+                "revision": str(version["revision"]),
+                "design_hash": version["design_hash"],
+            }
+            assert handoff["package_identity"] == {
+                "project_id": project["id"],
+                "revision": str(version["revision"]),
+                "design_hash": version["design_hash"],
+            }
+            assert handoff["readiness"]["cam_status"] == "BLOCKED"
+            assert handoff["readiness"]["blocker_codes"] == [
+                DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+            ]
+            assert handoff["package_contract"]["physical_cutting_authorized"] is False
+            assert handoff["operation_binding"]["status"] == "NOT_GENERATED"
+
+            intent_parts = intent["parts"]
+            shelves = [part for part in intent_parts if part["name"] == "SHELF"]
+            backs = [part for part in intent_parts if part["name"] == "BACK"]
+            dividers = [part for part in intent_parts if part["name"] == "DIVIDER"]
+            plinths = [part for part in intent_parts if part["name"] == "PLINTH"]
+            assert len(shelves) == 12
+            assert len(backs) == 3
+            assert len(dividers) == 2
+            assert len(plinths) == 1
+            assert plinths[0]["finished_dimensions_um"] == {
+                "thickness": 17_600,
+                "u": 1_401_800,
+                "v": 98_866,
+            }
+            assert sorted({part["finished_dimensions_um"]["u"] for part in shelves}) == [
+                298_718,
+                449_044,
+                654_034,
+            ]
+            assert sorted({part["finished_dimensions_um"]["u"] for part in backs}) == [
+                298_602,
+                448_928,
+                653_802,
+            ]
+            assert sum(
+                feature["depth_um"] == 5_750
+                for part in dividers
+                for feature in part["features"]
+            ) == 4
+            assert sorted(
+                int(Decimal(row["finished_width_mm"]) * 1_000)
+                for row in bom_rows
+                if row["name"] == "BACK"
+            ) == [298_602, 448_928, 653_802]
+            assert len([row for row in bom_rows if row["name"] == "SHELF"]) == 12
+            plinth_bom = next(row for row in bom_rows if row["name"] == "PLINTH")
+            assert int(Decimal(plinth_bom["finished_width_mm"]) * 1_000) == 1_401_800
+            assert int(Decimal(plinth_bom["finished_height_mm"]) * 1_000) == 98_866
+
+            drawing_paths = {
+                name for name in names if name.startswith("parts/") and name.endswith(".dxf")
+            }
+            assert len(drawing_paths) == 2 * len(intent_parts)
+            divider_relief = next(
+                (part["part_id"], feature)
+                for part in dividers
+                for feature in part["features"]
+                if feature["depth_um"] == 5_750
+            )
+            divider_id, relief_feature = divider_relief
+            assert relief_feature["corner_strategy"] == "dogbone-v2"
+            dxf = archive.read(
+                f"parts/{divider_id}/{relief_feature['side']}.dxf"
+            ).decode("utf-8")
+            assert f"FEATURE:{relief_feature['feature_id']}" in dxf
+            assert "CUSTOMBUILD_DRAWING_JSON:" in dxf
+            assert archive.read("model/design.step").startswith(b"ISO-10303-21")
+
+        rejected_cam = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Supplier review files do not replace retention evidence",
+                "generation_job_id": generated["id"],
+            },
+        )
+        assert rejected_cam.status_code == 409
+        assert rejected_cam.json()["detail"]["code"] == (
+            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+        )

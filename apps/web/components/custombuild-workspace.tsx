@@ -61,6 +61,7 @@ import {
   type RuleEvaluation,
 } from "@/lib/design-types";
 import {
+  compatibleFurnitureTemplateId,
   FURNITURE_TEMPLATES,
   furnitureTemplate,
   hasCustomInteriorLayout,
@@ -593,11 +594,10 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     setServerPreview(undefined);
     setWorkspaceSelected(Boolean(restored && selected));
     setPlanningBrief(storedPlanningBrief ?? DEFAULT_PLANNING_BRIEF);
-    setSelectedTemplateId(
-      isFurnitureTemplateId(storedTemplateId)
-        ? storedTemplateId
-        : nextSpec.furniture_type === "wall_library" ? "wall-library" : "shelving",
-    );
+    const storedTemplate = isFurnitureTemplateId(storedTemplateId)
+      ? storedTemplateId
+      : nextSpec.furniture_type === "wall_library" ? "wall-library" : "shelving";
+    setSelectedTemplateId(compatibleFurnitureTemplateId(storedTemplate, nextSpec.furniture_type));
     const nextMode = restored && selected
       ? requestedMode ?? storedUiState.mode
       : principal ? "explore" : requestedMode ?? "explore";
@@ -1237,6 +1237,18 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     try {
       const outcome = resolveSemanticDrop(spec, request);
       replaceSpec(outcome.spec, outcome.diff);
+      if (outcome.spec.furniture_type !== spec.furniture_type) {
+        const compatibleTemplate = compatibleFurnitureTemplateId(
+          selectedTemplateId,
+          outcome.spec.furniture_type,
+        );
+        setSelectedTemplateId(compatibleTemplate);
+        setPlanningBrief((current) => ({
+          ...current,
+          startMode: "template",
+          selectedTemplateId: compatibleTemplate,
+        }));
+      }
       setSemanticNotice({ title: outcome.message, detail: outcome.detail });
       setSemanticDragKind(undefined);
       changeSelectedPart(undefined);
@@ -1250,7 +1262,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       });
       setSemanticDragKind(undefined);
     }
-  }, [changeSelectedPart, replaceSpec, spec]);
+  }, [changeSelectedPart, replaceSpec, selectedTemplateId, spec]);
 
   const updateSelectedPart = useCallback((partId: string, patch: PartOverride) => {
     const edited = editPartParametrically(spec, partId, patch);
@@ -2181,6 +2193,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                       spec={spec}
                       status={design.status}
                       partCount={design.parts.length}
+                      templateName={selectedTemplate.name}
+                      productionLevel={selectedTemplate.productionLevel}
                       onChange={updateSpec}
                       onOpenExplore={() => changeWorkspaceStage("explore")}
                       onOpenCheck={() => changeWorkspaceStage("check")}

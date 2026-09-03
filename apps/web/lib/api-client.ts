@@ -125,6 +125,7 @@ export function toPreviewRequest(spec: DesignSpec): PreviewRequestBody {
     load_per_shelf_kg: spec.load_per_shelf_kg,
     back_panel: spec.back_panel ? spec.back_panel_type : false,
     plinth: spec.plinth,
+    plinth_height_mm: spec.plinth_height_mm,
     divider_count: spec.divider_count,
     bay_width_ratios: spec.bay_width_ratios,
     shelf_height_ratios: spec.shelf_height_ratios,
@@ -134,7 +135,7 @@ export function toPreviewRequest(spec: DesignSpec): PreviewRequestBody {
     edge_band_mm: spec.edge_band_mm,
     joint_system: spec.joint_system,
     reinforcement_mode: spec.reinforcement_mode,
-    wall_anchor_required: false,
+    wall_anchor_required: spec.wall_anchor_required,
     wall_anchor_verified: false,
   };
 }
@@ -563,6 +564,34 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
     17,
     true,
   );
+  const plinthHeightMm = boundedServerNumber(
+    parameters.plinth_height_um,
+    boundedRequested.plinth_height_mm * 1_000,
+    "spec.parameters.plinth_height_um",
+    0,
+    500_000,
+    true,
+  ) / 1_000;
+  const rawWallAnchor = parameters.wall_anchor;
+  const wallAnchor = rawWallAnchor === undefined ? undefined : asRecord(rawWallAnchor);
+  if (rawWallAnchor !== undefined && !wallAnchor) {
+    throw new ApiError("Serverns väggförankring har ogiltigt format.");
+  }
+  let wallAnchorRequired = boundedRequested.wall_anchor_required;
+  if (wallAnchor) {
+    if (typeof wallAnchor.required !== "boolean") {
+      throw new ApiError("Servern returnerade ett ogiltigt värde för spec.parameters.wall_anchor.required.");
+    }
+    if (typeof wallAnchor.verified !== "boolean") {
+      throw new ApiError("Servern returnerade ett ogiltigt värde för spec.parameters.wall_anchor.verified.");
+    }
+    if (wallAnchor.verified) {
+      throw new ApiError(
+        "Serverns preview försökte återställa väggförankringsbevis i den redigerbara designspecifikationen.",
+      );
+    }
+    wallAnchorRequired = wallAnchor.required;
+  }
   const candidate: DesignSpec = {
     ...boundedRequested,
     furniture_type: baseCabinetCount > 0 ? "wall_library" : "bookcase",
@@ -629,14 +658,8 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
     ) / 9.80665,
     back_panel: backPanel !== "none",
     back_panel_type: backPanel === "surface_mounted" ? "surface_mounted" : "inset_groove",
-    plinth: boundedServerNumber(
-      parameters.plinth_height_um,
-      boundedRequested.plinth ? 80_000 : 0,
-      "spec.parameters.plinth_height_um",
-      0,
-      500_000,
-      true,
-    ) > 0,
+    plinth: plinthHeightMm > 0,
+    plinth_height_mm: plinthHeightMm,
     divider_count: boundedServerNumber(
       parameters.vertical_divider_count,
       boundedRequested.divider_count,
@@ -684,6 +707,7 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
       5_000,
       true,
     ) / 1_000,
+    wall_anchor_required: wallAnchorRequired,
     wall_anchor_verified: false,
   };
   return parseLocalDesignSpec(candidate);
@@ -1403,7 +1427,8 @@ export class CustombuildApiClient {
         size_bytes: sizeBytes,
         content_type: contentType,
         // Never expose the untrusted external download_url returned for non-web
-        // clients. Web downloads always use the authenticated, signed API path.
+        // clients. Web downloads always use the authenticated API path with an
+        // expiring access signature.
         download_url: downloadPath,
         download_path: downloadPath,
       };
@@ -1483,7 +1508,9 @@ export class CustombuildApiClient {
       || digest !== expectedDigest
       || etag !== `"${artifact.sha256}"`
     ) {
-      throw new ApiError("Artefaktens svarshuvuden matchar inte den signerade inventeringen.");
+      throw new ApiError(
+        "Artefaktens svarshuvuden matchar inte den serverauktoritativa inventeringen.",
+      );
     }
 
     let body: ArrayBuffer;
@@ -1493,7 +1520,9 @@ export class CustombuildApiClient {
       throw new ApiError("Artefaktens svarskropp kunde inte läsas fullständigt.");
     }
     if (body.byteLength !== artifact.size_bytes) {
-      throw new ApiError("Artefaktens faktiska storlek matchar inte den signerade inventeringen.");
+      throw new ApiError(
+        "Artefaktens faktiska storlek matchar inte den serverauktoritativa inventeringen.",
+      );
     }
     let actualSha256: string;
     try {
@@ -1505,7 +1534,7 @@ export class CustombuildApiClient {
       throw new ApiError("Webbläsaren kunde inte verifiera artefaktens SHA-256.");
     }
     if (actualSha256 !== artifact.sha256) {
-      throw new ApiError("Artefaktens innehåll matchar inte den signerade SHA-256-identiteten.");
+      throw new ApiError("Artefaktens innehåll matchar inte den förväntade SHA-256-identiteten.");
     }
     return new Blob([body], { type: artifact.content_type });
   }

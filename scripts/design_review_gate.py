@@ -6,12 +6,16 @@ coordinate used by the automated run.  The gate never infers a WCS, pin,
 fixture, machine calibration or workshop approval.
 """
 
+# Repository-path bootstrapping intentionally precedes local package imports.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import argparse
 import hashlib
 import io
 import json
+import sys
 import tomllib
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -19,6 +23,27 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+# Keep the checked-in verification command runnable from a clean repository
+# checkout.  Pytest supplies these paths through ``pyproject.toml``, but an
+# operator invoking ``python scripts/design_review_gate.py`` does not inherit
+# pytest's import configuration.
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+for _source_root in (
+    _REPOSITORY_ROOT,
+    _REPOSITORY_ROOT / "packages/domain/src",
+    _REPOSITORY_ROOT / "packages/rule-engine/src",
+    _REPOSITORY_ROOT / "packages/manufacturing/src",
+    _REPOSITORY_ROOT / "packages/template-sdk/src",
+    _REPOSITORY_ROOT / "cad/src",
+    _REPOSITORY_ROOT / "cam/src",
+    _REPOSITORY_ROOT / "postprocessors/src",
+    _REPOSITORY_ROOT / "services/api",
+    _REPOSITORY_ROOT / "services/worker",
+):
+    _source_path = str(_source_root)
+    if _source_path not in sys.path:
+        sys.path.insert(0, _source_path)
 
 from app.design_service import canonical_preview
 from app.schemas import BookcasePreviewInput
@@ -76,9 +101,9 @@ SCREENED_TEMPLATE_IDS = ("shelving",)
 DEFAULT_REPOSITORY = Path(".")
 SCREENED_DEFAULTS_CONTRACT_PATH = Path("packages/contracts/screened-template-defaults.v1.json")
 SCREENED_DEFAULTS_SCHEMA_VERSION = "custombuild.screened-template-defaults.v1"
-SCREENED_DEFAULTS_CONTRACT_VERSION = "1.2.0"
+SCREENED_DEFAULTS_CONTRACT_VERSION = "1.3.0"
 SCREENED_DEFAULTS_CONTRACT_FINGERPRINT = (
-    "b3dcd99962958819964846c5836db418394b8024ce21910677272e2b86071c9a"
+    "ec20a539e2bef2478d18a66519331ceb1067388551419ead9df337e72ecd2b71"
 )
 SCREENED_DEFAULTS_CANONICALIZATION = (
     "UTF-8 JSON with recursively sorted object keys, compact separators, "
@@ -103,6 +128,7 @@ EFFECTIVE_DESIGN_SPEC_KEYS = frozenset(
         "back_panel",
         "back_panel_type",
         "plinth",
+        "plinth_height_mm",
         "divider_count",
         "bay_sizing_mode",
         "target_bay_width_mm",
@@ -117,6 +143,7 @@ EFFECTIVE_DESIGN_SPEC_KEYS = frozenset(
         "reinforcement_mode",
         "joint_system",
         "edge_band_mm",
+        "wall_anchor_required",
         "wall_anchor_verified",
         "stock_width_mm",
         "stock_height_mm",
@@ -139,9 +166,11 @@ REQUIRED_CORE_ARTIFACTS = frozenset(
         "labels/label-index.csv",
         "materials/material-list.csv",
         "materials/stock-purchase.csv",
+        "manufacturing/manufacturing-intent.json",
         "model/design.glb",
         "model/design.step",
         "quality/measurement-plan.json",
+        "shop/supplier-handoff.json",
         "validation/cad-interchange-status.json",
         "validation/design-review-package-status.json",
         "validation/dfm-report.json",
@@ -158,8 +187,10 @@ REQUIRED_BLOCKED_REVIEW_ARTIFACTS = frozenset(
         "design/design-spec.json",
         "design/result-summary.json",
         "materials/material-list.csv",
+        "manufacturing/manufacturing-intent.json",
         "model/design.glb",
         "model/design.step",
+        "shop/supplier-handoff.json",
         "validation/cad-interchange-status.json",
         "validation/design-review-package-status.json",
         "validation/dfm-report.json",

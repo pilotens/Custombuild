@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 from app.design_service import normalize_preview, preview
-from app.schemas import BookcasePreviewInput
+from app.schemas import BookcasePreviewInput, GenerationRequest
 from custombuild_domain import PartRole
 from pydantic import ValidationError
 
@@ -37,6 +37,17 @@ def test_custom_layout_crosses_api_boundary_into_domain_geometry() -> None:
     ]
 
 
+def test_api_accepts_binary_float_five_percent_shelf_spacing() -> None:
+    payload = BookcasePreviewInput(
+        shelf_count=2,
+        shelf_height_ratios=[0.1, 0.15],
+    )
+
+    spec = normalize_preview(payload.model_dump(exclude_none=True))
+
+    assert spec.parameters.shelf_height_ratios_ppm == (100_000, 150_000)
+
+
 @pytest.mark.parametrize(
     ("bay_ratios", "shelf_ratios"),
     (
@@ -55,6 +66,29 @@ def test_api_rejects_incoherent_custom_layouts(
             bay_width_ratios=bay_ratios,
             shelf_height_ratios=shelf_ratios,
         )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error_type"),
+    (
+        ({"machine_profile_id": "unknown-machine"}, "literal_error"),
+        ({"postprocessor_id": "unknown-postprocessor"}, "literal_error"),
+        ({"unexpected": True}, "extra_forbidden"),
+    ),
+)
+def test_generation_request_rejects_values_outside_its_runtime_contract(
+    payload: dict[str, object], error_type: str
+) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        GenerationRequest.model_validate(payload)
+
+    assert {error["type"] for error in exc_info.value.errors()} == {error_type}
+
+
+def test_generation_request_accepts_the_large_format_runtime_profile() -> None:
+    request = GenerationRequest(machine_profile_id="custombuild-router-5125-linuxcnc")
+
+    assert request.machine_profile_id == "custombuild-router-5125-linuxcnc"
 
 
 def test_api_contract_allows_seventeen_base_cabinets_but_only_sixteen_dividers() -> None:

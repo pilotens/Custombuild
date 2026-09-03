@@ -181,6 +181,7 @@ const LOCAL_DESIGN_SPEC_KEYS = [
   "back_panel",
   "back_panel_type",
   "plinth",
+  "plinth_height_mm",
   "divider_count",
   "bay_sizing_mode",
   "target_bay_width_mm",
@@ -197,6 +198,7 @@ const LOCAL_DESIGN_SPEC_KEYS = [
   "reinforcement_mode",
   "joint_system",
   "edge_band_mm",
+  "wall_anchor_required",
   "wall_anchor_verified",
   ...PRODUCTION_CONTEXT_KEYS,
 ] as const;
@@ -784,10 +786,14 @@ function parseCanonicalServerSpec(
     code,
   );
   const baseCabinetCount = integer(root.base_cabinet_count, "spec_json.base_cabinet_count", 0, 17, code);
-  if (root.plinth_height_mm !== undefined) {
-    finiteNumber(root.plinth_height_mm, "spec_json.plinth_height_mm", 0, 500, code);
+  const plinth = boolean(root.plinth, "spec_json.plinth", code);
+  const plinthHeight = root.plinth_height_mm === undefined
+    ? plinth ? DEFAULT_DESIGN_SPEC.plinth_height_mm : 0
+    : finiteNumber(root.plinth_height_mm, "spec_json.plinth_height_mm", 0, 500, code);
+  if (plinth !== (plinthHeight > 0)) {
+    fail(code, "spec_json.plinth måste motsvara om spec_json.plinth_height_mm är större än noll.");
   }
-  boolean(root.wall_anchor_required, "spec_json.wall_anchor_required", code);
+  const wallAnchorRequired = boolean(root.wall_anchor_required, "spec_json.wall_anchor_required", code);
   const wallAnchorVerified = boolean(root.wall_anchor_verified, "spec_json.wall_anchor_verified", code);
   if (wallAnchorVerified) {
     fail(code, "spec_json.wall_anchor_verified får inte återställa ett produktionsbevis i arbetsytan.");
@@ -815,7 +821,8 @@ function parseCanonicalServerSpec(
     load_per_shelf_kg: finiteNumber(root.load_per_shelf_kg, "spec_json.load_per_shelf_kg", 0, 500, code),
     back_panel: backPanel,
     back_panel_type: backPanelType,
-    plinth: boolean(root.plinth, "spec_json.plinth", code),
+    plinth,
+    plinth_height_mm: plinthHeight,
     divider_count: dividerCount,
     bay_sizing_mode: intent.bay_sizing_mode,
     target_bay_width_mm: intent.target_bay_width_mm,
@@ -836,6 +843,7 @@ function parseCanonicalServerSpec(
     ),
     joint_system: oneOf(root.joint_system, ["dado"] as const, "spec_json.joint_system", code),
     edge_band_mm: finiteNumber(root.edge_band_mm, "spec_json.edge_band_mm", 0, 5, code),
+    wall_anchor_required: wallAnchorRequired,
     wall_anchor_verified: false,
     ...intent.production_context,
   };
@@ -919,6 +927,13 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
         "back_panel_type",
         code,
       );
+  const plinth = boolean(merged.plinth, "plinth", code);
+  const plinthHeight = root.plinth_height_mm === undefined
+    ? plinth ? DEFAULT_DESIGN_SPEC.plinth_height_mm : 0
+    : finiteNumber(merged.plinth_height_mm, "plinth_height_mm", 0, 500, code);
+  if (plinth !== (plinthHeight > 0)) {
+    fail(code, "plinth måste motsvara om plinth_height_mm är större än noll.");
+  }
   const dividerCount = integer(merged.divider_count, "divider_count", 0, 16, code);
   const shelfCount = integer(merged.shelf_count, "shelf_count", 0, 40, code);
   const customizations = parsePartCustomizations(merged.part_overrides, merged.removed_part_ids, code);
@@ -948,7 +963,8 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
     load_per_shelf_kg: finiteNumber(merged.load_per_shelf_kg, "load_per_shelf_kg", 0, 500, code),
     back_panel: backPanel,
     back_panel_type: backPanelType,
-    plinth: boolean(merged.plinth, "plinth", code),
+    plinth,
+    plinth_height_mm: plinthHeight,
     divider_count: dividerCount,
     bay_sizing_mode: oneOf(merged.bay_sizing_mode, ["count", "target_width"] as const, "bay_sizing_mode", code),
     target_bay_width_mm: finiteNumber(merged.target_bay_width_mm, "target_bay_width_mm", 50, 2_000, code),
@@ -966,6 +982,7 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
     reinforcement_mode: oneOf(merged.reinforcement_mode, ["manual", "auto"] as const, "reinforcement_mode", code),
     joint_system: oneOf(merged.joint_system, ["dado"] as const, "joint_system", code),
     edge_band_mm: finiteNumber(merged.edge_band_mm, "edge_band_mm", 0, 5, code),
+    wall_anchor_required: boolean(merged.wall_anchor_required, "wall_anchor_required", code),
     wall_anchor_verified: false,
     ...productionContext,
   };
@@ -985,6 +1002,11 @@ export function parseLocalDesignPatch(
   patch: Partial<DesignSpec>,
 ): DesignSpec {
   const candidate: DesignSpec = { ...spec, ...patch };
+  if (Object.hasOwn(patch, "plinth") && !Object.hasOwn(patch, "plinth_height_mm")) {
+    candidate.plinth_height_mm = candidate.plinth
+      ? (spec.plinth_height_mm > 0 ? spec.plinth_height_mm : DEFAULT_DESIGN_SPEC.plinth_height_mm)
+      : 0;
+  }
   if (
     Object.hasOwn(patch, "depth_mm")
     && !Object.hasOwn(patch, "base_cabinet_depth_mm")

@@ -17,6 +17,9 @@ from .artifact_limits import (
     valid_artifact_size,
 )
 from .dfm import (
+    ADJACENT_RELIEF_CLEARANCE_WARNING_CODE,
+    ADJACENT_RELIEF_CLEARANCE_WARNING_MESSAGE,
+    ADJACENT_RELIEF_CLEARANCE_WARNING_REQUIRED_ACTION,
     DFM_ENGINE_VERSION,
     STOCK_PROFILE_MISSING_CODE,
     STOCK_PROFILE_MISSING_MESSAGE,
@@ -105,9 +108,17 @@ from .procurement import (
 from .profiles import linuxcnc_reference_router_1325, linuxcnc_reference_router_5125
 from .quality import (
     LABEL_INDEX_SCHEMA_VERSION,
+    MANUFACTURING_INTENT_PATH,
+    MANUFACTURING_INTENT_ROLE,
+    MANUFACTURING_INTENT_SCHEMA_VERSION,
     QUALITY_MEASUREMENT_PLAN_SCHEMA_VERSION,
+    SUPPLIER_HANDOFF_PATH,
+    SUPPLIER_HANDOFF_ROLE,
+    SUPPLIER_HANDOFF_SCHEMA_VERSION,
     label_index_csv,
+    manufacturing_intent_json,
     quality_measurement_plan_json,
+    supplier_handoff_json,
 )
 from .readiness import (
     WORKSHOP_READINESS_SCHEMA_VERSION,
@@ -194,6 +205,9 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
+    "ADJACENT_RELIEF_CLEARANCE_WARNING_CODE",
+    "ADJACENT_RELIEF_CLEARANCE_WARNING_MESSAGE",
+    "ADJACENT_RELIEF_CLEARANCE_WARNING_REQUIRED_ACTION",
     "ArtifactError",
     "ArtifactFile",
     "BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
@@ -235,6 +249,9 @@ __all__ = [
     "GrainRuleDefinition",
     "MachineProfile",
     "LABEL_INDEX_SCHEMA_VERSION",
+    "MANUFACTURING_INTENT_PATH",
+    "MANUFACTURING_INTENT_ROLE",
+    "MANUFACTURING_INTENT_SCHEMA_VERSION",
     "ManifestContext",
     "MANIFEST_CONTEXT_HASH_FIELDS",
     "ManufacturingError",
@@ -250,6 +267,9 @@ __all__ = [
     "Point2D",
     "ProductionBlockedError",
     "QUALITY_MEASUREMENT_PLAN_SCHEMA_VERSION",
+    "SUPPLIER_HANDOFF_PATH",
+    "SUPPLIER_HANDOFF_ROLE",
+    "SUPPLIER_HANDOFF_SCHEMA_VERSION",
     "Rect",
     "Severity",
     "Setup",
@@ -292,7 +312,9 @@ __all__ = [
     "retention_evidence_blocker_code",
     "normalize_design_review_dfm_report",
     "label_index_csv",
+    "manufacturing_intent_json",
     "quality_measurement_plan_json",
+    "supplier_handoff_json",
     "read_and_verify_package",
     "sha256_hex",
     "stock_purchase_csv",

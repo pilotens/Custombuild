@@ -10,6 +10,8 @@ import {
   Minus,
   Plus,
   Ruler,
+  ShieldAlert,
+  ShieldCheck,
 } from "lucide-react";
 import {
   currentEqualBayWidthMm,
@@ -33,6 +35,7 @@ import {
   type DesignSpec,
   type ValidationStatus,
 } from "@/lib/design-types";
+import type { FurnitureTemplate } from "@/lib/furniture-templates";
 import { ContextPanel, DimensionInput, SegmentedControl } from "./design-system";
 import styles from "./studio-inspector.module.css";
 
@@ -40,6 +43,8 @@ interface StudioInspectorProps {
   spec: DesignSpec;
   status: ValidationStatus;
   partCount: number;
+  templateName?: string;
+  productionLevel?: FurnitureTemplate["productionLevel"];
   onChange: (patch: Partial<DesignSpec>, reason?: string) => void;
   onOpenExplore: () => void;
   onOpenCheck: () => void;
@@ -255,6 +260,8 @@ export function StudioInspector({
   spec,
   status,
   partCount,
+  templateName = "Hyllsystem",
+  productionLevel = "screened",
   onChange,
   onOpenExplore,
   onOpenCheck,
@@ -267,6 +274,7 @@ export function StudioInspector({
     spec.height_mm,
     spec.measured_thickness_mm,
   );
+  const screenedDesign = productionLevel === "screened" && spec.furniture_type === "bookcase";
 
   const setBayCount = (nextBayCount: number) => {
     const next = clampInteger(nextBayCount, 1, MAX_BAY_COUNT);
@@ -316,12 +324,27 @@ export function StudioInspector({
         <span>{spec.material_name}</span>
       </div>
 
+      <div className={styles.scopeCard} data-level={screenedDesign ? "screened" : "concept"}>
+        {screenedDesign
+          ? <ShieldCheck aria-hidden="true" size={19} />
+          : <ShieldAlert aria-hidden="true" size={19} />}
+        <span>
+          <strong>{screenedDesign ? "Egen design inom screenad hyllstomme" : "Konceptdesign – underlag spärrat"}</strong>
+          <small>
+            {screenedDesign
+              ? `Yttermått, fack, hyllnivåer, material och konstruktionsval i ${templateName} skickas till samma servermodell som skapar granskningsunderlaget.`
+              : `${templateName} kan formas och kontrolleras här, men kan inte bli ett produktionsunderlag förrän dess konstruktionssystem är verifierat.`}
+          </small>
+          <small>Screening eller ett granskningspaket är inte ett godkännande för skärande CNC-körning.</small>
+        </span>
+      </div>
+
       <section className={styles.section} aria-labelledby="studio-size-heading">
         <header><Ruler aria-hidden="true" size={18} /><div><h3 id="studio-size-heading">Yttermått</h3><p>Dra även måtthandtagen direkt i modellen.</p></div></header>
         <div className={styles.dimensions}>
-          <DimensionInput label="Bredd" value={spec.width_mm} min={DESIGN_CONSTRAINTS.widthMm.minimum} max={DESIGN_CONSTRAINTS.widthMm.maximum} step={10} onCommit={(width_mm) => onChange({ width_mm }, "Bredd ändrades")} />
-          <DimensionInput label="Höjd" value={spec.height_mm} min={DESIGN_CONSTRAINTS.heightMm.minimum} max={DESIGN_CONSTRAINTS.heightMm.maximum} step={10} onCommit={(height_mm) => onChange({ height_mm }, "Höjd ändrades")} />
-          <DimensionInput label="Djup" value={spec.depth_mm} min={DESIGN_CONSTRAINTS.depthMm.minimum} max={DESIGN_CONSTRAINTS.depthMm.maximum} step={10} onCommit={(depth_mm) => onChange({ depth_mm }, "Djup ändrades")} />
+          <DimensionInput label="Bredd" value={spec.width_mm} min={DESIGN_CONSTRAINTS.widthMm.minimum} max={DESIGN_CONSTRAINTS.widthMm.maximum} step={0.001} commitMode="reject" hint="Sparas exakt i millimeter, med högst tre decimaler." onCommit={(width_mm) => onChange({ width_mm }, "Bredd ändrades")} />
+          <DimensionInput label="Höjd" value={spec.height_mm} min={DESIGN_CONSTRAINTS.heightMm.minimum} max={DESIGN_CONSTRAINTS.heightMm.maximum} step={0.001} commitMode="reject" hint="Sparas exakt i millimeter, med högst tre decimaler." onCommit={(height_mm) => onChange({ height_mm }, "Höjd ändrades")} />
+          <DimensionInput label="Djup" value={spec.depth_mm} min={DESIGN_CONSTRAINTS.depthMm.minimum} max={DESIGN_CONSTRAINTS.depthMm.maximum} step={0.001} commitMode="reject" hint="Sparas exakt i millimeter, med högst tre decimaler." onCommit={(depth_mm) => onChange({ depth_mm }, "Djup ändrades")} />
         </div>
       </section>
 
@@ -447,6 +470,7 @@ export function StudioInspector({
             ["back_panel", "Bakstycke", "Aktiverar ett specificerat 6 mm bakstycke"],
             ["plinth", "Sockel", "Indragen bas under möbeln"],
             ["fixed_shelves", "Fasta hyllor", "Frästa bärande spår"],
+            ["wall_anchor_required", "Planera väggförankring", "Kravet följer med revisionen; verifiering sker separat"],
           ] as const).map(([field, label, hint]) => (
             <label key={field}>
               <span><strong>{label}</strong><small>{hint}</small></span>
@@ -454,6 +478,27 @@ export function StudioInspector({
             </label>
           ))}
         </div>
+        {spec.plinth ? (
+          <DimensionInput
+            label="Sockelhöjd"
+            value={spec.plinth_height_mm}
+            min={0.001}
+            max={Math.min(
+              500,
+              Math.floor((spec.height_mm - 2 * spec.measured_thickness_mm) * 1_000 - 1) / 1_000,
+            )}
+            step={0.001}
+            commitMode="reject"
+            hint="Exakt höjd från golv till stommens underkant; sparas i serverrevisionen."
+            onCommit={(plinth_height_mm) => onChange(
+              { plinth_height_mm },
+              "Sockelhöjden ändrades",
+            )}
+          />
+        ) : null}
+        {spec.wall_anchor_required ? (
+          <p className={styles.inlineNote}>Väggförankring är ett krav i designen, inte ett verifierat montagebevis.</p>
+        ) : null}
         {spec.back_panel ? (
           <div className={styles.backPanelOptions} aria-label="Val för bakstycke">
             <SegmentedControl

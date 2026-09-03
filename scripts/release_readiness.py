@@ -562,9 +562,31 @@ def _package_manifest_emitter_is_safe(tree: ast.Module) -> bool:
     context_index, context_value = context_assignments[0]
     if context_index + 1 != manifest_index or not isinstance(context_value, ast.Dict):
         return False
-    context_items = _dict_literal_items(context_value)
-    if context_items is None:
+    context_parts = _dict_literal_parts(context_value)
+    if context_parts is None:
         return False
+    context_items, context_expansions = context_parts
+    if context_expansions:
+        if (
+            len(context_expansions) != 1
+            or set(context_items) != {"artifacts"}
+            or not isinstance(context_expansions[0], ast.Call)
+            or _call_name(context_expansions[0]) != "supplier_handoff_manifest_context"
+            or len(context_expansions[0].args) != 1
+            or context_expansions[0].keywords
+            or _expression_path(context_expansions[0].args[0]) != ("context",)
+        ):
+            return False
+        context_builder = _simple_function(tree, "supplier_handoff_manifest_context")
+        if context_builder is None:
+            return False
+        context_projection = _returned_dict_literal(context_builder)
+        if context_projection is None:
+            return False
+        projected_items = _dict_literal_items(context_projection)
+        if projected_items is None or set(projected_items) & set(context_items):
+            return False
+        context_items = {**projected_items, **context_items}
 
     assignments = _module_assignments(tree)
     expected_claims: dict[str, object] = {
