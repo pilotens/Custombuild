@@ -46,6 +46,7 @@ from scripts.live_acceptance import (
     verify_generation_plan,
     verify_generation_result_safety,
     verify_status_readiness_alignment,
+    verify_stock_selection,
     verify_workshop_readiness,
 )
 
@@ -103,6 +104,7 @@ def test_live_acceptance_rejects_noncanonical_artifact_download_paths(
             download_path,
             artifact_id="11111111-1111-4111-8111-111111111111",
             artifact_kind="production_bundle",
+            project_id="33333333-3333-4333-8333-333333333333",
             revision=3,
             expected_size=1,
             expected_content_type="application/octet-stream",
@@ -231,6 +233,7 @@ def _download_with_headers(
     headers: dict[str, str],
     *,
     expires_at: int | None = None,
+    project_id: str = "33333333-3333-4333-8333-333333333333",
 ) -> _StaticDownloadClient:
     client = _StaticDownloadClient(headers)
     effective_expiry = expires_at if expires_at is not None else int(time.time()) + 300
@@ -240,6 +243,7 @@ def _download_with_headers(
         f"expires={effective_expiry}&signature={'a' * 64}",
         artifact_id="11111111-1111-4111-8111-111111111111",
         artifact_kind="stock_selection",
+        project_id=project_id,
         revision=3,
         expected_size=1,
         expected_content_type="application/json",
@@ -256,7 +260,10 @@ def test_live_acceptance_accepts_the_one_hour_expiry_boundary(
 
     client = _download_with_headers(
         _download_headers(
-            disposition='attachment; filename="custombuild-stock-selection-rev-3.json"',
+            disposition=(
+                'attachment; filename="custombuild-project-33333333-3333-4333-8333-'
+                '333333333333-stock-selection-rev-3.json"'
+            ),
             cache_control="private, no-store, no-transform, max-age=0",
         ),
         expires_at=now + 3_600,
@@ -283,6 +290,7 @@ def test_live_acceptance_rejects_expired_or_far_future_download_paths(
             path,
             artifact_id="11111111-1111-4111-8111-111111111111",
             artifact_kind="stock_selection",
+            project_id="33333333-3333-4333-8333-333333333333",
             revision=3,
             expected_size=1,
             expected_content_type="application/json",
@@ -293,7 +301,10 @@ def test_live_acceptance_rejects_expired_or_far_future_download_paths(
 def test_live_acceptance_binds_filename_revision_and_exact_cache_directives() -> None:
     client = _download_with_headers(
         _download_headers(
-            disposition='attachment; filename="custombuild-stock-selection-rev-3.json"',
+            disposition=(
+                'attachment; filename="custombuild-project-33333333-3333-4333-8333-'
+                '333333333333-stock-selection-rev-3.json"'
+            ),
             cache_control="private, no-store, no-transform, max-age=0",
         )
     )
@@ -323,6 +334,33 @@ def test_live_acceptance_rejects_filename_kind_or_revision_drift(
 
 
 @pytest.mark.parametrize(
+    "project_id",
+    (
+        "33333333-3333-4333-8333-33333333333Z",
+        "33333333-3333-4333-8333-333333333333\r\nX-Test: injected",
+        "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+        "00000000-0000-0000-0000-000000000000",
+        "aaaaaaaa-aaaa-6aaa-8aaa-aaaaaaaaaaaa",
+        "aaaaaaaa-aaaa-4aaa-7aaa-aaaaaaaaaaaa",
+    ),
+)
+def test_live_acceptance_rejects_noncanonical_project_filename_identity(
+    project_id: str,
+) -> None:
+    with pytest.raises(AcceptanceFailure, match="Content-Disposition"):
+        _download_with_headers(
+            _download_headers(
+                disposition=(
+                    'attachment; filename="custombuild-project-33333333-3333-4333-8333-'
+                    '333333333333-stock-selection-rev-3.json"'
+                ),
+                cache_control="private, no-store, no-transform, max-age=0",
+            ),
+            project_id=project_id,
+        )
+
+
+@pytest.mark.parametrize(
     ("cache_control", "message"),
     (
         ("private, x-no-storey, no-transform, max-age=0", "may be cached"),
@@ -341,7 +379,10 @@ def test_live_acceptance_rejects_cache_control_substring_spoofs(
     with pytest.raises(AcceptanceFailure, match=message):
         _download_with_headers(
             _download_headers(
-                disposition='attachment; filename="custombuild-stock-selection-rev-3.json"',
+                disposition=(
+                    'attachment; filename="custombuild-project-33333333-3333-4333-8333-'
+                    '333333333333-stock-selection-rev-3.json"'
+                ),
                 cache_control=cache_control,
             )
         )
@@ -349,7 +390,7 @@ def test_live_acceptance_rejects_cache_control_substring_spoofs(
 
 def test_live_acceptance_hashes_the_exact_manifest_context_contract() -> None:
     assert CONTEXT_HASH_FIELDS == MANIFEST_CONTEXT_HASH_FIELDS
-    assert PRODUCTION_MANIFEST_SCHEMA_VERSION == "custombuild.production-manifest.v4"
+    assert PRODUCTION_MANIFEST_SCHEMA_VERSION == "custombuild.production-manifest.v5"
 
 
 def test_live_acceptance_uses_the_manufacturing_blocker_actions() -> None:
@@ -498,19 +539,44 @@ def _readiness_payload(*, edge_required: bool = False) -> dict[str, object]:
     ).as_dict()
 
 
+def _stock_rows() -> list[dict[str, object]]:
+    return [
+        {
+            "stock_id": "stock-a",
+            "declaration_authority": "CLIENT_DECLARED",
+            "material_id": "mdf",
+            "material_version": "v1",
+            "width_um": 1_000_000,
+            "height_um": 500_000,
+            "thickness_um": 18_000,
+            "quantity": 1,
+            "margin_um": 10_000,
+            "kerf_um": 6_000,
+            "grain_direction": "X",
+            "allow_rotation": True,
+            "defect_zones": [],
+            "clamp_zones": [
+                {"x_um": 46_500, "y_um": 46_500, "width_um": 7_000, "height_um": 7_000},
+                {"x_um": 946_500, "y_um": 46_500, "width_um": 7_000, "height_um": 7_000},
+            ],
+        }
+    ]
+
+
 def _generation_plan_payload() -> dict[str, object]:
     return {
-        "schema_version": "custombuild.generation-plan.v1",
-        "pipeline_version": "production-pipeline-1.10.0",
+        "schema_version": "custombuild.generation-plan.v2",
+        "pipeline_version": "production-pipeline-1.11.0",
         "nesting_algorithm": "deterministic-bottom-left-v1",
         "operations_schema_version": "custombuild.operations.v2",
-        "operations_engine_version": "semantic-operations-1.2.0",
+        "operations_engine_version": "semantic-operations-1.3.0",
         "machine_profile": {
             "id": "custombuild-router-1325-linuxcnc",
             "version": "1.0.0",
             "fingerprint": "a" * 64,
         },
         "postprocessor": {"id": "linuxcnc-validation", "version": "1.0.0"},
+        "stock_declaration_authorities": ["CLIENT_DECLARED"],
         "stock_profiles_fingerprint": "a" * 64,
         "validation_program_requested": True,
         "two_sided_registrations": [
@@ -519,10 +585,14 @@ def _generation_plan_payload() -> dict[str, object]:
                 "sheets": [
                     {
                         "sheet_index": 0,
+                        "declaration_authority": "CLIENT_DECLARED",
                         "method_id": "registration-pins",
+                        "fixture_method_version": "fixture-v1",
+                        "pin_diameter_um": 6_000,
+                        "position_tolerance_um": 500,
                         "points": [
-                            {"x_um": 10_000, "y_um": 20_000},
-                            {"x_um": 30_000, "y_um": 40_000},
+                            {"x_um": 50_000, "y_um": 50_000},
+                            {"x_um": 950_000, "y_um": 50_000},
                         ],
                     }
                 ],
@@ -541,6 +611,7 @@ def test_live_acceptance_verifies_the_generation_plan_semantics() -> None:
             label="plan",
             generated_validation_program=True,
             expected_stock_profiles_fingerprint="a" * 64,
+            expected_stock_rows=_stock_rows(),
         )
         == payload
     )
@@ -553,6 +624,7 @@ def test_live_acceptance_verifies_the_generation_plan_semantics() -> None:
             label="plan",
             generated_validation_program=True,
             expected_stock_profiles_fingerprint="a" * 64,
+            expected_stock_rows=_stock_rows(),
         )
 
     payload = _generation_plan_payload()
@@ -563,7 +635,24 @@ def test_live_acceptance_verifies_the_generation_plan_semantics() -> None:
             label="plan",
             generated_validation_program=True,
             expected_stock_profiles_fingerprint="a" * 64,
+            expected_stock_rows=_stock_rows(),
         )
+
+
+def test_live_acceptance_validates_v2_stock_authority_and_bounds() -> None:
+    payload: dict[str, object] = {
+        "schema_version": "custombuild.stock-selection.v2",
+        "stocks": _stock_rows(),
+        "assignments": [],
+        "unmatched_part_ids": [],
+    }
+
+    assert verify_stock_selection(payload, label="stock selection") == payload["stocks"]
+
+    tampered = copy.deepcopy(payload)
+    tampered["stocks"][0]["declaration_authority"] = "SERVER_VERIFIED"  # type: ignore[index]
+    with pytest.raises(AcceptanceFailure, match="authority"):
+        verify_stock_selection(tampered, label="stock selection")
 
 
 def _blocked_readiness_payload(*, dfm_blocked: bool = False) -> dict[str, object]:
@@ -1134,8 +1223,14 @@ def _registered_operations() -> dict[str, object]:
         "stock_id": "sheet-stock",
         "sheet_index": 0,
         "fixture": "EXTERNAL_FIXTURE_PLAN_REQUIRED; DECLARED_KEEP_OUT_ZONES_ONLY",
+        "keep_out_zones": [
+            {"x_um": 16_500, "y_um": 16_500, "width_um": 7_000, "height_um": 7_000},
+            {"x_um": 896_500, "y_um": 16_500, "width_um": 7_000, "height_um": 7_000},
+        ],
         "probe_method": (
-            "DECLARED_COORDINATE_REGISTRATION;METHOD=fixture-registration-v1;"
+            "DECLARED_COORDINATE_REGISTRATION;DECLARATION_AUTHORITY=CLIENT_DECLARED;"
+            "METHOD=fixture-registration-v1;METHOD_VERSION=fixture-v1;"
+            "PIN_DIAMETER_UM=6000;POSITION_TOLERANCE_UM=500;"
             "STOCK_XY_UM=20000,20000|900000,20000;"
             "EXTERNAL_SETUP_VERIFICATION_REQUIRED"
         ),

@@ -39,6 +39,7 @@ from .model import (
     NestingLayout,
     OperationsDocument,
     PartSpec,
+    Rect,
     Severity,
     StockSheet,
     canonical_json_bytes,
@@ -46,9 +47,11 @@ from .model import (
 )
 from .nesting import DeterministicNester
 from .operations import (
+    MIN_VALIDATION_CONTOUR_KERF_UM,
     OPERATIONS_SCHEMA_VERSION,
     TwoSidedRegistration,
     generate_operations_document,
+    registration_pin_keep_out_rectangles,
 )
 from .package import (
     GENERATION_PLAN_PIPELINE_VERSION,
@@ -225,6 +228,58 @@ def build_production_bundle(
         raise ProductionBlockedError("at least one stock profile is required")
     if len({item.stock_id for item in stocks}) != len(stocks):
         raise ProductionBlockedError("stock_id values must be unique within a generation request")
+    if any(item.kerf_um < MIN_VALIDATION_CONTOUR_KERF_UM for item in stocks):
+        raise ProductionBlockedError(
+            "validation stock kerf is smaller than the supported 6000 um contour-tool envelope"
+        )
+    registration_values = two_sided_registration_by_stock or {}
+    if not isinstance(registration_values, Mapping):
+        raise ProductionBlockedError("two-sided registrations must be a mapping")
+    stock_by_id = {item.stock_id: item for item in stocks}
+    keep_outs_by_stock: dict[str, list[Rect]] = {}
+    for stock_id, registrations_by_sheet in registration_values.items():
+        selected_stock = stock_by_id.get(stock_id)
+        if selected_stock is None or not isinstance(registrations_by_sheet, Mapping):
+            raise ProductionBlockedError("two-sided registration references unknown stock")
+        for sheet_index, registration in registrations_by_sheet.items():
+            if (
+                type(sheet_index) is not int
+                or not 0 <= sheet_index < selected_stock.quantity
+                or not isinstance(registration, TwoSidedRegistration)
+            ):
+                raise ProductionBlockedError("two-sided registration sheet identity is invalid")
+            footprints = registration_pin_keep_out_rectangles(registration)
+            sheet_bounds = Rect(0, 0, selected_stock.width_um, selected_stock.height_um)
+            for footprint in footprints:
+                if not sheet_bounds.contains(footprint):
+                    raise ProductionBlockedError(
+                        "two-sided registration pin footprint lies outside stock"
+                    )
+                if any(footprint.intersects(zone) for zone in selected_stock.defect_zones):
+                    raise ProductionBlockedError(
+                        "two-sided registration pin footprint intersects a defect zone"
+                    )
+                if any(footprint.intersects(zone) for zone in selected_stock.clamp_zones):
+                    raise ProductionBlockedError(
+                        "two-sided registration pin footprint intersects a fixture keep-out"
+                    )
+            keep_outs_by_stock.setdefault(stock_id, []).extend(footprints)
+
+    def zone_key(zone: Rect) -> tuple[int, int, int, int]:
+        return (zone.y_um, zone.x_um, zone.height_um, zone.width_um)
+
+    stocks = tuple(
+        replace(
+            item,
+            clamp_zones=tuple(
+                sorted(
+                    set((*item.clamp_zones, *keep_outs_by_stock.get(item.stock_id, ()))),
+                    key=zone_key,
+                )
+            ),
+        )
+        for item in stocks
+    )
 
     grouped_parts, selection_issues = _assign_parts_to_stock(adapted.parts, stocks)
     selection_blocking_issues = tuple(
@@ -405,7 +460,7 @@ def build_production_bundle(
 
     if not include_step:
         raise ProductionBlockedError(
-            "schema-v4 production packages require authoritative STEP/GLB and a canonical "
+            "schema-v5 production packages require authoritative STEP/GLB and a canonical "
             "design-review status; statusless generation is disabled"
         )
 

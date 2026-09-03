@@ -63,8 +63,8 @@ from custombuild_domain import (
 )
 from custombuild_manufacturing import (
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,
     ManifestContext,
-    Point2D,
     ProductionBlockedError,
     StockSheet,
     TwoSidedRegistration,
@@ -91,19 +91,23 @@ except ModuleNotFoundError:  # Direct ``python scripts/design_review_gate.py`` e
     )
 
 GATE_REPORT_SCHEMA_VERSION = "custombuild.design-review-gate.v2"
+# The v1 JSON shape is unchanged.  Tightening its AUTOMATED_DESIGN_REVIEW_ONLY
+# scope to require an empty registration map is a fail-closed validation fix,
+# not a new payload capability; old claim-bearing v1 values are rejected.
 GATE_FIXTURE_SCHEMA_VERSION = "custombuild.design-review-gate-fixture.v1"
 GATE_FIXTURE_SCOPE = "AUTOMATED_DESIGN_REVIEW_ONLY"
 GATE_FIXTURE_WARNING = (
-    "These stock-frame coordinates are deterministic automated test data, not a WCS, "
-    "fixture, machine setup, calibration record, or workshop approval."
+    "Automated design review is not workshop evidence and deliberately provides no physical "
+    "two-sided registration, WCS, fixture, machine setup, calibration record, or workshop "
+    "approval."
 )
 SCREENED_TEMPLATE_IDS = ("shelving",)
 DEFAULT_REPOSITORY = Path(".")
 SCREENED_DEFAULTS_CONTRACT_PATH = Path("packages/contracts/screened-template-defaults.v1.json")
 SCREENED_DEFAULTS_SCHEMA_VERSION = "custombuild.screened-template-defaults.v1"
-SCREENED_DEFAULTS_CONTRACT_VERSION = "1.3.0"
+SCREENED_DEFAULTS_CONTRACT_VERSION = "1.4.0"
 SCREENED_DEFAULTS_CONTRACT_FINGERPRINT = (
-    "ec20a539e2bef2478d18a66519331ceb1067388551419ead9df337e72ecd2b71"
+    "638d8091c7afb2d4bb54b8ccc67876595371b51f878076819a8b2cf46fc65057"
 )
 SCREENED_DEFAULTS_CANONICALIZATION = (
     "UTF-8 JSON with recursively sorted object keys, compact separators, "
@@ -122,6 +126,7 @@ EFFECTIVE_DESIGN_SPEC_KEYS = frozenset(
         "back_material_id",
         "nominal_thickness_mm",
         "measured_thickness_mm",
+        "measured_back_thickness_mm",
         "shelf_count",
         "fixed_shelves",
         "load_per_shelf_kg",
@@ -420,55 +425,11 @@ def load_gate_fixture(path: Path) -> GateFixture:
             template["registrations_by_stock"],
             f"fixture.templates.{template_id}.registrations_by_stock",
         )
-        parsed_stocks: dict[str, dict[int, TwoSidedRegistration]] = {}
-        for stock_id, raw_sheets in sorted(stocks.items()):
-            sheets = _object(raw_sheets, f"fixture stock {stock_id}")
-            parsed_sheets: dict[int, TwoSidedRegistration] = {}
-            for raw_sheet_index, raw_plan in sorted(sheets.items()):
-                if not raw_sheet_index.isdecimal():
-                    raise DesignReviewGateError(
-                        f"fixture stock {stock_id} sheet indexes must be decimal strings"
-                    )
-                sheet_index = int(raw_sheet_index)
-                plan = _object(raw_plan, f"fixture stock {stock_id} sheet {sheet_index}")
-                _exact_keys(
-                    plan,
-                    {"method_id", "points_um"},
-                    f"fixture stock {stock_id} sheet {sheet_index}",
-                )
-                method_id = plan["method_id"]
-                if not isinstance(method_id, str) or not method_id.startswith(
-                    "automated-design-review:"
-                ):
-                    raise DesignReviewGateError(
-                        "registration method_id must use the automated-design-review namespace"
-                    )
-                raw_points = plan["points_um"]
-                if not isinstance(raw_points, list) or len(raw_points) < 2:
-                    raise DesignReviewGateError(
-                        f"fixture stock {stock_id} requires at least two stock-frame points"
-                    )
-                points: list[Point2D] = []
-                for point_index, raw_point in enumerate(raw_points):
-                    if (
-                        not isinstance(raw_point, list)
-                        or len(raw_point) != 2
-                        or any(type(coordinate) is not int for coordinate in raw_point)
-                    ):
-                        raise DesignReviewGateError(
-                            f"fixture stock {stock_id} point {point_index} must be two integers"
-                        )
-                    points.append(Point2D(raw_point[0], raw_point[1]))
-                if len({(point.x_um, point.y_um) for point in points}) != len(points):
-                    raise DesignReviewGateError(
-                        f"fixture stock {stock_id} registration points must be unique"
-                    )
-                parsed_sheets[sheet_index] = TwoSidedRegistration(
-                    method_id=method_id,
-                    points=tuple(points),
-                )
-            parsed_stocks[stock_id] = parsed_sheets
-        parsed_templates[template_id] = parsed_stocks
+        if stocks:
+            raise DesignReviewGateError(
+                "automated design review must not declare physical registration data"
+            )
+        parsed_templates[template_id] = {}
     return GateFixture(raw=raw, registrations=parsed_templates)
 
 
@@ -506,6 +467,7 @@ def _stock_profiles(template_id: str, design: Any) -> tuple[StockSheet, ...]:
             thickness_um=mm(18),
             quantity=main_quantity,
             grain_direction=design.spec.material.grain_direction.value.upper(),
+            declaration_authority="AUTOMATED_DESIGN_REVIEW_FIXTURE",
         ),
         StockSheet(
             stock_id=f"gate-{template_id}-mdf-6",
@@ -517,46 +479,21 @@ def _stock_profiles(template_id: str, design: Any) -> tuple[StockSheet, ...]:
             quantity=1,
             # This automated fixture is not supplier evidence for back-sheet grain.
             grain_direction="NONE",
+            declaration_authority="AUTOMATED_DESIGN_REVIEW_FIXTURE",
         ),
     )
 
 
 def deterministic_gate_fixture_payload() -> dict[str, Any]:
-    """Generate the canonical validation-only registration fixture.
+    """Generate the canonical validation-only fixture without physical registration.
 
-    The coordinates are deterministic test inputs, never inferred workshop
-    evidence. Keeping the checked-in fixture equal to this payload prevents a
-    concept template or stale sheet count from remaining in the golden data.
+    Keeping the checked-in fixture equal to this payload prevents automated
+    review data from being mislabeled as a client workshop declaration.
     """
 
     templates: dict[str, Any] = {}
     for template_id in SCREENED_TEMPLATE_IDS:
-        design = build_bookcase(
-            BookcaseDesignSpec(
-                design_id=f"automated-design-review-{template_id}",
-                template_id=template_id,
-                parameters=_template_parameters(template_id),
-                material=screening_mdf_18(),
-                back_material=screening_mdf_6(),
-            )
-        )
-        registrations_by_stock: dict[str, Any] = {}
-        for stock in _stock_profiles(template_id, design):
-            stock_suffix = stock.stock_id.removeprefix(f"gate-{template_id}-")
-            registrations_by_stock[stock.stock_id] = {
-                str(sheet_index): {
-                    "method_id": (
-                        f"automated-design-review:{template_id}:{stock_suffix}:"
-                        f"sheet-{sheet_index + 1:03d}"
-                    ),
-                    "points_um": [
-                        [50_000, 50_000],
-                        [stock.width_um - 50_000, 50_000],
-                    ],
-                }
-                for sheet_index in range(stock.quantity)
-            }
-        templates[template_id] = {"registrations_by_stock": registrations_by_stock}
+        templates[template_id] = {"registrations_by_stock": {}}
     return {
         "schema_version": GATE_FIXTURE_SCHEMA_VERSION,
         "fixture_scope": GATE_FIXTURE_SCOPE,
@@ -578,6 +515,7 @@ def _actual_default_preview_payload(
         "back_material_id": spec["back_material_id"] if spec["back_panel"] else None,
         "nominal_thickness_mm": spec["nominal_thickness_mm"],
         "measured_thickness_mm": spec["measured_thickness_mm"],
+        "measured_back_thickness_mm": spec["measured_back_thickness_mm"],
         "shelf_count": spec["shelf_count"],
         "shelf_mount": "fixed" if spec["fixed_shelves"] else "adjustable",
         "load_per_shelf_kg": spec["load_per_shelf_kg"],
@@ -616,6 +554,7 @@ def _actual_default_stocks(
         quantity=int(spec["stock_count"]),
         # UI defaults do not bind a supplier-sheet axis. Keep it explicit.
         grain_direction="UNBOUND",
+        declaration_authority="LEGACY_UNSTRUCTURED_CLIENT_INPUT",
     )
     stocks = [carcass]
     if design.spec.back_material is not None:
@@ -632,21 +571,39 @@ def _actual_default_stocks(
                 thickness_um=design.spec.parameters.back_thickness_um,
                 quantity=int(spec["back_stock_count"]),
                 grain_direction="UNBOUND",
+                declaration_authority="LEGACY_UNSTRUCTURED_CLIENT_INPUT",
             )
         )
     return tuple(stocks)
 
 
 def _stock_snapshot(stock: StockSheet) -> dict[str, Any]:
+    def zones(values: Sequence[Any]) -> list[dict[str, int]]:
+        return [
+            {
+                "x_um": zone.x_um,
+                "y_um": zone.y_um,
+                "width_um": zone.width_um,
+                "height_um": zone.height_um,
+            }
+            for zone in values
+        ]
+
     return {
         "stock_id": stock.stock_id,
+        "declaration_authority": stock.declaration_authority,
         "material_id": stock.material_id,
         "material_version": stock.material_version,
         "width_um": stock.width_um,
         "height_um": stock.height_um,
         "thickness_um": stock.thickness_um,
         "quantity": stock.quantity,
+        "margin_um": stock.margin_um,
+        "kerf_um": stock.kerf_um,
         "grain_direction": stock.grain_direction,
+        "allow_rotation": stock.allow_rotation,
+        "defect_zones": zones(stock.defect_zones),
+        "clamp_zones": zones(stock.clamp_zones),
     }
 
 
@@ -674,39 +631,16 @@ def _actual_default_cad_evidence(design: Any) -> dict[str, Any]:
 def _registrations_for(
     fixture: GateFixture,
     template_id: str,
-    stocks: Sequence[StockSheet],
+    _stocks: Sequence[StockSheet],
 ) -> dict[str, dict[int, TwoSidedRegistration]]:
     declared = fixture.registrations.get(template_id)
     if declared is None:
         raise DesignReviewGateError(f"fixture has no registration data for {template_id}")
-    expected_stock_ids = {stock.stock_id for stock in stocks}
-    if set(declared) != expected_stock_ids:
+    if declared:
         raise DesignReviewGateError(
-            f"fixture stocks for {template_id} must be exactly {sorted(expected_stock_ids)}"
+            f"automated fixture for {template_id} must not claim physical registration"
         )
-
-    resolved: dict[str, dict[int, TwoSidedRegistration]] = {}
-    for stock in stocks:
-        plans = declared[stock.stock_id]
-        expected_sheets = set(range(stock.quantity))
-        if set(plans) != expected_sheets:
-            raise DesignReviewGateError(
-                f"fixture sheets for {stock.stock_id} must be exactly {sorted(expected_sheets)}"
-            )
-        for sheet_index, plan in plans.items():
-            if any(
-                point.x_um < 0
-                or point.y_um < 0
-                or point.x_um > stock.width_um
-                or point.y_um > stock.height_um
-                for point in plan.points
-            ):
-                raise DesignReviewGateError(
-                    f"fixture registration for {stock.stock_id} sheet {sheet_index} "
-                    "is outside the stock frame"
-                )
-        resolved[stock.stock_id] = dict(plans)
-    return resolved
+    return {}
 
 
 def _project_version(repo: Path) -> str:
@@ -905,6 +839,7 @@ def _verified_bundle_report(
     admitted_blocker_codes = {
         *dfm_blocker_codes,
         DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,
     }
     blocker_codes = bundle.review_status.blocker_codes
     dfm_blocked = len(blocker_codes) == 1 and blocker_codes[0] in dfm_blocker_codes

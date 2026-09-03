@@ -19,6 +19,8 @@ from uuid import uuid4
 from custombuild_domain import (
     BackPanelType,
     BookcaseDesignSpec,
+    JointRetentionContract,
+    JointRetentionLoadMode,
     TemplateCapabilityError,
     build_bookcase,
     dado_joint_geometry_fingerprint,
@@ -101,7 +103,13 @@ from .artifact_operations import (
     InMemoryArtifactOperationStore,
     RedisArtifactOperationStore,
 )
-from .auth import Capability, Principal, get_principal, require_capability
+from .auth import (
+    Capability,
+    Principal,
+    capabilities_for_role,
+    get_principal,
+    require_capability,
+)
 from .config import get_settings
 from .config_guards import BuildIdentityValues
 from .db import get_session_factory
@@ -112,6 +120,7 @@ from .design_service import (
     bind_joint_retention,
     canonical_preview,
     generation_plan_snapshot_for_design,
+    generation_stock_projection_for_design,
     grain_rule_evaluation,
     preview_grain_issues_for_design,
     stock_grain_issues_for_design,
@@ -126,6 +135,11 @@ from .joint_retention import (
     JointRetentionTrustError,
     resolve_joint_retention_contract,
     validate_signed_retention_evidence_structure,
+)
+from .joint_retention_registry import (
+    JointRetentionRegistryError,
+    assert_joint_retention_registry_activated,
+    parse_joint_retention_registry_json,
 )
 from .models import (
     Approval,
@@ -212,6 +226,10 @@ PrincipalDep = Annotated[Principal, Depends(get_principal)]
 DesignerDep = Annotated[Principal, Depends(require_capability(Capability.DESIGN))]
 GeneratorDep = Annotated[Principal, Depends(require_capability(Capability.GENERATE))]
 ReviewerDep = Annotated[Principal, Depends(require_capability(Capability.REVIEW))]
+JointRetentionEvidenceDownloadDep = Annotated[
+    Principal,
+    Depends(require_capability(Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD)),
+]
 WorkshopPreparerDep = Annotated[
     Principal,
     Depends(require_capability(Capability.WORKSHOP_PREPARE)),
@@ -351,6 +369,10 @@ _RULE_REPORT_DISCLAIMER = (
 _CANONICAL_UUID_PATTERN = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 )
+_CANONICAL_PROJECT_UUID_PATTERN = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}"
+)
 FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE = "FOUR_EYES_APPROVER_SEPARATION_REQUIRED"
 
 
@@ -456,6 +478,7 @@ def _evidence_snapshot(evidence: ExternalEvidence) -> dict[str, Any]:
 
 _ExternalEvidenceBinding = tuple[Any, ...]
 _ApprovalBinding = tuple[Any, ...]
+_RetentionDownloadVersionBinding = tuple[Any, ...]
 
 
 def _external_evidence_binding(evidence: ExternalEvidence) -> _ExternalEvidenceBinding:
@@ -479,6 +502,35 @@ def _external_evidence_binding(evidence: ExternalEvidence) -> _ExternalEvidenceB
         evidence.updated_at,
         evidence.expires_at,
         evidence.revoked_at,
+    )
+
+
+def _retention_download_version_binding(
+    version: DesignVersion,
+) -> _RetentionDownloadVersionBinding:
+    """Freeze every revision field that can affect retention applicability."""
+
+    return (
+        version.id,
+        version.organization_id,
+        version.project_id,
+        version.revision,
+        version.status,
+        version.design_hash,
+        version.context_hash,
+        canonical_hash(version.spec_json),
+        canonical_hash(version.source_provenance_json),
+        version.source_import_id,
+        canonical_hash(version.result_json),
+        version.engine_version,
+        version.template_version,
+        version.template_id,
+        version.template_capability_fingerprint,
+        version.rule_version,
+        version.created_by,
+        version.immutable,
+        version.created_at,
+        version.updated_at,
     )
 
 
@@ -1082,6 +1134,33 @@ def _retention_trust_error(code: str, message: str, solution: str) -> HTTPExcept
     )
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedCurrentRetentionEvidence:
+    """Exact signed evidence released only after the complete current-binding gate.
+
+    The bytes are immutable and deliberately excluded from every persisted job or
+    Celery payload.  A generation worker may hold this value in memory long enough
+    to place the certifier-signed statement in the immutable review package.
+    """
+
+    content: bytes
+    sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.content) is not bytes
+            or not self.content
+            or len(self.content) > MAX_SIGNED_EVIDENCE_BYTES
+        ):
+            raise ValueError("verified retention evidence bytes are invalid")
+        if (
+            not isinstance(self.sha256, str)
+            or re.fullmatch(r"[a-f0-9]{64}", self.sha256) is None
+            or hashlib.sha256(self.content).hexdigest() != self.sha256
+        ):
+            raise ValueError("verified retention evidence SHA-256 is invalid")
+
+
 def _joint_retention_trust_registry(
     encoded_override: str | None = None,
 ) -> Mapping[str, Any]:
@@ -1101,19 +1180,13 @@ def _joint_retention_trust_registry(
             "Keep the design in review until approved certifier keys are deployed.",
         )
     try:
-        registry = json.loads(encoded)
-    except json.JSONDecodeError as exc:
+        registry = parse_joint_retention_registry_json(encoded)
+    except JointRetentionRegistryError as exc:
         raise _retention_trust_error(
             "JOINT_RETENTION_TRUST_INVALID",
             "The server-owned joint-retention trust registry is malformed.",
             "Repair the deployment configuration; physical release remains blocked.",
         ) from exc
-    if not isinstance(registry, Mapping):
-        raise _retention_trust_error(
-            "JOINT_RETENTION_TRUST_INVALID",
-            "The server-owned joint-retention trust registry is not a JSON object.",
-            "Repair the deployment configuration; physical release remains blocked.",
-        )
     return registry
 
 
@@ -1197,7 +1270,8 @@ def _resolve_joint_retention_binding(
     evidence_id: str,
     *,
     trust_registry_json: str | None = None,
-) -> tuple[Any, dict[str, Any]]:
+    production_mode: bool | None = None,
+) -> tuple[JointRetentionContract, dict[str, Any], bytes]:
     if (
         base_spec.parameters.back_panel == BackPanelType.INSET_GROOVE
         and not captive_inset_back_topology_is_complete(
@@ -1221,6 +1295,31 @@ def _resolve_joint_retention_binding(
             "The canonical base design already contains a retention contract.",
             "Create a new unbound design revision before selecting new evidence.",
         )
+    registry = _joint_retention_trust_registry(trust_registry_json)
+    require_activation = (
+        get_settings().app_env == "production" if production_mode is None else production_mode
+    )
+    try:
+        assert_joint_retention_registry_activated(
+            session,
+            registry,
+            production=require_activation,
+        )
+    except JointRetentionRegistryError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "JOINT_RETENTION_REGISTRY_NOT_ACTIVATED",
+                "message": (
+                    "The configured joint-retention trust registry does not match "
+                    "the activated production high-water state."
+                ),
+                "solution": (
+                    "Activate this exact monotonic registry with the operator CLI; "
+                    "physical release remains blocked."
+                ),
+            },
+        ) from exc
     evidence, evidence_bytes = _verified_joint_retention_evidence_bytes(
         session,
         organization_id,
@@ -1228,20 +1327,28 @@ def _resolve_joint_retention_binding(
         base_result.design_hash,
         evidence_id,
     )
-    registry = _joint_retention_trust_registry(trust_registry_json)
     geometry_sha256 = dado_joint_geometry_fingerprint(base_result.parts, base_result.joints)
     try:
         contract = resolve_joint_retention_contract(
             trust_registry=registry,
             evidence_bytes=evidence_bytes,
-            expected_application_class=(
-                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
-            ),
+            expected_application_class=(JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO),
             expected_joint_geometry_sha256=geometry_sha256,
             expected_engine_version=base_result.engine_version,
             expected_template_version=base_result.template_version,
             required_materials=((base_spec.material.material_id, base_spec.material.version),),
             required_thicknesses_um=(base_spec.parameters.actual_thickness_um,),
+            required_loads_n=(
+                (
+                    JointRetentionLoadMode.SHEAR,
+                    max(base_spec.parameters.shelf_load_n, 1),
+                ),
+                (
+                    JointRetentionLoadMode.WITHDRAWAL,
+                    base_spec.parameters.assumed_horizontal_force_n,
+                ),
+            ),
+            minimum_safety_factor_permille=(base_spec.parameters.structural_safety_factor_permille),
         )
     except JointRetentionTrustError as exc:
         raise _retention_trust_error(
@@ -1279,9 +1386,7 @@ def _resolve_joint_retention_binding(
         )
     snapshot = {
         "schema_version": "custombuild.joint-retention-binding.v2",
-        "application_class": (
-            JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO.value
-        ),
+        "application_class": (JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO.value),
         "storage_evidence_id": evidence.id,
         "storage_evidence_sha256": evidence.sha256,
         "base_design_hash": base_result.design_hash,
@@ -1295,7 +1400,7 @@ def _resolve_joint_retention_binding(
         "system_version": contract.system_version,
         "contract_sha256": canonical_hash(contract.model_dump(mode="json")),
     }
-    return contract, snapshot
+    return contract, snapshot, evidence_bytes
 
 
 def _canonical_preview_with_optional_retention(
@@ -1329,7 +1434,7 @@ def _canonical_preview_with_optional_retention(
             "Retention evidence can only be resolved inside an existing project.",
             "Save the project draft, then preview the signed retention selection again.",
         )
-    contract, snapshot = _resolve_joint_retention_binding(
+    contract, snapshot, _evidence_bytes = _resolve_joint_retention_binding(
         session,
         organization_id,
         project.id,
@@ -1379,9 +1484,7 @@ def _retention_certification_request(
     return {
         "schema_version": "custombuild.joint-retention-certification-request.v2",
         "signed_evidence_schema_version": SIGNED_EVIDENCE_SCHEMA_VERSION,
-        "application_class": (
-            JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO.value
-        ),
+        "application_class": (JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO.value),
         "joint_geometry_fingerprint_schema": JOINT_GEOMETRY_FINGERPRINT_SCHEMA,
         "source_design_hash": result.design_hash,
         "joint_geometry_sha256": dado_joint_geometry_fingerprint(
@@ -1391,13 +1494,7 @@ def _retention_certification_request(
         "engine_version": result.engine_version,
         "template_version": result.template_version,
         "eligible_for_current_binding": eligible,
-        "blocking_issue": (
-            None
-            if eligible
-            else (
-                "back_panel_capture_not_proven"
-            )
-        ),
+        "blocking_issue": (None if eligible else ("back_panel_capture_not_proven")),
         "excluded_applications": (
             [
                 {
@@ -1460,7 +1557,8 @@ def _require_current_retention_binding(
     *,
     minimum_valid_until: datetime | None = None,
     trust_registry_json: str | None = None,
-) -> None:
+    production_mode: bool | None = None,
+) -> VerifiedCurrentRetentionEvidence | None:
     try:
         bound_spec = BookcaseDesignSpec.model_validate(version.spec_json)
     except ValidationError as exc:
@@ -1470,7 +1568,7 @@ def _require_current_retention_binding(
             "Create and review a new design revision.",
         ) from exc
     if bound_spec.joint_retention is None:
-        return
+        return None
     frozen_snapshot = version.result_json.get("retention_trust")
     if not isinstance(frozen_snapshot, Mapping):
         raise _retention_trust_error(
@@ -1494,7 +1592,7 @@ def _require_current_retention_binding(
             "The frozen retention evidence identifier is malformed.",
             "Create and review a new design revision.",
         )
-    contract, current_snapshot = _resolve_joint_retention_binding(
+    contract, current_snapshot, evidence_bytes = _resolve_joint_retention_binding(
         session,
         organization_id,
         version.project_id,
@@ -1502,6 +1600,7 @@ def _require_current_retention_binding(
         base_result,
         evidence_id,
         trust_registry_json=trust_registry_json,
+        production_mode=production_mode,
     )
     if minimum_valid_until is not None:
         try:
@@ -1514,7 +1613,10 @@ def _require_current_retention_binding(
                 "The frozen retention validity window is malformed.",
                 "Create and review a new revision from current signed evidence.",
             ) from exc
-        if signed_expiry < minimum_valid_until.astimezone(UTC):
+        if not _retention_evidence_valid_beyond(
+            signed_expiry,
+            minimum_valid_until,
+        ):
             raise _retention_trust_error(
                 "JOINT_RETENTION_VALIDITY_TOO_SHORT",
                 "Retention evidence may expire before the generation deadline.",
@@ -1544,6 +1646,29 @@ def _require_current_retention_binding(
             "The frozen retention contract no longer matches the version design hash.",
             "Create and review a new revision.",
         )
+    evidence_sha256 = current_snapshot.get("storage_evidence_sha256")
+    if (
+        not isinstance(evidence_sha256, str)
+        or hashlib.sha256(evidence_bytes).hexdigest() != evidence_sha256
+    ):
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The verified retention bytes no longer match the frozen evidence digest.",
+            "Create and review a new revision from current signed evidence.",
+        )
+    return VerifiedCurrentRetentionEvidence(
+        content=evidence_bytes,
+        sha256=evidence_sha256,
+    )
+
+
+def _retention_evidence_valid_beyond(
+    signed_expiry: datetime,
+    required_deadline: datetime,
+) -> bool:
+    """Require positive validity after the deadline, not equality at expiry."""
+
+    return signed_expiry.astimezone(UTC) > required_deadline.astimezone(UTC)
 
 
 def _require_current_artifacts(
@@ -1583,15 +1708,100 @@ def _require_current_artifacts(
     return version
 
 
-def _artifact_filename(kind: str, revision: int) -> str | None:
-    return {
-        "production_bundle": f"custombuild-design-review-rev-{revision}.zip",
-        "manifest": f"custombuild-design-review-rev-{revision}-manifest.json",
-        "stock_selection": f"custombuild-stock-selection-rev-{revision}.json",
-        "generation_plan": f"custombuild-generation-plan-rev-{revision}.json",
-        "manufacturing_intent": f"custombuild-manufacturing-intent-rev-{revision}.json",
-        "supplier_handoff": f"custombuild-cnc-shop-handoff-rev-{revision}.json",
-    }.get(kind)
+_ARTIFACT_DOWNLOAD_IDENTITIES: Mapping[str, tuple[str, str]] = {
+    "production_bundle": ("design-review", "application/zip"),
+    "manifest": ("design-review-manifest", "application/json"),
+    "manufacturing_intent": ("manufacturing-intent", "application/json"),
+    "supplier_handoff": ("cnc-shop-handoff", "application/json"),
+    "dfm_report": ("dfm-report", "application/json"),
+    "design_review_package_status": ("design-review-package-status", "application/json"),
+    "stock_selection": ("stock-selection", "application/json"),
+    "generation_plan": ("generation-plan", "application/json"),
+    "operations": ("machine-neutral-operations", "application/json"),
+    "validation_backplot": ("validation-backplot", "image/svg+xml"),
+    "design_glb": ("design", "model/gltf-binary"),
+    "design_fcstd": ("design", "application/vnd.freecad"),
+    "cad_interchange_status": ("cad-interchange-status", "application/json"),
+    "source_provenance": ("source-provenance", "application/json"),
+    "workshop_readiness": ("workshop-readiness", "application/json"),
+    "assembly_readiness": ("assembly-readiness", "application/json"),
+}
+_ARTIFACT_DOWNLOAD_EXTENSIONS: Mapping[str, str] = {
+    "application/json": ".json",
+    "application/vnd.freecad": ".FCStd",
+    "application/zip": ".zip",
+    "image/svg+xml": ".svg",
+    "model/gltf-binary": ".glb",
+}
+_SETUP_SHEET_ARTIFACT_KIND_PATTERN = re.compile(r"setup_sheet_([0-9]{3})")
+
+
+def _require_retention_bound_bundle_download_capability(
+    principal: Principal,
+    version: DesignVersion,
+    artifact_kind: str,
+) -> None:
+    """Protect the embedded signed statement with its dedicated capability.
+
+    Other job and release artifacts retain the ordinary READ policy.  Only a
+    production ZIP whose frozen DesignSpec contains a retention contract gains
+    the stricter boundary because that ZIP contains the exact signed evidence.
+    """
+
+    if artifact_kind != "production_bundle":
+        return
+    try:
+        spec = BookcaseDesignSpec.model_validate(version.spec_json)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="The frozen design cannot be reconstructed for bundle authorization",
+        ) from exc
+    if (
+        spec.joint_retention is not None
+        and Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD
+        not in capabilities_for_role(principal.role)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(f"Capability {Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD.value} required"),
+        )
+
+
+def _artifact_filename(
+    kind: str,
+    revision: int,
+    project_id: str,
+    content_type: str,
+) -> str:
+    """Return a project-unique, header-safe name from server-owned identities."""
+
+    if type(project_id) is not str or _CANONICAL_PROJECT_UUID_PATTERN.fullmatch(project_id) is None:
+        raise ValueError("artifact project identity is invalid")
+    if type(revision) is not int or revision < 1:
+        raise ValueError("artifact revision is invalid")
+    if type(kind) is not str or type(content_type) is not str:
+        raise ValueError("artifact identity is invalid")
+
+    identity = _ARTIFACT_DOWNLOAD_IDENTITIES.get(kind)
+    if identity is None:
+        setup_match = _SETUP_SHEET_ARTIFACT_KIND_PATTERN.fullmatch(kind)
+        if setup_match is None:
+            raise ValueError("artifact kind is invalid")
+        stem = f"setup-sheet-{setup_match.group(1)}"
+        expected_content_type = "image/svg+xml"
+    else:
+        stem, expected_content_type = identity
+    if content_type != expected_content_type:
+        raise ValueError("artifact content type does not match its kind")
+    extension = _ARTIFACT_DOWNLOAD_EXTENSIONS.get(content_type)
+    if extension is None:
+        raise ValueError("artifact content type is invalid")
+
+    filename = f"custombuild-project-{project_id}-{stem}-rev-{revision}{extension}"
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", filename) is None:
+        raise ValueError("artifact filename is invalid")
+    return filename
 
 
 def _require_generation_result_context_binding(job: GenerationJob) -> None:
@@ -1635,29 +1845,35 @@ def _release_artifact_signature_subject(release_id: str, artifact_id: str) -> st
 
 
 def _release_artifact_filename(
+    project_id: str,
     release_number: str,
     revision: int,
     kind: str,
     content_type: str,
 ) -> str:
-    """Return a deterministic, header-safe name without trusting stored text."""
+    """Return a project-unique release name under the current artifact policy."""
 
     if re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,39}", release_number) is None:
         raise _release_archive_error()
-    if re.fullmatch(r"[a-z0-9_]{1,64}", kind) is None:
-        kind_token = f"artifact-{hashlib.sha256(kind.encode('utf-8')).hexdigest()[:12]}"
-    else:
-        kind_token = kind.replace("_", "-")[:40]
-    extension = {
-        "application/json": ".json",
-        "application/vnd.freecad": ".FCStd",
-        "application/zip": ".zip",
-        "image/svg+xml": ".svg",
-        "model/gltf-binary": ".glb",
-    }.get(content_type, ".bin")
-    if kind == "production_bundle" and content_type == "application/zip":
-        return f"custombuild-release-{release_number}-rev-{revision}.zip"
-    return f"custombuild-release-{release_number}-rev-{revision}-{kind_token}{extension}"
+    try:
+        current_name = _artifact_filename(kind, revision, project_id, content_type)
+    except ValueError as exc:
+        raise _release_archive_error() from exc
+
+    prefix = f"custombuild-project-{project_id}-"
+    if not current_name.startswith(prefix):
+        raise _release_archive_error()
+    suffix = current_name.removeprefix(prefix)
+    release_token = release_number
+    filename = f"{prefix}release-{release_token}-{suffix}"
+    if len(filename) > 128:
+        release_token = (
+            f"{release_number[:5]}-{hashlib.sha256(release_number.encode('ascii')).hexdigest()[:8]}"
+        )
+        filename = f"{prefix}release-{release_token}-{suffix}"
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", filename) is None:
+        raise _release_archive_error()
+    return filename
 
 
 @dataclass(frozen=True, slots=True)
@@ -2321,6 +2537,7 @@ def _require_current_bound_job_evidence(
     version: DesignVersion,
     *,
     trust_registry_json: str | None = None,
+    production_mode: bool | None = None,
 ) -> None:
     """Re-resolve mutable evidence rows before a frozen job may be trusted.
 
@@ -2338,6 +2555,7 @@ def _require_current_bound_job_evidence(
         organization_id,
         version,
         trust_registry_json=trust_registry_json,
+        production_mode=production_mode,
     )
     verified_evidence_bindings: dict[str, _ExternalEvidenceBinding] = {}
     design_approval = session.scalar(
@@ -2486,6 +2704,7 @@ def _require_resolved_dado_retention(version: DesignVersion) -> None:
 
 def _frozen_grain_contract(
     version: DesignVersion,
+    job: GenerationJob | None = None,
 ) -> tuple[tuple[Any, ...], tuple[Any, ...], dict[str, Any] | None] | None:
     """Re-derive preview and matched-stock grain truth from the frozen revision."""
 
@@ -2498,7 +2717,14 @@ def _frozen_grain_contract(
             return None
         production_context = RevisionProductionContext.model_validate(
             version.result_json.get("production_context")
-        ).model_dump(mode="json")
+        ).model_dump(mode="json", exclude_none=True)
+        if job is not None:
+            if not isinstance(job.request_json, Mapping):
+                return None
+            assert_job_matches_frozen_revision_context(
+                production_context,
+                job.request_json,
+            )
         preview_issues = preview_grain_issues_for_design(design)
         preview_projection = grain_control_projection(preview_issues)
         expected_controls = (
@@ -2527,7 +2753,7 @@ def _frozen_grain_contract(
             production_context,
             severity=Severity.BLOCK,
         )
-    except (TypeError, ValueError, ValidationError, RecursionError):
+    except (ProductionContextError, TypeError, ValueError, ValidationError, RecursionError):
         return None
     return (
         matched_issues,
@@ -2540,7 +2766,10 @@ def _frozen_grain_contract(
     )
 
 
-def _frozen_stock_selection_snapshot(version: DesignVersion) -> bytes | None:
+def _frozen_stock_selection_snapshot(
+    version: DesignVersion,
+    job: GenerationJob | None = None,
+) -> bytes | None:
     """Rebuild the exact worker stock-selection document from frozen inputs."""
 
     if not isinstance(version.spec_json, Mapping) or not isinstance(version.result_json, Mapping):
@@ -2552,9 +2781,16 @@ def _frozen_stock_selection_snapshot(version: DesignVersion) -> bytes | None:
             return None
         production_context = RevisionProductionContext.model_validate(
             version.result_json.get("production_context")
-        ).model_dump(mode="json")
+        ).model_dump(mode="json", exclude_none=True)
+        if job is not None:
+            if not isinstance(job.request_json, Mapping):
+                return None
+            assert_job_matches_frozen_revision_context(
+                production_context,
+                job.request_json,
+            )
         return stock_selection_snapshot_for_design(design, production_context)
-    except (TypeError, ValueError, ValidationError, RecursionError):
+    except (ProductionContextError, TypeError, ValueError, ValidationError, RecursionError):
         return None
 
 
@@ -2579,21 +2815,11 @@ def _frozen_generation_plan_snapshot(
             return None
         production_context = RevisionProductionContext.model_validate(
             version.result_json.get("production_context")
-        ).model_dump(mode="json")
-        request_context = {
-            field: job.request_json.get(field)
-            for field in (
-                "stock_width_mm",
-                "stock_height_mm",
-                "stock_count",
-                "back_stock_width_mm",
-                "back_stock_height_mm",
-                "back_stock_count",
-                "machine_profile_id",
-            )
-        }
-        if request_context != production_context:
-            return None
+        ).model_dump(mode="json", exclude_none=True)
+        assert_job_matches_frozen_revision_context(
+            production_context,
+            job.request_json,
+        )
         machine_profile_id = job.request_json.get("machine_profile_id")
         postprocessor_id = job.request_json.get("postprocessor_id")
         validation_program_requested = job.request_json.get("include_validation_program")
@@ -2633,7 +2859,10 @@ def _frozen_generation_plan_snapshot(
         return None
 
 
-def _frozen_stock_missing_issues(version: DesignVersion) -> tuple[Any, ...] | None:
+def _frozen_stock_missing_issues(
+    version: DesignVersion,
+    job: GenerationJob | None = None,
+) -> tuple[Any, ...] | None:
     """Rebuild canonical missing-stock facts from the frozen assignment."""
 
     if not isinstance(version.spec_json, Mapping) or not isinstance(version.result_json, Mapping):
@@ -2645,9 +2874,16 @@ def _frozen_stock_missing_issues(version: DesignVersion) -> tuple[Any, ...] | No
             return None
         production_context = RevisionProductionContext.model_validate(
             version.result_json.get("production_context")
-        ).model_dump(mode="json")
+        ).model_dump(mode="json", exclude_none=True)
+        if job is not None:
+            if not isinstance(job.request_json, Mapping):
+                return None
+            assert_job_matches_frozen_revision_context(
+                production_context,
+                job.request_json,
+            )
         return stock_missing_issues_for_design(design, production_context)
-    except (TypeError, ValueError, ValidationError, RecursionError):
+    except (ProductionContextError, TypeError, ValueError, ValidationError, RecursionError):
         return None
 
 
@@ -3103,7 +3339,7 @@ def _review_document_binding_issues(
         ):
             raise ValueError("stock-selection evidence is missing")
         _strict_canonical_json_object(stock_selection_payload)
-        expected_stock_selection = _frozen_stock_selection_snapshot(version)
+        expected_stock_selection = _frozen_stock_selection_snapshot(version, job)
         if (
             expected_stock_selection is None
             or stock_selection_payload != expected_stock_selection
@@ -3220,11 +3456,11 @@ def _review_document_binding_issues(
             raise ValueError("production manifest does not match the frozen job")
         if stored_readiness is None:
             raise ValueError("production manifest has no valid workshop readiness evidence")
-        frozen_grain_contract = _frozen_grain_contract(version)
+        frozen_grain_contract = _frozen_grain_contract(version, job)
         if frozen_grain_contract is None:
             raise ValueError("frozen design grain projection is invalid")
         expected_grain_issues, expected_missing_stock_grain_issues, _ = frozen_grain_contract
-        expected_stock_missing_issues = _frozen_stock_missing_issues(version)
+        expected_stock_missing_issues = _frozen_stock_missing_issues(version, job)
         if expected_stock_missing_issues is None:
             raise ValueError("frozen design stock-selection projection is invalid")
         expected_edge_band_selection_required = _frozen_edge_band_selection_required(version)
@@ -3346,7 +3582,7 @@ def _review_document_binding_issues(
             raise ValueError("production manifest package-status entry does not match")
         normalized_package_status = _design_review_package_status(result_json)
         if normalized_package_status is None or stored_package_status is None:
-            raise ValueError("schema-v4 production package status is mandatory")
+            raise ValueError("schema-v5 production package status is mandatory")
         validate_design_review_status_inventory_entries(
             normalized_package_status,
             manifest_inventory,
@@ -3361,9 +3597,7 @@ def _review_document_binding_issues(
         blocker_codes = normalized_package_status.blocker_codes
         grain_blocked = blocker_codes == (DFM_GRAIN_BLOCKER_CODE,)
         stock_blocked = blocker_codes == (STOCK_PROFILE_MISSING_CODE,)
-        dado_retention_blocked = blocker_codes == (
-            DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
-        )
+        dado_retention_blocked = blocker_codes == (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
         back_retention_blocked = blocker_codes == (
             BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
         )
@@ -3402,14 +3636,12 @@ def _review_document_binding_issues(
             frozen_dado_retention is not False or frozen_back_retention is not True
         ):
             raise ValueError("back-panel retention blocker does not match the frozen design")
-        if (
-            normalized_package_status.cam_status is CAMStageStatus.VALIDATION_GENERATED
-            and (frozen_dado_retention or frozen_back_retention)
+        if normalized_package_status.cam_status is CAMStageStatus.VALIDATION_GENERATED and (
+            frozen_dado_retention or frozen_back_retention
         ):
             raise ValueError("generated CAM status contradicts frozen joint retention")
-        if (
-            blocker_codes == ("TWO_SIDED_REGISTRATION_MISSING",)
-            and (frozen_dado_retention or frozen_back_retention)
+        if blocker_codes == ("TWO_SIDED_REGISTRATION_MISSING",) and (
+            frozen_dado_retention or frozen_back_retention
         ):
             raise ValueError("registration blocker masks unresolved frozen joint retention")
     except (
@@ -3759,6 +3991,7 @@ def _require_review_evidence(
     bind_review_documents: bool = False,
     build_identity: BuildIdentityValues | None = None,
     trust_registry_json: str | None = None,
+    production_mode: bool | None = None,
 ) -> None:
     """Require persisted, checksum-addressed evidence for the exact successful job."""
 
@@ -3798,6 +4031,7 @@ def _require_review_evidence(
             job,
             version,
             trust_registry_json=trust_registry_json,
+            production_mode=production_mode,
         )
 
 
@@ -4397,6 +4631,254 @@ def list_external_evidence(
     return rows
 
 
+def _current_joint_retention_download_version(
+    session: Session,
+    organization_id: str,
+    project: Project,
+    evidence: ExternalEvidence,
+) -> DesignVersion:
+    """Require the evidence to be named by the project's current revision."""
+
+    version = session.scalar(
+        select(DesignVersion).where(
+            DesignVersion.organization_id == organization_id,
+            DesignVersion.project_id == project.id,
+            DesignVersion.revision == project.current_revision,
+        )
+    )
+    frozen_snapshot = (
+        version.result_json.get("retention_trust")
+        if version is not None and isinstance(version.result_json, Mapping)
+        else None
+    )
+    try:
+        bound_spec = (
+            BookcaseDesignSpec.model_validate(version.spec_json) if version is not None else None
+        )
+    except ValidationError as exc:
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The current retention-bound revision cannot be reconstructed.",
+            "Create and review a new revision from current signed evidence.",
+        ) from exc
+    if (
+        version is None
+        or bound_spec is None
+        or bound_spec.joint_retention is None
+        or not isinstance(frozen_snapshot, Mapping)
+        or frozen_snapshot.get("storage_evidence_id") != evidence.id
+        or frozen_snapshot.get("storage_evidence_sha256") != evidence.sha256
+        or frozen_snapshot.get("base_design_hash") != evidence.design_hash
+    ):
+        raise _retention_trust_error(
+            "JOINT_RETENTION_BINDING_STALE",
+            "The signed retention evidence is not bound to the project's current revision.",
+            "Select the current revision's authenticated evidence before downloading it.",
+        )
+    return version
+
+
+@router.get(
+    "/projects/{project_id}/evidence/{evidence_id}/download",
+    response_class=StreamingResponse,
+    dependencies=[_ARTIFACT_STREAM_OPERATION_DEPENDENCY],
+    responses={
+        200: {
+            "description": (
+                "Exact certifier-signed joint-retention JSON bytes after current-revision, "
+                "Ed25519, activated-registry/high-water, tenant, ledger, revocation, expiry "
+                "and SHA-256 verification"
+            ),
+            "headers": {
+                "Cache-Control": {"schema": {"type": "string"}},
+                "Content-Disposition": {"schema": {"type": "string"}},
+                "Content-Length": {"schema": {"type": "string"}},
+                "Digest": {"schema": {"type": "string"}},
+                "ETag": {"schema": {"type": "string"}},
+                "Pragma": {"schema": {"type": "string"}},
+                "X-Content-Type-Options": {"schema": {"type": "string"}},
+            },
+            "content": {"application/json": {"schema": {"type": "string", "format": "binary"}}},
+        },
+        401: {"description": "Authentication required."},
+        403: {"description": "The active role may not download signed retention evidence."},
+        404: {"description": "The tenant-scoped project or signed evidence was not found."},
+        409: {"description": "The evidence is stale, revoked, expired or unverifiable."},
+        422: {"description": "A path identifier is not a canonical UUID."},
+        429: {"description": "The bounded download channel is at capacity."},
+        503: {"description": "The evidence ledger or immutable object is unavailable."},
+    },
+)
+def download_joint_retention_evidence(
+    project_id: Annotated[
+        str,
+        Path(pattern=rf"^{_CANONICAL_PROJECT_UUID_PATTERN.pattern}$"),
+    ],
+    evidence_id: Annotated[
+        str,
+        Path(pattern=rf"^{_CANONICAL_PROJECT_UUID_PATTERN.pattern}$"),
+    ],
+    session: DownloadSessionDep,
+    principal: JointRetentionEvidenceDownloadDep,
+) -> StreamingResponse:
+    """Stream only the exact currently valid signed JSON held by this tenant/project."""
+
+    project = tenant_project(session, principal, project_id)
+    evidence = session.scalar(
+        select(ExternalEvidence).where(
+            ExternalEvidence.id == evidence_id,
+            ExternalEvidence.organization_id == principal.organization_id,
+            ExternalEvidence.project_id == project.id,
+            ExternalEvidence.evidence_type == "joint_retention",
+            ExternalEvidence.rule_id == "CB-JOINT-001",
+        )
+    )
+    if evidence is None:
+        raise HTTPException(status_code=404, detail="Signed retention evidence not found")
+    expires_at = _as_utc(evidence.expires_at) if evidence.expires_at is not None else None
+    if evidence.revoked_at is not None or (
+        expires_at is not None and expires_at <= datetime.now(UTC)
+    ):
+        raise _external_evidence_stale(evidence.id)
+    if (
+        evidence.content_type != "application/json"
+        or type(evidence.size_bytes) is not int
+        or evidence.size_bytes <= 0
+        or evidence.size_bytes > MAX_SIGNED_EVIDENCE_BYTES
+        or re.fullmatch(r"[a-f0-9]{64}", evidence.sha256) is None
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "JOINT_RETENTION_EVIDENCE_INTEGRITY_FAILED",
+                "message": "The signed retention evidence record is not a canonical JSON object.",
+                "solution": "Register a new immutable certifier-signed JSON statement.",
+            },
+        )
+
+    version = _current_joint_retention_download_version(
+        session,
+        principal.organization_id,
+        project,
+        evidence,
+    )
+    initial_binding = _external_evidence_binding(evidence)
+    initial_version_binding = _retention_download_version_binding(version)
+    _require_committed_domain_object(
+        session,
+        principal.organization_id,
+        project_id=project.id,
+        object_key=evidence.object_key,
+        sha256=evidence.sha256,
+        size_bytes=evidence.size_bytes,
+        media_type=evidence.content_type,
+        owner_type="external_evidence",
+        owner_id=evidence.id,
+    )
+    verified: VerifiedStoredObject | None = None
+    try:
+        try:
+            with storage_read_deadline(_REVIEW_STORAGE_TOTAL_SECONDS):
+                # Use the same fail-closed resolver as validation, generation
+                # and release inside this request's absolute storage deadline.
+                # It rechecks Ed25519 authenticity, registry/high-water,
+                # revocations, exact design applicability and the complete
+                # frozen revision snapshot before any bytes can be streamed.
+                _require_current_retention_binding(
+                    session,
+                    principal.organization_id,
+                    version,
+                )
+                verified = open_verified_stored_object(
+                    StoredObjectExpectation(
+                        object_key=evidence.object_key,
+                        sha256=evidence.sha256,
+                        size_bytes=evidence.size_bytes,
+                        content_type=evidence.content_type,
+                        required_metadata=(("immutable", "true"),),
+                    ),
+                    max_bytes=MAX_SIGNED_EVIDENCE_BYTES,
+                )
+        except ArtifactIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "JOINT_RETENTION_EVIDENCE_INTEGRITY_FAILED",
+                    "message": "The signed retention evidence no longer matches its record.",
+                    "solution": "Register and review a new immutable signed JSON statement.",
+                },
+            ) from exc
+        except ArtifactStorageUnavailableError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "JOINT_RETENTION_EVIDENCE_STORAGE_UNAVAILABLE",
+                    "message": "Signed retention evidence storage cannot currently be verified.",
+                    "solution": "Retry after immutable object storage is healthy.",
+                },
+            ) from exc
+
+        current = session.scalar(
+            select(ExternalEvidence)
+            .where(
+                ExternalEvidence.id == evidence_id,
+                ExternalEvidence.organization_id == principal.organization_id,
+                ExternalEvidence.project_id == project.id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if current is None:
+            raise _external_evidence_snapshot_stale()
+        current_expiry = _as_utc(current.expires_at) if current.expires_at is not None else None
+        if current.revoked_at is not None or (
+            current_expiry is not None and current_expiry <= datetime.now(UTC)
+        ):
+            raise _external_evidence_stale(current.id)
+        if (
+            current.evidence_type != "joint_retention"
+            or current.rule_id != "CB-JOINT-001"
+            or current.content_type != "application/json"
+            or _external_evidence_binding(current) != initial_binding
+        ):
+            raise _external_evidence_snapshot_stale()
+        current_project = session.scalar(
+            select(Project)
+            .where(
+                Project.id == project.id,
+                Project.organization_id == principal.organization_id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        current_version = session.scalar(
+            select(DesignVersion)
+            .where(
+                DesignVersion.id == version.id,
+                DesignVersion.organization_id == principal.organization_id,
+                DesignVersion.project_id == project.id,
+            )
+            .execution_options(populate_existing=True)
+        )
+        if (
+            current_project is None
+            or current_version is None
+            or current_project.current_revision != version.revision
+            or _retention_download_version_binding(current_version) != initial_version_binding
+        ):
+            raise _retention_trust_error(
+                "JOINT_RETENTION_BINDING_STALE",
+                "The current retention-bound revision changed during verification.",
+                "Refresh the project and retry against its current revision.",
+            )
+        return _verified_artifact_response(
+            verified,
+            filename=f"custombuild-joint-retention-{current.id}.json",
+        )
+    except BaseException:
+        if verified is not None:
+            verified.close()
+        raise
+
+
 @router.post(
     "/projects/{project_id}/evidence",
     response_model=ExternalEvidenceRead,
@@ -4725,7 +5207,7 @@ def create_version(
     )
     source_provenance: dict[str, Any] = {}
     source_import: ImportedAsset | None = None
-    production_context = payload.production_context.model_dump(mode="json")
+    production_context = payload.production_context.model_dump(mode="json", exclude_none=True)
     try:
         template_capability = require_template_for_revision(
             payload.template_id, payload.spec.furniture_type
@@ -4754,6 +5236,33 @@ def create_version(
                 "current; wait for preview synchronization and save again"
             ),
         )
+
+    try:
+        generation_stock_projection_for_design(
+            result,
+            production_context,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "WORKSHOP_PRODUCTION_CONTEXT_INVALID",
+                "message": (
+                    "The workshop production context does not match the server-built design."
+                ),
+                "solution": (
+                    "Correct the exact stock material, version, thickness, coverage or "
+                    "two-sided registration before creating a design revision."
+                ),
+                "errors": [
+                    {
+                        "type": "value_error",
+                        "loc": ["body", "production_context"],
+                        "msg": str(exc),
+                    }
+                ],
+            },
+        ) from exc
 
     if requested_source_provenance:
         source_import, source_provenance = _verified_reference_provenance(
@@ -5057,7 +5566,7 @@ def generate_version(
     try:
         frozen_production_context = RevisionProductionContext.model_validate(
             version.result_json.get("production_context")
-        ).model_dump(mode="json")
+        ).model_dump(mode="json", exclude_none=True)
     except ValidationError as exc:
         raise HTTPException(
             status_code=409,
@@ -5066,7 +5575,7 @@ def generate_version(
                 "before generating production evidence"
             ),
         ) from exc
-    requested_production_context = {
+    requested_production_context: dict[str, Any] = {
         "stock_width_mm": payload.stock_width_mm,
         "stock_height_mm": payload.stock_height_mm,
         "stock_count": payload.stock_count,
@@ -5075,6 +5584,14 @@ def generate_version(
         "back_stock_count": payload.back_stock_count,
         "machine_profile_id": payload.machine_profile_id,
     }
+    if payload.stock_profiles is not None:
+        requested_production_context["stock_profiles"] = [
+            profile.model_dump(mode="json") for profile in payload.stock_profiles
+        ]
+    if payload.two_sided_registrations is not None:
+        requested_production_context["two_sided_registrations"] = [
+            registration.model_dump(mode="json") for registration in payload.two_sided_registrations
+        ]
     if requested_production_context != frozen_production_context:
         raise HTTPException(
             status_code=409,
@@ -5084,7 +5601,7 @@ def generate_version(
                 "revision before generating production evidence"
             ),
         )
-    request_json = payload.model_dump(mode="json")
+    request_json = payload.model_dump(mode="json", exclude_none=True)
     verified_evidence_bindings: dict[str, _ExternalEvidenceBinding] = {}
     request_json["external_evidence"] = _verified_external_evidence(
         session,
@@ -5702,8 +6219,7 @@ def approve_version(
     status_code=status.HTTP_409_CONFLICT,
     response_model=WorkshopRunBlockedResponse,
     response_description=(
-        "The server-owned generation/release is not an immutable executable "
-        "workshop package."
+        "The server-owned generation/release is not an immutable executable workshop package."
     ),
     responses={
         status.HTTP_401_UNAUTHORIZED: {"description": "Authentication required."},
@@ -5758,9 +6274,7 @@ def prepare_workshop_run(
         # HTTPException payloads bypass FastAPI response-model validation.
         # Validate explicitly so a future internal blocker cannot drift from
         # the public enum/envelope while still returning a plausible 409.
-        detail = WorkshopRunBlockerDetail.model_validate(exc.as_detail()).model_dump(
-            mode="json"
-        )
+        detail = WorkshopRunBlockerDetail.model_validate(exc.as_detail()).model_dump(mode="json")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=detail,
@@ -6048,6 +6562,11 @@ def download_release_artifact(
     artifact = next((item for item in archive.artifacts if item.id == artifact_id), None)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Release artifact not found")
+    _require_retention_bound_bundle_download_capability(
+        principal,
+        archive.version,
+        artifact.kind,
+    )
 
     verified: VerifiedStoredObject | None = None
     try:
@@ -6064,6 +6583,7 @@ def download_release_artifact(
         if current_artifact is None:
             raise _release_archive_error()
         filename = _release_artifact_filename(
+            archive.version.project_id,
             archive.release.release_number,
             archive.version.revision,
             current_artifact.kind,
@@ -6180,6 +6700,11 @@ def download_artifact(
     if job is None:
         raise HTTPException(status_code=404, detail="Generation job not found")
     version = _require_current_artifacts(session, principal.organization_id, job)
+    _require_retention_bound_bundle_download_capability(
+        principal,
+        version,
+        artifact.kind,
+    )
     verified: VerifiedStoredObject | None = None
     try:
         verified = _prepare_review_artifact_download(
@@ -6189,7 +6714,18 @@ def download_artifact(
             version,
             artifact.kind,
         )
-        filename = _artifact_filename(artifact.kind, version.revision) or "custombuild-artifact.bin"
+        try:
+            filename = _artifact_filename(
+                artifact.kind,
+                version.revision,
+                version.project_id,
+                artifact.content_type,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Artifact download identity is invalid",
+            ) from exc
         # The request-scoped session deliberately retains its PostgreSQL
         # transaction-level tenant/global advisory locks until streaming ends.
         # Capacity is bounded to eight transfers and the response has a hard

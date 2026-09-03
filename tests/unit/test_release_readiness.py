@@ -69,7 +69,7 @@ def test_digest_promotion_contract_requires_descriptor_and_exact_overlay(
 
 SEMANTIC_FIXTURE_SOURCES = {
     PRODUCTION_SEMANTIC_SOURCE_PATHS[0]: """
-PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v4"
+PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 MANIFEST_CONTEXT_HASH_FIELDS = (
     "domain_template_version",
     "template_capability_version",
@@ -263,18 +263,18 @@ async def inspect_import(principal, project, digest):
 """,
     PRODUCTION_SEMANTIC_SOURCE_PATHS[4]: """
 CONTEXT_HASH_FIELDS = ("generation_context_hash",)
-PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v4"
+PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 WORKSHOP_READINESS_SCHEMA_VERSION = "custombuild.workshop-readiness.v2"
 DFM_ENGINE_VERSION = "dfm-1.3.0"
 STOCK_SELECTION_PATH = "validation/stock-selection.json"
 STOCK_SELECTION_ROLE = "STOCK_SELECTION_SNAPSHOT"
-STOCK_SELECTION_SCHEMA_VERSION = "custombuild.stock-selection.v1"
+STOCK_SELECTION_SCHEMA_VERSION = "custombuild.stock-selection.v2"
 GENERATION_PLAN_PATH = "validation/generation-plan.json"
 GENERATION_PLAN_ROLE = "GENERATION_PLAN"
-GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v1"
-PRODUCTION_PIPELINE_VERSION = "production-pipeline-1.10.0"
+GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v2"
+PRODUCTION_PIPELINE_VERSION = "production-pipeline-1.11.0"
 OPERATIONS_SCHEMA_VERSION = "custombuild.operations.v2"
-OPERATIONS_ENGINE_VERSION = "semantic-operations-1.2.0"
+OPERATIONS_ENGINE_VERSION = "semantic-operations-1.3.0"
 REQUIRED_REVIEW_PACKAGE_PATHS = frozenset({STOCK_SELECTION_PATH, GENERATION_PLAN_PATH})
 STOCK_PROFILE_MISSING = "STOCK_PROFILE_MISSING"
 DFM_GRAIN_MISSING = "DFM-GRAIN-001"
@@ -388,6 +388,71 @@ def write_production_semantic_fixture(root: Path, *, sources: dict[str, str] | N
 
 def test_checked_in_production_semantic_contract_is_current() -> None:
     assert production_semantic_contract_issues(Path.cwd()) == []
+
+
+def _canonical_worker_resolver_source() -> str:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = SEMANTIC_FIXTURE_SOURCES[relative]
+    stock_start = source.index("    carcass_stock = StockSheet(")
+    evidence_start = source.index("    evidence_candidates = [", stock_start)
+    resolver = """    stocks = stock_configuration_for_design(design, request)
+    registrations = two_sided_registration_for_design(
+        design,
+        request,
+        stocks=stocks,
+    )
+"""
+    return (
+        "from app.design_service import (\n"
+        "    stock_configuration_for_design,\n"
+        "    two_sided_registration_for_design,\n"
+        ")\n\n"
+        + source[:stock_start]
+        + resolver
+        + source[evidence_start:]
+    )
+
+
+def test_production_semantic_contract_accepts_canonical_worker_stock_resolver(
+    tmp_path: Path,
+) -> None:
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[PRODUCTION_SEMANTIC_SOURCE_PATHS[2]] = _canonical_worker_resolver_source()
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert production_semantic_contract_issues(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("canonical", "unsafe"),
+    (
+        (
+            "stock_configuration_for_design(design, request)",
+            "stock_configuration_for_design(request, design)",
+        ),
+        ("stocks=stocks", "stocks=()"),
+        (
+            "    two_sided_registration_for_design,\n",
+            "    legacy_two_sided_registration_for_design,\n",
+        ),
+    ),
+)
+def test_production_semantic_contract_rejects_worker_stock_resolver_drift(
+    tmp_path: Path,
+    canonical: str,
+    unsafe: str,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_worker_resolver_source()
+    assert canonical in source
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source.replace(canonical, unsafe, 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "unique role/thickness stock IDs with UNBOUND grain" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
 
 
 def test_minimal_exact_production_semantic_contract_passes(tmp_path: Path) -> None:
@@ -519,15 +584,15 @@ def test_production_semantic_contract_requires_every_source(tmp_path: Path, rela
     [
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[0],
+            "custombuild.production-manifest.v5",
             "custombuild.production-manifest.v4",
-            "custombuild.production-manifest.v3",
-            "manifest v4 schema",
+            "manifest v5 schema",
         ),
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[0],
             '    "template_capability_registry_version",\n',
             "",
-            "v4 safety fields",
+            "v5 safety fields",
         ),
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[0],

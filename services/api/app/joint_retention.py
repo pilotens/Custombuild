@@ -13,6 +13,7 @@ import base64
 import binascii
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -30,7 +31,15 @@ from custombuild_domain import (
     content_hash,
 )
 from custombuild_domain.models import JointRetentionApplicationClass
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 TRUST_REGISTRY_SCHEMA_VERSION = "custombuild.joint-retention-trust-registry.v1"
 SIGNED_EVIDENCE_SCHEMA_VERSION = "custombuild.joint-retention-signed-evidence.v2"
@@ -40,6 +49,8 @@ JOINT_GEOMETRY_FINGERPRINT_SCHEMA = (
 JOINT_RETENTION_CERTIFIER_ROLE = "joint_retention_certifier"
 MAX_SIGNED_EVIDENCE_BYTES = 20 * 1024 * 1024
 MAX_EMBEDDED_DOCUMENT_BYTES = 8 * 1024 * 1024
+_STABLE_KEY_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+_STABLE_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
 class JointRetentionTrustError(ValueError):
@@ -54,13 +65,21 @@ class _StrictModel(BaseModel):
 
 
 class TrustedIssuer(_StrictModel):
-    issuer_id: str = Field(min_length=1, max_length=160)
-    key_id: str = Field(min_length=1, max_length=160)
+    issuer_id: str = Field(pattern=_STABLE_KEY_PATTERN)
+    key_id: str = Field(pattern=_STABLE_KEY_PATTERN)
     role: Literal["joint_retention_certifier"]
-    public_key_base64: str = Field(min_length=1, max_length=128)
+    public_key_base64: str = Field(min_length=44, max_length=44)
     not_before: datetime
     not_after: datetime
-    revoked_at: datetime | None = None
+    # Required even when null: omission must never silently reactivate a key.
+    revoked_at: datetime | None
+
+    @field_validator("not_before", "not_after", "revoked_at", mode="before")
+    @classmethod
+    def require_timestamp_string(cls, value: object) -> object:
+        if value is not None and not isinstance(value, str):
+            raise ValueError("issuer timestamps must be JSON strings")
+        return value
 
     @field_validator("not_before", "not_after", "revoked_at")
     @classmethod
@@ -71,12 +90,18 @@ class TrustedIssuer(_StrictModel):
             raise ValueError("issuer timestamps must include a timezone")
         return value.astimezone(UTC)
 
+    @model_validator(mode="after")
+    def require_increasing_validity_window(self) -> TrustedIssuer:
+        if self.not_before >= self.not_after:
+            raise ValueError("issuer validity window must be increasing")
+        return self
+
 
 class TrustRegistry(_StrictModel):
     schema_version: Literal["custombuild.joint-retention-trust-registry.v1"]
     issuers: tuple[TrustedIssuer, ...]
-    revoked_statement_sha256: tuple[str, ...] = ()
-    revoked_system_versions: tuple[str, ...] = ()
+    revoked_statement_sha256: tuple[str, ...]
+    revoked_system_versions: tuple[str, ...]
 
     @field_validator("revoked_statement_sha256")
     @classmethod
@@ -89,44 +114,46 @@ class TrustRegistry(_StrictModel):
     @classmethod
     def validate_revoked_systems(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if value != tuple(sorted(set(value))) or any(
-            not item or "@" not in item or item != item.strip() for item in value
+            item.count("@") != 1
+            or any(_STABLE_KEY.fullmatch(component) is None for component in item.split("@"))
+            for item in value
         ):
             raise ValueError("revoked system versions must be sorted unique system@version values")
         return value
 
 
 class EmbeddedDocument(_StrictModel):
-    document_id: str = Field(min_length=1, max_length=160)
-    document_version: str = Field(min_length=1, max_length=80)
+    document_id: str = Field(pattern=_STABLE_KEY_PATTERN)
+    document_version: str = Field(pattern=_STABLE_KEY_PATTERN, max_length=80)
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     content_base64: str = Field(min_length=1)
 
 
 class RetentionMaterial(_StrictModel):
-    material_id: str = Field(min_length=1, max_length=160)
-    material_version: str = Field(min_length=1, max_length=80)
+    material_id: str = Field(pattern=_STABLE_KEY_PATTERN)
+    material_version: str = Field(pattern=_STABLE_KEY_PATTERN, max_length=80)
 
 
 class RetentionLoadCase(_StrictModel):
     mode: Literal["shear", "withdrawal"]
-    rated_design_load_n: int = Field(gt=0)
-    verified_capacity_n: int = Field(gt=0)
+    rated_design_load_n: StrictInt = Field(gt=0)
+    verified_capacity_n: StrictInt = Field(gt=0)
 
 
 class RetentionCatalogueEntry(_StrictModel):
-    system_id: str = Field(min_length=1, max_length=160)
-    system_version: str = Field(min_length=1, max_length=80)
+    system_id: str = Field(pattern=_STABLE_KEY_PATTERN)
+    system_version: str = Field(pattern=_STABLE_KEY_PATTERN, max_length=80)
     joint_type: Literal["dado"]
     application_class: Literal["load_bearing_carcass_dado"]
     method: Literal["mechanical"]
     machining_scope: Literal["no_additional_cnc"]
-    hardware_sku: str = Field(min_length=1, max_length=160)
-    hardware_count_per_joint: int = Field(gt=0, le=100)
+    hardware_sku: str = Field(pattern=_STABLE_KEY_PATTERN)
+    hardware_count_per_joint: StrictInt = Field(gt=0, le=100)
     applicable_materials: tuple[RetentionMaterial, ...] = Field(min_length=1)
-    minimum_applicable_thickness_um: int = Field(gt=0)
-    maximum_applicable_thickness_um: int = Field(gt=0)
+    minimum_applicable_thickness_um: StrictInt = Field(gt=0)
+    maximum_applicable_thickness_um: StrictInt = Field(gt=0)
     load_cases: tuple[RetentionLoadCase, RetentionLoadCase]
-    safety_factor_permille: int = Field(ge=1_000, le=10_000)
+    safety_factor_permille: StrictInt = Field(ge=1_000, le=10_000)
 
     @field_validator("applicable_materials")
     @classmethod
@@ -150,22 +177,29 @@ class RetentionCatalogueEntry(_StrictModel):
 
 class SignedRetentionEvidence(_StrictModel):
     schema_version: Literal["custombuild.joint-retention-signed-evidence.v2"]
-    evidence_id: str = Field(min_length=1, max_length=160)
-    issuer_id: str = Field(min_length=1, max_length=160)
-    key_id: str = Field(min_length=1, max_length=160)
+    evidence_id: str = Field(pattern=_STABLE_KEY_PATTERN)
+    issuer_id: str = Field(pattern=_STABLE_KEY_PATTERN)
+    key_id: str = Field(pattern=_STABLE_KEY_PATTERN)
     issued_at: datetime
     expires_at: datetime
     application_class: Literal["load_bearing_carcass_dado"]
     joint_geometry_fingerprint_schema: Literal[
         "custombuild.joint-retention-application-geometry.v1"
     ]
-    engine_version: str = Field(min_length=1, max_length=80)
-    template_version: str = Field(min_length=1, max_length=80)
+    engine_version: str = Field(pattern=_STABLE_KEY_PATTERN, max_length=80)
+    template_version: str = Field(pattern=_STABLE_KEY_PATTERN, max_length=80)
     joint_geometry_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     catalogue_entry: RetentionCatalogueEntry
     test_report: EmbeddedDocument
     installation_instruction: EmbeddedDocument
-    signature_base64: str = Field(min_length=1, max_length=256)
+    signature_base64: str = Field(min_length=88, max_length=88)
+
+    @field_validator("issued_at", "expires_at", mode="before")
+    @classmethod
+    def require_timestamp_string(cls, value: object) -> object:
+        if not isinstance(value, str):
+            raise ValueError("evidence timestamps must be JSON strings")
+        return value
 
     @field_validator("issued_at", "expires_at")
     @classmethod
@@ -209,6 +243,8 @@ def _decode_base64(value: str, *, label: str, max_bytes: int) -> bytes:
         raise JointRetentionTrustError(f"{label} is not canonical base64") from exc
     if not decoded or len(decoded) > max_bytes:
         raise JointRetentionTrustError(f"{label} is empty or exceeds its size limit")
+    if base64.b64encode(decoded).decode("ascii") != value:
+        raise JointRetentionTrustError(f"{label} is not canonical base64")
     return decoded
 
 
@@ -220,6 +256,20 @@ def _load_registry(value: Mapping[str, Any]) -> TrustRegistry:
     issuer_keys = tuple((item.issuer_id, item.key_id) for item in registry.issuers)
     if issuer_keys != tuple(sorted(set(issuer_keys))):
         raise JointRetentionTrustError("trusted issuers must be sorted and unique")
+    public_keys: set[bytes] = set()
+    for issuer in registry.issuers:
+        public_key = _decode_base64(
+            issuer.public_key_base64,
+            label="issuer public key",
+            max_bytes=32,
+        )
+        if len(public_key) != 32:
+            raise JointRetentionTrustError("issuer public key must be 32-byte Ed25519 material")
+        if public_key in public_keys:
+            raise JointRetentionTrustError(
+                "trusted issuer public key material must be globally unique"
+            )
+        public_keys.add(public_key)
     return registry
 
 
@@ -258,6 +308,10 @@ def _find_trusted_issuer(
         raise JointRetentionTrustError("retention evidence was issued outside key validity")
     if not issuer.not_before <= now <= issuer.not_after:
         raise JointRetentionTrustError("retention evidence issuer key is not currently valid")
+    if evidence.expires_at > issuer.not_after:
+        raise JointRetentionTrustError(
+            "retention evidence expiry exceeds issuer key validity"
+        )
     return issuer
 
 
@@ -324,6 +378,8 @@ def resolve_joint_retention_contract(
     expected_template_version: str,
     required_materials: Sequence[tuple[str, str]],
     required_thicknesses_um: Sequence[int],
+    required_loads_n: Sequence[tuple[JointRetentionLoadMode, int]],
+    minimum_safety_factor_permille: int,
     now: datetime | None = None,
 ) -> JointRetentionContract:
     """Derive a domain contract only from authenticated, applicable evidence."""
@@ -346,6 +402,20 @@ def resolve_joint_retention_contract(
     thicknesses = tuple(required_thicknesses_um)
     if not thicknesses or any(type(value) is not int or value <= 0 for value in thicknesses):
         raise JointRetentionTrustError("required thicknesses must be positive integers")
+    required_loads = tuple(required_loads_n)
+    if (
+        tuple(mode for mode, _ in required_loads)
+        != (JointRetentionLoadMode.SHEAR, JointRetentionLoadMode.WITHDRAWAL)
+        or any(type(value) is not int or value <= 0 for _, value in required_loads)
+    ):
+        raise JointRetentionTrustError(
+            "required loads must be canonical positive shear and withdrawal values"
+        )
+    if (
+        type(minimum_safety_factor_permille) is not int
+        or not 1_000 <= minimum_safety_factor_permille <= 10_000
+    ):
+        raise JointRetentionTrustError("minimum safety factor is outside the supported range")
 
     registry = _load_registry(trust_registry)
     evidence, raw = _load_evidence(evidence_bytes)
@@ -388,6 +458,14 @@ def resolve_joint_retention_contract(
         for thickness in thicknesses
     ):
         raise JointRetentionTrustError("retention evidence does not cover every member thickness")
+    evidence_loads = {
+        JointRetentionLoadMode(item.mode): item.rated_design_load_n
+        for item in entry.load_cases
+    }
+    if any(evidence_loads[mode] < required for mode, required in required_loads):
+        raise JointRetentionTrustError("retention evidence is below a required design load")
+    if entry.safety_factor_permille < minimum_safety_factor_permille:
+        raise JointRetentionTrustError("retention evidence is below the required safety factor")
 
     try:
         return JointRetentionContract(

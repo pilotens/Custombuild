@@ -1,7 +1,7 @@
 {
   "schema_version": "custombuild.template.v1",
   "template_id": "bookcase",
-  "template_version": "2.1.0",
+  "template_version": "2.2.0",
   "furniture_type": "bookcase",
   "coordinate_system": "RH_X_WIDTH_Y_DEPTH_Z_HEIGHT",
   "persisted_unit": "um",
@@ -21,7 +21,7 @@
     {"key":"base_cabinet_count","value_type":"integer","unit":"count","default":0,"minimum":0,"maximum":17},
     {"key":"back_panel","value_type":"enum","unit":"none","default":"inset_groove","enum_values":["none","surface_mounted","inset_groove"]},
     {"key":"plinth_height_um","value_type":"integer","unit":"um","default":80000,"minimum":0,"maximum":500000},
-    {"key":"edge_band_thickness_um","value_type":"integer","unit":"um","default":1000,"minimum":0,"maximum":5000},
+    {"key":"edge_band_thickness_um","value_type":"integer","unit":"um","default":0,"minimum":0,"maximum":5000},
     {"key":"joint_system","value_type":"enum","unit":"none","default":"dado","enum_values":["dado"]},
     {"key":"reinforcement_mode","value_type":"enum","unit":"none","default":"manual","enum_values":["manual","auto"]},
     {"key":"wall_anchor_required","value_type":"boolean","unit":"none","default":false}

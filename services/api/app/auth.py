@@ -18,6 +18,7 @@ from sqlalchemy import select
 from .config import get_settings
 from .db import get_session_factory, set_tenant_context
 from .models import Membership, Role, User
+from .oidc_identity import oidc_identity_key, oidc_issuer_sha256
 
 DEV_ORG_NORDIC = "11111111-1111-4111-8111-111111111111"
 DEV_ORG_ATELIER = "22222222-2222-4222-8222-222222222222"
@@ -70,6 +71,7 @@ class Capability(StrEnum):
     DESIGN = "design"
     GENERATE = "generate"
     REVIEW = "review"
+    JOINT_RETENTION_EVIDENCE_DOWNLOAD = "joint_retention_evidence_download"
     PRODUCTION_RELEASE = "production_release"
     WORKSHOP_PREPARE = "workshop_prepare"
     WORKSHOP_CHALLENGE = "workshop_challenge"
@@ -91,6 +93,7 @@ ROLE_CAPABILITIES: Final[Mapping[Role, frozenset[Capability]]] = MappingProxyTyp
         Role.operator: frozenset(
             {
                 Capability.READ,
+                Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
                 Capability.WORKSHOP_CHALLENGE,
                 Capability.WORKSHOP_EVIDENCE,
                 Capability.WORKSHOP_ATTEST,
@@ -106,6 +109,7 @@ ROLE_CAPABILITIES: Final[Mapping[Role, frozenset[Capability]]] = MappingProxyTyp
         Role.production: frozenset(
             {
                 Capability.READ,
+                Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
                 Capability.PRODUCTION_RELEASE,
                 Capability.WORKSHOP_PREPARE,
                 Capability.WORKSHOP_CHALLENGE,
@@ -117,6 +121,7 @@ ROLE_CAPABILITIES: Final[Mapping[Role, frozenset[Capability]]] = MappingProxyTyp
             {
                 Capability.READ,
                 Capability.REVIEW,
+                Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
                 Capability.WORKSHOP_VERIFY,
             }
         ),
@@ -156,6 +161,7 @@ def _jwk_client() -> PyJWKClient:
 
 def _resolve_oidc_principal(
     *,
+    issuer: str,
     subject: str,
     organization_id: str,
     claimed_role: Role,
@@ -165,10 +171,35 @@ def _resolve_oidc_principal(
 ) -> Principal:
     """Bind signed OIDC claims to one provisioned internal identity and membership."""
 
+    try:
+        issuer_sha256 = oidc_issuer_sha256(issuer)
+        identity_key = oidc_identity_key(issuer, subject)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Active organization membership required",
+        ) from exc
     factory = get_session_factory()
     with factory.begin() as session:
         set_tenant_context(session, organization_id)
-        user = session.scalar(select(User).where(User.oidc_sub == subject))
+        user = session.scalar(
+            select(User).where(
+                User.oidc_sub == identity_key,
+                User.oidc_issuer_sha256 == issuer_sha256,
+            )
+        )
+        if user is None and session.scalar(
+            select(User.id)
+            .where(
+                User.oidc_sub.in_((subject, identity_key)),
+                User.oidc_issuer_sha256.is_(None),
+            )
+            .limit(1)
+        ) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OIDC identity requires explicit issuer binding",
+            )
         if user is None or (claimed_user_id is not None and claimed_user_id != user.id):
             raise HTTPException(status_code=403, detail="Active organization membership required")
         membership = session.scalar(
@@ -215,6 +246,7 @@ def _oidc_principal(token: str) -> Principal:
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     return _resolve_oidc_principal(
+        issuer=settings.oidc_issuer,
         subject=subject,
         organization_id=organization_id,
         claimed_role=claimed_role,

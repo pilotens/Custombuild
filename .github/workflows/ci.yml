@@ -75,6 +75,12 @@ jobs:
           uv run mypy scripts/storage_capacity_preflight.py
           uv run mypy scripts/storage_capacity_refresh.py
           uv run mypy scripts/storage_recovery.py
+          uv run mypy scripts/activate_joint_retention_registry.py
+          uv run mypy scripts/bootstrap_production_identity.py
+          uv run mypy scripts/joint_retention_certifier.py
+          uv run mypy scripts/verify_production_package.py
+      - name: Verify immutable offline package verifier
+        run: make trusted-package-verifier-sha256
       - name: Test and total coverage gate
         run: |
           uv run coverage erase

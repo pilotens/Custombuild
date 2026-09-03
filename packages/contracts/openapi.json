@@ -334,7 +334,7 @@
             "type": "integer"
           },
           "edge_band_mm": {
-            "default": 1,
+            "default": 0,
             "maximum": 5.0,
             "minimum": 0.0,
             "title": "Edge Band Mm",
@@ -378,6 +378,14 @@
             ],
             "title": "Material Id",
             "type": "string"
+          },
+          "measured_back_thickness_mm": {
+            "default": 6,
+            "description": "Actual measured back-panel batch thickness. The design service accepts whole micrometres only and does not round finer measurements.",
+            "maximum": 6.5,
+            "minimum": 5.5,
+            "title": "Measured Back Thickness Mm",
+            "type": "number"
           },
           "measured_thickness_mm": {
             "default": 18,
@@ -813,12 +821,42 @@
             "title": "Stock Height Mm",
             "type": "number"
           },
+          "stock_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopStockProfile"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Profiles"
+          },
           "stock_width_mm": {
             "default": 2440,
             "exclusiveMinimum": 0.0,
             "maximum": 10000.0,
             "title": "Stock Width Mm",
             "type": "number"
+          },
+          "two_sided_registrations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopTwoSidedRegistration"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Two Sided Registrations"
           }
         },
         "title": "GenerationRequest",
@@ -1598,8 +1636,10 @@
             "type": "number"
           },
           "machine_profile_id": {
-            "maxLength": 160,
-            "minLength": 1,
+            "enum": [
+              "custombuild-router-1325-linuxcnc",
+              "custombuild-router-5125-linuxcnc"
+            ],
             "title": "Machine Profile Id",
             "type": "string"
           },
@@ -1615,11 +1655,41 @@
             "title": "Stock Height Mm",
             "type": "number"
           },
+          "stock_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopStockProfile"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Profiles"
+          },
           "stock_width_mm": {
             "exclusiveMinimum": 0.0,
             "maximum": 10000.0,
             "title": "Stock Width Mm",
             "type": "number"
+          },
+          "two_sided_registrations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopTwoSidedRegistration"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Two Sided Registrations"
           }
         },
         "required": [
@@ -1701,6 +1771,29 @@
           "reason"
         ],
         "title": "WarningOverrideCreate",
+        "type": "object"
+      },
+      "WorkshopRegistrationPin": {
+        "additionalProperties": false,
+        "properties": {
+          "x_um": {
+            "maximum": 10000000.0,
+            "minimum": 0.0,
+            "title": "X Um",
+            "type": "integer"
+          },
+          "y_um": {
+            "maximum": 5000000.0,
+            "minimum": 0.0,
+            "title": "Y Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x_um",
+          "y_um"
+        ],
+        "title": "WorkshopRegistrationPin",
         "type": "object"
       },
       "WorkshopRunBlockedResponse": {
@@ -1805,6 +1898,254 @@
           "confirmation"
         ],
         "title": "WorkshopRunPrepare",
+        "type": "object"
+      },
+      "WorkshopStockProfile": {
+        "additionalProperties": false,
+        "description": "Exact supplier/raw-sheet declaration; no dimensions are inferred by the server.",
+        "properties": {
+          "allow_rotation": {
+            "title": "Allow Rotation",
+            "type": "boolean"
+          },
+          "declaration_authority": {
+            "const": "CLIENT_DECLARED",
+            "title": "Declaration Authority",
+            "type": "string"
+          },
+          "defect_zones": {
+            "items": {
+              "$ref": "#/components/schemas/WorkshopStockZone"
+            },
+            "maxItems": 100,
+            "title": "Defect Zones",
+            "type": "array"
+          },
+          "fixture_keep_out_zones": {
+            "items": {
+              "$ref": "#/components/schemas/WorkshopStockZone"
+            },
+            "maxItems": 100,
+            "title": "Fixture Keep Out Zones",
+            "type": "array"
+          },
+          "grain_direction": {
+            "enum": [
+              "X",
+              "Y",
+              "NONE"
+            ],
+            "title": "Grain Direction",
+            "type": "string"
+          },
+          "kerf_um": {
+            "maximum": 100000.0,
+            "minimum": 6000.0,
+            "title": "Kerf Um",
+            "type": "integer"
+          },
+          "material_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Material Version",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "carcass",
+              "back"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "sheet_count": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Sheet Count",
+            "type": "integer"
+          },
+          "sheet_height_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000000.0,
+            "title": "Sheet Height Um",
+            "type": "integer"
+          },
+          "sheet_width_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Sheet Width Um",
+            "type": "integer"
+          },
+          "supplier_profile_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Supplier Profile Id",
+            "type": "string"
+          },
+          "supplier_profile_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Supplier Profile Version",
+            "type": "string"
+          },
+          "thickness_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 100000.0,
+            "title": "Thickness Um",
+            "type": "integer"
+          },
+          "trim_margin_um": {
+            "maximum": 500000.0,
+            "minimum": 0.0,
+            "title": "Trim Margin Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "role",
+          "declaration_authority",
+          "supplier_profile_id",
+          "supplier_profile_version",
+          "material_id",
+          "material_version",
+          "sheet_width_um",
+          "sheet_height_um",
+          "thickness_um",
+          "sheet_count",
+          "trim_margin_um",
+          "kerf_um",
+          "grain_direction",
+          "allow_rotation",
+          "defect_zones",
+          "fixture_keep_out_zones"
+        ],
+        "title": "WorkshopStockProfile",
+        "type": "object"
+      },
+      "WorkshopStockZone": {
+        "additionalProperties": false,
+        "description": "One caller-declared unusable rectangle in the raw-sheet coordinate frame.",
+        "properties": {
+          "height_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000000.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "width_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Width Um",
+            "type": "integer"
+          },
+          "x_um": {
+            "maximum": 10000000.0,
+            "minimum": 0.0,
+            "title": "X Um",
+            "type": "integer"
+          },
+          "y_um": {
+            "maximum": 5000000.0,
+            "minimum": 0.0,
+            "title": "Y Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x_um",
+          "y_um",
+          "width_um",
+          "height_um"
+        ],
+        "title": "WorkshopStockZone",
+        "type": "object"
+      },
+      "WorkshopTwoSidedRegistration": {
+        "additionalProperties": false,
+        "description": "Externally specified flip registration for one physical raw sheet.",
+        "properties": {
+          "declaration_authority": {
+            "const": "CLIENT_DECLARED",
+            "title": "Declaration Authority",
+            "type": "string"
+          },
+          "fixture_method_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Fixture Method Id",
+            "type": "string"
+          },
+          "fixture_method_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Fixture Method Version",
+            "type": "string"
+          },
+          "flip_axis": {
+            "const": "X",
+            "title": "Flip Axis",
+            "type": "string"
+          },
+          "pin_diameter_um": {
+            "maximum": 50000.0,
+            "minimum": 1000.0,
+            "title": "Pin Diameter Um",
+            "type": "integer"
+          },
+          "pins": {
+            "items": {
+              "$ref": "#/components/schemas/WorkshopRegistrationPin"
+            },
+            "maxItems": 16,
+            "minItems": 2,
+            "title": "Pins",
+            "type": "array"
+          },
+          "position_tolerance_um": {
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Position Tolerance Um",
+            "type": "integer"
+          },
+          "sheet_index": {
+            "maximum": 99.0,
+            "minimum": 0.0,
+            "title": "Sheet Index",
+            "type": "integer"
+          },
+          "stock_role": {
+            "enum": [
+              "carcass",
+              "back"
+            ],
+            "title": "Stock Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stock_role",
+          "sheet_index",
+          "flip_axis",
+          "declaration_authority",
+          "fixture_method_id",
+          "fixture_method_version",
+          "pin_diameter_um",
+          "position_tolerance_um",
+          "pins"
+        ],
+        "title": "WorkshopTwoSidedRegistration",
         "type": "object"
       },
       "WorkspaceIntentV1": {
@@ -1964,11 +2305,41 @@
             "title": "Stock Height Mm",
             "type": "number"
           },
+          "stock_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopStockProfile"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Profiles"
+          },
           "stock_width_mm": {
             "exclusiveMinimum": 0.0,
             "maximum": 10000.0,
             "title": "Stock Width Mm",
             "type": "number"
+          },
+          "two_sided_registrations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopTwoSidedRegistration"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Two Sided Registrations"
           }
         },
         "required": [
@@ -2918,6 +3289,111 @@
           }
         ],
         "summary": "Upload External Evidence"
+      }
+    },
+    "/v1/projects/{project_id}/evidence/{evidence_id}/download": {
+      "get": {
+        "description": "Stream only the exact currently valid signed JSON held by this tenant/project.",
+        "operationId": "download_joint_retention_evidence_v1_projects__project_id__evidence__evidence_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "evidence_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "title": "Evidence Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Exact certifier-signed joint-retention JSON bytes after current-revision, Ed25519, activated-registry/high-water, tenant, ledger, revocation, expiry and SHA-256 verification",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Digest": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Pragma": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The active role may not download signed retention evidence."
+          },
+          "404": {
+            "description": "The tenant-scoped project or signed evidence was not found."
+          },
+          "409": {
+            "description": "The evidence is stale, revoked, expired or unverifiable."
+          },
+          "422": {
+            "description": "A path identifier is not a canonical UUID."
+          },
+          "429": {
+            "description": "The bounded download channel is at capacity."
+          },
+          "503": {
+            "description": "The evidence ledger or immutable object is unavailable."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Joint Retention Evidence"
       }
     },
     "/v1/projects/{project_id}/imports/inspect": {

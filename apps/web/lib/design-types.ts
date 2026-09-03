@@ -78,6 +78,8 @@ export interface DesignSpec {
   back_material_id: BackMaterialId;
   nominal_thickness_mm: number;
   measured_thickness_mm: number;
+  /** Actual back-panel batch thickness; represented exactly to whole micrometres. */
+  measured_back_thickness_mm: number;
   shelf_count: number;
   fixed_shelves: boolean;
   load_per_shelf_kg: number;
@@ -119,6 +121,8 @@ export interface DesignSpec {
   back_stock_height_mm: number;
   back_stock_count: number;
   machine_profile_id: string;
+  /** Supplier/shop declarations; excluded from canonical geometry and design_hash. */
+  workshop_context?: import("./workshop-production-context").WorkshopProductionContext;
 }
 
 export interface MaterialDefinition {
@@ -136,6 +140,7 @@ export interface MaterialDefinition {
 export interface MachineDefinition {
   id: string;
   name: string;
+  version: string;
   workAreaMm: { x: number; y: number; z: number };
   supportedFeatures: ManufacturingFeature["kind"][];
 }
@@ -253,6 +258,37 @@ export interface ChangeDiff {
   reason: string;
 }
 
+export interface RetentionCertificationRequest {
+  schema_version: "custombuild.joint-retention-certification-request.v2";
+  signed_evidence_schema_version: "custombuild.joint-retention-signed-evidence.v2";
+  application_class: "load_bearing_carcass_dado";
+  joint_geometry_fingerprint_schema: "custombuild.joint-retention-application-geometry.v1";
+  source_design_hash: string;
+  joint_geometry_sha256: string;
+  engine_version: string;
+  template_version: string;
+  eligible_for_current_binding: boolean;
+  blocking_issue: "back_panel_capture_not_proven" | null;
+  excluded_applications: Array<{
+    application_class: "captive_inset_back_groove" | "surface_mounted_back";
+    joint_count: number;
+    retention_basis:
+      | "canonical_four_boundary_geometric_capture"
+      | "independent_authenticated_evidence_required";
+    capture_proven: boolean;
+  }>;
+  required_materials: Array<{
+    material_id: string;
+    material_version: string;
+    actual_thickness_um: number;
+  }>;
+  required_load_cases: Array<{
+    mode: "shear" | "withdrawal";
+    rated_design_load_n: number;
+  }>;
+  minimum_safety_factor_permille: number;
+}
+
 export interface ResolvedDesign {
   design_hash: string;
   spec: DesignSpec;
@@ -264,6 +300,7 @@ export interface ResolvedDesign {
   status: ValidationStatus;
   change_diff: ChangeDiff[];
   source: "local" | "server-preview";
+  retention_certification_request?: RetentionCertificationRequest;
 }
 
 export const MATERIALS: readonly MaterialDefinition[] = [
@@ -320,12 +357,14 @@ export const MACHINES: readonly MachineDefinition[] = [
   {
     id: "custombuild-router-1325-linuxcnc",
     name: "Custombuild Router 1325 / LinuxCNC (valideringsprofil)",
+    version: "1.0.0-validation",
     workAreaMm: { x: 2_500, y: 1_300, z: 150 },
     supportedFeatures: ["outline", "drill", "groove", "rabbet", "pocket", "label"],
   },
   {
     id: "custombuild-router-5125-linuxcnc",
     name: "Custombuild Router 5125 / LinuxCNC (storformatsvalidering)",
+    version: "1.0.0-validation",
     workAreaMm: { x: 5_100, y: 2_600, z: 150 },
     supportedFeatures: ["outline", "drill", "groove", "rabbet", "pocket", "label"],
   },
@@ -344,6 +383,7 @@ export const DEFAULT_DESIGN_SPEC: DesignSpec = {
   back_material_id: BACK_MATERIALS[0]!.id as BackMaterialId,
   nominal_thickness_mm: MATERIALS[0]!.nominalThicknessMm,
   measured_thickness_mm: MATERIALS[0]!.measuredThicknessMm,
+  measured_back_thickness_mm: BACK_MATERIALS[0]!.measuredThicknessMm,
   shelf_count: 5,
   fixed_shelves: true,
   load_per_shelf_kg: 32,
@@ -364,7 +404,7 @@ export const DEFAULT_DESIGN_SPEC: DesignSpec = {
   base_cabinet_count: 0,
   reinforcement_mode: "auto",
   joint_system: "dado",
-  edge_band_mm: 1,
+  edge_band_mm: 0,
   wall_anchor_required: false,
   wall_anchor_verified: false,
   stock_width_mm: 2_440,

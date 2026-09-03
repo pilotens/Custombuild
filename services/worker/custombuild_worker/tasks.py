@@ -4,6 +4,7 @@ import logging
 import re
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from threading import Event, Lock, Thread
 from types import MappingProxyType
@@ -12,6 +13,10 @@ from uuid import UUID, uuid4, uuid5
 
 import boto3
 from app.db import set_tenant_context
+from app.design_service import (
+    stock_configuration_for_design,
+    two_sided_registration_for_design,
+)
 from app.job_policy import (
     GENERATION_HEARTBEAT_INTERVAL_SECONDS,
     GENERATION_JOB_TIMEOUT,
@@ -21,6 +26,7 @@ from app.job_policy import (
     GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS,
     LEGACY_STALE_LEASE_THRESHOLD,
 )
+from app.joint_retention import MAX_SIGNED_EVIDENCE_BYTES
 from app.models import (
     Artifact,
     AuditEvent,
@@ -65,6 +71,9 @@ from custombuild_manufacturing import (
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     GENERATION_PLAN_ARTIFACT_PATH,
     GENERATION_PLAN_ARTIFACT_ROLE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+    JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
     MANUFACTURING_INTENT_PATH,
     MANUFACTURING_INTENT_ROLE,
     MAX_EVIDENCE_ARTIFACTS,
@@ -75,7 +84,6 @@ from custombuild_manufacturing import (
     CAMStageStatus,
     ManifestContext,
     ProductionBlockedError,
-    StockSheet,
     build_production_bundle,
     canonical_json_bytes,
     sha256_hex,
@@ -100,6 +108,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from .config import get_worker_settings
 from .documents import (
+    VerifiedRetentionTrust,
     assembly_manual_pdf,
     assembly_readiness_json,
     bom_pdf,
@@ -117,6 +126,27 @@ IMMEDIATE_TERMINAL_GENERATION_ERRORS = (
     ProductionBlockedError,
     ReadinessValidationError,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedRetentionPackageInput:
+    """Ephemeral package input produced only by the canonical retention preflight."""
+
+    document_trust: VerifiedRetentionTrust
+    signed_evidence_bytes: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.signed_evidence_bytes) is not bytes:
+            raise TypeError("signed retention package evidence must be exact bytes")
+        if (
+            not self.signed_evidence_bytes
+            or len(self.signed_evidence_bytes) > MAX_SIGNED_EVIDENCE_BYTES
+        ):
+            raise ValueError("signed retention package evidence size is invalid")
+        if sha256_hex(self.signed_evidence_bytes) != (self.document_trust.storage_evidence_sha256):
+            raise ValueError("signed retention package evidence checksum mismatch")
+
+
 _EVIDENCE_ARTIFACT_CONTRACTS: Mapping[str, tuple[str, str, str]] = {
     MANUFACTURING_INTENT_PATH: (
         "manufacturing_intent",
@@ -266,7 +296,15 @@ MAX_GENERATION_ATTEMPTS = 4
 DEFAULT_SCHEDULER_BATCH_LIMIT = 50
 DEFAULT_STORAGE_REAPER_BATCH_LIMIT = 25
 STORAGE_REAPER_TENANT_BATCH_LIMIT = 10
+OUTBOX_DISPATCH_CURSOR_KEY = "custombuild:scheduler:outbox-dispatch:tenant-cursor:v1"
+GENERATION_RECOVERY_CURSOR_KEY = "custombuild:scheduler:generation-recovery:tenant-cursor:v1"
 STORAGE_REAPER_CURSOR_KEY = "custombuild:scheduler:storage-reaper:tenant-cursor:v1"
+GENERATION_DELIVERY_WATCHDOG_INTERVAL = max(
+    GENERATION_LEASE_TTL,
+    timedelta(seconds=2 * GENERATION_RECOVERY_INTERVAL_SECONDS),
+)
+GENERATION_DELIVERY_WATCHDOG_EVENT_PREFIX = "generation-delivery-watchdog"
+GENERATION_DELIVERY_WATCHDOG_ERROR = "Queued generation delivery watchdog state is invalid"
 TERMINAL_JOB_STATUSES = frozenset({JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled})
 GENERATION_DEADLINE_ERROR = "Generation job exceeded the server deadline of 120 minutes"
 S3_CONNECT_TIMEOUT_SECONDS = 3
@@ -408,10 +446,19 @@ def _organization_ids() -> tuple[str, ...]:
     return organization_ids
 
 
-def _storage_reaper_start_index(tenant_count: int) -> int:
-    """Advance one durable Redis cursor so bounded scans cannot starve tenants."""
+def _scheduler_start_index(
+    tenant_count: int,
+    *,
+    cursor_key: str,
+    scheduler_name: str,
+) -> int:
+    """Advance one scheduler-specific cursor before a globally bounded tenant scan."""
 
-    if tenant_count <= 0:
+    if type(tenant_count) is not int or tenant_count < 0:
+        raise ValueError("tenant_count must be a non-negative integer")
+    if not cursor_key or not scheduler_name:
+        raise ValueError("scheduler cursor identity must be non-empty")
+    if tenant_count == 0:
         return 0
     client: Redis = Redis.from_url(
         REDIS_URL,
@@ -421,14 +468,24 @@ def _storage_reaper_start_index(tenant_count: int) -> int:
         retry_on_timeout=False,
     )
     try:
-        cursor = client.incr(STORAGE_REAPER_CURSOR_KEY)
+        cursor = client.incr(cursor_key)
     except RedisError as exc:
-        raise RuntimeError("storage reaper fairness cursor is unavailable") from exc
+        raise RuntimeError(f"{scheduler_name} fairness cursor is unavailable") from exc
     finally:
         client.close()
     if type(cursor) is not int or cursor < 1:
-        raise RuntimeError("storage reaper fairness cursor is non-canonical")
+        raise RuntimeError(f"{scheduler_name} fairness cursor is non-canonical")
     return (cursor - 1) % tenant_count
+
+
+def _storage_reaper_start_index(tenant_count: int) -> int:
+    """Preserve the storage task's named seam while sharing cursor validation."""
+
+    return _scheduler_start_index(
+        tenant_count,
+        cursor_key=STORAGE_REAPER_CURSOR_KEY,
+        scheduler_name="storage reaper",
+    )
 
 
 def _rotated_tenant_ids(
@@ -438,7 +495,7 @@ def _rotated_tenant_ids(
     if not organization_ids:
         return ()
     if type(start_index) is not int or not 0 <= start_index < len(organization_ids):
-        raise RuntimeError("storage reaper fairness cursor is outside the tenant registry")
+        raise RuntimeError("scheduler fairness cursor is outside the tenant registry")
     return organization_ids[start_index:] + organization_ids[:start_index]
 
 
@@ -480,7 +537,13 @@ def dispatch_outbox(limit: int = 50) -> int:
     global_limit = _scheduler_limit(limit)
     dispatched = 0
     handled = 0
-    for tenant_id in _organization_ids():
+    organization_ids = _organization_ids()
+    start_index = _scheduler_start_index(
+        len(organization_ids),
+        cursor_key=OUTBOX_DISPATCH_CURSOR_KEY,
+        scheduler_name="outbox dispatcher",
+    )
+    for tenant_id in _rotated_tenant_ids(organization_ids, start_index):
         remaining = global_limit - handled
         if remaining <= 0:
             break
@@ -518,6 +581,110 @@ def dispatch_outbox(limit: int = 50) -> int:
         handled += tenant_handled
         dispatched += tenant_dispatched
     return dispatched
+
+
+def _terminalize_delivery_watchdog_invariant(
+    job: GenerationJob,
+    *,
+    now: datetime,
+) -> None:
+    job.status = JobStatus.failed
+    job.lease_token = None
+    job.lease_expires_at = None
+    job.next_attempt_at = None
+    job.error = GENERATION_DELIVERY_WATCHDOG_ERROR
+    job.finished_at = now
+
+
+def _generation_delivery_watchdog_event_key(job_id: str) -> str:
+    if not _valid_event_identifier(job_id):
+        raise ValueError("generation watchdog job_id must be a canonical UUID")
+    return f"{GENERATION_DELIVERY_WATCHDOG_EVENT_PREFIX}:{job_id}"
+
+
+def _recover_unclaimed_queued_delivery(
+    session: Session,
+    job: GenerationJob,
+    *,
+    now: datetime,
+) -> OutboxEvent | None:
+    """Recreate one broker delivery only after a queued job remains unclaimed."""
+
+    if job.status != JobStatus.queued:
+        raise RuntimeError("generation delivery watchdog received a non-queued job")
+    if job.deadline_at is None:
+        _terminalize_delivery_watchdog_invariant(job, now=now)
+        return None
+    if _deadline_is_expired(job, now=now):
+        _terminalize_deadline(job, now=now)
+        return None
+    if job.attempts >= MAX_GENERATION_ATTEMPTS:
+        _terminalize_attempt_budget(job, now=now)
+        return None
+    if job.next_attempt_at is None:
+        _terminalize_delivery_watchdog_invariant(job, now=now)
+        return None
+    if _as_utc(job.next_attempt_at) > now:
+        return None
+
+    event_key = _generation_delivery_watchdog_event_key(job.id)
+    expected_payload = {
+        "job_id": job.id,
+        "organization_id": job.organization_id,
+    }
+    watchdog = session.scalar(
+        select(OutboxEvent)
+        .where(
+            OutboxEvent.organization_id == job.organization_id,
+            OutboxEvent.event_key == event_key,
+        )
+        .with_for_update()
+    )
+    if watchdog is not None:
+        if (
+            watchdog.organization_id != job.organization_id
+            or watchdog.topic != "generation.requested"
+            or watchdog.payload_json != expected_payload
+            or watchdog.dead_lettered_at is not None
+        ):
+            _terminalize_delivery_watchdog_invariant(job, now=now)
+            return None
+        if watchdog.dispatched_at is None:
+            job.updated_at = now
+            return None
+
+    pending_event_id = session.scalar(
+        select(OutboxEvent.id)
+        .where(
+            OutboxEvent.organization_id == job.organization_id,
+            OutboxEvent.event_key != event_key,
+            OutboxEvent.topic == "generation.requested",
+            OutboxEvent.dispatched_at.is_(None),
+            OutboxEvent.dead_lettered_at.is_(None),
+            OutboxEvent.payload_json["job_id"].as_string() == job.id,
+            OutboxEvent.payload_json["organization_id"].as_string() == job.organization_id,
+        )
+        .limit(1)
+    )
+    job.updated_at = now
+    if pending_event_id is not None:
+        return None
+    if watchdog is None:
+        return OutboxEvent(
+            organization_id=job.organization_id,
+            event_key=event_key,
+            topic="generation.requested",
+            payload_json=expected_payload,
+            available_at=now,
+        )
+
+    watchdog.dispatched_at = None
+    watchdog.available_at = now
+    watchdog.last_error = (
+        "Broker acknowledgement was not followed by a generation claim; "
+        "a bounded delivery retry was scheduled."
+    )
+    return None
 
 
 def _dispatch_tenant_outbox_events(
@@ -577,7 +744,13 @@ def _dispatch_tenant_outbox_events(
 def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
     global_limit = _scheduler_limit(limit)
     handled = 0
-    for tenant_id in _organization_ids():
+    organization_ids = _organization_ids()
+    start_index = _scheduler_start_index(
+        len(organization_ids),
+        cursor_key=GENERATION_RECOVERY_CURSOR_KEY,
+        scheduler_name="generation recovery",
+    )
+    for tenant_id in _rotated_tenant_ids(organization_ids, start_index):
         remaining = global_limit - handled
         if remaining <= 0:
             break
@@ -586,6 +759,7 @@ def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
             with _tenant_transaction(tenant_id) as session:
                 now = _database_time(session)
                 legacy_threshold = now - LEGACY_STALE_LEASE_THRESHOLD
+                queued_delivery_threshold = now - GENERATION_DELIVERY_WATCHDOG_INTERVAL
                 jobs = list(
                     session.scalars(
                         select(GenerationJob)
@@ -594,6 +768,18 @@ def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
                             GenerationJob.status.in_([JobStatus.queued, JobStatus.running]),
                             or_(
                                 GenerationJob.deadline_at <= now,
+                                and_(
+                                    GenerationJob.status == JobStatus.queued,
+                                    or_(
+                                        GenerationJob.attempts >= MAX_GENERATION_ATTEMPTS,
+                                        GenerationJob.deadline_at.is_(None),
+                                        GenerationJob.next_attempt_at.is_(None),
+                                        and_(
+                                            GenerationJob.next_attempt_at <= now,
+                                            GenerationJob.updated_at <= queued_delivery_threshold,
+                                        ),
+                                    ),
+                                ),
                                 and_(
                                     GenerationJob.status == JobStatus.running,
                                     or_(
@@ -606,7 +792,11 @@ def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
                                 ),
                             ),
                         )
-                        .order_by(GenerationJob.created_at, GenerationJob.id)
+                        .order_by(
+                            GenerationJob.updated_at,
+                            GenerationJob.created_at,
+                            GenerationJob.id,
+                        )
                         .with_for_update(skip_locked=True)
                         .limit(remaining)
                     )
@@ -616,7 +806,14 @@ def recover_stale_jobs(limit: int = DEFAULT_SCHEDULER_BATCH_LIMIT) -> int:
                         raise RuntimeError(
                             "tenant-local recovery query returned a cross-tenant row"
                         )
-                    event = _recover_stale_job(job, now=now)
+                    if job.status == JobStatus.queued:
+                        event = _recover_unclaimed_queued_delivery(
+                            session,
+                            job,
+                            now=now,
+                        )
+                    else:
+                        event = _recover_stale_job(job, now=now)
                     if event is not None:
                         session.add(event)
                     tenant_handled += 1
@@ -742,7 +939,7 @@ def generate_package(*, job_id: str, organization_id: str) -> dict[str, Any]:
             organization_id,
             lease_token,
         ) as lease_guard:
-            _validate_retention_before_generation(
+            verified_retention_input = _validate_retention_before_generation(
                 organization_id,
                 version,
                 minimum_valid_until=job.deadline_at,
@@ -753,6 +950,7 @@ def generate_package(*, job_id: str, organization_id: str) -> dict[str, Any]:
                 version,
                 lease_token=lease_token,
                 lease_guard=lease_guard,
+                verified_retention_input=verified_retention_input,
             )
             lease_guard.check()
             completed = _complete_job(
@@ -945,22 +1143,6 @@ def _maintain_generation_lease(
             )
 
 
-def _stock_id(
-    *,
-    role: str,
-    material_id: str,
-    material_version: str,
-    thickness_um: int,
-    width_um: int,
-    height_um: int,
-) -> str:
-    """Build a stable stock identity without conflating carcass and back sheets."""
-
-    return (
-        f"stock-{role}-{material_id}-{material_version}-{thickness_um}um-{width_um}x{height_um}um"
-    )
-
-
 def _generation_attempt_id(job_id: str, lease_token: str) -> str:
     """Derive the immutable physical incarnation for one claimed job attempt."""
 
@@ -1088,6 +1270,7 @@ def _generate(
     *,
     lease_token: str,
     lease_guard: _GenerationLeaseGuard,
+    verified_retention_input: VerifiedRetentionPackageInput | None = None,
 ) -> dict[str, Any]:
     if (
         not isinstance(lease_guard, _GenerationLeaseGuard)
@@ -1113,6 +1296,32 @@ def _generate(
     design = build_bookcase(spec)
     if design.design_hash != version.design_hash:
         raise ProductionBlockedError("Frozen DesignSpec no longer matches persisted design hash")
+    retention_contract = design.spec.joint_retention
+    if retention_contract is None:
+        if verified_retention_input is not None:
+            raise ProductionBlockedError(
+                "verified retention package input contradicts the unbound frozen design"
+            )
+        verified_retention_trust = None
+        signed_retention_artifacts: tuple[ArtifactFile, ...] = ()
+    else:
+        if verified_retention_input is None:
+            raise ProductionBlockedError(
+                "retention-bound generation has no canonically verified signed evidence bytes"
+            )
+        verified_retention_trust = verified_retention_input.document_trust
+        if not verified_retention_trust.matches_contract(retention_contract):
+            raise ProductionBlockedError(
+                "verified retention package input is detached from the frozen contract"
+            )
+        signed_retention_artifacts = (
+            ArtifactFile(
+                JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+                verified_retention_input.signed_evidence_bytes,
+                JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+                JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+            ),
+        )
     rule_report = evaluate_design(design)
     if rule_report.overall_status == RuleStatus.BLOCK:
         blockers = ", ".join(
@@ -1123,53 +1332,17 @@ def _generate(
     request = job.request_json
     external_evidence = tuple(request.get("external_evidence", ()))
     machine = resolved.machine
-    carcass_width_um = int(round(float(request["stock_width_mm"]) * 1000))
-    carcass_height_um = int(round(float(request["stock_height_mm"]) * 1000))
-    carcass_stock = StockSheet(
-        stock_id=_stock_id(
-            role="carcass",
-            material_id=spec.material.material_id,
-            material_version=spec.material.version,
-            thickness_um=spec.parameters.actual_thickness_um,
-            width_um=carcass_width_um,
-            height_um=carcass_height_um,
-        ),
-        material_id=spec.material.material_id,
-        material_version=spec.material.version,
-        width_um=carcass_width_um,
-        height_um=carcass_height_um,
-        thickness_um=spec.parameters.actual_thickness_um,
-        quantity=int(request["stock_count"]),
-        # The request carries dimensions and quantity, not a supplier-sheet axis.
-        # Keep stock orientation unbound until a structured stock profile owns it.
-        grain_direction="UNBOUND",
-    )
-    stocks = [carcass_stock]
-    if spec.back_material is not None:
-        back_width_um = int(round(float(request["back_stock_width_mm"]) * 1000))
-        back_height_um = int(round(float(request["back_stock_height_mm"]) * 1000))
-        stocks.append(
-            StockSheet(
-                stock_id=_stock_id(
-                    role="back",
-                    material_id=spec.back_material.material_id,
-                    material_version=spec.back_material.version,
-                    thickness_um=spec.parameters.back_thickness_um,
-                    width_um=back_width_um,
-                    height_um=back_height_um,
-                ),
-                material_id=spec.back_material.material_id,
-                material_version=spec.back_material.version,
-                width_um=back_width_um,
-                height_um=back_height_um,
-                thickness_um=spec.parameters.back_thickness_um,
-                quantity=int(request["back_stock_count"]),
-                # The validation request does not yet carry a verified supplier-sheet
-                # orientation. Keep it explicitly unspecified and record that fact in
-                # the signed manifest instead of inventing a grain match.
-                grain_direction="UNBOUND",
-            )
+    try:
+        stocks = stock_configuration_for_design(design, request)
+        registrations = two_sided_registration_for_design(
+            design,
+            request,
+            stocks=stocks,
         )
+    except (TypeError, ValueError) as exc:
+        raise ProductionBlockedError(
+            f"frozen workshop stock or two-sided registration is invalid: {exc}"
+        ) from exc
     context = ManifestContext(
         project_id=version.project_id,
         revision=str(version.revision),
@@ -1210,22 +1383,27 @@ def _generate(
         source_provenance=version.source_provenance_json or None,
     )
     document_files = [
-        ArtifactFile("bom/bom.pdf", bom_pdf(design), "application/pdf", "BOM_PDF"),
+        ArtifactFile(
+            "bom/bom.pdf",
+            bom_pdf(design, verified_retention_trust),
+            "application/pdf",
+            "BOM_PDF",
+        ),
         ArtifactFile(
             "bom/hardware-list.csv",
-            hardware_csv(design),
+            hardware_csv(design, verified_retention_trust),
             "text/csv",
             "HARDWARE_LIST",
         ),
         ArtifactFile(
             "assembly/assembly-manual.pdf",
-            assembly_manual_pdf(design),
+            assembly_manual_pdf(design, verified_retention_trust),
             "application/pdf",
             "ASSEMBLY_REVIEW_MANUAL",
         ),
         ArtifactFile(
             "assembly/assembly-readiness.json",
-            assembly_readiness_json(design),
+            assembly_readiness_json(design, verified_retention_trust),
             "application/json",
             "ASSEMBLY_READINESS",
         ),
@@ -1263,7 +1441,7 @@ def _generate(
                 "SOURCE_PROVENANCE",
             )
         )
-    documents = tuple(document_files)
+    documents = (*document_files, *signed_retention_artifacts)
     bundle = build_production_bundle(
         design,
         stock=tuple(stocks),
@@ -1274,6 +1452,7 @@ def _generate(
         include_validation_program=bool(request["include_validation_program"]),
         production_release=False,
         allow_blocked_cam=True,
+        two_sided_registration_by_stock=registrations,
         additional_artifacts=documents,
     )
     if bundle.manifest.get("generation_context_hash") != job.production_context_hash:
@@ -1795,6 +1974,7 @@ def _validate_completion_evidence(
                 bind_review_documents=True,
                 build_identity=WORKER_SETTINGS.build_identity,
                 trust_registry_json=WORKER_SETTINGS.joint_retention_trust_registry_json,
+                production_mode=WORKER_SETTINGS.app_env == "production",
             )
     except (BotoCoreError, ClientError, OSError) as exc:
         raise ArtifactStorageUnavailableError(
@@ -1815,7 +1995,7 @@ def _validate_retention_before_generation(
     claimed_version: DesignVersion,
     *,
     minimum_valid_until: datetime | None,
-) -> None:
+) -> VerifiedRetentionPackageInput | None:
     """Revalidate mutable retention trust before spending a generation attempt.
 
     The API validates the binding when it queues the job and the completion
@@ -1843,13 +2023,70 @@ def _validate_retention_before_generation(
                 raise ProductionBlockedError(
                     "generation retention preflight references a missing design version"
                 )
-            _require_current_retention_binding(
+            current_evidence = _require_current_retention_binding(
                 session,
                 organization_id,
                 version,
                 minimum_valid_until=minimum_valid_until,
                 trust_registry_json=WORKER_SETTINGS.joint_retention_trust_registry_json,
+                production_mode=WORKER_SETTINGS.app_env == "production",
             )
+            try:
+                bound_spec = BookcaseDesignSpec.model_validate(version.spec_json)
+            except (TypeError, ValueError) as exc:
+                raise ProductionBlockedError(
+                    "generation retention preflight could not reconstruct the frozen design"
+                ) from exc
+            if bound_spec.joint_retention is None:
+                if current_evidence is not None:
+                    raise ProductionBlockedError(
+                        "unbound generation unexpectedly returned retention evidence"
+                    )
+                return None
+            if current_evidence is None:
+                raise ProductionBlockedError(
+                    "retention-bound generation did not receive verified evidence bytes"
+                )
+            result_json = version.result_json
+            if not isinstance(result_json, Mapping):
+                raise ProductionBlockedError(
+                    "generation retention preflight has no frozen trust snapshot"
+                )
+            try:
+                verified = VerifiedRetentionTrust.from_verified_snapshot(
+                    result_json.get("retention_trust")
+                )
+            except (TypeError, ValueError) as exc:
+                raise ProductionBlockedError(
+                    "generation retention preflight trust snapshot is malformed"
+                ) from exc
+            if not verified.matches_contract(bound_spec.joint_retention):
+                raise ProductionBlockedError(
+                    "generation retention preflight trust snapshot is detached from the contract"
+                )
+            try:
+                evidence_bytes = current_evidence.content
+                evidence_sha256 = current_evidence.sha256
+            except AttributeError as exc:
+                raise ProductionBlockedError(
+                    "canonical retention gate returned malformed evidence"
+                ) from exc
+            if (
+                type(evidence_bytes) is not bytes
+                or evidence_sha256 != verified.storage_evidence_sha256
+            ):
+                raise ProductionBlockedError(
+                    "canonical retention evidence is detached from the frozen trust snapshot"
+                )
+            try:
+                return VerifiedRetentionPackageInput(
+                    document_trust=verified,
+                    signed_evidence_bytes=evidence_bytes,
+                )
+            except (TypeError, ValueError) as exc:
+                raise ProductionBlockedError(
+                    "canonical retention evidence is invalid for package generation"
+                ) from exc
     except (BotoCoreError, ClientError, OSError) as exc:
         raise ArtifactStorageUnavailableError(
             "retention evidence storage is temporarily unavailable"

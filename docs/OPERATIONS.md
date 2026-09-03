@@ -102,8 +102,15 @@ until the new recovery point has been independently accepted.
    never bypass or manually clear its maintenance gate.
 8. Start the dedicated storage-capacity attestor and require a fresh heartbeat
    bound to the restored database evidence and exact bucket inventory.
-9. Start one worker, let queued/idempotent jobs settle, then scale workers.
-10. Run tenant-isolation and seeded acceptance probes before starting the
+9. Compare the restored `joint_retention_registry_state` epoch, exact canonical
+   registry SHA-256 and operator-reference SHA-256 with the latest approved
+   off-database change record. A database backup and deployment secret can be
+   rolled back together, so the database high-water mark alone cannot detect
+   that paired rollback. Keep API/workers stopped if the restored epoch or digest
+   is older or unknown; review and explicitly activate the latest monotonic
+   registry before continuing. Never edit the singleton row directly.
+10. Start one worker, let queued/idempotent jobs settle, then scale workers.
+11. Run tenant-isolation and seeded acceptance probes before starting the
    scheduler and reopening API traffic.
 
 The disposable local database/object-volume restore probe is:
@@ -130,6 +137,51 @@ platform restore. Every Docker invocation, log/readiness probe, large payload
 restore and cleanup attempt has an explicit timeout. A hung inspection still
 triggers one separately bounded removal attempt for that exact validated name,
 then cleanup proceeds to the remaining disposable resources.
+
+### Joint-retention registry rollout and rollback
+
+The registry JSON stays at
+`custombuild.joint-retention-trust-registry.v1`; activation does not rewrite the
+file or existing revision snapshot hashes. Migration `0018` creates one global
+singleton because the same registry controls every tenant and both runtimes.
+Tenant-scoped state would leave dormant tenants vulnerable to an older registry.
+
+Every production rollout follows this order:
+
+1. Validate and independently approve the candidate registry and SHA-256.
+2. Ensure every deployed and rollback image understands revision `0018`, then
+   stop or gate generation and physical-release writers.
+3. Migrate the database and run `scripts.activate_joint_retention_registry` once
+   with the protected registry file and a non-secret change reference.
+4. Put the exact same bytes in both API and worker secret configuration, deploy
+   both, and require the `joint_retention_registry` readiness dependency to be
+   `ok` before reopening work.
+5. Preserve the CLI output, registry bytes and digest in the external change
+   record. Do not treat an application log or development/SQLite run as proof.
+
+Production readiness requires both that exact activated registry and at least
+one certifier key whose validity window includes the current instant and whose
+revocation has not taken effect. This proves policy availability only. It does
+not prove that an external certifier is currently engaged or that valid signed
+evidence exists for any particular design. Development skips this production
+proof and must not report that skip as certification or physical authorization.
+
+Activation is one-way. Exact retries are idempotent; revocations can only grow,
+existing keys cannot be removed or rewritten, and a set `revoked_at` cannot be
+cleared or moved later; it may move earlier to tighten a compromise response.
+The exclusive activation lock waits for in-flight shared runtime assertions,
+so no request can silently cross the policy transition.
+There is no runtime auto-pin path and neither API nor worker has table or install-
+function privileges.
+
+An application-image rollback is allowed only when that image supports `0018`
+and is configured with the currently activated registry. Do not roll the registry
+or database high-water row backward to accommodate an older image. Alembic
+downgrade is blocked after first activation. If disaster recovery restores an
+older database, compare it to the independent latest change record and activate
+the latest reviewed monotonic registry while all writers remain stopped. If the
+latest external record or exact bytes are unavailable, production retention
+readiness remains closed.
 
 ## Secrets and observability
 
@@ -446,6 +498,170 @@ closed and that repository-administration blocker must be resolved externally.
 Neither a successful software release nor its descriptor grants commercial release
 authority or physical-machine authorization; both remain explicitly `false`.
 
+### Bootstrap the first production OIDC administrator
+
+Migrations intentionally create no organization, user or membership, and the API
+never auto-provisions a signed OIDC subject. Before the first API start, provision
+one exact `owner` or `admin` with the production image's one-shot CLI. There is no
+HTTP bootstrap route and development demo tokens are not accepted by this command.
+OIDC production readiness remains closed with
+`ProductionIdentityBootstrapRequiredError` until at least one issuer-bound identity
+exists for the exact configured issuer. It also fails closed if any identity is
+still unbound or is bound to another issuer; one deployment therefore cannot
+silently mix identity-provider namespaces.
+
+First record two newly generated, canonical UUIDs for the organization and user.
+Read the subject and lowercase email from the production identity provider; the
+subject is case-sensitive and must not be guessed from the email. Choose and record
+the immutable organization slug and an operator-controlled change-ticket reference.
+Put them in a process-owned private request file; do not put identity values in
+shell arguments, environment variables or a heredoc:
+
+```bash
+umask 077
+export IDENTITY_REQUEST="$PWD/initial-production-identity.json"
+install -m 600 /dev/null "$IDENTITY_REQUEST"
+${EDITOR:?Set EDITOR} "$IDENTITY_REQUEST"
+test "$(stat -c '%a:%u' "$IDENTITY_REQUEST")" = "600:$(id -u)"
+```
+
+The file is strict JSON with exactly these fields. Every `__REPLACE_...__` value
+is deliberately invalid and must be replaced before execution:
+
+```json
+{
+  "schema_version": "custombuild.production-identity-bootstrap.v1",
+  "organization_id": "__REPLACE_ORGANIZATION_UUID__",
+  "organization_slug": "__REPLACE_ORGANIZATION_SLUG__",
+  "organization_name": "__REPLACE_ORGANIZATION_NAME__",
+  "user_id": "__REPLACE_USER_UUID__",
+  "oidc_issuer": "__REPLACE_HTTPS_OIDC_ISSUER__",
+  "oidc_subject": "__REPLACE_EXACT_OIDC_SUBJECT__",
+  "email": "__REPLACE_LOWERCASE_EMAIL__",
+  "user_name": "__REPLACE_USER_DISPLAY_NAME__",
+  "role": "__REPLACE_WITH_owner_OR_admin__",
+  "operator_reference": "__REPLACE_CHANGE_TICKET_REFERENCE__"
+}
+```
+
+While writers remain stopped and after the database is migrated to the image's
+Alembic head, read only the non-secret issuer into the deployment environment and
+mount the protected file read-only. Running the container as the file owner lets
+the CLI verify both ownership and mode:
+
+```bash
+export OIDC_ISSUER="$(python -c \
+  'import json,os; print(json.load(open(os.environ["IDENTITY_REQUEST"]))["oidc_issuer"])')"
+
+docker compose --env-file artifacts/deploy-images.env \
+  -f compose.yml -f compose.external-production.yml -f compose.registry.yml \
+  run --rm --no-deps \
+  --user "$(id -u):$(id -g)" \
+  --volume "$IDENTITY_REQUEST:/tmp/custombuild-initial-identity.json:ro" \
+  -e AUTH_MODE=oidc -e OIDC_ISSUER="$OIDC_ISSUER" \
+  migrate python -m scripts.bootstrap_production_identity \
+  --request-file /tmp/custombuild-initial-identity.json \
+  --confirm-initial-admin
+```
+
+The command has no identity defaults. Inject `MIGRATION_DATABASE_URL` through the
+normal deployment secret environment and never put that URL or its password on the
+command line. The CLI refuses symlinks, relative paths, non-regular files, files not
+owned by its process user, group/world permissions and files other than mode `0400`
+or `0600`. It requires `APP_ENV=production`, the exact password-authenticated
+`custombuild_migrator` role, no role memberships or privilege drift, the current
+schema head, an exact `pg_catalog,public` search path, correctly owned identity
+tables and an HTTPS issuer byte-for-byte equal to `OIDC_ISSUER`. It sets the tenant
+RLS context, takes a transaction-scoped bootstrap lock and commits the organization,
+user, membership and audit event atomically. Runtime lookup stores and checks an
+opaque SHA-256 key over the exact `(issuer, subject)` pair, so an equal subject from
+a different issuer cannot inherit the provisioned role.
+
+A successful first run prints only the recorded database IDs, role and `created`.
+Repeating the exact command prints `unchanged` and creates no rows. Any changed
+UUID, slug, name, issuer, subject, email, role or operator reference is refused;
+the initial-admin mode never renames, rebinds or promotes an existing identity.
+The audit explicitly records that the
+operation was performed by the external bootstrap operator and that its required
+`actor_id` is the provisioned target rather than the operator; issuer, subject and
+operator reference are stored only as SHA-256 bindings. Preserve the private request
+and output in an encrypted, access-controlled deployment record if exact replay is
+required; otherwise remove the request using the organization's approved secret-file
+cleanup procedure and unset `IDENTITY_REQUEST` and `OIDC_ISSUER`. Never weaken its
+permissions to work around a rootless/non-Linux bind-mount mapping: copy it into a
+private mounted volume with the numeric process owner and verify the in-container
+mode instead. If a failed run reports conflicting or partial identity state,
+leave writers stopped and investigate the database/audit history instead of deleting
+or editing rows manually.
+
+Finally configure the IdP token mapping so its signed `organization_id` and `role`
+claims exactly equal the bootstrapped values (and, when emitted, `user_id` equals the
+recorded user UUID). The API continues to fail closed when any subject, tenant,
+user or role claim differs from the provisioned membership.
+
+Production role separation cannot reuse the initial administrator. Create a second
+private request file with the exact same organization fields and issuer but a new
+user UUID, subject, email and name with role `designer`. Create two further files
+for two different people, each with role `reviewer`: one will perform design
+approval and the other CAM approval. Run all three through the same verified image,
+mount and environment command, replacing only the final confirmation flag with:
+
+```text
+--confirm-additional-member
+```
+
+This mode accepts only `designer` or `reviewer`, requires the exact organization to
+already contain an `owner` or `admin` bound to that same issuer, and atomically
+creates one issuer-bound user, membership and separately identified audit event.
+Exact retries are no-ops; partial rows, reused IDs/subjects/emails and role drift
+are refused. Confirm that the IdP
+maps the three distinct signed subjects to their exact user, organization and role
+claims. The design-approval and CAM-approval reviewer user IDs must remain distinct;
+`designer` has no review capability, and possession of the initial owner credential
+is not a substitute for either named reviewer.
+
+### Upgrade a legacy or unmarked OIDC identity
+
+Migration `0017_oidc_issuer_binding` adds a nullable issuer-hash marker without
+changing existing `oidc_sub` values. The current runtime treats a marked `oidc_sub`
+as an opaque issuer+subject binding. Production readiness explicitly fails with
+`LegacyUnscopedOIDCIdentityError` while any older row has no marker, and authentication
+returns a clear service-unavailable binding error for an exact legacy raw subject or
+an exact pre-marker opaque key.
+The schema upgrade therefore cannot silently make such a row authenticate under a
+replacement issuer or merely turn it into an unexplained 403.
+
+Before starting the upgraded API, prepare one protected request file per distinct
+unmarked user that belongs to exactly one organization. Its organization, user, raw
+provider subject, email, name and current role must
+exactly match the existing row and membership; `oidc_issuer` must be the issuer that
+originally authenticated that subject. Run the same command with:
+
+```text
+--confirm-legacy-issuer-binding
+```
+
+This migration mode accepts both a legacy raw `oidc_sub` and an already opaque but
+unmarked `oidc_sub`. It accepts every existing application role but creates no user,
+organization or membership and changes no role. It only replaces the exact raw
+subject with the opaque issuer-scoped key, sets the issuer-hash marker and adds a
+hash-bound external-operator audit event in the same transaction. A byte-identical
+retry is a no-op; missing, ambiguous, already conflicting or partially audited state
+is refused. Repeat for
+each raw-subject user until the database readiness probe passes. Preserve the
+pre-upgrade backup and the private requests under the normal change-control policy;
+never mass-update `oidc_sub` with ad-hoc SQL. A global user with memberships in
+multiple organizations is deliberately refused because one global authentication
+mutation cannot be truthfully authorized and audited from a single tenant context;
+escalate that case for a separately reviewed all-tenant migration.
+
+After any legacy binding, Alembic downgrade from `0017` is deliberately blocked:
+the one-way opaque key cannot reconstruct the raw provider subject required by the
+older runtime. Roll back application and schema only by restoring the approved
+pre-binding backup, then verify its Alembic head and identity row counts before
+starting the older application. A downgrade remains available on a clean schema
+where every issuer marker is still `NULL`.
+
 Register the web application as an OIDC public client with Authorization Code and
 PKCE (`S256`). The callback URI must be the public web origin's exact root (for
 example `https://app.example.com/`); no separate `/callback` route is implemented.
@@ -456,6 +672,45 @@ lock a revision, confirm that the job exposes `operations`,
 `validation_backplot` and at least `setup_sheet_001` as separate evidence
 artifacts. A locked review package must still be treated as validation-only under
 `PRODUCTION_SAFETY.md`.
+
+## Trusted offline package verifier
+
+Never execute a received production ZIP or anything contained in it. The ZIP is
+untrusted data. Obtain `scripts/verify_production_package.py` separately from a
+trusted, commit-pinned checkout or authenticated release channel. The file is the
+standalone Python-standard-library verifier; the byte-parity gate keeps it identical
+to the canonical reviewed implementation.
+
+From that trusted checkout, record its SHA-256 and install the exact bytes into a
+protected path outside any downloaded package:
+
+```bash
+EXPECTED_VERIFIER_SHA256="$(make -s trusted-package-verifier-sha256)"
+sudo make install-trusted-package-verifier \
+  TRUSTED_VERIFIER_DEST=/trusted/verify_production_package.py
+ACTUAL_VERIFIER_SHA256="$(sha256sum /trusted/verify_production_package.py | awk '{print $1}')"
+test "$ACTUAL_VERIFIER_SHA256" = "$EXPECTED_VERIFIER_SHA256"
+```
+
+Verify the ZIP as data, using project, revision and design hash obtained independently
+from the authenticated order record:
+
+```bash
+python3 -I /trusted/verify_production_package.py package.zip \
+  --expect-project-id '<project-id>' \
+  --expect-revision '<revision>' \
+  --expect-design-hash '<64-char-design-hash>'
+```
+
+Accept only exit code 0 and JSON `status: PASS`, and retain that JSON in the shop
+review record. A pass proves internal manifest consistency and can detect accidental
+corruption. It cannot detect a malicious coordinated rewrite of both the unsigned
+manifest and payloads, authenticate Custombuild or an evidence issuer, establish
+current evidence revocation/expiry, or authorize physical cutting, machining or
+assembly. The expected-identity options compare unsigned manifest claims only; they
+do not independently reconstruct design semantics or establish authenticity. Use the
+authenticated server for those trust checks and the shop's own controlled release
+process for any machine operation.
 
 ## Optional FreeCAD worker
 

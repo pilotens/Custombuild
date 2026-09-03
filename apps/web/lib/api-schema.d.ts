@@ -254,6 +254,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/projects/{project_id}/evidence/{evidence_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Joint Retention Evidence
+         * @description Stream only the exact currently valid signed JSON held by this tenant/project.
+         */
+        get: operations["download_joint_retention_evidence_v1_projects__project_id__evidence__evidence_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects/{project_id}/imports/inspect": {
         parameters: {
             query?: never;
@@ -599,7 +619,7 @@ export interface components {
             divider_count: number;
             /**
              * Edge Band Mm
-             * @default 1
+             * @default 0
              */
             edge_band_mm: number;
             /**
@@ -631,6 +651,12 @@ export interface components {
              * @enum {string}
              */
             material_id: "mdf" | "birch-plywood";
+            /**
+             * Measured Back Thickness Mm
+             * @description Actual measured back-panel batch thickness. The design service accepts whole micrometres only and does not round finer measurements.
+             * @default 6
+             */
+            measured_back_thickness_mm: number;
             /**
              * Measured Thickness Mm
              * @description MVP catalogue range for nominal 18 mm carcass sheet material.
@@ -843,11 +869,15 @@ export interface components {
              * @default 1220
              */
             stock_height_mm: number;
+            /** Stock Profiles */
+            stock_profiles?: components["schemas"]["WorkshopStockProfile"][] | null;
             /**
              * Stock Width Mm
              * @default 2440
              */
             stock_width_mm: number;
+            /** Two Sided Registrations */
+            two_sided_registrations?: components["schemas"]["WorkshopTwoSidedRegistration"][] | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -1153,14 +1183,21 @@ export interface components {
             back_stock_height_mm: number;
             /** Back Stock Width Mm */
             back_stock_width_mm: number;
-            /** Machine Profile Id */
-            machine_profile_id: string;
+            /**
+             * Machine Profile Id
+             * @enum {string}
+             */
+            machine_profile_id: "custombuild-router-1325-linuxcnc" | "custombuild-router-5125-linuxcnc";
             /** Stock Count */
             stock_count: number;
             /** Stock Height Mm */
             stock_height_mm: number;
+            /** Stock Profiles */
+            stock_profiles?: components["schemas"]["WorkshopStockProfile"][] | null;
             /** Stock Width Mm */
             stock_width_mm: number;
+            /** Two Sided Registrations */
+            two_sided_registrations?: components["schemas"]["WorkshopTwoSidedRegistration"][] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -1183,6 +1220,13 @@ export interface components {
             reason: string;
             /** Rule Id */
             rule_id: string;
+        };
+        /** WorkshopRegistrationPin */
+        WorkshopRegistrationPin: {
+            /** X Um */
+            x_um: number;
+            /** Y Um */
+            y_um: number;
         };
         /** WorkshopRunBlockedResponse */
         WorkshopRunBlockedResponse: {
@@ -1234,6 +1278,100 @@ export interface components {
             confirmation: "PREPARE_WORKSHOP_RUN";
             /** Generation Job Id */
             generation_job_id: string;
+        };
+        /**
+         * WorkshopStockProfile
+         * @description Exact supplier/raw-sheet declaration; no dimensions are inferred by the server.
+         */
+        WorkshopStockProfile: {
+            /** Allow Rotation */
+            allow_rotation: boolean;
+            /**
+             * Declaration Authority
+             * @constant
+             */
+            declaration_authority: "CLIENT_DECLARED";
+            /** Defect Zones */
+            defect_zones: components["schemas"]["WorkshopStockZone"][];
+            /** Fixture Keep Out Zones */
+            fixture_keep_out_zones: components["schemas"]["WorkshopStockZone"][];
+            /**
+             * Grain Direction
+             * @enum {string}
+             */
+            grain_direction: "X" | "Y" | "NONE";
+            /** Kerf Um */
+            kerf_um: number;
+            /** Material Id */
+            material_id: string;
+            /** Material Version */
+            material_version: string;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "carcass" | "back";
+            /** Sheet Count */
+            sheet_count: number;
+            /** Sheet Height Um */
+            sheet_height_um: number;
+            /** Sheet Width Um */
+            sheet_width_um: number;
+            /** Supplier Profile Id */
+            supplier_profile_id: string;
+            /** Supplier Profile Version */
+            supplier_profile_version: string;
+            /** Thickness Um */
+            thickness_um: number;
+            /** Trim Margin Um */
+            trim_margin_um: number;
+        };
+        /**
+         * WorkshopStockZone
+         * @description One caller-declared unusable rectangle in the raw-sheet coordinate frame.
+         */
+        WorkshopStockZone: {
+            /** Height Um */
+            height_um: number;
+            /** Width Um */
+            width_um: number;
+            /** X Um */
+            x_um: number;
+            /** Y Um */
+            y_um: number;
+        };
+        /**
+         * WorkshopTwoSidedRegistration
+         * @description Externally specified flip registration for one physical raw sheet.
+         */
+        WorkshopTwoSidedRegistration: {
+            /**
+             * Declaration Authority
+             * @constant
+             */
+            declaration_authority: "CLIENT_DECLARED";
+            /** Fixture Method Id */
+            fixture_method_id: string;
+            /** Fixture Method Version */
+            fixture_method_version: string;
+            /**
+             * Flip Axis
+             * @constant
+             */
+            flip_axis: "X";
+            /** Pin Diameter Um */
+            pin_diameter_um: number;
+            /** Pins */
+            pins: components["schemas"]["WorkshopRegistrationPin"][];
+            /** Position Tolerance Um */
+            position_tolerance_um: number;
+            /** Sheet Index */
+            sheet_index: number;
+            /**
+             * Stock Role
+             * @enum {string}
+             */
+            stock_role: "carcass" | "back";
         };
         /** WorkspaceIntentV1 */
         WorkspaceIntentV1: {
@@ -1295,8 +1433,12 @@ export interface components {
             stock_count: number;
             /** Stock Height Mm */
             stock_height_mm: number;
+            /** Stock Profiles */
+            stock_profiles?: components["schemas"]["WorkshopStockProfile"][] | null;
             /** Stock Width Mm */
             stock_width_mm: number;
+            /** Two Sided Registrations */
+            two_sided_registrations?: components["schemas"]["WorkshopTwoSidedRegistration"][] | null;
         };
         /** WorkspaceReferenceConfirmedInputs */
         WorkspaceReferenceConfirmedInputs: {
@@ -1867,6 +2009,85 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
+            };
+        };
+    };
+    download_joint_retention_evidence_v1_projects__project_id__evidence__evidence_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                evidence_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact certifier-signed joint-retention JSON bytes after current-revision, Ed25519, activated-registry/high-water, tenant, ledger, revocation, expiry and SHA-256 verification */
+            200: {
+                headers: {
+                    "Cache-Control"?: string;
+                    "Content-Disposition"?: string;
+                    "Content-Length"?: string;
+                    Digest?: string;
+                    ETag?: string;
+                    Pragma?: string;
+                    "X-Content-Type-Options"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string;
+                };
+            };
+            /** @description Authentication required. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The active role may not download signed retention evidence. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The tenant-scoped project or signed evidence was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The evidence is stale, revoked, expired or unverifiable. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A path identifier is not a canonical UUID. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The bounded download channel is at capacity. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The evidence ledger or immutable object is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

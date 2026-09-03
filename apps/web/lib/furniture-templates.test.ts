@@ -14,7 +14,7 @@ import { referenceVerificationFingerprint } from "./reference-image";
 import { DEFAULT_PLANNING_BRIEF, templateWithPlanningBrief } from "./furniture-planning";
 import { parseLocalDesignSpec } from "./workspace-design-envelope";
 
-const SCREENED_TEMPLATE_DEFAULTS_V1_3_SHA256 = "ec20a539e2bef2478d18a66519331ceb1067388551419ead9df337e72ecd2b71";
+const SCREENED_TEMPLATE_DEFAULTS_V1_4_SHA256 = "638d8091c7afb2d4bb54b8ccc67876595371b51f878076819a8b2cf46fc65057";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -116,7 +116,7 @@ describe("furniture template visual contracts", () => {
 
   it("binds current screened UI defaults to the versioned non-release contract", () => {
     expect(screenedTemplateDefaults.schema_version).toBe("custombuild.screened-template-defaults.v1");
-    expect(screenedTemplateDefaults.contract_version).toBe("1.3.0");
+    expect(screenedTemplateDefaults.contract_version).toBe("1.4.0");
     expect(screenedTemplateDefaults.identity_policy).toEqual({
       design_id: "preserve_current_project",
       revision: "preserve_current_project",
@@ -129,9 +129,9 @@ describe("furniture template visual contracts", () => {
     expect(fingerprint).toEqual({
       algorithm: "sha256",
       canonicalization: "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
-      value: SCREENED_TEMPLATE_DEFAULTS_V1_3_SHA256,
+      value: SCREENED_TEMPLATE_DEFAULTS_V1_4_SHA256,
     });
-    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_3_SHA256);
+    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_4_SHA256);
 
     expect(screenedTemplateDefaults.templates.map((entry) => entry.template_id)).toEqual(["shelving"]);
     for (const entry of screenedTemplateDefaults.templates) {

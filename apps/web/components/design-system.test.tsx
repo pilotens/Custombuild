@@ -83,6 +83,11 @@ describe("design system primitives", () => {
     expect(screen.getByText(/steg om 0,001 mm/i)).toBeVisible();
     expect(onCommit).not.toHaveBeenCalled();
 
+    fireEvent.change(input, { target: { value: "397.12500000001" } });
+    fireEvent.blur(input);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(onCommit).not.toHaveBeenCalled();
+
     fireEvent.change(input, { target: { value: "397.125" } });
     fireEvent.keyDown(input, { key: "Enter" });
     expect(input).toHaveAttribute("aria-invalid", "false");

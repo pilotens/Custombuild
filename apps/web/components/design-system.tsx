@@ -295,6 +295,44 @@ function clampAndSnap(value: number, min: number, max: number, step: number): nu
   return Math.min(max, Math.max(min, Number(snapped.toFixed(8))));
 }
 
+interface ExactDecimal {
+  coefficient: bigint;
+  scale: number;
+}
+
+function parseExactDecimal(raw: string): ExactDecimal | undefined {
+  const trimmed = raw.trim();
+  if (trimmed.length === 0 || trimmed.length > 128) return undefined;
+  const match = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(trimmed);
+  if (!match) return undefined;
+
+  const fraction = match[3] ?? match[4] ?? "";
+  const exponent = Number(match[5] ?? "0");
+  if (!Number.isSafeInteger(exponent) || Math.abs(exponent) > 100) return undefined;
+
+  const unsigned = BigInt(`${match[2] ?? "0"}${fraction}` || "0");
+  let coefficient = match[1] === "-" ? -unsigned : unsigned;
+  let scale = fraction.length - exponent;
+  if (scale < 0) {
+    coefficient *= 10n ** BigInt(-scale);
+    scale = 0;
+  }
+  return { coefficient, scale };
+}
+
+function followsExactDecimalStep(raw: string, min: number, step: number): boolean {
+  const value = parseExactDecimal(raw);
+  const origin = parseExactDecimal(String(min));
+  const increment = parseExactDecimal(String(step));
+  if (!value || !origin || !increment || increment.coefficient <= 0n) return false;
+
+  const scale = Math.max(value.scale, origin.scale, increment.scale);
+  const scaled = (decimal: ExactDecimal) => (
+    decimal.coefficient * 10n ** BigInt(scale - decimal.scale)
+  );
+  return (scaled(value) - scaled(origin)) % scaled(increment) === 0n;
+}
+
 export function DimensionInput({
   label,
   value,
@@ -330,8 +368,7 @@ export function DimensionInput({
     if (parsed < min || parsed > max) {
       return `Ange ett värde mellan ${min.toLocaleString("sv-SE")} och ${max.toLocaleString("sv-SE")} ${unit}.`;
     }
-    const steps = (parsed - min) / step;
-    if (Math.abs(steps - Math.round(steps)) > 1e-7) {
+    if (!followsExactDecimalStep(raw, min, step)) {
       return `Ange värdet i steg om ${step.toLocaleString("sv-SE")} ${unit}.`;
     }
     return undefined;

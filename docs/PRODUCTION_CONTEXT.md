@@ -47,6 +47,23 @@ and release also re-resolve the context and return a conflict for stale jobs.
 
 ## Migration and deployment rule
 
+The package contract introduced with this release is
+`custombuild.production-manifest.v5` with
+`custombuild.supplier-handoff.v3`. The current reader deliberately rejects
+manifest v4 and supplier-handoff v2 instead of interpreting old bytes under
+the stronger v5/v3 rules. Historical bytes are never rewritten or relabelled,
+but the current release-archive endpoints intentionally reject v4 packages
+because their ownership check uses the current v5 reader. Preserve and retrieve
+v4 packages through the archived v4 runtime or an independently controlled
+byte archive, and verify them with the exact archived v4 verifier that created
+them. Regenerating a design creates a new revision and a new v5 archive rather
+than upgrading an existing ZIP in place.
+
+This break is required because v5 adds the canonical package guide and three
+published JSON Schemas, while handoff v3 binds the operations document and its
+schema by path, version and SHA-256. Those required files and fields were not
+part of the v4/v2 contract and must never be inferred for a historical archive.
+
 Migration `0002_generation_engine_context` adds the non-null JSON snapshot to
 generation jobs. Existing pre-context jobs are intentionally non-reproducible:
 their empty snapshot fails the current-context guard and they must be regenerated.

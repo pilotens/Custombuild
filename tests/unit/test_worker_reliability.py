@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
@@ -24,6 +26,7 @@ from app.models import (
 from celery.exceptions import SoftTimeLimitExceeded
 from custombuild_manufacturing import MAX_ARTIFACT_BYTES, MAX_CORE_DOCUMENT_BYTES
 from custombuild_manufacturing.readiness import ReadinessValidationError
+from custombuild_worker.documents import VerifiedRetentionTrust
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -41,6 +44,11 @@ def worker_session_factory(
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     monkeypatch.setattr(worker_tasks, "SessionFactory", factory)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_scheduler_start_index",
+        lambda _tenant_count, *, cursor_key, scheduler_name: 0,
+    )
     monkeypatch.setattr(
         worker_tasks,
         "_validate_completion_evidence",
@@ -122,6 +130,144 @@ def _generation_result() -> dict[str, Any]:
     }
 
 
+def test_generate_package_threads_exact_verified_retention_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signed_evidence_bytes = b"signed-retention-evidence"
+    trust = VerifiedRetentionTrust.from_verified_snapshot(
+        {
+            "schema_version": "custombuild.joint-retention-binding.v2",
+            "application_class": "load_bearing_carcass_dado",
+            "storage_evidence_id": "44444444-4444-4444-8444-444444444444",
+            "storage_evidence_sha256": worker_tasks.sha256_hex(signed_evidence_bytes),
+            "base_design_hash": "2" * 64,
+            "joint_geometry_sha256": "3" * 64,
+            "registry_sha256": "4" * 64,
+            "issuer_id": "independent-retention-lab",
+            "key_id": "independent-retention-lab-2026",
+            "signed_evidence_id": "signed-evidence-1",
+            "signed_evidence_expires_at": "2027-08-30T12:00:00+00:00",
+            "system_id": "mechanical-dado-lock",
+            "system_version": "1.0.0",
+            "contract_sha256": "5" * 64,
+        }
+    )
+    retention_input = worker_tasks.VerifiedRetentionPackageInput(
+        document_trust=trust,
+        signed_evidence_bytes=signed_evidence_bytes,
+    )
+    deadline = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    exact_claim = str(worker_tasks.uuid4())
+    job = SimpleNamespace(lease_token=exact_claim, deadline_at=deadline)
+    version = SimpleNamespace(id="version-1")
+    order: list[str] = []
+
+    class Guard:
+        def check(self) -> None:
+            order.append("lease-check")
+
+    @contextmanager
+    def maintain(*_args: object):
+        order.append("lease-start")
+        yield Guard()
+        order.append("lease-stop")
+
+    def preflight(
+        organization_id: str,
+        claimed_version: object,
+        *,
+        minimum_valid_until: datetime | None,
+    ) -> worker_tasks.VerifiedRetentionPackageInput:
+        assert organization_id == "tenant-1"
+        assert claimed_version is version
+        assert minimum_valid_until == deadline
+        order.append("preflight")
+        return retention_input
+
+    expected_result = _generation_result()
+
+    def generate(
+        claimed_job: object,
+        claimed_version: object,
+        *,
+        lease_token: str,
+        lease_guard: object,
+        verified_retention_input: worker_tasks.VerifiedRetentionPackageInput | None,
+    ) -> dict[str, Any]:
+        assert claimed_job is job
+        assert claimed_version is version
+        assert lease_token == exact_claim
+        assert isinstance(lease_guard, Guard)
+        assert verified_retention_input is retention_input
+        order.append("generate")
+        return expected_result
+
+    def complete(*_args: object, **_kwargs: object) -> bool:
+        order.append("complete")
+        return True
+
+    monkeypatch.setattr(worker_tasks, "_claim_job", lambda *_args: (job, version))
+    monkeypatch.setattr(worker_tasks, "_maintain_generation_lease", maintain)
+    monkeypatch.setattr(worker_tasks, "_validate_retention_before_generation", preflight)
+    monkeypatch.setattr(worker_tasks, "_generate", generate)
+    monkeypatch.setattr(worker_tasks, "_complete_job", complete)
+
+    result = worker_tasks.generate_package.run(job_id="job-1", organization_id="tenant-1")
+
+    assert result is expected_result
+    assert order.index("preflight") < order.index("generate") < order.index("complete")
+
+
+def test_verified_retention_package_input_rejects_mutable_or_detached_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact = b"signed-retention-evidence"
+    trust = VerifiedRetentionTrust.from_verified_snapshot(
+        {
+            "schema_version": "custombuild.joint-retention-binding.v2",
+            "application_class": "load_bearing_carcass_dado",
+            "storage_evidence_id": "44444444-4444-4444-8444-444444444444",
+            "storage_evidence_sha256": worker_tasks.sha256_hex(exact),
+            "base_design_hash": "2" * 64,
+            "joint_geometry_sha256": "3" * 64,
+            "registry_sha256": "4" * 64,
+            "issuer_id": "independent-retention-lab",
+            "key_id": "independent-retention-lab-2026",
+            "signed_evidence_id": "signed-evidence-1",
+            "signed_evidence_expires_at": "2027-08-30T12:00:00+00:00",
+            "system_id": "mechanical-dado-lock",
+            "system_version": "1.0.0",
+            "contract_sha256": "5" * 64,
+        }
+    )
+
+    with pytest.raises(TypeError, match="must be exact bytes"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=trust,
+            signed_evidence_bytes=bytearray(exact),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=trust,
+            signed_evidence_bytes=b"different",
+        )
+    empty_trust = replace(
+        trust,
+        storage_evidence_sha256=worker_tasks.sha256_hex(b""),
+    )
+    with pytest.raises(ValueError, match="size is invalid"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=empty_trust,
+            signed_evidence_bytes=b"",
+        )
+    monkeypatch.setattr(worker_tasks, "MAX_SIGNED_EVIDENCE_BYTES", len(exact) - 1)
+    with pytest.raises(ValueError, match="size is invalid"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=trust,
+            signed_evidence_bytes=exact,
+        )
+
+
 def test_completion_rejects_detached_engine_context_before_state_or_artifacts(
     worker_session_factory: sessionmaker[Session],
 ) -> None:
@@ -166,8 +312,14 @@ def test_completion_rejects_detached_engine_context_before_state_or_artifacts(
         )
 
 
+@pytest.mark.parametrize(
+    ("app_env", "expected_production_mode"),
+    (("production", True), ("test", False)),
+)
 def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
     monkeypatch: pytest.MonkeyPatch,
+    app_env: str,
+    expected_production_mode: bool,
 ) -> None:
     payload = b'{"completion":"verified"}'
     digest = hashlib.sha256(payload).hexdigest()
@@ -192,6 +344,7 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
 
     client = WorkerS3Client()
     runtime = SimpleNamespace(
+        app_env=app_env,
         s3_bucket="production-artifacts",
         build_identity=build_identity,
         joint_retention_trust_registry_json='{"registry":"worker-owned"}',
@@ -209,6 +362,7 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
         assert organization_id == "tenant-a"
         assert kwargs["build_identity"] == build_identity
         assert kwargs["trust_registry_json"] == '{"registry":"worker-owned"}'
+        assert kwargs["production_mode"] is expected_production_mode
         storage_module.verify_stored_object(
             storage_module.StoredObjectExpectation(
                 object_key="tenant-a/evidence.json",
@@ -222,6 +376,7 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
     monkeypatch.setattr(worker_tasks, "WORKER_SETTINGS", runtime)
     monkeypatch.setattr(worker_tasks, "_s3_client", lambda: client)
     monkeypatch.setattr(api_module, "_require_review_evidence", canonical_gate)
+    monkeypatch.setattr(api_module, "get_settings", must_not_load_api_settings)
     monkeypatch.setattr(storage_module, "get_settings", must_not_load_api_settings)
 
     worker_tasks._validate_completion_evidence(
@@ -1061,6 +1216,206 @@ def test_recovery_task_deadline_overrides_a_still_live_lease(
         assert recovery_events == []
 
 
+def test_queued_delivery_watchdog_reuses_one_event_after_acknowledged_broker_loss(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = stale_at
+        job.updated_at = stale_at
+        job.deadline_at = now + timedelta(hours=1)
+        session.add(
+            OutboxEvent(
+                organization_id=organization_id,
+                event_key=f"generation:{job_id}",
+                topic="generation.requested",
+                payload_json={
+                    "job_id": job_id,
+                    "organization_id": organization_id,
+                },
+                available_at=stale_at,
+                dispatched_at=stale_at,
+                attempts=1,
+            )
+        )
+
+    clock = {"now": now}
+    monkeypatch.setattr(
+        worker_tasks,
+        "_database_time",
+        lambda _session, _override=None: clock["now"],
+    )
+    published: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published.append(kwargs),
+    )
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 0
+    event_key = f"{worker_tasks.GENERATION_DELIVERY_WATCHDOG_EVENT_PREFIX}:{job_id}"
+    with worker_session_factory() as session:
+        watchdogs = list(
+            session.scalars(select(OutboxEvent).where(OutboxEvent.event_key == event_key))
+        )
+        assert len(watchdogs) == 1
+        watchdog_id = watchdogs[0].id
+        assert watchdogs[0].dispatched_at is None
+
+    assert worker_tasks.dispatch_outbox.run(limit=1) == 1
+    assert len(published) == 1
+    clock["now"] = now + worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL + timedelta(seconds=1)
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    with worker_session_factory() as session:
+        watchdogs = list(
+            session.scalars(select(OutboxEvent).where(OutboxEvent.event_key == event_key))
+        )
+        assert len(watchdogs) == 1
+        assert watchdogs[0].id == watchdog_id
+        assert watchdogs[0].dispatched_at is None
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.queued
+        assert job.attempts == 0
+
+    assert worker_tasks.dispatch_outbox.run(limit=1) == 1
+    assert len(published) == 2
+    first_claim = worker_tasks._claim_job(job_id, organization_id)
+    assert first_claim is not None
+    assert first_claim[0].attempts == 1
+    assert worker_tasks._claim_job(job_id, organization_id) is None
+
+
+def test_queued_delivery_watchdog_does_not_duplicate_pending_outbox_delivery(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = stale_at
+        job.updated_at = stale_at
+        job.deadline_at = now + timedelta(hours=1)
+        session.add(
+            OutboxEvent(
+                organization_id=organization_id,
+                event_key=f"generation:{job_id}",
+                topic="generation.requested",
+                payload_json={
+                    "job_id": job_id,
+                    "organization_id": organization_id,
+                },
+                available_at=stale_at,
+            )
+        )
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: now)
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 0
+    with worker_session_factory() as session:
+        events = list(session.scalars(select(OutboxEvent)))
+        assert [event.event_key for event in events] == [f"generation:{job_id}"]
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert worker_tasks._as_utc(job.updated_at) == now
+        assert job.attempts == 0
+
+
+@pytest.mark.parametrize(
+    "terminal_bound",
+    ("deadline", "missing_deadline", "missing_schedule", "attempts"),
+)
+def test_queued_delivery_watchdog_respects_terminal_bounds_without_republish(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_bound: str,
+) -> None:
+    job_id, _organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = None if terminal_bound == "missing_schedule" else stale_at
+        job.updated_at = stale_at
+        if terminal_bound == "deadline":
+            job.deadline_at = now - timedelta(seconds=1)
+        elif terminal_bound == "missing_deadline":
+            job.deadline_at = None
+        else:
+            job.deadline_at = now + timedelta(hours=1)
+        if terminal_bound == "attempts":
+            job.attempts = worker_tasks.MAX_GENERATION_ATTEMPTS
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: now)
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    with worker_session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.failed
+        assert job.next_attempt_at is None
+        assert job.finished_at is not None
+        if terminal_bound == "deadline":
+            assert job.error == worker_tasks.GENERATION_DEADLINE_ERROR
+        elif terminal_bound in {"missing_deadline", "missing_schedule"}:
+            assert job.error == worker_tasks.GENERATION_DELIVERY_WATCHDOG_ERROR
+        else:
+            assert job.error == "Generation job exhausted the maximum of 4 attempts"
+        assert list(session.scalars(select(OutboxEvent))) == []
+
+
+def test_queued_delivery_watchdog_fails_closed_on_corrupt_canonical_event(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    event_key = f"{worker_tasks.GENERATION_DELIVERY_WATCHDOG_EVENT_PREFIX}:{job_id}"
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = stale_at
+        job.updated_at = stale_at
+        job.deadline_at = now + timedelta(hours=1)
+        session.add(
+            OutboxEvent(
+                organization_id=organization_id,
+                event_key=event_key,
+                topic="generation.requested",
+                payload_json={
+                    "job_id": job_id,
+                    "organization_id": organization_id,
+                    "secret": "must-not-leak",
+                },
+                available_at=stale_at,
+                dispatched_at=stale_at,
+                attempts=1,
+            )
+        )
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: now)
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    with worker_session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.failed
+        assert job.error == worker_tasks.GENERATION_DELIVERY_WATCHDOG_ERROR
+        assert "must-not-leak" not in (job.error or "")
+        watchdog = session.scalar(select(OutboxEvent).where(OutboxEvent.event_key == event_key))
+        assert watchdog is not None
+        assert watchdog.dispatched_at is not None
+
+
 def test_poison_outbox_event_is_dead_lettered_without_blocking_the_next_event(
     worker_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -1363,6 +1718,117 @@ def test_stale_recovery_runs_one_tenant_transaction_per_organization(
         ]
 
 
+def test_outbox_global_limit_rotates_first_tenant_durably(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenants = tuple(f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 4))
+    jobs = tuple(f"10000000-0000-4000-8000-{index:012d}" for index in range(1, 4))
+    available_at = datetime.now(UTC) - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        for index, (tenant_id, job_id) in enumerate(zip(tenants, jobs, strict=True), start=1):
+            session.add(
+                Organization(
+                    id=tenant_id,
+                    name=f"Fair outbox tenant {index}",
+                    slug=f"fair-outbox-{index}",
+                )
+            )
+            session.add(
+                OutboxEvent(
+                    organization_id=tenant_id,
+                    event_key=f"fair-outbox-{index}",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job_id,
+                        "organization_id": tenant_id,
+                    },
+                    available_at=available_at,
+                )
+            )
+
+    starts = iter((0, 1, 2))
+    cursor_calls: list[tuple[int, str, str]] = []
+
+    def next_start(
+        tenant_count: int,
+        *,
+        cursor_key: str,
+        scheduler_name: str,
+    ) -> int:
+        cursor_calls.append((tenant_count, cursor_key, scheduler_name))
+        return next(starts)
+
+    published_tenants: list[str] = []
+    monkeypatch.setattr(worker_tasks, "_scheduler_start_index", next_start)
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published_tenants.append(str(kwargs["kwargs"]["organization_id"])),
+    )
+
+    assert [worker_tasks.dispatch_outbox.run(limit=1) for _ in range(3)] == [1, 1, 1]
+    assert published_tenants == list(tenants)
+    assert cursor_calls == [
+        (3, worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY, "outbox dispatcher"),
+        (3, worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY, "outbox dispatcher"),
+        (3, worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY, "outbox dispatcher"),
+    ]
+
+
+def test_recovery_global_limit_rotates_first_tenant_durably(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenants = tuple(f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 4))
+    jobs: list[str] = []
+    for index, tenant_id in enumerate(tenants, start=1):
+        job_id, _ = _seed_generation_job(
+            worker_session_factory,
+            organization_id=tenant_id,
+            version_id=f"20000000-0000-4000-8000-{index:012d}",
+            job_id=f"30000000-0000-4000-8000-{index:012d}",
+            project_id=f"40000000-0000-4000-8000-{index:012d}",
+        )
+        jobs.append(job_id)
+        assert worker_tasks._claim_job(job_id, tenant_id) is not None
+    with worker_session_factory.begin() as session:
+        for job_id in jobs:
+            job = session.get(GenerationJob, job_id)
+            assert job is not None
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    starts = iter((0, 1, 2))
+    cursor_calls: list[tuple[int, str, str]] = []
+
+    def next_start(
+        tenant_count: int,
+        *,
+        cursor_key: str,
+        scheduler_name: str,
+    ) -> int:
+        cursor_calls.append((tenant_count, cursor_key, scheduler_name))
+        return next(starts)
+
+    monkeypatch.setattr(worker_tasks, "_scheduler_start_index", next_start)
+
+    assert [worker_tasks.recover_stale_jobs.run(limit=1) for _ in range(3)] == [1, 1, 1]
+    with worker_session_factory() as session:
+        recovered = list(
+            session.scalars(
+                select(OutboxEvent)
+                .where(OutboxEvent.event_key.like("generation-recovery:%"))
+                .order_by(OutboxEvent.organization_id)
+            )
+        )
+        assert [event.organization_id for event in recovered] == list(tenants)
+    assert cursor_calls == [
+        (3, worker_tasks.GENERATION_RECOVERY_CURSOR_KEY, "generation recovery"),
+        (3, worker_tasks.GENERATION_RECOVERY_CURSOR_KEY, "generation recovery"),
+        (3, worker_tasks.GENERATION_RECOVERY_CURSOR_KEY, "generation recovery"),
+    ]
+
+
 def test_outbox_tenant_rollback_does_not_block_other_tenants(
     worker_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -1498,3 +1964,73 @@ def test_scheduler_tasks_reject_invalid_global_limits(
         worker_tasks.dispatch_outbox.run(limit=invalid_limit)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="positive integer"):
         worker_tasks.recover_stale_jobs.run(limit=invalid_limit)  # type: ignore[arg-type]
+
+
+def test_scheduler_cursor_is_task_specific_atomic_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counts: dict[str, int] = {}
+    closed = 0
+
+    class FakeRedis:
+        def incr(self, key: str) -> int:
+            counts[key] = counts.get(key, 0) + 1
+            return counts[key]
+
+        def close(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    fake = FakeRedis()
+    monkeypatch.setattr(worker_tasks.Redis, "from_url", lambda *_args, **_kwargs: fake)
+
+    assert (
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY,
+            scheduler_name="outbox dispatcher",
+        )
+        == 0
+    )
+    assert (
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY,
+            scheduler_name="outbox dispatcher",
+        )
+        == 1
+    )
+    assert (
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.GENERATION_RECOVERY_CURSOR_KEY,
+            scheduler_name="generation recovery",
+        )
+        == 0
+    )
+    assert worker_tasks._storage_reaper_start_index(3) == 0
+    assert closed == 4
+    assert counts == {
+        worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY: 2,
+        worker_tasks.GENERATION_RECOVERY_CURSOR_KEY: 1,
+        worker_tasks.STORAGE_REAPER_CURSOR_KEY: 1,
+    }
+
+    class BrokenRedis:
+        def incr(self, _key: str) -> int:
+            raise worker_tasks.RedisError("redis-secret")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        worker_tasks.Redis,
+        "from_url",
+        lambda *_args, **_kwargs: BrokenRedis(),
+    )
+    with pytest.raises(RuntimeError, match="generation recovery fairness cursor is unavailable"):
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.GENERATION_RECOVERY_CURSOR_KEY,
+            scheduler_name="generation recovery",
+        )

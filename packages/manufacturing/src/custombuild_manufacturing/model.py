@@ -462,12 +462,19 @@ class StockSheet:
     allow_rotation: bool = True
     defect_zones: tuple[Rect, ...] = ()
     clamp_zones: tuple[Rect, ...] = ()
+    declaration_authority: str = "UNSPECIFIED_UNVERIFIED_INPUT"
 
     def __post_init__(self) -> None:
         if min(self.width_um, self.height_um, self.thickness_um, self.quantity) <= 0:
             raise ValueError("stock dimensions and quantity must be positive")
         if self.margin_um < 0 or self.kerf_um < 0:
             raise ValueError("stock margin and kerf cannot be negative")
+        if (
+            not isinstance(self.declaration_authority, str)
+            or not self.declaration_authority
+            or self.declaration_authority != self.declaration_authority.strip()
+        ):
+            raise ValueError("stock declaration authority must be a canonical non-blank string")
         if self.margin_um * 2 >= min(self.width_um, self.height_um):
             raise ValueError("stock margin consumes the usable sheet")
 

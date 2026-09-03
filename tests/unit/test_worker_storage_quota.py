@@ -303,6 +303,7 @@ def _fast_generation_subject(
         material=material,
         back_material=None,
         parameters=SimpleNamespace(actual_thickness_um=18_000),
+        joint_retention=None,
     )
     monkeypatch.setattr(
         worker_tasks,
@@ -312,7 +313,7 @@ def _fast_generation_subject(
     monkeypatch.setattr(
         worker_tasks,
         "build_bookcase",
-        lambda _spec: SimpleNamespace(design_hash=version.design_hash),
+        lambda _spec: SimpleNamespace(design_hash=version.design_hash, spec=spec),
     )
     rule_report = SimpleNamespace(
         overall_status=RuleStatus.PASS,
@@ -593,7 +594,9 @@ def test_transient_put_failure_delays_retry_until_storage_lease_can_be_taken_ove
         *,
         lease_token: str,
         lease_guard: worker_tasks._GenerationLeaseGuard,
+        verified_retention_input: worker_tasks.VerifiedRetentionPackageInput | None = None,
     ) -> dict[str, Any]:
+        assert verified_retention_input is None
         claim = StorageObjectClaim(
             project_id=version.project_id,
             object_key="private/transient-upload.bin",

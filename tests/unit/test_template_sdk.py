@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from custombuild_domain import BOOKCASE_TEMPLATE_VERSION
 from custombuild_templates import load_bookcase_template
 
 
 def test_bookcase_template_is_versioned_and_complete() -> None:
     template = load_bookcase_template()
     assert template.template_id == "bookcase"
-    assert template.template_version == "2.1.0"
+    assert BOOKCASE_TEMPLATE_VERSION == "2.2.0"
+    assert template.template_version == BOOKCASE_TEMPLATE_VERSION
     assert template.assembly_graph_version == "2.0.0"
     assert template.manufacturing_feature_version == "2.1.0"
     assert template.persisted_unit == "um"

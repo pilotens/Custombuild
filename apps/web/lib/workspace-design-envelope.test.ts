@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { toPreviewRequest } from "./api-client";
 import { DEFAULT_DESIGN_SPEC, type DesignSpec } from "./design-types";
 import { referenceVerificationFingerprint } from "./reference-image";
+import type { WorkshopProductionContext } from "./workshop-production-context";
 import {
   DesignHydrationError,
   MAX_CUSTOM_PART_IDS,
@@ -21,6 +22,49 @@ function serverDraft(
     draftRevision: spec.revision,
     specJson: toPreviewRequest(spec),
     workspaceSpecJson,
+  };
+}
+
+function validWorkshopContext(): WorkshopProductionContext {
+  return {
+    stock_profiles: [
+      {
+        role: "carcass",
+        declaration_authority: "CLIENT_DECLARED",
+        supplier_profile_id: "shop-birch-18",
+        supplier_profile_version: "batch-2026-09",
+        material_id: "birch-plywood",
+        material_version: "screening-2026.1",
+        sheet_width_um: 2_440_000,
+        sheet_height_um: 1_220_000,
+        thickness_um: 17_800,
+        sheet_count: 4,
+        trim_margin_um: 10_000,
+        kerf_um: 6_000,
+        grain_direction: "X",
+        allow_rotation: false,
+        defect_zones: [],
+        fixture_keep_out_zones: [],
+      },
+      {
+        role: "back",
+        declaration_authority: "CLIENT_DECLARED",
+        supplier_profile_id: "shop-birch-6",
+        supplier_profile_version: "batch-2026-09",
+        material_id: "birch-plywood-6",
+        material_version: "screening-2026.1",
+        sheet_width_um: 2_440_000,
+        sheet_height_um: 1_220_000,
+        thickness_um: 6_000,
+        sheet_count: 2,
+        trim_margin_um: 10_000,
+        kerf_um: 6_000,
+        grain_direction: "X",
+        allow_rotation: false,
+        defect_zones: [],
+        fixture_keep_out_zones: [],
+      },
+    ],
   };
 }
 
@@ -96,6 +140,13 @@ describe("strict server draft hydration", () => {
     expect(explicit.kind).toBe("ready");
     if (explicit.kind === "ready") expect(explicit.spec.back_material_id).toBe("mdf-6");
 
+    const measured = parseServerProjectDraft(serverDraft({
+      ...DEFAULT_DESIGN_SPEC,
+      measured_back_thickness_mm: 5.8,
+    }));
+    expect(measured.kind).toBe("ready");
+    if (measured.kind === "ready") expect(measured.spec.measured_back_thickness_mm).toBe(5.8);
+
     const legacyDraft = serverDraft({
       ...DEFAULT_DESIGN_SPEC,
       material_id: "mdf",
@@ -104,9 +155,13 @@ describe("strict server draft hydration", () => {
     });
     const legacySpec = { ...(legacyDraft.specJson as Record<string, unknown>) };
     delete legacySpec.back_material_id;
+    delete legacySpec.measured_back_thickness_mm;
     const legacy = parseServerProjectDraft({ ...legacyDraft, specJson: legacySpec });
     expect(legacy.kind).toBe("ready");
-    if (legacy.kind === "ready") expect(legacy.spec.back_material_id).toBe("mdf-6");
+    if (legacy.kind === "ready") {
+      expect(legacy.spec.back_material_id).toBe("mdf-6");
+      expect(legacy.spec.measured_back_thickness_mm).toBe(6);
+    }
 
     expectHydrationCode(() => parseServerProjectDraft({
       ...legacyDraft,
@@ -163,6 +218,19 @@ describe("strict server draft hydration", () => {
       wall_anchor_required: true,
       wall_anchor_verified: false,
     });
+  });
+
+  it("round-trips exact workshop declarations through the workspace envelope", () => {
+    const context = validWorkshopContext();
+    const spec: DesignSpec = { ...DEFAULT_DESIGN_SPEC, workshop_context: context };
+    const envelope = workspaceIntentEnvelopeFromSpec(spec);
+
+    expect(envelope.production_context.stock_profiles).toEqual(context.stock_profiles);
+    const parsed = parseServerProjectDraft(serverDraft(spec, envelope));
+    expect(parsed.kind).toBe("ready");
+    if (parsed.kind !== "ready") return;
+    expect(parsed.spec.workshop_context).toEqual(context);
+    expect(parseLocalDesignSpec(spec).workshop_context).toEqual(context);
   });
 
   it("derives the historical plinth height only when the canonical field is absent", () => {
@@ -522,6 +590,65 @@ describe("local legacy parsing and reference provenance", () => {
       plinth: true,
       plinth_height_mm: 140,
     })).toMatchObject({ plinth: true, plinth_height_mm: 140 });
+  });
+
+  it("clears a bound workshop context atomically when a binding field changes", () => {
+    const bound: DesignSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      workshop_context: validWorkshopContext(),
+    };
+
+    expect(parseLocalDesignPatch(bound, { measured_thickness_mm: 18 }))
+      .not.toHaveProperty("workshop_context");
+
+    const rebuilt = validWorkshopContext();
+    rebuilt.stock_profiles[0] = {
+      ...rebuilt.stock_profiles[0]!,
+      sheet_width_um: 2_500_000,
+    };
+    expect(parseLocalDesignPatch(bound, {
+      stock_width_mm: 2_500,
+      workshop_context: rebuilt,
+    }).workshop_context).toEqual(rebuilt);
+  });
+
+  it("accepts exact measured micrometres and rejects finer persisted precision", () => {
+    expect(parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, { measured_thickness_mm: 17.6 }))
+      .toMatchObject({ measured_thickness_mm: 17.6 });
+    expectHydrationCode(() => parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, {
+      measured_thickness_mm: 17.6005,
+    }), "INVALID_LOCAL_DESIGN");
+
+    expect(parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, {
+      measured_back_thickness_mm: 5.8,
+    })).toMatchObject({ measured_back_thickness_mm: 5.8 });
+    expectHydrationCode(() => parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, {
+      measured_back_thickness_mm: 5.8005,
+    }), "INVALID_LOCAL_DESIGN");
+    expectHydrationCode(() => parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, {
+      measured_back_thickness_mm: 6.501,
+    }), "INVALID_LOCAL_DESIGN");
+  });
+
+  it.each([0, 1, 1.2])("hydrates exact %.3f mm edge-band intent", (edgeBandMm) => {
+    expect(parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, { edge_band_mm: edgeBandMm }))
+      .toMatchObject({ edge_band_mm: edgeBandMm });
+  });
+
+  it.each([1.0005, -0.001, 5.001])("rejects invalid edge-band intent %s", (edgeBandMm) => {
+    expectHydrationCode(() => parseLocalDesignPatch(DEFAULT_DESIGN_SPEC, {
+      edge_band_mm: edgeBandMm,
+    }), "INVALID_LOCAL_DESIGN");
+  });
+
+  it("clears a bound workshop context when the measured back batch changes", () => {
+    const bound: DesignSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      workshop_context: validWorkshopContext(),
+    };
+
+    expect(parseLocalDesignPatch(bound, { measured_back_thickness_mm: 5.8 }))
+      .not.toHaveProperty("workshop_context");
   });
 
   it("rejects an out-of-envelope live patch instead of returning persistable state", () => {

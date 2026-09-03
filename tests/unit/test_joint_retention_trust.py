@@ -17,7 +17,7 @@ from app.joint_retention import (
 )
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from custombuild_domain.models import JointRetentionApplicationClass
+from custombuild_domain.models import JointRetentionApplicationClass, JointRetentionLoadMode
 
 NOW = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
 GEOMETRY_SHA256 = "a" * 64
@@ -155,6 +155,11 @@ def _resolve(
         expected_template_version="bookcase-template-5.0.0",
         required_materials=(("mdf", "screening-2026.1"),),
         required_thicknesses_um=(18_000,),
+        required_loads_n=(
+            (JointRetentionLoadMode.SHEAR, 300),
+            (JointRetentionLoadMode.WITHDRAWAL, 200),
+        ),
+        minimum_safety_factor_permille=2_000,
         now=NOW,
     )
 
@@ -240,6 +245,29 @@ def test_revoked_statement_system_and_key_fail_closed() -> None:
         _resolve(evidence_bytes, _registry(private_key, revoked_at=NOW - timedelta(seconds=1)))
 
 
+def test_noncanonical_signature_base64_cannot_bypass_statement_revocation() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    evidence_bytes = _signed_evidence(private_key)
+    original_digest = hashlib.sha256(evidence_bytes).hexdigest()
+    payload = json.loads(evidence_bytes)
+    signature = payload["signature_base64"]
+    assert signature.endswith("==")
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    final_data_index = alphabet.index(signature[-3])
+    mutated_signature = f"{signature[:-3]}{alphabet[final_data_index ^ 1]}=="
+    assert mutated_signature != signature
+    assert base64.b64decode(mutated_signature) == base64.b64decode(signature)
+    payload["signature_base64"] = mutated_signature
+    mutated_evidence = _canonical_json_bytes(payload)
+    assert hashlib.sha256(mutated_evidence).hexdigest() != original_digest
+
+    with pytest.raises(JointRetentionTrustError, match="canonical base64"):
+        _resolve(
+            mutated_evidence,
+            _registry(private_key, revoked_statement_sha256=(original_digest,)),
+        )
+
+
 def test_expired_future_and_out_of_window_evidence_fail_closed() -> None:
     private_key = Ed25519PrivateKey.generate()
     with pytest.raises(JointRetentionTrustError, match="expired"):
@@ -251,6 +279,14 @@ def test_expired_future_and_out_of_window_evidence_fail_closed() -> None:
         _resolve(
             _signed_evidence(private_key, issued_at=NOW + timedelta(seconds=1)),
             _registry(private_key),
+        )
+
+    registry = _registry(private_key)
+    registry["issuers"][0]["not_after"] = (NOW + timedelta(days=30)).isoformat()
+    with pytest.raises(JointRetentionTrustError, match="expiry exceeds issuer key"):
+        _resolve(
+            _signed_evidence(private_key, expires_at=NOW + timedelta(days=31)),
+            registry,
         )
 
 
@@ -280,6 +316,39 @@ def test_material_and_thickness_applicability_fail_closed() -> None:
         _resolve(_signed_evidence(private_key, entry=entry), _registry(private_key))
 
 
+def test_load_and_safety_factor_applicability_fail_closed() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    entry = _entry()
+    entry["load_cases"][0]["rated_design_load_n"] = 299
+    with pytest.raises(JointRetentionTrustError, match="required design load"):
+        _resolve(_signed_evidence(private_key, entry=entry), _registry(private_key))
+
+    entry = _entry()
+    entry["safety_factor_permille"] = 1_999
+    with pytest.raises(JointRetentionTrustError, match="required safety factor"):
+        _resolve(_signed_evidence(private_key, entry=entry), _registry(private_key))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("issued_at", int(NOW.timestamp())),
+        ("expires_at", int((NOW + timedelta(days=365)).timestamp())),
+    ),
+)
+def test_numeric_evidence_timestamps_are_rejected(field: str, value: int) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    payload = json.loads(_signed_evidence(private_key))
+    payload[field] = value
+    payload.pop("signature_base64")
+    payload["signature_base64"] = base64.b64encode(
+        private_key.sign(_canonical_json_bytes(payload))
+    ).decode("ascii")
+
+    with pytest.raises(JointRetentionTrustError, match="invalid schema"):
+        _resolve(_canonical_json_bytes(payload), _registry(private_key))
+
+
 def test_unknown_fields_and_non_certifier_registry_fail_closed() -> None:
     private_key = Ed25519PrivateKey.generate()
     evidence = json.loads(_signed_evidence(private_key))
@@ -291,3 +360,98 @@ def test_unknown_fields_and_non_certifier_registry_fail_closed() -> None:
     registry["issuers"][0]["role"] = "designer"
     with pytest.raises(JointRetentionTrustError, match="trust registry is invalid"):
         _resolve(_signed_evidence(private_key), registry)
+
+
+def test_server_rejects_identifiers_forbidden_by_published_stable_key_schema() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    payload = json.loads(_signed_evidence(private_key))
+    payload["evidence_id"] = " evidence with spaces "
+    payload.pop("signature_base64")
+    payload["signature_base64"] = base64.b64encode(
+        private_key.sign(_canonical_json_bytes(payload))
+    ).decode("ascii")
+    with pytest.raises(JointRetentionTrustError, match="invalid schema"):
+        _resolve(_canonical_json_bytes(payload), _registry(private_key))
+
+    registry = _registry(private_key)
+    registry["issuers"][0]["issuer_id"] = "issuer with spaces"
+    with pytest.raises(JointRetentionTrustError, match="trust registry is invalid"):
+        _resolve(_signed_evidence(private_key), registry)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ("revoked_statement_sha256", "revoked_system_versions"),
+)
+def test_registry_requires_explicit_revocation_state(missing_field: str) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    registry = _registry(private_key)
+    del registry[missing_field]
+
+    with pytest.raises(JointRetentionTrustError, match="trust registry is invalid"):
+        _resolve(_signed_evidence(private_key), registry)
+
+
+@pytest.mark.parametrize(
+    "system_version",
+    (
+        "missing-version-separator",
+        "@1.0.0",
+        "system@",
+        "system@1.0.0@alias",
+        "-system@1.0.0",
+        "system@-version",
+        "system/name@1.0.0",
+        f"{'s' * 129}@1.0.0",
+        f"system@{'v' * 129}",
+    ),
+)
+def test_revoked_system_versions_match_the_published_stable_key_pair_schema(
+    system_version: str,
+) -> None:
+    private_key = Ed25519PrivateKey.generate()
+    registry = _registry(
+        private_key,
+        revoked_system_versions=(system_version,),
+    )
+
+    with pytest.raises(JointRetentionTrustError, match="trust registry is invalid"):
+        _resolve(_signed_evidence(private_key), registry)
+
+
+def test_revoked_system_versions_accept_both_maximum_length_stable_keys() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    registry = _registry(
+        private_key,
+        revoked_system_versions=(f"{'s' * 128}@{'v' * 128}",),
+    )
+
+    contract = _resolve(_signed_evidence(private_key), registry)
+
+    assert contract.system_id == "mechanical-dado-lock"
+
+
+def test_registry_requires_explicit_issuer_revocation_and_increasing_key_window() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    registry = _registry(private_key)
+    del registry["issuers"][0]["revoked_at"]
+    with pytest.raises(JointRetentionTrustError, match="trust registry is invalid"):
+        _resolve(_signed_evidence(private_key), registry)
+
+    registry = _registry(private_key)
+    registry["issuers"][0]["not_after"] = registry["issuers"][0]["not_before"]
+    with pytest.raises(JointRetentionTrustError, match="trust registry is invalid"):
+        _resolve(_signed_evidence(private_key), registry)
+
+
+def test_registry_and_catalogue_reject_coerced_numeric_values() -> None:
+    private_key = Ed25519PrivateKey.generate()
+    registry = _registry(private_key)
+    registry["issuers"][0]["not_before"] = int((NOW - timedelta(days=1)).timestamp())
+    with pytest.raises(JointRetentionTrustError, match="trust registry is invalid"):
+        _resolve(_signed_evidence(private_key), registry)
+
+    entry = _entry()
+    entry["hardware_count_per_joint"] = "2"
+    with pytest.raises(JointRetentionTrustError, match="invalid schema"):
+        _resolve(_signed_evidence(private_key, entry=entry), _registry(private_key))

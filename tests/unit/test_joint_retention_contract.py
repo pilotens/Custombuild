@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
+import zipfile
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -31,21 +34,31 @@ from custombuild_domain.models import (
 )
 from custombuild_manufacturing import (
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+    JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+    ArtifactFile,
     ManifestContext,
     StockSheet,
     blocked_design_review_package_status,
     build_production_bundle,
+    canonical_json_bytes,
     dado_retention_evidence_missing,
     generated_design_review_package_status,
     linuxcnc_reference_router_1325,
     validate_design_review_status_retention_binding,
 )
 from custombuild_worker.documents import (
+    VerifiedRetentionTrust,
     _assembly_step_hardware_text,
+    assembly_manual_pdf,
     assembly_readiness_json,
+    bom_pdf,
     hardware_csv,
 )
 from pydantic import ValidationError
+
+_SYNTHETIC_SIGNED_RETENTION_BYTES = b'{"fixture":"not-authenticated-test-evidence"}'
 
 
 @pytest.fixture
@@ -67,7 +80,7 @@ def structured_retention_contract() -> JointRetentionContract:
         method=JointRetentionMethod.MECHANICAL,
         catalog_entry_sha256="1" * 64,
         evidence_id="test-only.capacity-evidence",
-        evidence_sha256="2" * 64,
+        evidence_sha256=hashlib.sha256(_SYNTHETIC_SIGNED_RETENTION_BYTES).hexdigest(),
         installation_instruction_id="test-only.installation-instruction",
         installation_instruction_version="v1",
         installation_instruction_sha256="3" * 64,
@@ -112,6 +125,29 @@ def retained_design(structured_retention_contract: JointRetentionContract):
             back_material=screening_mdf_6(),
             joint_retention=structured_retention_contract,
         )
+    )
+
+
+def _verified_retention_trust(
+    contract: JointRetentionContract,
+) -> VerifiedRetentionTrust:
+    return VerifiedRetentionTrust.from_verified_snapshot(
+        {
+            "schema_version": "custombuild.joint-retention-binding.v2",
+            "application_class": "load_bearing_carcass_dado",
+            "storage_evidence_id": "44444444-4444-4444-8444-444444444444",
+            "storage_evidence_sha256": contract.evidence_sha256,
+            "base_design_hash": "4" * 64,
+            "joint_geometry_sha256": contract.joint_geometry_sha256,
+            "registry_sha256": "5" * 64,
+            "issuer_id": "independent-retention-lab",
+            "key_id": "independent-retention-lab-2026",
+            "signed_evidence_id": contract.evidence_id,
+            "signed_evidence_expires_at": "2027-08-30T12:00:00+00:00",
+            "system_id": contract.system_id,
+            "system_version": contract.system_version,
+            "contract_sha256": hashlib.sha256(canonical_json_bytes(contract)).hexdigest(),
+        }
     )
 
 
@@ -185,7 +221,7 @@ def test_synthetic_structurally_complete_contract_exercises_future_path_without_
     readiness = json.loads(assembly_readiness_json(retained_design))
     assert readiness["physical_assembly_authorized"] is False
     assert readiness["customer_assembly_authorized"] is False
-    assert "verified_adhesive_free_joint_retention" not in readiness["missing_requirements"]
+    assert "verified_adhesive_free_joint_retention" in readiness["missing_requirements"]
     assert "named_assembly_safety_approver" in readiness["missing_requirements"]
 
     rows = tuple(
@@ -222,6 +258,98 @@ def test_synthetic_structurally_complete_contract_exercises_future_path_without_
     assert _assembly_step_hardware_text(retained_design, dado_step).startswith(
         "VERSIONSBUNDET RETENTIONSSYSTEM"
     )
+
+
+def test_verified_retention_trust_is_reported_without_authorizing_physical_work(
+    retained_design,
+    structured_retention_contract: JointRetentionContract,
+) -> None:
+    trust = _verified_retention_trust(structured_retention_contract)
+    first_documents = (
+        bom_pdf(retained_design, trust),
+        hardware_csv(retained_design, trust),
+        assembly_manual_pdf(retained_design, trust),
+        assembly_readiness_json(retained_design, trust),
+    )
+    second_documents = (
+        bom_pdf(retained_design, trust),
+        hardware_csv(retained_design, trust),
+        assembly_manual_pdf(retained_design, trust),
+        assembly_readiness_json(retained_design, trust),
+    )
+
+    assert first_documents == second_documents
+    rows = tuple(csv.DictReader(io.StringIO(first_documents[1].decode("utf-8"))))
+    contract_row = next(
+        row
+        for row in rows
+        if row["hardware_sku"] == structured_retention_contract.hardware_sku
+    )
+    assert contract_row["selection_status"] == "SERVER_VERIFIED_RETENTION_APPLICATION"
+    assert contract_row["catalog_authenticity_status"] == (
+        "CERTIFIER_SIGNED_ENTRY_SERVER_VERIFIED_FOR_GENERATION_SNAPSHOT"
+    )
+    assert contract_row["storage_evidence_id"] == trust.storage_evidence_id
+    assert contract_row["storage_evidence_sha256"] == trust.storage_evidence_sha256
+    assert contract_row["trust_registry_sha256"] == trust.registry_sha256
+    assert contract_row["certifier_issuer_id"] == trust.issuer_id
+    assert contract_row["certifier_key_id"] == trust.key_id
+    assert contract_row["signed_evidence_expires_at"] == trust.signed_evidence_expires_at
+    assert contract_row["retention_contract_sha256"] == trust.contract_sha256
+    assert "current revocation and expiry" in contract_row["required_action"]
+    assert "does not authorize physical assembly or cutting" in contract_row["required_action"]
+    readiness = json.loads(first_documents[3])
+    assert "verified_adhesive_free_joint_retention" not in readiness["missing_requirements"]
+
+    dado_joint_ids = {
+        joint.joint_id
+        for joint in retained_design.joints
+        if joint.retention_application_class
+        == JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+    }
+    dado_step = next(
+        step
+        for step in retained_design.assembly_graph.steps
+        if dado_joint_ids.intersection(step.joint_ids)
+    )
+    manual_text = _assembly_step_hardware_text(retained_design, dado_step, trust)
+    assert manual_text.startswith("SERVERVERIFIERAT CERTIFIERARSIGNERAT RETENTIONSSYSTEM")
+    assert trust.issuer_id in manual_text
+    assert trust.key_id in manual_text
+    assert "auktoriserar inte fysisk montering eller kapning" in manual_text
+
+
+def test_missing_malformed_or_detached_retention_trust_remains_unverified(
+    retained_design,
+    structured_retention_contract: JointRetentionContract,
+) -> None:
+    trust = _verified_retention_trust(structured_retention_contract)
+    detached = replace(trust, contract_sha256="0" * 64)
+
+    for candidate in (None, detached, {"schema_version": trust.schema_version}):
+        rows = tuple(
+            csv.DictReader(
+                io.StringIO(hardware_csv(retained_design, candidate).decode("utf-8"))
+            )
+        )
+        contract_row = next(
+            row
+            for row in rows
+            if row["hardware_sku"] == structured_retention_contract.hardware_sku
+        )
+        assert contract_row["catalog_authenticity_status"] == "NOT_ESTABLISHED_BY_CURRENT_MVP"
+        assert contract_row["certifier_issuer_id"] == ""
+        assert contract_row["selection_status"] == (
+            "STRUCTURALLY_COMPLETE_RETENTION_APPLICATION"
+        )
+        readiness = json.loads(assembly_readiness_json(retained_design, candidate))
+        assert "verified_adhesive_free_joint_retention" in readiness["missing_requirements"]
+
+    malformed = trust.__dict__ if hasattr(trust, "__dict__") else {
+        field: getattr(trust, field) for field in trust.__dataclass_fields__
+    }
+    with pytest.raises(ValueError, match="invalid field set"):
+        VerifiedRetentionTrust.from_verified_snapshot({**malformed, "unexpected": "value"})
 
 
 def test_structurally_complete_retention_reaches_next_gate_without_authorizing_cutting(
@@ -303,6 +431,14 @@ def test_structurally_complete_retention_reaches_next_gate_without_authorizing_c
         include_step=True,
         include_validation_program=True,
         allow_blocked_cam=True,
+        additional_artifacts=(
+            ArtifactFile(
+                JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+                _SYNTHETIC_SIGNED_RETENTION_BYTES,
+                JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+                JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+            ),
+        ),
     )
 
     assert bundle.review_status.blocker_codes == ("TWO_SIDED_REGISTRATION_MISSING",)
@@ -311,6 +447,11 @@ def test_structurally_complete_retention_reaches_next_gate_without_authorizing_c
     assert bundle.review_status.physical_cutting_authorized is False
     assert bundle.workshop_readiness.physical_cutting_authorized is False
     assert bundle.manifest["physical_cutting_authorized"] is False
+    with zipfile.ZipFile(io.BytesIO(bundle.zip_bytes)) as archive:
+        assert (
+            archive.read(JOINT_RETENTION_SIGNED_EVIDENCE_PATH)
+            == _SYNTHETIC_SIGNED_RETENTION_BYTES
+        )
 
 
 def test_review_status_is_bound_both_ways_to_frozen_retention(retained_design) -> None:

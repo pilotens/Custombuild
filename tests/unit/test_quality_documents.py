@@ -17,10 +17,22 @@ from custombuild_manufacturing import (
     linuxcnc_reference_router_1325,
     manufacturing_intent_json,
     quality_measurement_plan_json,
+    sha256_hex,
     supplier_handoff_json,
 )
 from custombuild_manufacturing.package import default_artifacts
-from custombuild_manufacturing.quality import SUPPLIER_HANDOFF_MANIFEST_CONTEXT_FIELDS
+from custombuild_manufacturing.quality import (
+    MANUFACTURING_INTENT_JSON_SCHEMA_PATH,
+    OPERATIONS_JSON_SCHEMA_PATH,
+    START_HERE_PATH,
+    SUPPLIER_HANDOFF_JSON_SCHEMA_PATH,
+    SUPPLIER_HANDOFF_MANIFEST_CONTEXT_FIELDS,
+    manufacturing_intent_json_schema,
+    operations_json_schema,
+    start_here_markdown,
+    supplier_handoff_json_schema,
+    validate_json_schema_instance,
+)
 
 
 def _quality_values():
@@ -73,6 +85,19 @@ def test_label_index_covers_every_placement_once_with_non_authorizing_qr() -> No
     assert len({row["qr_payload"] for row in rows}) == len(rows)
     assert all(row["qr_payload"].startswith(f"custombuild:part:{'d' * 64}:") for row in rows)
     assert all(row["physical_release_authorized"] == "false" for row in rows)
+
+
+def test_start_here_exposes_registration_math_and_unverified_authority_boundary() -> None:
+    guide = start_here_markdown().decode("utf-8")
+
+    assert "checksummed but unsigned" in guide
+    assert "validation/stock-selection.json" in guide
+    assert "validation/generation-plan.json" in guide
+    assert "CLIENT_DECLARED" in guide
+    assert "r = (pin_diameter_um + 1) // 2 + position_tolerance_um" in guide
+    assert "Rect(x_um-r, y_um-r, 2*r, 2*r)" in guide
+    assert "100000 + 2*r" in guide
+    assert "do not authorize cutting" in guide
 
 
 def test_measurement_plan_covers_every_part_dimension_and_operation_without_pass() -> None:
@@ -157,9 +182,86 @@ def test_machine_neutral_intent_freezes_every_feature_without_authorizing_motion
     assert feature["pattern_points_um"] == [{"x_um": 50_000, "y_um": 50_000}]
 
 
+def test_start_here_explains_supplier_boundary_and_all_acceptance_questions() -> None:
+    first = start_here_markdown()
+    second = start_here_markdown()
+    guide = first.decode("utf-8")
+
+    assert first == second
+    assert guide.startswith("# START HERE")
+    assert "checksummed but unsigned" in guide
+    assert 'python3 -I /trusted/verify_production_package.py "<downloaded-package>.zip"' in guide
+    assert "no Custombuild installation" in guide
+    assert "status` equal to `PASS`" in guide
+    assert "does not authenticate the publisher" in guide
+    assert "does not authorize physical cutting" in guide
+    assert "current revocation or expiry status" in guide
+    assert "No executable verifier or `__main__.py` is included" in guide
+    assert "never execute anything contained in it" in guide
+    assert "malicious coordinated rewrite" in guide
+    assert "authenticate the publisher or evidence issuer" in guide
+    assert "expected values compare unsigned manifest claims only" in guide
+    assert "do not independently reconstruct design semantics" in guide
+    assert "no approved executable G-code" in guide
+    assert "CUT intent versus REFERENCE material" in guide
+    assert "1000 um = 1 mm" in guide
+    assert "does **not** define a machine flip" in guide
+    assert [guide.count(f"`Q{index:02d}_") for index in range(1, 11)] == [1] * 10
+
+
+def test_published_manufacturing_intent_schema_rejects_cut_authorization() -> None:
+    part, _, _ = _quality_values()
+    schema_bytes = manufacturing_intent_json_schema()
+    schema = json.loads(schema_bytes)
+    intent = json.loads(
+        manufacturing_intent_json(
+            parts=(part,),
+            project_id="project-123",
+            revision="revision-7",
+            design_hash="d" * 64,
+        )
+    )
+
+    assert schema_bytes == manufacturing_intent_json_schema()
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["$id"] == "urn:custombuild:schema:manufacturing-intent:v1"
+    validate_json_schema_instance(intent, schema)
+
+    intent["physical_cutting_authorized"] = True
+    with pytest.raises(ValueError, match="physical_cutting_authorized"):
+        validate_json_schema_instance(intent, schema)
+
+
+def test_published_operations_schema_is_exact_validation_only_contract() -> None:
+    _, _, operations = _quality_values()
+    schema_bytes = operations_json_schema()
+    schema = json.loads(schema_bytes)
+    document = json.loads(operations.to_json())
+
+    assert schema_bytes == operations_json_schema()
+    assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
+    assert schema["$id"] == "urn:custombuild:schema:operations:v2"
+    assert schema["properties"]["schema_version"] == {
+        "const": "custombuild.operations.v2"
+    }
+    assert schema["properties"]["mode"] == {"const": "VALIDATION"}
+    validate_json_schema_instance(document, schema)
+
+    document["physical_cutting_authorized"] = True
+    with pytest.raises(ValueError, match="unexpected properties"):
+        validate_json_schema_instance(document, schema)
+
+    del document["physical_cutting_authorized"]
+    document["operations"][0]["stepover_ppm"] = 1_000_001
+    with pytest.raises(ValueError, match="integer is above maximum"):
+        validate_json_schema_instance(document, schema)
+
+
 def test_supplier_handoff_binds_assumptions_and_requires_explicit_shop_answers() -> None:
     _, layout, operations = _quality_values()
     machine = linuxcnc_reference_router_1325()
+    operations_bytes = operations.to_json()
+    operations_schema_bytes = operations_json_schema()
 
     payload = json.loads(
         supplier_handoff_json(
@@ -187,6 +289,20 @@ def test_supplier_handoff_binds_assumptions_and_requires_explicit_shop_answers()
                     "size_bytes": 123,
                     "sha256": "a" * 64,
                 },
+                {
+                    "path": "cam/operations.json",
+                    "media_type": "application/json",
+                    "role": "MACHINE_NEUTRAL_OPERATIONS",
+                    "size_bytes": len(operations_bytes),
+                    "sha256": sha256_hex(operations_bytes),
+                },
+                {
+                    "path": OPERATIONS_JSON_SCHEMA_PATH,
+                    "media_type": "application/schema+json",
+                    "role": "JSON_SCHEMA",
+                    "size_bytes": len(operations_schema_bytes),
+                    "sha256": sha256_hex(operations_schema_bytes),
+                },
             ),
             known_unresolved_decision_codes=(),
         )
@@ -197,9 +313,15 @@ def test_supplier_handoff_binds_assumptions_and_requires_explicit_shop_answers()
         "revision": "revision-7",
         "design_hash": "d" * 64,
     }
+    assert payload["schema_version"] == "custombuild.supplier-handoff.v3"
     assert payload["package_contract"]["authoritative_inventory"] == (
         "manifest.json.artifacts"
     )
+    assert payload["package_contract"]["signature_status"] == "UNSIGNED"
+    assert payload["package_contract"]["publisher_authenticity_provided"] is False
+    assert "does not authenticate the publisher" in payload["package_contract"][
+        "authenticity_boundary"
+    ]
     assert payload["supplier_stages"] == {
         "available_for_quote_review": True,
         "quote_review_scope": "SUPPLIER_ESTIMATION_ONLY_SUBJECT_TO_ALL_NAMED_BLOCKERS",
@@ -214,8 +336,12 @@ def test_supplier_handoff_binds_assumptions_and_requires_explicit_shop_answers()
         "cut_authorized": False,
     }
     inventory = payload["payload_inventory_binding"]
-    assert inventory["artifact_count"] == 1
-    assert inventory["artifacts"][0]["path"] == "model/design.step"
+    assert inventory["artifact_count"] == 3
+    assert {item["path"] for item in inventory["artifacts"]} == {
+        "cam/operations.json",
+        "model/design.step",
+        OPERATIONS_JSON_SCHEMA_PATH,
+    }
     assert len(inventory["payload_inventory_sha256"]) == 64
     assert inventory["excluded_paths"] == ["manifest.json", "shop/supplier-handoff.json"]
     manifest_context = payload["manifest_context_binding"]
@@ -237,12 +363,34 @@ def test_supplier_handoff_binds_assumptions_and_requires_explicit_shop_answers()
         "MACHINE_NEUTRAL_VALIDATION_ONLY"
     )
     assert payload["operation_binding"]["document_path"] == "cam/operations.json"
+    assert payload["operation_binding"]["document_sha256"] == sha256_hex(
+        operations.to_json()
+    )
+    assert payload["operation_binding"]["json_schema_path"] == (
+        OPERATIONS_JSON_SCHEMA_PATH
+    )
+    assert payload["operation_binding"]["json_schema_sha256"] == sha256_hex(
+        operations_json_schema()
+    )
     assert payload["operation_binding"]["setups"]
     assert payload["operation_binding"]["selected_tools"]
     assert payload["selected_validation_machine_profile"]["profile"]["profile_id"] == (
         machine.profile_id
     )
     assert payload["stock_assumptions"]["profiles"][0]["stock_id"] == "sheet"
+    operations_contract = payload["package_contract"][
+        "machine_neutral_operations_contract"
+    ]
+    assert operations_contract == {
+        "document_path": "cam/operations.json",
+        "document_schema_version": "custombuild.operations.v2",
+        "json_schema_path": OPERATIONS_JSON_SCHEMA_PATH,
+        "json_schema_draft": "https://json-schema.org/draft/2020-12/schema",
+        "json_schema_sha256": sha256_hex(operations_json_schema()),
+        "purpose": "MACHINE_NEUTRAL_VALIDATION_ONLY",
+        "executable_cam_provided": False,
+        "physical_cutting_authorized": False,
+    }
     questions = payload["shop_acceptance_questions"]
     assert [item["question_id"] for item in questions] == [
         f"Q{index:02d}_{suffix}"
@@ -267,6 +415,41 @@ def test_supplier_handoff_binds_assumptions_and_requires_explicit_shop_answers()
     relief_question = questions[-1]
     assert "actual cutter diameter and runout" in relief_question["question"]
     assert "zero or tolerance-consumed clearance" in relief_question["required_evidence"]
+
+    schema_bytes = supplier_handoff_json_schema()
+    schema = json.loads(schema_bytes)
+    assert schema_bytes == supplier_handoff_json_schema()
+    assert schema["$id"] == "urn:custombuild:schema:supplier-handoff:v3"
+    validate_json_schema_instance(payload, schema)
+    payload["shop_acceptance_questions"][0]["question_id"] = "Q10_WRONG_ORDER"
+    with pytest.raises(ValueError, match=r"shop_acceptance_questions\[0\]\.question_id"):
+        validate_json_schema_instance(payload, schema)
+
+
+def test_default_artifacts_publish_guide_and_all_json_schemas() -> None:
+    part, layout, operations = _quality_values()
+
+    artifacts = default_artifacts(
+        parts=(part,),
+        layout=layout,
+        operations=operations,
+    )
+    by_path = {artifact.path: artifact for artifact in artifacts}
+
+    assert by_path[START_HERE_PATH].data == start_here_markdown()
+    assert by_path[START_HERE_PATH].media_type == "text/markdown"
+    assert (
+        by_path[MANUFACTURING_INTENT_JSON_SCHEMA_PATH].data
+        == manufacturing_intent_json_schema()
+    )
+    assert (
+        by_path[SUPPLIER_HANDOFF_JSON_SCHEMA_PATH].data
+        == supplier_handoff_json_schema()
+    )
+    assert by_path[OPERATIONS_JSON_SCHEMA_PATH].data == operations_json_schema()
+    assert by_path[MANUFACTURING_INTENT_JSON_SCHEMA_PATH].media_type == (
+        "application/schema+json"
+    )
 
 
 def test_label_index_rejects_duplicate_instance_placement() -> None:

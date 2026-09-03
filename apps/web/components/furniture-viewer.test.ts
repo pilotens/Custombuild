@@ -861,6 +861,10 @@ describe("manufacturing feature disclosure", () => {
       .toBeInTheDocument();
     expect(screen.getByTestId("viewer-feature-geometry-limitation"))
       .toHaveTextContent(VIEWER_FEATURE_GEOMETRY_LIMITATION);
+    expect(VIEWER_FEATURE_GEOMETRY_LIMITATION)
+      .toContain("manufacturing/manufacturing-intent.json");
+    expect(VIEWER_FEATURE_GEOMETRY_LIMITATION).toContain("A/B-DXF/SVG");
+    expect(VIEWER_FEATURE_GEOMETRY_LIMITATION).not.toContain("cam/operations.json");
   });
 
   it("produces an explicit screen-reader description for edge features without a tool", () => {

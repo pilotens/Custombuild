@@ -1,6 +1,6 @@
 {
   "schema_version": "custombuild.screened-template-defaults.v1",
-  "contract_version": "1.3.0",
+  "contract_version": "1.4.0",
   "status": "published",
   "purpose": "Version-bound effective UI defaults for the screened shelving template. Concept templates are deliberately excluded. This contract records design-review inputs and does not authorize manufacturing or physical cutting.",
   "units": {
@@ -53,6 +53,7 @@
         "back_material_id": "birch-plywood-6",
         "nominal_thickness_mm": 18,
         "measured_thickness_mm": 17.8,
+        "measured_back_thickness_mm": 6,
         "shelf_count": 5,
         "fixed_shelves": true,
         "load_per_shelf_kg": 32,
@@ -73,7 +74,7 @@
         "base_cabinet_count": 0,
         "reinforcement_mode": "auto",
         "joint_system": "dado",
-        "edge_band_mm": 1,
+        "edge_band_mm": 0,
         "wall_anchor_required": false,
         "wall_anchor_verified": false,
         "stock_width_mm": 2440,
@@ -89,6 +90,6 @@
   "fingerprint": {
     "algorithm": "sha256",
     "canonicalization": "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
-    "value": "ec20a539e2bef2478d18a66519331ceb1067388551419ead9df337e72ecd2b71"
+    "value": "638d8091c7afb2d4bb54b8ccc67876595371b51f878076819a8b2cf46fc65057"
   }
 }

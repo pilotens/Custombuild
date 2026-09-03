@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import app.api as api_module
 import pytest
 from app.auth import (
     ROLE_CAPABILITIES,
@@ -28,6 +31,7 @@ EXPECTED_NON_ADMIN_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.operator: frozenset(
         {
             Capability.READ,
+            Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
             Capability.WORKSHOP_CHALLENGE,
             Capability.WORKSHOP_EVIDENCE,
             Capability.WORKSHOP_ATTEST,
@@ -43,6 +47,7 @@ EXPECTED_NON_ADMIN_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.production: frozenset(
         {
             Capability.READ,
+            Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
             Capability.PRODUCTION_RELEASE,
             Capability.WORKSHOP_PREPARE,
             Capability.WORKSHOP_CHALLENGE,
@@ -54,6 +59,7 @@ EXPECTED_NON_ADMIN_CAPABILITIES: dict[Role, frozenset[Capability]] = {
         {
             Capability.READ,
             Capability.REVIEW,
+            Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
             Capability.WORKSHOP_VERIFY,
         }
     ),
@@ -123,3 +129,102 @@ def test_workshop_checker_and_revocation_are_separate() -> None:
     for role in (Role.admin, Role.owner):
         principal = _principal(role)
         assert require_capability(Capability.WORKSHOP_REVOKE)(principal) is principal
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    (
+        (Role.viewer, False),
+        (Role.designer, False),
+        (Role.reviewer, True),
+        (Role.operator, True),
+        (Role.production, True),
+        (Role.admin, True),
+        (Role.owner, True),
+    ),
+)
+def test_joint_retention_evidence_download_has_an_explicit_closed_role_set(
+    role: Role,
+    allowed: bool,
+) -> None:
+    dependency = require_capability(Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD)
+    if allowed:
+        assert dependency(_principal(role)) is not None
+    else:
+        with pytest.raises(
+            HTTPException,
+            match="Capability joint_retention_evidence_download required",
+        ):
+            dependency(_principal(role))
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    (
+        (Role.viewer, False),
+        (Role.designer, False),
+        (Role.reviewer, True),
+        (Role.operator, True),
+        (Role.production, True),
+        (Role.admin, True),
+        (Role.owner, True),
+    ),
+)
+def test_retention_bound_bundle_uses_the_exact_evidence_download_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    role: Role,
+    allowed: bool,
+) -> None:
+    monkeypatch.setattr(
+        api_module.BookcaseDesignSpec,
+        "model_validate",
+        staticmethod(lambda _value: SimpleNamespace(joint_retention=object())),
+    )
+    version = SimpleNamespace(spec_json={})
+
+    if allowed:
+        api_module._require_retention_bound_bundle_download_capability(
+            _principal(role),
+            version,  # type: ignore[arg-type]
+            "production_bundle",
+        )
+    else:
+        with pytest.raises(
+            HTTPException,
+            match="Capability joint_retention_evidence_download required",
+        ):
+            api_module._require_retention_bound_bundle_download_capability(
+                _principal(role),
+                version,  # type: ignore[arg-type]
+                "production_bundle",
+            )
+
+
+def test_bundle_capability_gate_does_not_expand_to_unbound_or_non_bundle_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    version = SimpleNamespace(spec_json={})
+    monkeypatch.setattr(
+        api_module.BookcaseDesignSpec,
+        "model_validate",
+        staticmethod(lambda _value: SimpleNamespace(joint_retention=None)),
+    )
+    api_module._require_retention_bound_bundle_download_capability(
+        _principal(Role.viewer),
+        version,  # type: ignore[arg-type]
+        "production_bundle",
+    )
+
+    def must_not_parse(_value: object) -> None:
+        raise AssertionError("non-bundle authorization unexpectedly parsed the DesignSpec")
+
+    monkeypatch.setattr(
+        api_module.BookcaseDesignSpec,
+        "model_validate",
+        staticmethod(must_not_parse),
+    )
+    api_module._require_retention_bound_bundle_download_capability(
+        _principal(Role.viewer),
+        version,  # type: ignore[arg-type]
+        "operations",
+    )

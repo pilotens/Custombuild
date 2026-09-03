@@ -33,8 +33,24 @@ def test_compose_workers_are_isolated_to_exact_celery_queues() -> None:
     storage_reaper = services["storage-reaper-worker"]
     scheduler = services["scheduler"]
     assert "--queues=generation" in generation["command"]
+    assert generation["command"][:3] == [
+        "python",
+        "-m",
+        "custombuild_worker.generation_startup",
+    ]
     assert "--queues=maintenance" not in generation["command"]
     assert generation["environment"]["CELERY_EXPECTED_QUEUE"] == "generation"
+    assert "JOINT_RETENTION_TRUST_REGISTRY_JSON" in generation["environment"]
+    assert generation["healthcheck"]["test"] == [
+        "CMD",
+        "python",
+        "-m",
+        "custombuild_worker.healthcheck",
+    ]
+    assert "custombuild_worker.generation_startup" in Path(
+        "services/worker/Dockerfile"
+    ).read_text(encoding="utf-8")
+    assert maintenance["command"][0] == "celery"
     assert "--queues=maintenance" in maintenance["command"]
     assert "--queues=generation" not in maintenance["command"]
     assert "--concurrency=1" in maintenance["command"]

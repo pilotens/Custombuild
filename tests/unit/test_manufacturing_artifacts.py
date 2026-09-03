@@ -19,6 +19,7 @@ from custombuild_manufacturing import (
     PartSpec,
     Point2D,
     ProductionBlockedError,
+    Rect,
     Side,
     StockSheet,
     build_deterministic_zip,
@@ -40,7 +41,7 @@ from ezdxf import bbox, units
 
 
 def _raw_builder_manifest(payload: bytes) -> dict[str, object]:
-    """Inspect builder output without invoking current schema-v4 acceptance policy."""
+    """Inspect builder output without invoking current schema-v5 acceptance policy."""
 
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
         value = json.loads(archive.read("manifest.json"))
@@ -112,6 +113,10 @@ def manufacturing_values():
         600_000,
         18_000,
         grain_direction="NONE",
+        clamp_zones=(
+            Rect(16_500, 576_500, 7_000, 7_000),
+            Rect(896_500, 576_500, 7_000, 7_000),
+        ),
     )
     layout = DeterministicNester().nest((panel,), source_stock)
     machine = linuxcnc_reference_router_1325()
@@ -122,8 +127,12 @@ def manufacturing_values():
         machine=machine,
         two_sided_registration_by_sheet={
             0: TwoSidedRegistration(
+                declaration_authority="CLIENT_DECLARED",
                 method_id="fixture-registration-v1",
-                points=(Point2D(20_000, 20_000), Point2D(900_000, 20_000)),
+                fixture_method_version="fixture-v1",
+                pin_diameter_um=6_000,
+                position_tolerance_um=500,
+                points=(Point2D(20_000, 580_000), Point2D(900_000, 580_000)),
             )
         },
     )

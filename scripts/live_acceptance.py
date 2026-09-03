@@ -65,21 +65,47 @@ CONTEXT_HASH_FIELDS: Final = (
     "source_provenance",
     "artifacts",
 )
-PRODUCTION_MANIFEST_SCHEMA_VERSION: Final = "custombuild.production-manifest.v4"
+PRODUCTION_MANIFEST_SCHEMA_VERSION: Final = "custombuild.production-manifest.v5"
 DESIGN_REVIEW_PACKAGE_STATUS_SCHEMA_VERSION: Final = "custombuild.design-review-package-status.v1"
 DESIGN_REVIEW_PACKAGE_STATUS_PATH: Final = "validation/design-review-package-status.json"
 DFM_REPORT_PATH: Final = "validation/dfm-report.json"
 DFM_REPORT_ROLE: Final = "DFM_VALIDATION_REPORT"
 STOCK_SELECTION_PATH: Final = "validation/stock-selection.json"
 STOCK_SELECTION_ROLE: Final = "STOCK_SELECTION_SNAPSHOT"
-STOCK_SELECTION_SCHEMA_VERSION: Final = "custombuild.stock-selection.v1"
+STOCK_SELECTION_SCHEMA_VERSION: Final = "custombuild.stock-selection.v2"
+STOCK_SELECTION_ROW_KEYS: Final = frozenset(
+    {
+        "stock_id",
+        "declaration_authority",
+        "material_id",
+        "material_version",
+        "width_um",
+        "height_um",
+        "thickness_um",
+        "quantity",
+        "margin_um",
+        "kerf_um",
+        "grain_direction",
+        "allow_rotation",
+        "defect_zones",
+        "clamp_zones",
+    }
+)
+UNVERIFIED_STOCK_AUTHORITIES: Final = frozenset(
+    {
+        "CLIENT_DECLARED",
+        "LEGACY_UNSTRUCTURED_CLIENT_INPUT",
+        "AUTOMATED_DESIGN_REVIEW_FIXTURE",
+        "UNSPECIFIED_UNVERIFIED_INPUT",
+    }
+)
 GENERATION_PLAN_PATH: Final = "validation/generation-plan.json"
 GENERATION_PLAN_ROLE: Final = "GENERATION_PLAN"
-GENERATION_PLAN_SCHEMA_VERSION: Final = "custombuild.generation-plan.v1"
-PRODUCTION_PIPELINE_VERSION: Final = "production-pipeline-1.10.0"
+GENERATION_PLAN_SCHEMA_VERSION: Final = "custombuild.generation-plan.v2"
+PRODUCTION_PIPELINE_VERSION: Final = "production-pipeline-1.11.0"
 NESTING_ALGORITHM_VERSION: Final = "deterministic-bottom-left-v1"
 OPERATIONS_SCHEMA_VERSION: Final = "custombuild.operations.v2"
-OPERATIONS_ENGINE_VERSION: Final = "semantic-operations-1.2.0"
+OPERATIONS_ENGINE_VERSION: Final = "semantic-operations-1.3.0"
 GENERATION_PLAN_KEYS: Final = frozenset(
     {
         "schema_version",
@@ -89,6 +115,7 @@ GENERATION_PLAN_KEYS: Final = frozenset(
         "operations_engine_version",
         "machine_profile",
         "postprocessor",
+        "stock_declaration_authorities",
         "stock_profiles_fingerprint",
         "validation_program_requested",
         "two_sided_registrations",
@@ -940,8 +967,27 @@ def verify_explicit_two_sided_registration(operations: dict[str, Any]) -> None:
                 "two-sided setup has no declared coordinate registration",
             )
             method_match = re.search(r"(?:^|;)METHOD=([^;]+)(?:;|$)", probe_method)
+            authority_match = re.search(
+                r"(?:^|;)DECLARATION_AUTHORITY=([^;]+)(?:;|$)", probe_method
+            )
+            version_match = re.search(
+                r"(?:^|;)METHOD_VERSION=([^;]+)(?:;|$)", probe_method
+            )
+            diameter_match = re.search(
+                r"(?:^|;)PIN_DIAMETER_UM=([0-9]+)(?:;|$)", probe_method
+            )
+            tolerance_match = re.search(
+                r"(?:^|;)POSITION_TOLERANCE_UM=([0-9]+)(?:;|$)", probe_method
+            )
             coordinate_match = re.search(r"(?:^|;)STOCK_XY_UM=([^;]+)(?:;|$)", probe_method)
+            require(
+                authority_match is not None and authority_match.group(1) == "CLIENT_DECLARED",
+                "two-sided setup authority is not explicitly client-declared",
+            )
             require(method_match is not None, "two-sided setup has no registration method ID")
+            require(version_match is not None, "two-sided setup has no registration method version")
+            require(diameter_match is not None, "two-sided setup has no pin diameter")
+            require(tolerance_match is not None, "two-sided setup has no position tolerance")
             require(coordinate_match is not None, "two-sided setup has no stock-frame coordinates")
             points = coordinate_match.group(1).split("|") if coordinate_match else []
             require(
@@ -951,6 +997,52 @@ def verify_explicit_two_sided_registration(operations: dict[str, Any]) -> None:
             require(
                 all(re.fullmatch(r"-?[0-9]+,-?[0-9]+", point) for point in points),
                 "registration coordinates are not integer stock-frame coordinates",
+            )
+            diameter_um = int(diameter_match.group(1)) if diameter_match else 0
+            tolerance_um = int(tolerance_match.group(1)) if tolerance_match else 0
+            require(
+                1_000 <= diameter_um <= 50_000
+                and 1 <= tolerance_um <= 10_000
+                and tolerance_um * 2 < diameter_um,
+                "registration pin diameter or tolerance is outside the validation envelope",
+            )
+            coordinates = [tuple(int(value) for value in point.split(",")) for point in points]
+            footprint_radius_um = (diameter_um + 1) // 2 + tolerance_um
+            minimum_center_um = 100_000 + 2 * footprint_radius_um
+            require(
+                all(
+                    (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
+                    >= minimum_center_um**2
+                    for index, first in enumerate(coordinates)
+                    for second in coordinates[index + 1 :]
+                ),
+                "registration pin usable baseline is below 100000 um",
+            )
+            keep_outs = [
+                mapping(item, "setup keep-out")
+                for item in sequence(setup.get("keep_out_zones"), "setup keep-out zones")
+            ]
+            expected_keep_outs = {
+                (
+                    x_um - footprint_radius_um,
+                    y_um - footprint_radius_um,
+                    2 * footprint_radius_um,
+                    2 * footprint_radius_um,
+                )
+                for x_um, y_um in coordinates
+            }
+            actual_keep_outs = {
+                (
+                    integer(item.get("x_um"), "keep-out x_um"),
+                    integer(item.get("y_um"), "keep-out y_um"),
+                    integer(item.get("width_um"), "keep-out width_um"),
+                    integer(item.get("height_um"), "keep-out height_um"),
+                )
+                for item in keep_outs
+            }
+            require(
+                expected_keep_outs <= actual_keep_outs,
+                "registration pin footprint is missing from setup keep-outs",
             )
             require(
                 fixture.startswith("EXTERNAL_FIXTURE_PLAN_REQUIRED;"),
@@ -1077,12 +1169,130 @@ def _strict_canonical_json_object(payload: bytes, *, label: str) -> dict[str, An
     return cast(dict[str, Any], parsed)
 
 
+def _stock_zone_tuple(
+    value: Any,
+    *,
+    label: str,
+    sheet_width_um: int,
+    sheet_height_um: int,
+) -> tuple[int, int, int, int]:
+    zone = mapping(value, label)
+    require(
+        set(zone) == {"x_um", "y_um", "width_um", "height_um"},
+        f"{label} keys differ",
+    )
+    x_um = integer(zone.get("x_um"), f"{label}.x_um")
+    y_um = integer(zone.get("y_um"), f"{label}.y_um")
+    width_um = integer(zone.get("width_um"), f"{label}.width_um")
+    height_um = integer(zone.get("height_um"), f"{label}.height_um")
+    require(
+        x_um >= 0
+        and y_um >= 0
+        and width_um > 0
+        and height_um > 0
+        and x_um + width_um <= sheet_width_um
+        and y_um + height_um <= sheet_height_um,
+        f"{label} lies outside its stock sheet",
+    )
+    return (x_um, y_um, width_um, height_um)
+
+
+def _rectangles_intersect(
+    first: tuple[int, int, int, int], second: tuple[int, int, int, int]
+) -> bool:
+    first_x, first_y, first_width, first_height = first
+    second_x, second_y, second_width, second_height = second
+    return not (
+        first_x + first_width <= second_x
+        or second_x + second_width <= first_x
+        or first_y + first_height <= second_y
+        or second_y + second_height <= first_y
+    )
+
+
+def verify_stock_selection(value: Any, *, label: str) -> list[dict[str, Any]]:
+    """Validate the complete v2 stock declaration boundary used by live acceptance."""
+
+    payload = mapping(value, label)
+    require(
+        set(payload) == {"schema_version", "stocks", "assignments", "unmatched_part_ids"},
+        f"{label} keys differ",
+    )
+    require(
+        payload.get("schema_version") == STOCK_SELECTION_SCHEMA_VERSION,
+        f"{label} schema differs",
+    )
+    stock_rows = [
+        mapping(item, f"{label} stock")
+        for item in sequence(payload.get("stocks"), f"{label} stocks")
+    ]
+    require(bool(stock_rows), f"{label} has no stock rows")
+    stock_ids: list[str] = []
+    for row in stock_rows:
+        require(set(row) == STOCK_SELECTION_ROW_KEYS, f"{label} stock keys differ")
+        stock_id = string(row.get("stock_id"), f"{label} stock_id")
+        material_id = string(row.get("material_id"), f"{label} material_id")
+        material_version = string(
+            row.get("material_version"), f"{label} material_version"
+        )
+        require(
+            all(
+                value and value == value.strip()
+                for value in (stock_id, material_id, material_version)
+            ),
+            f"{label} stock identity is not canonical",
+        )
+        stock_ids.append(stock_id)
+        require(
+            row.get("declaration_authority") in UNVERIFIED_STOCK_AUTHORITIES,
+            f"{label} stock authority is unsupported or implies verification",
+        )
+        width_um = integer(row.get("width_um"), f"{label} width_um")
+        height_um = integer(row.get("height_um"), f"{label} height_um")
+        thickness_um = integer(row.get("thickness_um"), f"{label} thickness_um")
+        quantity = integer(row.get("quantity"), f"{label} quantity")
+        margin_um = integer(row.get("margin_um"), f"{label} margin_um")
+        kerf_um = integer(row.get("kerf_um"), f"{label} kerf_um")
+        require(
+            min(width_um, height_um, thickness_um, quantity) > 0
+            and margin_um >= 0
+            and margin_um * 2 < min(width_um, height_um)
+            and kerf_um >= 6_000,
+            f"{label} stock dimensions are outside the validation envelope",
+        )
+        require(type(row.get("allow_rotation")) is bool, f"{label} rotation flag is invalid")
+        require(
+            row.get("grain_direction")
+            in {"X", "Y", "UNBOUND", "NONE", "ANY", "UNSPECIFIED", "UNKNOWN"},
+            f"{label} grain direction is unsupported",
+        )
+        for field in ("defect_zones", "clamp_zones"):
+            zones = [
+                _stock_zone_tuple(
+                    item,
+                    label=f"{label} {field}",
+                    sheet_width_um=width_um,
+                    sheet_height_um=height_um,
+                )
+                for item in sequence(row.get(field), f"{label} {field}")
+            ]
+            require(len(zones) == len(set(zones)), f"{label} {field} contains duplicates")
+    require(stock_ids == sorted(set(stock_ids)), f"{label} stocks are not uniquely sorted")
+    require(isinstance(payload.get("assignments"), list), f"{label} assignments are invalid")
+    require(
+        isinstance(payload.get("unmatched_part_ids"), list),
+        f"{label} unmatched part IDs are invalid",
+    )
+    return stock_rows
+
+
 def verify_generation_plan(
     value: Any,
     *,
     label: str,
     generated_validation_program: bool | None,
     expected_stock_profiles_fingerprint: str,
+    expected_stock_rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     payload = mapping(value, label)
     require(set(payload) == GENERATION_PLAN_KEYS, f"{label} keys differ")
@@ -1113,6 +1323,20 @@ def verify_generation_plan(
         )
         == expected_stock_profiles_fingerprint,
         f"{label} stock profiles fingerprint differs from stock selection",
+    )
+    stock_by_id = {
+        string(row.get("stock_id"), f"{label} stock stock_id"): row
+        for row in expected_stock_rows
+    }
+    expected_authorities = sorted(
+        {
+            string(row.get("declaration_authority"), f"{label} stock authority")
+            for row in expected_stock_rows
+        }
+    )
+    require(
+        payload.get("stock_declaration_authorities") == expected_authorities,
+        f"{label} stock declaration authorities differ from stock selection",
     )
     requested = payload.get("validation_program_requested")
     require(type(requested) is bool, f"{label}.validation_program_requested must be boolean")
@@ -1151,24 +1375,72 @@ def verify_generation_plan(
     for registration in registrations:
         require(set(registration) == {"stock_id", "sheets"}, f"{label} registration keys differ")
         stock_id = string(registration.get("stock_id"), f"{label} registration stock_id")
+        require(stock_id in stock_by_id, f"{label} registration stock is unknown")
+        stock_row = stock_by_id[stock_id]
         stock_ids.append(stock_id)
         sheets = [
             mapping(item, f"{label} registration sheet")
             for item in sequence(registration.get("sheets"), f"{label} registration sheets")
         ]
+        require(bool(sheets), f"{label} registration has no sheets")
         sheet_indices: list[int] = []
+        expected_pin_keep_outs_for_stock: set[tuple[int, int, int, int]] = set()
         for sheet in sheets:
             require(
-                set(sheet) == {"sheet_index", "method_id", "points"},
+                set(sheet)
+                == {
+                    "sheet_index",
+                    "declaration_authority",
+                    "method_id",
+                    "fixture_method_version",
+                    "pin_diameter_um",
+                    "position_tolerance_um",
+                    "points",
+                },
                 f"{label} registration sheet keys differ",
             )
-            sheet_indices.append(integer(sheet.get("sheet_index"), f"{label} sheet_index"))
+            sheet_index = integer(sheet.get("sheet_index"), f"{label} sheet_index")
             require(
-                bool(string(sheet.get("method_id"), f"{label} registration method_id")),
-                f"{label} registration method_id is empty",
+                0 <= sheet_index < integer(stock_row.get("quantity"), f"{label} stock quantity"),
+                f"{label} registration sheet index is outside stock quantity",
+            )
+            sheet_indices.append(sheet_index)
+            require(
+                sheet.get("declaration_authority") == "CLIENT_DECLARED",
+                f"{label} registration authority is not client-declared",
+            )
+            method_id = string(sheet.get("method_id"), f"{label} registration method_id")
+            fixture_method_version = string(
+                sheet.get("fixture_method_version"),
+                f"{label} registration fixture_method_version",
+            )
+            require(
+                all(
+                    1 <= len(identity) <= 64
+                    and identity == identity.strip()
+                    and re.fullmatch(r"[A-Za-z0-9_.:-]+", identity) is not None
+                    for identity in (method_id, fixture_method_version)
+                ),
+                f"{label} registration identity is invalid",
+            )
+            diameter_um = integer(
+                sheet.get("pin_diameter_um"), f"{label} registration pin_diameter_um"
+            )
+            tolerance_um = integer(
+                sheet.get("position_tolerance_um"),
+                f"{label} registration position_tolerance_um",
+            )
+            require(
+                1_000 <= diameter_um <= 50_000
+                and 1 <= tolerance_um <= 10_000
+                and tolerance_um * 2 < diameter_um,
+                f"{label} registration pin envelope is invalid",
             )
             raw_points = sequence(sheet.get("points"), f"{label} registration points")
-            require(len(raw_points) >= 2, f"{label} registration has too few points")
+            require(
+                2 <= len(raw_points) <= 16,
+                f"{label} registration must contain two to sixteen points",
+            )
             coordinates: list[tuple[int, int]] = []
             for point_value in raw_points:
                 point = mapping(point_value, f"{label} registration point")
@@ -1186,9 +1458,83 @@ def verify_generation_plan(
                 len(coordinates) == len(set(coordinates)),
                 f"{label} registration points are not unique",
             )
+            footprint_radius_um = (diameter_um + 1) // 2 + tolerance_um
+            minimum_center_um = 100_000 + 2 * footprint_radius_um
+            require(
+                all(
+                    (first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2
+                    >= minimum_center_um**2
+                    for index, first in enumerate(coordinates)
+                    for second in coordinates[index + 1 :]
+                ),
+                f"{label} registration usable baseline is too short",
+            )
+            expected_pin_keep_outs = {
+                (
+                    x_um - footprint_radius_um,
+                    y_um - footprint_radius_um,
+                    2 * footprint_radius_um,
+                    2 * footprint_radius_um,
+                )
+                for x_um, y_um in coordinates
+            }
+            expected_pin_keep_outs_for_stock.update(expected_pin_keep_outs)
+            sheet_width_um = integer(stock_row.get("width_um"), f"{label} stock width")
+            sheet_height_um = integer(stock_row.get("height_um"), f"{label} stock height")
+            require(
+                all(
+                    x_um >= 0
+                    and y_um >= 0
+                    and x_um + width_um <= sheet_width_um
+                    and y_um + height_um <= sheet_height_um
+                    for x_um, y_um, width_um, height_um in expected_pin_keep_outs
+                ),
+                f"{label} registration pin footprint lies outside stock",
+            )
         require(
             sheet_indices == sorted(set(sheet_indices)),
             f"{label} registration sheets are not uniquely sorted",
+        )
+        sheet_width_um = integer(stock_row.get("width_um"), f"{label} stock width")
+        sheet_height_um = integer(stock_row.get("height_um"), f"{label} stock height")
+        clamp_zones = {
+            _stock_zone_tuple(
+                zone,
+                label=f"{label} stock clamp zone",
+                sheet_width_um=sheet_width_um,
+                sheet_height_um=sheet_height_um,
+            )
+            for zone in sequence(stock_row.get("clamp_zones"), f"{label} stock clamp_zones")
+        }
+        defect_zones = {
+            _stock_zone_tuple(
+                zone,
+                label=f"{label} stock defect zone",
+                sheet_width_um=sheet_width_um,
+                sheet_height_um=sheet_height_um,
+            )
+            for zone in sequence(stock_row.get("defect_zones"), f"{label} stock defect_zones")
+        }
+        require(
+            expected_pin_keep_outs_for_stock <= clamp_zones,
+            f"{label} registration pin keep-out is missing from stock selection",
+        )
+        require(
+            not any(
+                _rectangles_intersect(footprint, zone)
+                for footprint in expected_pin_keep_outs_for_stock
+                for zone in defect_zones
+            ),
+            f"{label} registration pin footprint intersects a defect zone",
+        )
+        require(
+            not any(
+                zone not in expected_pin_keep_outs_for_stock
+                and _rectangles_intersect(footprint, zone)
+                for footprint in expected_pin_keep_outs_for_stock
+                for zone in clamp_zones
+            ),
+            f"{label} registration pin footprint intersects a fixture keep-out",
         )
     require(
         stock_ids == sorted(set(stock_ids)),
@@ -1446,34 +1792,9 @@ def verify_package(
             archived_stock_selection,
             label="stock selection snapshot",
         )
-        require(
-            set(stock_selection)
-            == {"schema_version", "stocks", "assignments", "unmatched_part_ids"},
-            "stock selection snapshot keys differ",
-        )
-        require(
-            stock_selection.get("schema_version") == STOCK_SELECTION_SCHEMA_VERSION,
-            "stock selection snapshot schema differs",
-        )
-        require(
-            isinstance(stock_selection.get("stocks"), list),
-            "stock selection snapshot stock rows are invalid",
-        )
-        require(
-            isinstance(stock_selection.get("assignments"), list)
-            and isinstance(stock_selection.get("unmatched_part_ids"), list),
-            "stock selection snapshot assignment fields are invalid",
-        )
-        stock_rows = [
-            mapping(item, "stock selection stock")
-            for item in sequence(stock_selection["stocks"], "stock selection stocks")
-        ]
-        stock_ids = [
-            string(item.get("stock_id"), "stock selection stock_id") for item in stock_rows
-        ]
-        require(
-            stock_ids == sorted(set(stock_ids)),
-            "stock selection stocks are not uniquely sorted",
+        stock_rows = verify_stock_selection(
+            stock_selection,
+            label="stock selection snapshot",
         )
         stock_profiles_fingerprint = sha256(canonical_json_bytes(stock_rows))
         generation_plan_entries = [
@@ -1503,6 +1824,7 @@ def verify_package(
                 None if cam_blocked else expected_package_status["validation_program_included"]
             ),
             expected_stock_profiles_fingerprint=stock_profiles_fingerprint,
+            expected_stock_rows=stock_rows,
         )
         programs = [path for path in paths if path.casefold().endswith(".validation.ngc")]
         if cam_blocked:
@@ -1656,6 +1978,7 @@ def download_artifact(
     *,
     artifact_id: str,
     artifact_kind: str,
+    project_id: str,
     revision: int,
     expected_size: int,
     expected_content_type: str,
@@ -1671,6 +1994,10 @@ def download_artifact(
         canonical_artifact_id = str(uuid.UUID(artifact_id))
     except (AttributeError, ValueError):
         canonical_artifact_id = ""
+    try:
+        canonical_project_id = str(uuid.UUID(project_id))
+    except (AttributeError, ValueError):
+        canonical_project_id = ""
     query_match = re.fullmatch(
         r"expires=([1-9][0-9]{0,18})&signature=([0-9a-f]{64})",
         parsed.query,
@@ -1716,16 +2043,24 @@ def download_artifact(
     require(result.headers.get("etag") == f'"{expected_sha256}"', "artifact ETag mismatch")
     require(result.headers.get("digest") == expected_digest, "artifact Digest mismatch")
     disposition = result.headers.get("content-disposition", "")
+    project_prefix = f"custombuild-project-{project_id}-"
     expected_filename = {
-        "production_bundle": f"custombuild-design-review-rev-{revision}.zip",
-        "manifest": f"custombuild-design-review-rev-{revision}-manifest.json",
-        "stock_selection": f"custombuild-stock-selection-rev-{revision}.json",
-        "generation_plan": f"custombuild-generation-plan-rev-{revision}.json",
-        "manufacturing_intent": f"custombuild-manufacturing-intent-rev-{revision}.json",
-        "supplier_handoff": f"custombuild-cnc-shop-handoff-rev-{revision}.json",
+        "production_bundle": f"{project_prefix}design-review-rev-{revision}.zip",
+        "manifest": f"{project_prefix}design-review-manifest-rev-{revision}.json",
+        "stock_selection": f"{project_prefix}stock-selection-rev-{revision}.json",
+        "generation_plan": f"{project_prefix}generation-plan-rev-{revision}.json",
+        "manufacturing_intent": f"{project_prefix}manufacturing-intent-rev-{revision}.json",
+        "supplier_handoff": f"{project_prefix}cnc-shop-handoff-rev-{revision}.json",
     }.get(artifact_kind)
     require(
-        type(revision) is int
+        canonical_project_id == project_id
+        and re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+            project_id,
+        )
+        is not None
+        and type(revision) is int
         and revision > 0
         and expected_filename is not None
         and disposition == f'attachment; filename="{expected_filename}"',
@@ -1824,6 +2159,8 @@ def bookcase_spec(overrides: dict[str, object] | None = None) -> dict[str, objec
         "back_panel": True,
         "plinth": True,
         "divider_count": 0,
+        # Deliberately exercise the conditional edge-band evidence path; the
+        # canonical product default is 0 mm and has separate parity coverage.
         "edge_band_mm": 1,
         "joint_system": "dado",
         "reinforcement_mode": "manual",
@@ -2130,6 +2467,7 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             path,
             artifact_id=string(artifact.get("id"), f"{kind} artifact id"),
             artifact_kind=kind,
+            project_id=nordic_project_id,
             revision=revision,
             expected_size=integer(artifact.get("size_bytes"), f"{kind} size"),
             expected_content_type=expected_content_type,

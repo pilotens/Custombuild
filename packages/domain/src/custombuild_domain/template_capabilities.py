@@ -16,7 +16,7 @@ from pydantic import Field
 from .identity import content_hash
 from .models import BOOKCASE_TEMPLATE_VERSION, FrozenModel, StableKey
 
-TEMPLATE_CAPABILITY_REGISTRY_VERSION = "custombuild-template-capabilities-1.3.0"
+TEMPLATE_CAPABILITY_REGISTRY_VERSION = "custombuild-template-capabilities-1.4.0"
 
 
 class TemplateProductionLevel(StrEnum):

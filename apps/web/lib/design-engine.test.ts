@@ -1453,6 +1453,60 @@ describe("deterministic bookcase preview", () => {
     expect(edited.notice).toMatch(/yttermått/);
   });
 
+  it("keeps an exact micrometre material measurement in parametric part edits", () => {
+    const edited = editPartParametrically(
+      DEFAULT_DESIGN_SPEC,
+      "side-left",
+      { thickness_mm: 17.625 },
+    );
+
+    expect(edited.supported).toBe(true);
+    expect(edited.spec.measured_thickness_mm).toBe(17.625);
+    expect(resolveDesign(edited.spec).parts.find((candidate) => candidate.part_id === "side-left")?.thickness_mm)
+      .toBe(17.625);
+  });
+
+  it("propagates exact measured back thickness through local geometry and hash", () => {
+    const edited = editPartParametrically(
+      DEFAULT_DESIGN_SPEC,
+      "back-panel",
+      { thickness_mm: 5.8 },
+    );
+    const result = resolveDesign(edited.spec);
+    const back = result.parts.find((candidate) => candidate.kind === "back");
+
+    expect(edited.supported).toBe(true);
+    expect(edited.spec.measured_back_thickness_mm).toBe(5.8);
+    expect(back?.thickness_mm).toBe(5.8);
+    expect(back?.position_mm.y).toBe(DEFAULT_DESIGN_SPEC.depth_mm - 12 - 2.9);
+    expect(localDesignHash(edited.spec)).not.toBe(localDesignHash(DEFAULT_DESIGN_SPEC));
+
+    const lossy = editPartParametrically(
+      DEFAULT_DESIGN_SPEC,
+      "back-panel",
+      { thickness_mm: 5.8005 },
+    );
+    expect(lossy.supported).toBe(false);
+    expect(lossy.spec).toBe(DEFAULT_DESIGN_SPEC);
+  });
+
+  it.each([0, 1, 1.2])("binds exact %.3f mm edge-band intent into the local design hash", (edgeBandMm) => {
+    const spec = { ...DEFAULT_DESIGN_SPEC, edge_band_mm: edgeBandMm };
+
+    expect(resolveDesign(spec).spec.edge_band_mm).toBe(edgeBandMm);
+    if (edgeBandMm !== DEFAULT_DESIGN_SPEC.edge_band_mm) {
+      expect(localDesignHash(spec)).not.toBe(localDesignHash(DEFAULT_DESIGN_SPEC));
+    }
+  });
+
+  it("defaults to no edge band while preserving an explicit one millimetre choice", () => {
+    expect(DEFAULT_DESIGN_SPEC.edge_band_mm).toBe(0);
+
+    const explicit = { ...DEFAULT_DESIGN_SPEC, edge_band_mm: 1 };
+    expect(resolveDesign(explicit).spec.edge_band_mm).toBe(1);
+    expect(localDesignHash(explicit)).not.toBe(localDesignHash(DEFAULT_DESIGN_SPEC));
+  });
+
   it("clamps parametric outer and base edits to the published envelope", () => {
     expect(editPartParametrically(DEFAULT_DESIGN_SPEC, "top", { width_mm: 10_000 }).spec.width_mm)
       .toBe(6_000);

@@ -72,7 +72,19 @@ from .model import (
     um_to_mm,
 )
 from .nesting import DeterministicNester, validate_layout
-from .operations import TwoSidedRegistration, generate_operations_document
+from .operations import (
+    CLIENT_DECLARED_AUTHORITY,
+    MAX_REGISTRATION_PIN_DIAMETER_UM,
+    MAX_REGISTRATION_POSITION_TOLERANCE_UM,
+    MIN_REGISTRATION_PIN_DIAMETER_UM,
+    MIN_REGISTRATION_POSITION_TOLERANCE_UM,
+    MIN_REGISTRATION_USABLE_BASELINE_UM,
+    MIN_VALIDATION_CONTOUR_KERF_UM,
+    TwoSidedRegistration,
+    generate_operations_document,
+    registration_pin_keep_out_radius_um,
+    registration_pin_keep_out_rectangles,
+)
 
 if TYPE_CHECKING:
     from .package import (
@@ -107,6 +119,9 @@ from .procurement import (
 )
 from .profiles import linuxcnc_reference_router_1325, linuxcnc_reference_router_5125
 from .quality import (
+    JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+    JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
     LABEL_INDEX_SCHEMA_VERSION,
     MANUFACTURING_INTENT_PATH,
     MANUFACTURING_INTENT_ROLE,
@@ -134,6 +149,7 @@ from .review_status import (
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DESIGN_REVIEW_PACKAGE_STATUS_SCHEMA_VERSION,
+    TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,
     CAMStageStatus,
     DesignReviewPackageStatus,
     back_panel_retention_evidence_missing,
@@ -221,6 +237,7 @@ __all__ = [
     "MAX_READINESS_STATUS_BYTES",
     "MAX_HTTP_REQUEST_BYTES",
     "CAMOperation",
+    "CLIENT_DECLARED_AUTHORITY",
     "CAMStageStatus",
     "DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
     "DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH",
@@ -248,7 +265,12 @@ __all__ = [
     "GROUPED_BOM_SCHEMA_VERSION",
     "GrainRuleDefinition",
     "MachineProfile",
+    "MAX_REGISTRATION_PIN_DIAMETER_UM",
+    "MAX_REGISTRATION_POSITION_TOLERANCE_UM",
     "LABEL_INDEX_SCHEMA_VERSION",
+    "JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE",
+    "JOINT_RETENTION_SIGNED_EVIDENCE_PATH",
+    "JOINT_RETENTION_SIGNED_EVIDENCE_ROLE",
     "MANUFACTURING_INTENT_PATH",
     "MANUFACTURING_INTENT_ROLE",
     "MANUFACTURING_INTENT_SCHEMA_VERSION",
@@ -256,6 +278,10 @@ __all__ = [
     "MANIFEST_CONTEXT_HASH_FIELDS",
     "ManufacturingError",
     "ManufacturingFeature",
+    "MIN_REGISTRATION_PIN_DIAMETER_UM",
+    "MIN_REGISTRATION_POSITION_TOLERANCE_UM",
+    "MIN_REGISTRATION_USABLE_BASELINE_UM",
+    "MIN_VALIDATION_CONTOUR_KERF_UM",
     "NestingError",
     "NestingLayout",
     "OperationKind",
@@ -282,6 +308,7 @@ __all__ = [
     "STOCK_SELECTION_SCHEMA_VERSION",
     "ToolSpec",
     "TwoSidedRegistration",
+    "TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE",
     "WORKSHOP_READINESS_SCHEMA_VERSION",
     "ReadinessRequirement",
     "ReadinessStatus",
@@ -300,6 +327,8 @@ __all__ = [
     "design_review_artifacts",
     "expand_part_instances",
     "generate_operations_document",
+    "registration_pin_keep_out_radius_um",
+    "registration_pin_keep_out_rectangles",
     "generated_design_review_package_status",
     "joint_retention_contract_is_structurally_complete",
     "generation_plan_artifact",

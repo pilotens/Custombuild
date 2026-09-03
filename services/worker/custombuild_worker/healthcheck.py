@@ -4,12 +4,20 @@ import os
 import socket
 from typing import Any
 
+from .registry_readiness import require_generation_registry_activation
 from .tasks import celery_app
 
 
 def worker_is_responsive(*, timeout_seconds: float = 5.0) -> bool:
     expected_queue = os.getenv("CELERY_EXPECTED_QUEUE", "").strip()
     if expected_queue not in {"generation", "maintenance", "storage-reaper"}:
+        return False
+    try:
+        # This check precedes the Celery ping deliberately: a stale production
+        # generation worker must never advertise readiness merely because its
+        # process and queue consumer are alive.
+        require_generation_registry_activation(expected_queue=expected_queue)
+    except Exception:
         return False
     node_name = f"celery@{socket.gethostname()}"
     inspector: Any = celery_app.control.inspect(

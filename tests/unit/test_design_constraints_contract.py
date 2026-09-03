@@ -159,6 +159,7 @@ def test_template_manifest_matches_the_contract_representations() -> None:
         load_representation["template_maximum"],
     )
     assert "not a certified load class" in load_representation["note"]
+    assert parameters["edge_band_thickness_um"]["default"] == 0
 
 
 def test_domain_model_matches_the_contract_representations() -> None:
@@ -174,6 +175,24 @@ def test_domain_model_matches_the_contract_representations() -> None:
         load_representation["template_minimum"],
         load_representation["template_maximum"],
     )
+    assert properties["edge_band_thickness_um"]["default"] == 0
+
+
+def test_edge_band_default_matches_api_openapi_template_and_domain() -> None:
+    api_properties = BookcasePreviewInput.model_json_schema()["properties"]
+    openapi = _read_json(OPENAPI_PATH)
+    openapi_properties = openapi["components"]["schemas"]["BookcasePreviewInput"][
+        "properties"
+    ]
+    template_parameters = {
+        parameter["key"]: parameter for parameter in _read_json(TEMPLATE_PATH)["parameters"]
+    }
+    domain_properties = BookcaseParameters.model_json_schema()["properties"]
+
+    assert api_properties["edge_band_mm"]["default"] == 0
+    assert openapi_properties["edge_band_mm"]["default"] == 0
+    assert template_parameters["edge_band_thickness_um"]["default"] == 0
+    assert domain_properties["edge_band_thickness_um"]["default"] == 0
 
 
 def test_frontend_strict_hydration_matches_the_contract() -> None:

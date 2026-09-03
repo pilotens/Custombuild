@@ -271,7 +271,8 @@ const VIEWER_FEATURE_COLORS: Readonly<Record<ManufacturingFeature["kind"], strin
 
 export const VIEWER_FEATURE_GEOMETRY_LIMITATION =
   "Den lokala 3D-modellen innehåller featuretyp, sida, djup och verktygsdiameter men inte "
-  + "featurekoordinater eller utbredning. Exakt geometri ska därför verifieras i DXF/SVG och cam/operations.json.";
+  + "featurekoordinater eller utbredning. Exakt geometri ska därför verifieras mot "
+  + "manufacturing/manufacturing-intent.json och de sideseparerade A/B-DXF/SVG-filerna i leverantörspaketet.";
 
 export interface ViewerMachiningKindSummary {
   kind: ManufacturingFeature["kind"];

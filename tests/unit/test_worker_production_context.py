@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import custombuild_manufacturing.pipeline as manufacturing_pipeline
+import custombuild_manufacturing.production_context as production_context_contract
 import custombuild_manufacturing.review_status as review_status_contract
 import custombuild_worker.tasks as worker_tasks
 import pytest
@@ -39,6 +40,7 @@ from custombuild_manufacturing.production_context import (
     resolve_production_components,
 )
 from custombuild_rules import RULES_VERSION
+from custombuild_worker.documents import DOCUMENT_RENDERER_VERSION
 
 TEST_STORAGE_LEASE = "77777777-7777-4777-8777-777777777777"
 
@@ -334,6 +336,9 @@ def test_worker_accepts_only_the_exact_frozen_context() -> None:
         resolved.context.dependency_lock_sha256
         == worker_tasks.WORKER_SETTINGS.dependency_lock_sha256
     )
+    assert DOCUMENT_RENDERER_VERSION == "reportlab-production-documents-1.4.0"
+    assert production_context_contract.DOCUMENT_RENDERER_VERSION == DOCUMENT_RENDERER_VERSION
+    assert resolved.context.document_renderer_version == DOCUMENT_RENDERER_VERSION
 
 
 def test_worker_returns_review_package_when_two_sided_cam_registration_is_missing(
@@ -898,6 +903,8 @@ def test_worker_keeps_directional_stock_unbound_despite_opaque_grain_evidence(
     assert result["nesting_utilization_ppm"] is None
     assert result["used_sheet_count"] == 0
     assert result["nesting_layouts"] == []
+
+
     software_status = {
         item["code"]: item["status"] for item in result["workshop_readiness"]["software_evidence"]
     }
@@ -924,7 +931,7 @@ def test_worker_keeps_directional_stock_unbound_despite_opaque_grain_evidence(
         item for item in result["evidence_artifacts"] if item["kind"] == "stock_selection"
     )
     stock_selection = json.loads(written_payloads[stock_selection_artifact["object_key"]])
-    assert stock_selection["schema_version"] == "custombuild.stock-selection.v1"
+    assert stock_selection["schema_version"] == "custombuild.stock-selection.v2"
     assert [item["stock_id"] for item in stock_selection["stocks"]] == sorted(
         stock.stock_id for stock in captured_stock
     )
@@ -933,7 +940,7 @@ def test_worker_keeps_directional_stock_unbound_despite_opaque_grain_evidence(
         item for item in result["evidence_artifacts"] if item["kind"] == "generation_plan"
     )
     generation_plan = json.loads(written_payloads[generation_plan_artifact["object_key"]])
-    assert generation_plan["schema_version"] == "custombuild.generation-plan.v1"
+    assert generation_plan["schema_version"] == "custombuild.generation-plan.v2"
     assert generation_plan["machine_profile"]["id"] == "custombuild-router-1325-linuxcnc"
     assert generation_plan["postprocessor"]["id"] == "linuxcnc-validation"
     assert (
@@ -957,6 +964,260 @@ def test_worker_keeps_directional_stock_unbound_despite_opaque_grain_evidence(
     manifest = json.loads(written_payloads[result["manifest_object_key"]])
     assert manifest["external_evidence"] == job.request_json["external_evidence"]
     assert not any("DFM-GRAIN-001" in warning for warning in manifest["warnings"])
+
+
+def test_worker_passes_frozen_structured_stock_and_registration_to_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    job.request_json = {
+        **job.request_json,
+        "stock_profiles": [
+            {
+                "role": "carcass",
+                "declaration_authority": "CLIENT_DECLARED",
+                "supplier_profile_id": "supplier-mdf-18",
+                "supplier_profile_version": "batch-2026-09",
+                "material_id": "mdf",
+                "material_version": "screening-2026.1",
+                "sheet_width_um": 2_440_000,
+                "sheet_height_um": 1_220_000,
+                "thickness_um": 18_000,
+                "sheet_count": 4,
+                "trim_margin_um": 12_000,
+                "kerf_um": 6_000,
+                "grain_direction": "NONE",
+                "allow_rotation": False,
+                "defect_zones": [],
+                "fixture_keep_out_zones": [
+                    {
+                        "x_um": 0,
+                        "y_um": 0,
+                        "width_um": 30_000,
+                        "height_um": 1_220_000,
+                    }
+                ],
+            },
+            {
+                "role": "back",
+                "declaration_authority": "CLIENT_DECLARED",
+                "supplier_profile_id": "supplier-mdf-6",
+                "supplier_profile_version": "batch-2026-09",
+                "material_id": "mdf-6",
+                "material_version": "screening-2026.1",
+                "sheet_width_um": 2_440_000,
+                "sheet_height_um": 1_220_000,
+                "thickness_um": 6_000,
+                "sheet_count": 2,
+                "trim_margin_um": 12_000,
+                "kerf_um": 6_000,
+                "grain_direction": "NONE",
+                "allow_rotation": False,
+                "defect_zones": [],
+                "fixture_keep_out_zones": [],
+            },
+        ],
+        "two_sided_registrations": [
+            {
+                "stock_role": "carcass",
+                "sheet_index": 0,
+                "flip_axis": "X",
+                "declaration_authority": "CLIENT_DECLARED",
+                "fixture_method_id": "supplier-pin-fixture-v1",
+                "fixture_method_version": "supplier-fixture-2026.1",
+                "pin_diameter_um": 6_000,
+                "position_tolerance_um": 500,
+                "pins": [
+                    {"x_um": 75_000, "y_um": 25_000},
+                    {"x_um": 2_365_000, "y_um": 25_000},
+                ],
+            }
+        ],
+    }
+    version.result_json["production_context"] = {
+        **version.result_json["production_context"],
+        "stock_profiles": copy.deepcopy(job.request_json["stock_profiles"]),
+        "two_sided_registrations": copy.deepcopy(
+            job.request_json["two_sided_registrations"]
+        ),
+    }
+    resolved = resolve_production_components(
+        machine_profile_id=job.request_json["machine_profile_id"],
+        postprocessor_id=job.request_json["postprocessor_id"],
+        **worker_tasks.WORKER_SETTINGS.build_identity,
+    )
+    job.production_context_hash = generation_context_hash(
+        design_context_hash=version.context_hash,
+        design_version_id=version.id,
+        revision=version.revision,
+        request=job.request_json,
+        production_engine_context=resolved.context,
+    )
+    captured: dict[str, Any] = {}
+
+    class PipelineInputsCaptured(Exception):
+        pass
+
+    def capture_pipeline(*_args: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        raise PipelineInputsCaptured
+
+    monkeypatch.setattr(worker_tasks, "build_production_bundle", capture_pipeline)
+
+    with pytest.raises(PipelineInputsCaptured):
+        _generate_with_storage_lease(monkeypatch, job, version)
+
+    stocks = captured["stock"]
+    assert len(stocks) == 2
+    carcass = next(stock for stock in stocks if stock.thickness_um == 18_000)
+    assert carcass.margin_um == 12_000
+    assert carcass.kerf_um == 6_000
+    assert carcass.grain_direction == "NONE"
+    assert carcass.allow_rotation is False
+    assert carcass.clamp_zones[0].width_um == 30_000
+    registrations = captured["two_sided_registration_by_stock"]
+    plan = registrations[carcass.stock_id][0]
+    assert plan.method_id == "supplier-pin-fixture-v1"
+    assert [(point.x_um, point.y_um) for point in plan.points] == [
+        (75_000, 25_000),
+        (2_365_000, 25_000),
+    ]
+    assert captured["production_release"] is False
+
+
+def test_real_worker_emits_bound_machine_neutral_shop_review_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        manufacturing_pipeline,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
+    monkeypatch.setattr(
+        review_status_contract,
+        "dado_retention_evidence_missing",
+        lambda _design: False,
+    )
+    job, version = _generation_ready_job_and_version()
+    profiles = [
+        {
+            "role": role,
+            "declaration_authority": "CLIENT_DECLARED",
+            "supplier_profile_id": f"supplier-{material_id}",
+            "supplier_profile_version": "batch-2026-09",
+            "material_id": material_id,
+            "material_version": "screening-2026.1",
+            "sheet_width_um": 2_440_000,
+            "sheet_height_um": 1_220_000,
+            "thickness_um": thickness_um,
+            "sheet_count": count,
+            "trim_margin_um": 10_000,
+            "kerf_um": 6_000,
+            "grain_direction": "NONE",
+            "allow_rotation": True,
+            "defect_zones": [],
+            "fixture_keep_out_zones": [],
+        }
+        for role, material_id, thickness_um, count in (
+            ("carcass", "mdf", 18_000, 4),
+            ("back", "mdf-6", 6_000, 2),
+        )
+    ]
+    registrations = [
+        {
+            "stock_role": role,
+            "sheet_index": sheet_index,
+            "flip_axis": "X",
+            "declaration_authority": "CLIENT_DECLARED",
+            "fixture_method_id": f"supplier-{role}-pin-fixture-v1",
+            "fixture_method_version": "supplier-fixture-2026.1",
+            "pin_diameter_um": 6_000,
+            "position_tolerance_um": 500,
+            "pins": [
+                {"x_um": 80_000, "y_um": 30_000},
+                {"x_um": 2_360_000, "y_um": 30_000},
+            ],
+        }
+        for role, count in (("carcass", 4), ("back", 2))
+        for sheet_index in range(count)
+    ]
+    job.request_json = {
+        **job.request_json,
+        "stock_profiles": profiles,
+        "two_sided_registrations": registrations,
+    }
+    version.result_json["production_context"] = {
+        **version.result_json["production_context"],
+        "stock_profiles": copy.deepcopy(profiles),
+        "two_sided_registrations": copy.deepcopy(registrations),
+    }
+    resolved = resolve_production_components(
+        machine_profile_id=job.request_json["machine_profile_id"],
+        postprocessor_id=job.request_json["postprocessor_id"],
+        **worker_tasks.WORKER_SETTINGS.build_identity,
+    )
+    job.production_context_hash = generation_context_hash(
+        design_context_hash=version.context_hash,
+        design_version_id=version.id,
+        revision=version.revision,
+        request=job.request_json,
+        production_engine_context=resolved.context,
+    )
+    written: dict[str, bytes] = {}
+
+    def record_write(
+        key: str,
+        payload: bytes,
+        _content_type: str,
+        **_kwargs: object,
+    ) -> None:
+        written[key] = payload
+
+    monkeypatch.setattr(worker_tasks, "_put_object", record_write)
+
+    result = _generate_with_storage_lease(monkeypatch, job, version)
+
+    assert result["production_machine_program"] is False
+    assert result["machine_program_mode"] == "VALIDATION_DRY_RUN"
+    assert result["used_sheet_count"] > 0
+    assert result["nesting_utilization_ppm"] > 0
+    assert result["nesting_layouts"]
+    assert result["workshop_readiness"]["physical_cutting_authorized"] is False
+    evidence = {item["kind"]: item for item in result["evidence_artifacts"]}
+    assert {
+        "stock_selection",
+        "generation_plan",
+        "operations",
+        "manufacturing_intent",
+        "supplier_handoff",
+        "validation_backplot",
+    } <= set(evidence)
+    assert any(kind.startswith("setup_sheet_") for kind in evidence)
+
+    stock_selection = json.loads(written[evidence["stock_selection"]["object_key"]])
+    generation_plan = json.loads(written[evidence["generation_plan"]["object_key"]])
+    operations = json.loads(written[evidence["operations"]["object_key"]])
+    assert stock_selection["stocks"]
+    assert stock_selection["assignments"]
+    assert stock_selection["unmatched_part_ids"] == []
+    assert generation_plan["two_sided_registrations"]
+    assert operations["operations"]
+    assert operations["setups"]
+
+    manifest = json.loads(written[result["manifest_object_key"]])
+    assert manifest["generation_context_hash"] == job.production_context_hash
+    assert manifest["release_scope"] == "design_review"
+    assert manifest["machine_use"] == "validation_only"
+    assert manifest["physical_cutting_authorized"] is False
+    inventory = {item["path"]: item for item in manifest["artifacts"]}
+    for path, kind in (
+        ("validation/stock-selection.json", "stock_selection"),
+        ("validation/generation-plan.json", "generation_plan"),
+        ("cam/operations.json", "operations"),
+    ):
+        payload = written[evidence[kind]["object_key"]]
+        assert inventory[path]["sha256"] == hashlib.sha256(payload).hexdigest()
+        assert inventory[path]["size_bytes"] == len(payload)
 
 
 def test_worker_blocks_outlier_frozen_spec_before_build_or_object_write(
@@ -1037,6 +1298,7 @@ def test_worker_treats_malformed_frozen_result_as_deterministic_block() -> None:
         "source-commit",
         "source-manifest",
         "dependency-lock",
+        "document-renderer",
         "generation-hash",
     ),
 )
@@ -1061,6 +1323,11 @@ def test_worker_blocks_persisted_context_drift(drift: str) -> None:
         job.production_engine_context_json = {
             **job.production_engine_context_json,
             "source_manifest_sha256": "c" * 64,
+        }
+    elif drift == "document-renderer":
+        job.production_engine_context_json = {
+            **job.production_engine_context_json,
+            "document_renderer_version": "reportlab-production-documents-1.3.0",
         }
     else:
         job.production_context_hash = "0" * 64

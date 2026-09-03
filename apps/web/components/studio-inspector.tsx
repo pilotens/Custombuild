@@ -442,6 +442,34 @@ export function StudioInspector({
           ))}
         </div>
         <DimensionInput
+          label="Faktisk uppmätt skivtjocklek"
+          value={spec.measured_thickness_mm}
+          min={17}
+          max={19}
+          step={0.001}
+          commitMode="reject"
+          hint="Mät den aktuella materialbatchen. Värdet används i all foggeometri och binds till verkstadsprofilen med 0,001 mm upplösning."
+          onCommit={(measured_thickness_mm) => onChange(
+            { measured_thickness_mm },
+            "Faktisk uppmätt skivtjocklek ändrades",
+          )}
+        />
+        <DimensionInput
+          label="Framkantlistens tjocklek"
+          value={spec.edge_band_mm}
+          min={0}
+          max={5}
+          step={0.001}
+          commitMode="reject"
+          hint="0 mm betyder ingen framkantlist. Ett positivt mått märker revisionen som krav på separat SKU, infästningsmetod och kapmåttskompensation; valet löser inte inköp eller produktionsgodkännande."
+          onCommit={(edge_band_mm) => onChange(
+            { edge_band_mm },
+            edge_band_mm === 0
+              ? "Framkantlist togs bort"
+              : `Framkantlist ändrades till ${edge_band_mm} mm`,
+          )}
+        />
+        <DimensionInput
           label="Total planerad last per hyllrad"
           value={spec.load_per_shelf_kg}
           min={DESIGN_CONSTRAINTS.shelfLoadKg.minimum}
@@ -467,7 +495,7 @@ export function StudioInspector({
         <div className={styles.toggles}>
           {([
             ["symmetry_locked", "Symmetrisk indelning", "Speglar ändringar runt mitten"],
-            ["back_panel", "Bakstycke", "Aktiverar ett specificerat 6 mm bakstycke"],
+            ["back_panel", "Bakstycke", "Aktiverar ett bakstycke med separat uppmätt batchtjocklek"],
             ["plinth", "Sockel", "Indragen bas under möbeln"],
             ["fixed_shelves", "Fasta hyllor", "Frästa bärande spår"],
             ["wall_anchor_required", "Planera väggförankring", "Kravet följer med revisionen; verifiering sker separat"],
@@ -508,20 +536,22 @@ export function StudioInspector({
                 {
                   id: "inset_groove",
                   label: "Infällt i not",
-                  description: "6 mm segment per fack i frästa noter.",
+                  description: "Uppmätt 5,5–6,5 mm segment per fack i frästa noter.",
                 },
                 {
                   id: "surface_mounted",
                   label: "Utanpåliggande",
-                  description: "Ett 6 mm stycke bakom stommen i kantfals.",
+                  description: "Inte tillgängligt för produktion: servern saknar en implementerad autentiserad retentionklass.",
+                  disabled: true,
                 },
               ]}
-              onChange={(back_panel_type) => onChange(
-                { back_panel_type },
-                back_panel_type === "inset_groove"
-                  ? "Infällt bakstycke valdes"
-                  : "Utanpåliggande bakstycke valdes",
-              )}
+              onChange={(back_panel_type) => {
+                if (back_panel_type !== "inset_groove") return;
+                onChange(
+                  { back_panel_type },
+                  "Infällt bakstycke valdes",
+                );
+              }}
             />
             <fieldset className={styles.backMaterials}>
               <legend>Bakstyckets material</legend>
@@ -535,7 +565,10 @@ export function StudioInspector({
                       aria-label={`Välj ${label} 6 mm för bakstycket`}
                       aria-pressed={spec.back_material_id === material.id}
                       onClick={() => onChange(
-                        { back_material_id: material.id as BackMaterialId },
+                        {
+                          back_material_id: material.id as BackMaterialId,
+                          measured_back_thickness_mm: material.measuredThicknessMm,
+                        },
                         `Bakstyckets material ändrades till ${label} 6 mm`,
                       )}
                     >
@@ -547,8 +580,23 @@ export function StudioInspector({
                 })}
               </div>
             </fieldset>
+            <DimensionInput
+              label="Faktisk uppmätt bakstyckestjocklek"
+              value={spec.measured_back_thickness_mm}
+              min={5.5}
+              max={6.5}
+              step={0.001}
+              commitMode="reject"
+              hint="Mät den verkliga skivan. Värdet sparas exakt till hela mikrometrar och styr not, CAD och verkstadsunderlag."
+              onCommit={(measured_back_thickness_mm) => onChange(
+                { measured_back_thickness_mm },
+                "Bakstyckets uppmätta tjocklek ändrades",
+              )}
+            />
             <p className={styles.backPanelNote}>
-              Valet påverkar modell, stycklista och konstruktionskontroll. Verkstadsunderlaget förblir spärrat tills externa material- och infästningsbevis är godkända.
+              {spec.back_panel_type === "surface_mounted"
+                ? "Den inlästa designen använder ett äldre utanpåliggande bakstycke. Den kan visas, men servern saknar en implementerad autentiserad retentionklass för ett nytt produktionsval. Välj Infällt i not för att fortsätta mot en ny produktionsrevision."
+                : "Valet påverkar modell, stycklista och konstruktionskontroll. Verkstadsunderlaget förblir spärrat tills externa material- och infästningsbevis är godkända."}
             </p>
           </div>
         ) : null}

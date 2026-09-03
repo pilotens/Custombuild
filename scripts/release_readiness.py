@@ -611,7 +611,7 @@ def _package_manifest_emitter_is_safe(tree: ast.Module) -> bool:
     return (
         schema_expression is not None
         and _resolved_static_value(schema_expression, assignments)
-        == "custombuild.production-manifest.v4"
+        == "custombuild.production-manifest.v5"
         and context_hash_expression is not None
         and _context_hash_expression_uses(context_hash_expression, context_name)
     )
@@ -623,9 +623,9 @@ def _check_package_semantics(tree: ast.Module, relative: str, issues: list[str])
     if (
         len(schema_values) != 1
         or _resolved_static_value(schema_values[0], assignments)
-        != "custombuild.production-manifest.v4"
+        != "custombuild.production-manifest.v5"
     ):
-        issues.append(f"{relative} does not declare the production manifest v4 schema")
+        issues.append(f"{relative} does not declare the production manifest v5 schema")
 
     field_values = assignments.get("MANIFEST_CONTEXT_HASH_FIELDS", [])
     fields = (
@@ -648,7 +648,7 @@ def _check_package_semantics(tree: ast.Module, relative: str, issues: list[str])
         or not all(isinstance(field, str) for field in fields)
         or not required_fields.issubset(fields)
     ):
-        issues.append(f"{relative} does not bind all v4 safety fields into the context hash")
+        issues.append(f"{relative} does not bind all v5 safety fields into the context hash")
     if not _package_manifest_emitter_is_safe(tree):
         issues.append(f"{relative} build_manifest emitter can output unsafe production claims")
 
@@ -711,6 +711,60 @@ def _worker_stock_projection_is_safe(tree: ast.Module, generate: FunctionNode) -
         for node in ast.walk(generate)
         if isinstance(node, ast.Call) and _call_name(node) == "StockSheet"
     ]
+    if not stock_calls:
+        imported_names = {
+            alias.name
+            for statement in tree.body
+            if isinstance(statement, ast.ImportFrom)
+            and statement.module == "app.design_service"
+            for alias in statement.names
+        }
+        if not {
+            "stock_configuration_for_design",
+            "two_sided_registration_for_design",
+        }.issubset(imported_names):
+            return False
+
+        assignments: dict[str, list[ast.expr]] = {"stocks": [], "registrations": []}
+        for node in ast.walk(generate):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in assignments
+            ):
+                assignments[node.targets[0].id].append(node.value)
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id in assignments
+                and node.value is not None
+            ):
+                assignments[node.target.id].append(node.value)
+
+        if any(len(values) != 1 for values in assignments.values()):
+            return False
+        stocks = assignments["stocks"][0]
+        registrations = assignments["registrations"][0]
+        if (
+            not isinstance(stocks, ast.Call)
+            or _call_name(stocks) != "stock_configuration_for_design"
+            or tuple(_expression_path(argument) for argument in stocks.args)
+            != (("design",), ("request",))
+            or stocks.keywords
+            or not isinstance(registrations, ast.Call)
+            or _call_name(registrations) != "two_sided_registration_for_design"
+            or tuple(_expression_path(argument) for argument in registrations.args)
+            != (("design",), ("request",))
+        ):
+            return False
+        registration_keywords = _call_keywords(registrations)
+        return (
+            registration_keywords is not None
+            and set(registration_keywords) == {"stocks"}
+            and _expression_path(registration_keywords["stocks"]) == ("stocks",)
+        )
+
     if len(stock_calls) != 2:
         return False
     roles: set[str] = set()
@@ -1767,18 +1821,18 @@ def _blocked_cam_negative_release_is_required(function: FunctionNode) -> bool:
 def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: list[str]) -> None:
     assignments = _module_assignments(tree)
     expected_constants = {
-        "PRODUCTION_MANIFEST_SCHEMA_VERSION": "custombuild.production-manifest.v4",
+        "PRODUCTION_MANIFEST_SCHEMA_VERSION": "custombuild.production-manifest.v5",
         "WORKSHOP_READINESS_SCHEMA_VERSION": "custombuild.workshop-readiness.v2",
         "DFM_ENGINE_VERSION": "dfm-1.3.0",
         "STOCK_SELECTION_PATH": "validation/stock-selection.json",
         "STOCK_SELECTION_ROLE": "STOCK_SELECTION_SNAPSHOT",
-        "STOCK_SELECTION_SCHEMA_VERSION": "custombuild.stock-selection.v1",
+        "STOCK_SELECTION_SCHEMA_VERSION": "custombuild.stock-selection.v2",
         "GENERATION_PLAN_PATH": "validation/generation-plan.json",
         "GENERATION_PLAN_ROLE": "GENERATION_PLAN",
-        "GENERATION_PLAN_SCHEMA_VERSION": "custombuild.generation-plan.v1",
-        "PRODUCTION_PIPELINE_VERSION": "production-pipeline-1.10.0",
+        "GENERATION_PLAN_SCHEMA_VERSION": "custombuild.generation-plan.v2",
+        "PRODUCTION_PIPELINE_VERSION": "production-pipeline-1.11.0",
         "OPERATIONS_SCHEMA_VERSION": "custombuild.operations.v2",
-        "OPERATIONS_ENGINE_VERSION": "semantic-operations-1.2.0",
+        "OPERATIONS_ENGINE_VERSION": "semantic-operations-1.3.0",
         "STOCK_PROFILE_MISSING": "STOCK_PROFILE_MISSING",
         "DFM_GRAIN_MISSING": "DFM-GRAIN-001",
         "TWO_SIDED_REGISTRATION_MISSING": "TWO_SIDED_REGISTRATION_MISSING",
@@ -2716,7 +2770,13 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "services/api/alembic/versions/0014_release_generation_binding.py",
         "services/api/alembic/versions/0015_outbox_retry_schedule.py",
         "services/api/alembic/versions/0016_workshop_trust_persistence.py",
+        "services/api/alembic/versions/0017_oidc_issuer_binding.py",
+        "services/api/alembic/versions/0018_joint_retention_registry_state.py",
+        "scripts/activate_joint_retention_registry.py",
+        "scripts/bootstrap_production_identity.py",
+        "services/api/app/oidc_identity.py",
         "services/api/app/artifact_operations.py",
+        "services/api/app/joint_retention_registry.py",
         "services/api/app/storage_capacity.py",
         "services/api/app/storage_quota.py",
         "services/api/app/storage_reaper.py",

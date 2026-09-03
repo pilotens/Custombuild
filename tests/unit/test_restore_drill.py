@@ -35,7 +35,9 @@ def test_broad_or_unsafe_restore_names_are_rejected(name: str) -> None:
 
 
 def test_restore_drill_resolves_current_repository_alembic_head() -> None:
-    assert current_alembic_heads(Path.cwd()) == ["0016_workshop_trust_persistence"]
+    assert current_alembic_heads(Path.cwd()) == [
+        "0018_joint_retention_registry_state"
+    ]
 
 
 def test_restore_prepares_schema_ownership_and_restores_as_migrator() -> None:
@@ -83,7 +85,7 @@ def test_restore_probe_recomputes_the_canonical_full_tombstone_history(
         captured_sql = arguments[-1]
         return json.dumps(
             {
-                "alembic_heads": ["0016_workshop_trust_persistence"],
+                "alembic_heads": ["0017_oidc_issuer_binding"],
                 "row_counts": {"storage_object_tombstones": 0},
                 "tombstone_history": history,
             }

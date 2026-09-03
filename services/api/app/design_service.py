@@ -29,16 +29,23 @@ from custombuild_manufacturing import (
     DFM_GRAIN_RULE,
     DeterministicNester,
     MachineProfile,
+    Point2D,
+    Rect,
     Severity,
     StockSheet,
+    TwoSidedRegistration,
     canonical_json_bytes,
     generation_plan_artifact,
     grain_control_projection,
+    registration_pin_keep_out_rectangles,
+    sha256_hex,
     stock_grain_binding_issues,
     stock_profile_missing_issue,
     stock_selection_artifact,
 )
 from custombuild_manufacturing.adapters import adapt_design_result, adapt_domain_part
+
+from .schemas import WorkshopStockProfile, WorkshopTwoSidedRegistration
 
 _DEFAULT_PRODUCTION_CONTEXT: dict[str, float | int] = {
     "stock_width_mm": 2440.0,
@@ -142,6 +149,7 @@ def normalize_preview(
     actual_um = _millimetres(
         payload.get("measured_thickness_mm", payload.get("material_thickness_mm", 18))
     )
+    back_actual_um = _millimetres(payload.get("measured_back_thickness_mm", 6))
     if nominal_um != material.nominal_thickness_um:
         raise ValueError("MVP material catalogue currently supports nominal 18 mm sheet material")
 
@@ -157,6 +165,7 @@ def normalize_preview(
         depth_um=_millimetres(payload.get("depth_mm", 320)),
         nominal_thickness_um=nominal_um,
         actual_thickness_um=actual_um,
+        back_thickness_um=back_actual_um,
         shelf_count=int(payload.get("shelf_count", 5)),
         shelf_mount=ShelfMount(str(payload.get("shelf_mount", "fixed"))),
         shelf_load_n=_load_newtons(payload.get("load_per_shelf_kg", 30)),
@@ -172,7 +181,7 @@ def normalize_preview(
         plinth_height_um=_millimetres(
             payload.get("plinth_height_mm", 80 if payload.get("plinth", True) else 0)
         ),
-        edge_band_thickness_um=_millimetres(payload.get("edge_band_mm", 1)),
+        edge_band_thickness_um=_millimetres(payload.get("edge_band_mm", 0)),
         joint_system=JointType(str(payload.get("joint_system", "dado"))),
         reinforcement_mode=ReinforcementMode(str(payload.get("reinforcement_mode", "manual"))),
         wall_anchor=WallAnchorSpec(
@@ -212,10 +221,10 @@ def _canonical_json_value(value: Any) -> Any:
     return json.loads(canonical_json_bytes(value))
 
 
-def _production_number(
+def _production_millimetres_um(
     production_context: Mapping[str, Any] | None,
     field: str,
-) -> float:
+) -> int:
     raw = (
         production_context.get(field, _DEFAULT_PRODUCTION_CONTEXT[field])
         if production_context is not None
@@ -226,16 +235,190 @@ def _production_number(
     value = Decimal(str(raw))
     if not value.is_finite() or value <= 0:
         raise ValueError(f"{field} must be a finite positive number")
-    return float(value)
+    scaled = value * Decimal(1_000)
+    if scaled != scaled.to_integral_value():
+        raise ValueError(f"{field} must use exact 0.001 mm precision")
+    return int(scaled)
 
 
-def _stock_selection_for_design(
+def _production_count(
+    production_context: Mapping[str, Any] | None,
+    field: str,
+) -> int:
+    raw = (
+        production_context.get(field, _DEFAULT_PRODUCTION_CONTEXT[field])
+        if production_context is not None
+        else _DEFAULT_PRODUCTION_CONTEXT[field]
+    )
+    if type(raw) is not int or not 1 <= raw <= 100:
+        raise ValueError(f"{field} must be an integer from 1 to 100")
+    return raw
+
+
+def _stock_id_for_profile(profile: WorkshopStockProfile) -> str:
+    fingerprint = sha256_hex(canonical_json_bytes(profile.model_dump(mode="json")))[:16]
+    return (
+        f"stock-{profile.role}-{profile.supplier_profile_id}-"
+        f"{profile.supplier_profile_version}-{fingerprint}"
+    )
+
+
+def _stock_zone(zone: Any) -> Rect:
+    return Rect(
+        x_um=zone.x_um,
+        y_um=zone.y_um,
+        width_um=zone.width_um,
+        height_um=zone.height_um,
+    )
+
+
+def _registration_plan(
+    registration: WorkshopTwoSidedRegistration,
+) -> TwoSidedRegistration:
+    return TwoSidedRegistration(
+        declaration_authority=registration.declaration_authority,
+        method_id=registration.fixture_method_id,
+        fixture_method_version=registration.fixture_method_version,
+        pin_diameter_um=registration.pin_diameter_um,
+        position_tolerance_um=registration.position_tolerance_um,
+        points=tuple(Point2D(pin.x_um, pin.y_um) for pin in registration.pins),
+    )
+
+
+def _with_registration_keep_outs(
+    stocks: tuple[StockSheet, ...],
+    profiles: tuple[WorkshopStockProfile, ...],
+    registrations: tuple[WorkshopTwoSidedRegistration, ...],
+) -> tuple[StockSheet, ...]:
+    """Validate raw fixture conflicts before the pipeline reserves pin footprints.
+
+    Stock profiles are role-wide while registrations identify physical sheet
+    instances.  Keeping the declared fixture zones separate here prevents a
+    footprint on one sheet from being mistaken for a fixture on another.  The
+    pipeline adds the union of validated footprints immediately before nesting.
+    """
+
+    stock_id_by_role = {
+        profile.role: _stock_id_for_profile(profile) for profile in profiles
+    }
+    stock_by_id = {stock.stock_id: stock for stock in stocks}
+    for registration in registrations:
+        stock_id = stock_id_by_role.get(registration.stock_role)
+        stock = stock_by_id.get(stock_id or "")
+        if stock is None or registration.sheet_index >= stock.quantity:
+            raise ValueError("two-sided registration references unknown stock or sheet")
+        footprints = registration_pin_keep_out_rectangles(
+            _registration_plan(registration)
+        )
+        sheet_bounds = Rect(0, 0, stock.width_um, stock.height_um)
+        if any(not sheet_bounds.contains(footprint) for footprint in footprints):
+            raise ValueError("two-sided registration pin footprint lies outside stock")
+        if any(
+            footprint.intersects(zone)
+            for footprint in footprints
+            for zone in (*stock.defect_zones, *stock.clamp_zones)
+        ):
+            raise ValueError("two-sided registration pin footprint collides with a stock zone")
+    return stocks
+
+
+def _structured_stock_profiles_for_design(
+    result: Any,
+    production_context: Mapping[str, Any] | None,
+) -> tuple[StockSheet, ...] | None:
+    if production_context is None or production_context.get("stock_profiles") is None:
+        return None
+    raw_profiles = production_context.get("stock_profiles")
+    if not isinstance(raw_profiles, list) or not raw_profiles:
+        raise ValueError("stock_profiles must be a non-empty array when supplied")
+    profiles = tuple(WorkshopStockProfile.model_validate(item) for item in raw_profiles)
+    if len({profile.role for profile in profiles}) != len(profiles):
+        raise ValueError("structured stock roles must be unique")
+
+    spec = result.spec
+    expected: dict[str, tuple[str, str, int]] = {
+        "carcass": (
+            spec.material.material_id,
+            spec.material.version,
+            spec.parameters.actual_thickness_um,
+        )
+    }
+    if spec.back_material is not None:
+        expected["back"] = (
+            spec.back_material.material_id,
+            spec.back_material.version,
+            spec.parameters.back_thickness_um,
+        )
+    if {profile.role for profile in profiles} != set(expected):
+        raise ValueError("structured stock profiles do not cover the frozen design materials")
+
+    stocks: list[StockSheet] = []
+    for profile in sorted(profiles, key=lambda item: 0 if item.role == "carcass" else 1):
+        material_id, material_version, thickness_um = expected[profile.role]
+        if (
+            profile.material_id != material_id
+            or profile.material_version != material_version
+            or profile.thickness_um != thickness_um
+        ):
+            raise ValueError(
+                f"structured {profile.role} profile does not match the frozen design material"
+            )
+        legacy_prefix = "stock" if profile.role == "carcass" else "back_stock"
+        if (
+            profile.sheet_width_um
+            != _production_millimetres_um(production_context, f"{legacy_prefix}_width_mm")
+            or profile.sheet_height_um
+            != _production_millimetres_um(production_context, f"{legacy_prefix}_height_mm")
+            or profile.sheet_count != _production_count(
+                production_context, f"{legacy_prefix}_count"
+            )
+        ):
+            raise ValueError(
+                f"structured {profile.role} profile conflicts with frozen sheet dimensions"
+            )
+        stocks.append(
+            StockSheet(
+                stock_id=_stock_id_for_profile(profile),
+                material_id=profile.material_id,
+                material_version=profile.material_version,
+                width_um=profile.sheet_width_um,
+                height_um=profile.sheet_height_um,
+                thickness_um=profile.thickness_um,
+                quantity=profile.sheet_count,
+                margin_um=profile.trim_margin_um,
+                kerf_um=profile.kerf_um,
+                grain_direction=profile.grain_direction,
+                allow_rotation=profile.allow_rotation,
+                defect_zones=tuple(_stock_zone(zone) for zone in profile.defect_zones),
+                clamp_zones=tuple(
+                    _stock_zone(zone) for zone in profile.fixture_keep_out_zones
+                ),
+                declaration_authority=profile.declaration_authority,
+            )
+        )
+    registrations_raw = production_context.get("two_sided_registrations")
+    if registrations_raw is None:
+        registrations: tuple[WorkshopTwoSidedRegistration, ...] = ()
+    elif isinstance(registrations_raw, list):
+        registrations = tuple(
+            WorkshopTwoSidedRegistration.model_validate(item)
+            for item in registrations_raw
+        )
+    else:
+        raise ValueError("two_sided_registrations must be an array")
+    return _with_registration_keep_outs(tuple(stocks), profiles, registrations)
+
+
+def stock_configuration_for_design(
     result: Any,
     production_context: Mapping[str, Any] | None = None,
-) -> tuple[tuple[StockSheet, ...], tuple[tuple[StockSheet, tuple[Any, ...]], ...], tuple[str, ...]]:
-    """Rebuild the worker's deterministic stock candidates and part assignment."""
+) -> tuple[StockSheet, ...]:
+    """Resolve strict public declarations or the legacy review-only stock placeholders."""
 
-    parts = adapt_design_result(result).parts
+    structured = _structured_stock_profiles_for_design(result, production_context)
+    if structured is not None:
+        return structured
+
     spec = result.spec
     stock_groups: list[tuple[str, str, int, str, str]] = [
         (
@@ -259,13 +442,9 @@ def _stock_selection_for_design(
 
     stocks: list[StockSheet] = []
     for material_id, material_version, thickness_um, prefix, role in stock_groups:
-        width_mm = _production_number(production_context, f"{prefix}_width_mm")
-        height_mm = _production_number(production_context, f"{prefix}_height_mm")
-        quantity = _production_number(production_context, f"{prefix}_count")
-        if not quantity.is_integer():
-            raise ValueError(f"{prefix}_count must be an integer")
-        width_um = int(round(width_mm * 1000))
-        height_um = int(round(height_mm * 1000))
+        width_um = _production_millimetres_um(production_context, f"{prefix}_width_mm")
+        height_um = _production_millimetres_um(production_context, f"{prefix}_height_mm")
+        quantity = _production_count(production_context, f"{prefix}_count")
         stocks.append(
             StockSheet(
                 stock_id=(
@@ -277,11 +456,130 @@ def _stock_selection_for_design(
                 width_um=width_um,
                 height_um=height_um,
                 thickness_um=thickness_um,
-                quantity=int(quantity),
+                quantity=quantity,
+                # Legacy requests do not own a supplier-sheet grain declaration.
                 grain_direction="UNBOUND",
+                declaration_authority="LEGACY_UNSTRUCTURED_CLIENT_INPUT",
             )
         )
-    stock_values = tuple(stocks)
+    return tuple(stocks)
+
+
+def two_sided_registration_for_design(
+    result: Any,
+    production_context: Mapping[str, Any],
+    *,
+    stocks: tuple[StockSheet, ...] | None = None,
+) -> dict[str, dict[int, TwoSidedRegistration]]:
+    """Resolve caller-declared pins to server-derived stock IDs without inference."""
+
+    raw_registrations = production_context.get("two_sided_registrations")
+    if raw_registrations is None:
+        return {}
+    if production_context.get("stock_profiles") is None:
+        raise ValueError("two-sided registrations require structured stock profiles")
+    if not isinstance(raw_registrations, list):
+        raise ValueError("two_sided_registrations must be an array")
+    raw_profiles = production_context.get("stock_profiles")
+    if not isinstance(raw_profiles, list):
+        raise ValueError("stock_profiles must be an array")
+    profiles = tuple(WorkshopStockProfile.model_validate(item) for item in raw_profiles)
+    registrations = tuple(
+        WorkshopTwoSidedRegistration.model_validate(item) for item in raw_registrations
+    )
+    stock_values = stocks or stock_configuration_for_design(result, production_context)
+    stock_by_id = {stock.stock_id: stock for stock in stock_values}
+    stock_id_by_role = {
+        profile.role: _stock_id_for_profile(profile) for profile in profiles
+    }
+    resolved: dict[str, dict[int, TwoSidedRegistration]] = {}
+    seen: set[tuple[str, int]] = set()
+    for registration in registrations:
+        key = (registration.stock_role, registration.sheet_index)
+        if key in seen:
+            raise ValueError("two-sided registration stock/sheet identities must be unique")
+        seen.add(key)
+        stock_id = stock_id_by_role.get(registration.stock_role)
+        stock = stock_by_id.get(stock_id or "")
+        if stock is None or registration.sheet_index >= stock.quantity:
+            raise ValueError("two-sided registration references unknown stock or sheet")
+        plan = _registration_plan(registration)
+        points = plan.points
+        if any(
+            point.x_um > stock.width_um or point.y_um > stock.height_um for point in points
+        ):
+            raise ValueError("two-sided registration pin lies outside the raw sheet")
+        resolved.setdefault(stock.stock_id, {})[registration.sheet_index] = (
+            plan
+        )
+    return resolved
+
+
+def generation_stock_projection_for_design(
+    result: Any,
+    production_context: Mapping[str, Any] | None = None,
+) -> tuple[
+    tuple[StockSheet, ...],
+    dict[str, dict[int, TwoSidedRegistration]],
+]:
+    """Project immutable declarations into the exact generation stock view.
+
+    ``stock_configuration_for_design`` deliberately returns only the caller's
+    declared fixture zones.  Registration-pin footprints are a deterministic
+    manufacturing projection, not caller provenance.  The pipeline applies
+    this same set-union and ordering immediately before nesting; API snapshots
+    use copied ``StockSheet`` values here so verification cannot mutate or
+    misrepresent the frozen declarations.
+    """
+
+    declared_stocks = stock_configuration_for_design(result, production_context)
+    registrations = (
+        {}
+        if production_context is None
+        else two_sided_registration_for_design(
+            result,
+            production_context,
+            stocks=declared_stocks,
+        )
+    )
+    derived_keep_outs: dict[str, list[Rect]] = {}
+    for stock_id, registrations_by_sheet in registrations.items():
+        for registration in registrations_by_sheet.values():
+            derived_keep_outs.setdefault(stock_id, []).extend(
+                registration_pin_keep_out_rectangles(registration)
+            )
+
+    def zone_key(zone: Rect) -> tuple[int, int, int, int]:
+        return (zone.y_um, zone.x_um, zone.height_um, zone.width_um)
+
+    projected_stocks = tuple(
+        replace(
+            stock,
+            clamp_zones=tuple(
+                sorted(
+                    set(
+                        (
+                            *stock.clamp_zones,
+                            *derived_keep_outs.get(stock.stock_id, ()),
+                        )
+                    ),
+                    key=zone_key,
+                )
+            ),
+        )
+        for stock in declared_stocks
+    )
+    return projected_stocks, registrations
+
+
+def _stock_selection_for_design(
+    result: Any,
+    production_context: Mapping[str, Any] | None = None,
+) -> tuple[tuple[StockSheet, ...], tuple[tuple[StockSheet, tuple[Any, ...]], ...], tuple[str, ...]]:
+    """Rebuild the worker's deterministic stock candidates and part assignment."""
+
+    parts = adapt_design_result(result).parts
+    stock_values, _ = generation_stock_projection_for_design(result, production_context)
     if len({stock.stock_id for stock in stock_values}) != len(stock_values):
         raise ValueError("frozen stock roles produced duplicate stock identifiers")
 
@@ -319,7 +617,7 @@ def stock_selection_snapshot_for_design(
     result: Any,
     production_context: Mapping[str, Any] | None = None,
 ) -> bytes:
-    """Return the canonical v1 stock-selection document for a frozen design."""
+    """Return the canonical v2 stock-selection document for a frozen design."""
 
     stocks, grouped_parts, unmatched_part_ids = _stock_selection_for_design(
         result,
@@ -341,11 +639,14 @@ def generation_plan_snapshot_for_design(
 ) -> bytes:
     """Return the canonical worker generation plan for frozen request inputs."""
 
-    stocks, _, _ = _stock_selection_for_design(result, production_context)
+    stocks, registrations = generation_stock_projection_for_design(
+        result,
+        production_context,
+    )
     return generation_plan_artifact(
         machine=machine,
         stocks=stocks,
-        two_sided_registration_by_stock=None,
+        two_sided_registration_by_stock=registrations,
         validation_program_requested=validation_program_requested,
     ).data
 
@@ -564,7 +865,12 @@ def bind_joint_retention(
 
     if spec.joint_retention is not None:
         raise ValueError("joint retention is already bound to this canonical design")
-    bound_spec = spec.model_copy(update={"joint_retention": retention})
+    bound_spec = BookcaseDesignSpec.model_validate(
+        {
+            **spec.model_dump(mode="python"),
+            "joint_retention": retention.model_dump(mode="python"),
+        }
+    )
     bound_result = build_bookcase(bound_spec)
     evaluate_design, _, _ = load_rule_engine()
     evaluations = evaluate_design(bound_result).evaluations

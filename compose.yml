@@ -284,7 +284,7 @@ services:
       context: .
       dockerfile: services/worker/Dockerfile
       args: *python-release-build-args
-    command: ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=2", "--queues=generation"]
+    command: ["python", "-m", "custombuild_worker.generation_startup", "--loglevel=INFO", "--concurrency=2", "--queues=generation"]
     environment:
       HOME: /tmp/custombuild
       APP_ENV: ${APP_ENV:-development}

@@ -47,7 +47,7 @@ BaseCabinetDepthUm = Annotated[int, Field(strict=True, ge=0, le=mm(1_200))]
 BaseCabinetCount = Annotated[int, Field(strict=True, ge=0, le=17)]
 
 BOOKCASE_ENGINE_VERSION = "0.9.0"
-BOOKCASE_TEMPLATE_VERSION = "2.1.0"
+BOOKCASE_TEMPLATE_VERSION = "2.2.0"
 
 
 class FrozenModel(BaseModel):
@@ -253,7 +253,7 @@ class BookcaseParameters(FrozenModel):
     back_thickness_um: PositiveUm = mm(6)
     plinth_height_um: NonNegativeUm = mm(80)
     shelf_side_clearance_um: NonNegativeUm = mm(1)
-    edge_band_thickness_um: NonNegativeUm = mm(1)
+    edge_band_thickness_um: NonNegativeUm = 0
     joint_system: JointType = JointType.DADO
     reinforcement_mode: ReinforcementMode = ReinforcementMode.MANUAL
     max_deflection_um: PositiveUm = mm(3)

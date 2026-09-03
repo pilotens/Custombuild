@@ -125,6 +125,26 @@ function classes(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
+function hasWholeMicrometreResolution(value: string): boolean {
+  const match = /^[+-]?(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(value.trim());
+  if (!match) return false;
+
+  const fraction = match[2] ?? match[3] ?? "";
+  const exponent = Number(match[4] ?? "0");
+  if (!Number.isSafeInteger(exponent)) return false;
+
+  // Check the decimal representation itself. Multiplying the parsed Number by
+  // 1,000 can introduce a binary floating-point remainder (for example,
+  // 256.001 * 1,000) even though the entered value is an exact micrometre.
+  const digits = `${match[1] ?? ""}${fraction}`;
+  const scaledExponent = exponent - fraction.length + 3;
+  if (scaledExponent >= 0) return true;
+
+  const requiredTrailingZeroes = -scaledExponent;
+  if (requiredTrailingZeroes > digits.length) return !/[1-9]/.test(digits);
+  return !/[1-9]/.test(digits.slice(-requiredTrailingZeroes));
+}
+
 function dimensionError(value: string, min: number, max: number): string | undefined {
   if (value.trim() === "") return "Ange ett mått i millimeter.";
   const parsed = Number(value);
@@ -132,7 +152,7 @@ function dimensionError(value: string, min: number, max: number): string | undef
   if (parsed < min || parsed > max) {
     return `Tillåtet intervall är ${min.toLocaleString("sv-SE")}–${max.toLocaleString("sv-SE")} mm.`;
   }
-  if (!Number.isInteger(parsed * 1_000)) {
+  if (!hasWholeMicrometreResolution(value)) {
     return "Ange högst tre decimaler (en tusendels millimeter).";
   }
   return undefined;

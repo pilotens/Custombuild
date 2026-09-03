@@ -24,6 +24,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -99,8 +100,17 @@ class Organization(IdMixin, TimestampMixin, Base):
 
 class User(IdMixin, TimestampMixin, Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "oidc_issuer_sha256 IS NULL OR length(oidc_issuer_sha256) = 64",
+            name="ck_users_oidc_issuer_sha256_format",
+        ),
+    )
 
+    # Production auth binds the opaque issuer/subject key to this issuer hash.
+    # NULL denotes an explicit legacy/development row and is rejected in OIDC mode.
     oidc_sub: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    oidc_issuer_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     name: Mapped[str] = mapped_column(String(160))
 
@@ -355,6 +365,60 @@ class ExternalEvidence(IdMixin, TimestampMixin, TenantMixin, Base):
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JointRetentionRegistryState(Base):
+    """Global monotonic high-water mark for the production trust registry."""
+
+    __tablename__ = "joint_retention_registry_state"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_joint_retention_registry_state_singleton"),
+        CheckConstraint(
+            "transition_epoch >= 0",
+            name="ck_joint_retention_registry_state_epoch",
+        ),
+        CheckConstraint(
+            "(transition_epoch = 0 AND registry_sha256 IS NULL "
+            "AND registry_canonical_json IS NULL "
+            "AND normalized_registry_json IS NULL "
+            "AND operator_reference_sha256 IS NULL) OR "
+            "(transition_epoch > 0 AND registry_sha256 IS NOT NULL "
+            "AND registry_canonical_json IS NOT NULL "
+            "AND normalized_registry_json IS NOT NULL "
+            "AND operator_reference_sha256 IS NOT NULL)",
+            name="ck_joint_retention_registry_state_activation",
+        ),
+        CheckConstraint(
+            "registry_sha256 IS NULL OR (length(registry_sha256) = 64 "
+            "AND registry_sha256 = lower(registry_sha256))",
+            name="ck_joint_retention_registry_state_registry_sha256",
+        ),
+        CheckConstraint(
+            "operator_reference_sha256 IS NULL OR "
+            "(length(operator_reference_sha256) = 64 "
+            "AND operator_reference_sha256 = lower(operator_reference_sha256))",
+            name="ck_joint_retention_registry_state_operator_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        SmallInteger,
+        primary_key=True,
+        autoincrement=False,
+    )
+    transition_epoch: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    registry_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    registry_canonical_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_registry_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+    )
+    operator_reference_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
 
 
 class StorageGlobalQuota(TimestampMixin, Base):

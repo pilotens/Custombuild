@@ -12,6 +12,7 @@ from custombuild_manufacturing.model import (
     MachineProfile,
     OperationKind,
     OperationsDocument,
+    Point2D,
     Rect,
     Setup,
     Side,
@@ -19,6 +20,11 @@ from custombuild_manufacturing.model import (
     canonical_json_bytes,
     sha256_hex,
     um_to_mm,
+)
+from custombuild_manufacturing.operations import (
+    CLIENT_DECLARED_AUTHORITY,
+    TwoSidedRegistration,
+    registration_pin_keep_out_rectangles,
 )
 from custombuild_manufacturing.profiles import (
     LARGE_FORMAT_MACHINE_PROFILE_ID,
@@ -29,7 +35,7 @@ from custombuild_manufacturing.profiles import (
 
 from .model import MoveKind, RemovalEnvelope, ValidationBackplot, ValidationMove
 
-CAM_VALIDATION_VERSION = "cam-validation-1.3.0"
+CAM_VALIDATION_VERSION = "cam-validation-1.4.0"
 CAM_BACKPLOT_VERSION = "validation-backplot-1.0.0"
 OPERATIONS_SCHEMA_VERSION = "custombuild.operations.v2"
 _DESIGN_HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -37,7 +43,11 @@ _WCS_PATTERN = re.compile(r"G5[4-9]")
 _CANONICAL_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 _DECLARED_PROBE_PATTERN = re.compile(
     r"DECLARED_COORDINATE_REGISTRATION;"
-    r"METHOD=([A-Za-z0-9][A-Za-z0-9._:-]{0,159});"
+    r"DECLARATION_AUTHORITY=(CLIENT_DECLARED);"
+    r"METHOD=([A-Za-z0-9][A-Za-z0-9._:-]{0,63});"
+    r"METHOD_VERSION=([A-Za-z0-9][A-Za-z0-9._:-]{0,63});"
+    r"PIN_DIAMETER_UM=([0-9]+);"
+    r"POSITION_TOLERANCE_UM=([0-9]+);"
     r"STOCK_XY_UM=([0-9]+,[0-9]+(?:\|[0-9]+,[0-9]+)+);"
     r"EXTERNAL_SETUP_VERIFICATION_REQUIRED"
 )
@@ -430,6 +440,8 @@ def _validate_setup_stock_bindings(setups: tuple[Setup, ...]) -> list[str]:
             setup.stock_width_um,
             setup.stock_height_um,
             setup.stock_thickness_um,
+            setup.probe_method,
+            setup.keep_out_zones,
         )
         previous = stock_binding_by_sheet.setdefault(key, binding)
         if previous != binding:
@@ -516,16 +528,29 @@ def _validate_probe_method(setup: Setup) -> list[str]:
     match = _DECLARED_PROBE_PATTERN.fullmatch(setup.probe_method)
     if match is None:
         return [f"setup probe method is unsupported or blank: {setup.setup_id}"]
-    coordinates = tuple(
-        tuple(int(value) for value in point.split(",")) for point in match.group(2).split("|")
-    )
-    if len(coordinates) < 2 or len(set(coordinates)) != len(coordinates):
-        return [f"setup probe coordinates are not unique: {setup.setup_id}"]
-    if any(
-        x_um < 0 or y_um < 0 or x_um > setup.stock_width_um or y_um > setup.stock_height_um
-        for x_um, y_um in coordinates
-    ):
+    try:
+        coordinates = tuple(
+            tuple(int(value) for value in point.split(","))
+            for point in match.group(6).split("|")
+        )
+        registration = TwoSidedRegistration(
+            declaration_authority=match.group(1),
+            method_id=match.group(2),
+            fixture_method_version=match.group(3),
+            pin_diameter_um=int(match.group(4)),
+            position_tolerance_um=int(match.group(5)),
+            points=tuple(Point2D(x_um, y_um) for x_um, y_um in coordinates),
+        )
+    except ValueError:
+        return [f"setup probe registration contract is invalid: {setup.setup_id}"]
+    if registration.declaration_authority != CLIENT_DECLARED_AUTHORITY:
+        return [f"setup probe registration authority is invalid: {setup.setup_id}"]
+    footprints = registration_pin_keep_out_rectangles(registration)
+    bounds = Rect(0, 0, setup.stock_width_um, setup.stock_height_um)
+    if any(not bounds.contains(footprint) for footprint in footprints):
         return [f"setup probe coordinates are outside stock: {setup.setup_id}"]
+    if any(footprint not in setup.keep_out_zones for footprint in footprints):
+        return [f"setup probe registration keep-out is missing: {setup.setup_id}"]
     return []
 
 

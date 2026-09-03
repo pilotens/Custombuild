@@ -19,6 +19,7 @@ const DESIGN_SPEC_FIELD_ORDER = [
   "back_material_id",
   "nominal_thickness_mm",
   "measured_thickness_mm",
+  "measured_back_thickness_mm",
   "shelf_count",
   "fixed_shelves",
   "load_per_shelf_kg",
@@ -51,6 +52,7 @@ const DESIGN_SPEC_FIELD_ORDER = [
   "back_stock_height_mm",
   "back_stock_count",
   "machine_profile_id",
+  "workshop_context",
 ] as const satisfies readonly (keyof DesignSpec)[];
 
 type MissingDesignSpecField = Exclude<keyof DesignSpec, (typeof DESIGN_SPEC_FIELD_ORDER)[number]>;

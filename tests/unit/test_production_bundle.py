@@ -163,7 +163,11 @@ def explicit_two_sided_registration(
     return {
         item.stock_id: {
             sheet_index: TwoSidedRegistration(
+                declaration_authority="CLIENT_DECLARED",
                 method_id=f"test-registration:{item.stock_id}:{sheet_index}",
+                fixture_method_version="fixture-v1",
+                pin_diameter_um=6_000,
+                position_tolerance_um=500,
                 points=(
                     Point2D(50_000, 50_000),
                     Point2D(item.width_um - 50_000, 50_000),

@@ -38,6 +38,94 @@ describe("SelectedPartInspector", () => {
     expect(screen.queryByLabelText("Från vänster (X)")).not.toBeInTheDocument();
   });
 
+  it("preserves the exact measured batch thickness through the selected-part path", () => {
+    const onChange = vi.fn();
+    render(
+      <SelectedPartInspector
+        part={part}
+        spec={DEFAULT_DESIGN_SPEC}
+        onChange={onChange}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const thickness = screen.getByLabelText("Materialtjocklek, hela möbeln");
+    expect(thickness).toHaveAttribute("step", "0.001");
+    fireEvent.change(thickness, { target: { value: "17.625" } });
+    fireEvent.blur(thickness);
+    expect(onChange).toHaveBeenCalledWith({ thickness_mm: 17.625 });
+
+    onChange.mockClear();
+    fireEvent.change(thickness, { target: { value: "17.6255" } });
+    fireEvent.blur(thickness);
+    expect(thickness).toHaveAttribute("aria-invalid", "true");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("shows the canonical edge-band input only on parts with a bandable front edge", () => {
+    const onEdgeBandChange = vi.fn();
+    const { rerender } = render(
+      <SelectedPartInspector
+        part={part}
+        spec={DEFAULT_DESIGN_SPEC}
+        onChange={vi.fn()}
+        onEdgeBandChange={onEdgeBandChange}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    const edgeBand = screen.getByLabelText("Framkantlistens tjocklek");
+    fireEvent.change(edgeBand, { target: { value: "1.2" } });
+    fireEvent.blur(edgeBand);
+    expect(onEdgeBandChange).toHaveBeenCalledWith(1.2);
+    expect(screen.getByText(/kräver fortfarande separat SKU/i)).toBeVisible();
+
+    const back = resolveDesign(DEFAULT_DESIGN_SPEC).parts.find((candidate) => candidate.kind === "back");
+    if (!back) throw new Error("Expected back panel");
+    rerender(
+      <SelectedPartInspector
+        part={back}
+        spec={DEFAULT_DESIGN_SPEC}
+        onChange={vi.fn()}
+        onEdgeBandChange={onEdgeBandChange}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.queryByLabelText("Framkantlistens tjocklek")).not.toBeInTheDocument();
+  });
+
+  it("edits an exact back batch thickness through the selected back part", () => {
+    const back = resolveDesign(DEFAULT_DESIGN_SPEC).parts.find((candidate) => candidate.kind === "back");
+    if (!back) throw new Error("Expected back panel");
+    const onChange = vi.fn();
+    render(
+      <SelectedPartInspector
+        part={back}
+        spec={DEFAULT_DESIGN_SPEC}
+        onChange={onChange}
+        onRemove={vi.fn()}
+        onReset={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const thickness = screen.getByLabelText("Bakstyckets materialtjocklek");
+    fireEvent.change(thickness, { target: { value: "5.8" } });
+    fireEvent.blur(thickness);
+    expect(onChange).toHaveBeenCalledWith({ thickness_mm: 5.8 });
+
+    onChange.mockClear();
+    fireEvent.change(thickness, { target: { value: "5.8005" } });
+    fireEvent.blur(thickness);
+    expect(thickness).toHaveAttribute("aria-invalid", "true");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("maps top-panel fields to the complete canonical outer envelope", () => {
     const top = resolveDesign(DEFAULT_DESIGN_SPEC).parts.find((candidate) => candidate.part_id === "top");
     if (!top) throw new Error("Expected top");

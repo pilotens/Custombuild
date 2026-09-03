@@ -1,17 +1,25 @@
 "use client";
 
 import { Check, Download, FileDown, LoaderCircle, RefreshCw, ShieldAlert } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   CustombuildApiClient,
   type ArtifactRead,
   type DesignVersionRead,
+  type ExternalEvidenceRead,
   type GenerationRequest,
   type JobRead,
+  type ReleaseRead,
+  productionContextFromSpec,
   versionProductionContextMatches,
 } from "@/lib/api-client";
-import type { DesignSpec, ResolvedDesign, RuleEvaluation } from "@/lib/design-types";
+import type {
+  DesignSpec,
+  ResolvedDesign,
+  RetentionCertificationRequest,
+  RuleEvaluation,
+} from "@/lib/design-types";
 import {
   clearLegacyProductionStorage,
   productionSessionKey,
@@ -27,13 +35,27 @@ import {
   permitsStocklessDesignReview,
   validationGuidance,
 } from "@/lib/validation-guidance";
+import {
+  parseRevisionProductionContext,
+  type RevisionProductionContextSnapshot,
+  type WorkshopProductionContext,
+} from "@/lib/workshop-production-context";
 import { RevisionHistory } from "./revision-history";
+import {
+  WorkshopContextEditor,
+  createWorkshopContextDraftState,
+  type WorkshopContextDraftState,
+} from "./workshop-context-editor";
 
 type BusyAction =
   | "save"
   | "validate"
   | "design-approval"
+  | "cam-approval"
   | "generation"
+  | "release"
+  | "evidence-upload"
+  | "evidence-download"
   | "download";
 
 type ActionFeedbackTone = "busy" | "success" | "error";
@@ -60,10 +82,18 @@ export type ProductionApi = Pick<
   | "validateVersion"
   | "approveVersion"
   | "generateVersion"
+  | "releaseVersion"
   | "getJob"
   | "listArtifacts"
   | "downloadArtifact"
-> & Partial<Pick<CustombuildApiClient, "listVersions">>;
+> & Partial<Pick<
+  CustombuildApiClient,
+  | "listVersions"
+  | "listExternalEvidence"
+  | "uploadExternalEvidence"
+  | "downloadJointRetentionEvidence"
+  | "setJointRetentionEvidence"
+>>;
 
 export interface ProductionSummary {
   revision?: number;
@@ -120,8 +150,10 @@ interface ProductionWorkflowProps {
   onApplyDesignChange?: (patch: Partial<DesignSpec>, reason: string) => void;
   onRequestServerPreviewRetry?: () => void;
   active?: boolean;
-  principal?: WorkspaceIdentity;
+  principal?: WorkspaceIdentity & { role?: string };
   showRevisionHistory?: boolean;
+  workshopContextDraftState?: WorkshopContextDraftState;
+  onWorkshopContextDraftStateChange?: (state: WorkshopContextDraftState) => void;
 }
 
 const PROJECT_NAME = "Arkitektväggen";
@@ -132,6 +164,12 @@ const STOCK_PROFILE_MISSING_CODE = "STOCK_PROFILE_MISSING";
 const DFM_GRAIN_MISSING_CODE = "DFM-GRAIN-001";
 const TWO_SIDED_REGISTRATION_MISSING_CODE = "TWO_SIDED_REGISTRATION_MISSING";
 const DADO_RETENTION_EVIDENCE_MISSING_CODE = "DADO_RETENTION_EVIDENCE_MISSING";
+const BACK_PANEL_RETENTION_EVIDENCE_MISSING_CODE = "BACK_PANEL_RETENTION_EVIDENCE_MISSING";
+const RETENTION_RULE_ID = "CB-JOINT-001";
+const RETENTION_EVIDENCE_MAX_BYTES = 20 * 1024 * 1024;
+const GENERAL_EVIDENCE_TYPES = ["wall_anchor", "hardware"] as const;
+type GeneralEvidenceType = typeof GENERAL_EVIDENCE_TYPES[number];
+type GeneralEvidenceSelection = Partial<Record<GeneralEvidenceType, string>>;
 const GENERATED_REVIEW_REQUIRED_ACTION = (
   "None for design review; physical workshop evidence remains required."
 );
@@ -150,14 +188,297 @@ const BLOCKED_CAM_REQUIRED_ACTIONS: Record<string, string> = {
     + "do not infer WCS, pins, fixtures or registration coordinates."
   ),
   [DADO_RETENTION_EVIDENCE_MISSING_CODE]: (
-    "The current MVP cannot resolve this blocker because it has no authenticated "
-    + "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-    + "checksum-addressed mechanical retention contract to every DADO joint, including "
-    + "exact geometry, hardware quantity, material/thickness applicability and separate "
-    + "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-    + "bearing check is not retention evidence."
+    "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+    + "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+    + "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+    + "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
+  ),
+  [BACK_PANEL_RETENTION_EVIDENCE_MISSING_CODE]: (
+    "Use only the canonical inset back whose four boundary grooves and multi-direction "
+    + "closing sequence prove mechanical capture, or bind independently authenticated "
+    + "back-panel retention evidence when that application class is implemented."
   ),
 };
+
+const GENERAL_EVIDENCE_LABELS: Record<GeneralEvidenceType, string> = {
+  wall_anchor: "Väggförankring",
+  hardware: "Beslag",
+};
+
+type WorkflowCapability = "design" | "review" | "generate";
+
+function hasWorkflowCapability(
+  principal: ProductionWorkflowProps["principal"],
+  capability: WorkflowCapability,
+): boolean {
+  if (!principal || !("role" in principal)) return false;
+  const role = (principal as { role?: unknown }).role;
+  if (role === "admin" || role === "owner") return true;
+  if (capability === "review") return role === "reviewer";
+  return role === "designer";
+}
+
+function canSelectExternalEvidence(principal: ProductionWorkflowProps["principal"]): boolean {
+  return hasWorkflowCapability(principal, "review");
+}
+
+function canDownloadJointRetentionEvidence(
+  principal: ProductionWorkflowProps["principal"],
+): boolean {
+  if (!principal || !("role" in principal)) return false;
+  return ["reviewer", "operator", "production", "admin", "owner"].includes(
+    String((principal as { role?: unknown }).role),
+  );
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+interface RetentionEvidenceUploadMetadata {
+  catalogId: string;
+  catalogVersion: string;
+  expiresAt: string;
+}
+
+function requiredRetentionMetadataString(
+  value: unknown,
+  label: string,
+  maxLength: number,
+): string {
+  if (
+    typeof value !== "string"
+    || value.length < 1
+    || value.length > maxLength
+    || value !== value.trim()
+  ) {
+    throw new Error(`${label} i den signerade JSON-filen är ogiltigt.`);
+  }
+  return value;
+}
+
+/**
+ * Read only the signed statement fields needed to mirror multipart metadata.
+ * The server remains authoritative for the schema, signature, issuer, hash and revocation checks.
+ */
+export async function retentionEvidenceUploadMetadata(
+  file: File,
+  now = Date.now(),
+): Promise<RetentionEvidenceUploadMetadata> {
+  const mediaType = file.type.split(";", 1)[0]?.trim().toLowerCase();
+  if (!file.name.toLowerCase().endsWith(".json") || mediaType !== "application/json") {
+    throw new Error("Retentionsevidensen måste vara en .json-fil med innehållstypen application/json.");
+  }
+  if (!Number.isSafeInteger(file.size) || file.size < 1 || file.size > RETENTION_EVIDENCE_MAX_BYTES) {
+    throw new Error("Retentionsevidensen måste innehålla data och får vara högst 20 MiB.");
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch {
+    throw new Error("Retentionsevidensen innehåller inte giltig JSON.");
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Retentionsevidensen måste innehålla ett signerat JSON-objekt.");
+  }
+  const root = payload as Record<string, unknown>;
+  const entry = root.catalogue_entry;
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new Error("catalogue_entry saknas i den signerade JSON-filen.");
+  }
+  const catalogueEntry = entry as Record<string, unknown>;
+  const catalogId = requiredRetentionMetadataString(
+    catalogueEntry.system_id,
+    "catalogue_entry.system_id",
+    160,
+  );
+  const catalogVersion = requiredRetentionMetadataString(
+    catalogueEntry.system_version,
+    "catalogue_entry.system_version",
+    80,
+  );
+  const expiresAt = requiredRetentionMetadataString(root.expires_at, "expires_at", 80);
+  if (
+    !/T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(expiresAt)
+    || !Number.isFinite(Date.parse(expiresAt))
+    || Date.parse(expiresAt) <= now
+  ) {
+    throw new Error("expires_at i den signerade JSON-filen måste vara en framtida tidszonssatt tidpunkt.");
+  }
+  return { catalogId, catalogVersion, expiresAt };
+}
+
+function canonicalJson(value: unknown): string {
+  if (
+    value === null
+    || typeof value === "string"
+    || typeof value === "boolean"
+    || (typeof value === "number" && Number.isFinite(value))
+  ) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(",")}}`;
+  }
+  throw new Error("Certifieringsbegäran innehåller ett värde som inte kan serialiseras säkert.");
+}
+
+export function canonicalRetentionCertificationRequestJson(
+  request: RetentionCertificationRequest,
+): string {
+  return canonicalJson(request);
+}
+
+const WARNING_RULE_ID_PATTERN = /^(CB|DFM)-[A-Z]+-[0-9]{3}$/;
+const APPROVAL_EVIDENCE_TYPES = new Set([
+  "wall_anchor",
+  "hardware",
+  "material_grain",
+  "joint_retention",
+]);
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function timezonedTimestamp(value: unknown): value is string {
+  return typeof value === "string"
+    && /T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
+function canonicalApprovalEvidenceIds(row: Record<string, unknown>): string[] | undefined {
+  if (
+    !nonEmptyString(row.rule_id)
+    || !WARNING_RULE_ID_PATTERN.test(row.rule_id)
+    || !nonEmptyString(row.rule_version)
+    || !nonEmptyString(row.reason)
+    || !nonEmptyString(row.approved_by)
+    || !timezonedTimestamp(row.approved_at)
+    || !Array.isArray(row.external_evidence)
+    || !["verified", "missing", "acknowledged_unresolved"].includes(String(row.evidence_status))
+  ) return undefined;
+
+  const ids: string[] = [];
+  for (const entry of row.external_evidence) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const snapshot = entry as Record<string, unknown>;
+    if (
+      typeof snapshot.evidence_id !== "string"
+      || !UUID_PATTERN.test(snapshot.evidence_id)
+      || !nonEmptyString(snapshot.evidence_type)
+      || !APPROVAL_EVIDENCE_TYPES.has(snapshot.evidence_type)
+      || snapshot.rule_id !== row.rule_id
+      || !nonEmptyString(snapshot.catalog_id)
+      || !nonEmptyString(snapshot.catalog_version)
+      || typeof snapshot.design_hash !== "string"
+      || !/^[a-f0-9]{64}$/.test(snapshot.design_hash)
+      || typeof snapshot.sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(snapshot.sha256)
+      || !Number.isSafeInteger(snapshot.size_bytes)
+      || Number(snapshot.size_bytes) < 1
+      || !nonEmptyString(snapshot.content_type)
+      || !nonEmptyString(snapshot.created_by)
+      || !timezonedTimestamp(snapshot.created_at)
+      || !(snapshot.expires_at === null || timezonedTimestamp(snapshot.expires_at))
+    ) return undefined;
+    ids.push(snapshot.evidence_id);
+  }
+
+  if (
+    (row.evidence_status === "verified") !== (ids.length > 0)
+    || (row.evidence_status === "acknowledged_unresolved" && row.rule_id !== DFM_GRAIN_MISSING_CODE)
+  ) return undefined;
+  return ids;
+}
+
+function legacyApprovalEvidenceIds(row: Record<string, unknown>): string[] | undefined {
+  if (
+    !nonEmptyString(row.rule_id)
+    || !WARNING_RULE_ID_PATTERN.test(row.rule_id)
+    || !nonEmptyString(row.reason)
+    || !Array.isArray(row.evidence_ids)
+    || row.evidence_ids.some((id) => typeof id !== "string" || !UUID_PATTERN.test(id))
+  ) return undefined;
+  return row.evidence_ids as string[];
+}
+
+/**
+ * Recover the canonical response snapshots persisted by approve_version.  The request-shaped
+ * evidence_ids form is retained only as an all-or-nothing legacy read path for older sessions.
+ */
+export function approvalExternalEvidenceIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids: string[] = [];
+  let shape: "canonical" | "legacy" | undefined;
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const row = entry as Record<string, unknown>;
+    const hasCanonicalShape = Object.prototype.hasOwnProperty.call(row, "external_evidence");
+    const hasLegacyShape = Object.prototype.hasOwnProperty.call(row, "evidence_ids");
+    if (hasCanonicalShape === hasLegacyShape) return undefined;
+    const rowShape = hasCanonicalShape ? "canonical" : "legacy";
+    if (shape !== undefined && shape !== rowShape) return undefined;
+    shape = rowShape;
+    const rowIds = rowShape === "canonical"
+      ? canonicalApprovalEvidenceIds(row)
+      : legacyApprovalEvidenceIds(row);
+    if (!rowIds) return undefined;
+    ids.push(...rowIds);
+  }
+  if (new Set(ids).size !== ids.length) return undefined;
+  return ids.sort((left, right) => left.localeCompare(right));
+}
+
+function retentionBindingFromVersion(version?: DesignVersionRead): {
+  baseDesignHash: string;
+  evidenceId: string;
+} | undefined {
+  const result = version?.result_json;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const trust = result.retention_trust;
+  if (!trust || typeof trust !== "object" || Array.isArray(trust)) return undefined;
+  const trustRecord = trust as Record<string, unknown>;
+  const baseDesignHash = trustRecord.base_design_hash;
+  const evidenceId = trustRecord.storage_evidence_id;
+  if (
+    typeof baseDesignHash !== "string"
+    || !/^[a-f0-9]{64}$/.test(baseDesignHash)
+    || typeof evidenceId !== "string"
+    || !/^[0-9a-f-]{36}$/.test(evidenceId)
+  ) return undefined;
+  return { baseDesignHash, evidenceId };
+}
+
+function evidenceMetadataIsCurrent(
+  evidence: ExternalEvidenceRead,
+  projectId: string,
+  designHash: string,
+  now = Date.now(),
+): boolean {
+  const expiry = evidence.expires_at ? Date.parse(evidence.expires_at) : undefined;
+  return (
+    evidence.project_id === projectId
+    && evidence.design_hash === designHash
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(evidence.id)
+    && /^[a-f0-9]{64}$/.test(evidence.sha256)
+    && Number.isSafeInteger(evidence.size_bytes)
+    && evidence.size_bytes > 0
+    && (expiry === undefined || (Number.isFinite(expiry) && expiry > now))
+  );
+}
+
+function evidenceOptionLabel(evidence: ExternalEvidenceRead): string {
+  const validity = evidence.expires_at
+    ? `giltig till ${new Intl.DateTimeFormat("sv-SE", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      }).format(new Date(evidence.expires_at))}`
+    : "utan registrerat slutdatum";
+  return `${evidence.catalog_id} · ${evidence.catalog_version} · ${validity}`;
+}
 
 function productionErrorHasCode(message: string | null | undefined, code: string): boolean {
   return message?.split(/[^A-Za-z0-9_]+/).includes(code) ?? false;
@@ -211,7 +532,11 @@ function actionFailureMessage(action: BusyAction, error: unknown): string {
     save: "Kontrollera serveranslutningen och välj Spara och kontrollera igen.",
     validate: "Modellen är redan sparad. Välj Kontrollera igen.",
     "design-approval": "Bekräfta varningarna igen och välj Skapa underlag.",
+    "cam-approval": "Kontrollera paketet och låt en annan reviewer än designgranskaren försöka igen.",
     generation: "Kontrollera orsaken ovan och välj Försök skapa underlag igen.",
+    release: "Kontrollera den aktuella CAM-granskningen och bekräfta revisionslåset igen.",
+    "evidence-upload": "Kontrollera att filen kommer direkt från certifieraren och försök ladda upp den igen.",
+    "evidence-download": "Hämta om serverregistret och försök verifiera originalfilen igen.",
     download: "Försök hämta filen igen.",
   };
   return `${message} ${nextAction[action]}`;
@@ -505,6 +830,15 @@ export function workshopRequirementPresentation(
   };
 }
 
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expectedKeys: readonly string[],
+): boolean {
+  const actualKeys = Object.keys(value);
+  return actualKeys.length === expectedKeys.length
+    && expectedKeys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
 const GENERATED_CAM_REVIEW_ARTIFACT_KINDS = [
   "production_bundle",
   "manifest",
@@ -550,6 +884,135 @@ const BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS = new Set([
   "assembly_readiness",
 ]);
 
+const GENERATED_CAM_ALLOWED_ARTIFACT_KINDS = new Set([
+  ...BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS,
+  "operations",
+  "validation_backplot",
+]);
+const SETUP_SHEET_KIND_PATTERN = /^setup_sheet_(?:00[1-9]|0[1-9]\d|[1-4]\d\d|5(?:0\d|1[0-2]))$/;
+const MAX_REVIEW_EVIDENCE_ARTIFACTS = 512;
+const MAX_REVIEW_EVIDENCE_BYTES = 96 * 1024 * 1024;
+const MAX_REVIEW_ARTIFACT_BYTES = 32 * 1024 * 1024;
+const MAX_REVIEW_CORE_DOCUMENT_BYTES = 3 * 1024 * 1024;
+const MAX_REVIEW_READINESS_BYTES = 64 * 1024;
+const REVIEW_EVIDENCE_RESULT_KEYS = [
+  "kind",
+  "object_key",
+  "sha256",
+  "size_bytes",
+  "content_type",
+] as const;
+const REVIEW_ARTIFACT_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  manufacturing_intent: "application/json",
+  supplier_handoff: "application/json",
+  dfm_report: "application/json",
+  stock_selection: "application/json",
+  generation_plan: "application/json",
+  operations: "application/json",
+  validation_backplot: "image/svg+xml",
+  design_glb: "model/gltf-binary",
+  design_fcstd: "application/vnd.freecad",
+  cad_interchange_status: "application/json",
+  source_provenance: "application/json",
+  workshop_readiness: "application/json",
+  assembly_readiness: "application/json",
+  design_review_package_status: "application/json",
+};
+const REVIEW_READINESS_ARTIFACT_KINDS = new Set([
+  "workshop_readiness",
+  "design_review_package_status",
+  "assembly_readiness",
+  "cad_interchange_status",
+]);
+const REVIEW_CORE_DOCUMENT_ARTIFACT_KINDS = new Set([
+  "manifest",
+  "dfm_report",
+  "stock_selection",
+  "generation_plan",
+  "manufacturing_intent",
+  "operations",
+  "supplier_handoff",
+  "source_provenance",
+]);
+
+function reviewArtifactKindIsAllowed(kind: string): boolean {
+  return GENERATED_CAM_ALLOWED_ARTIFACT_KINDS.has(kind)
+    || SETUP_SHEET_KIND_PATTERN.test(kind);
+}
+
+function expectedReviewArtifactContentType(kind: string): string | undefined {
+  return SETUP_SHEET_KIND_PATTERN.test(kind)
+    ? "image/svg+xml"
+    : REVIEW_ARTIFACT_CONTENT_TYPES[kind];
+}
+
+function reviewArtifactSizeLimit(kind: string): number {
+  if (REVIEW_READINESS_ARTIFACT_KINDS.has(kind)) return MAX_REVIEW_READINESS_BYTES;
+  if (REVIEW_CORE_DOCUMENT_ARTIFACT_KINDS.has(kind) || SETUP_SHEET_KIND_PATTERN.test(kind)) {
+    return MAX_REVIEW_CORE_DOCUMENT_BYTES;
+  }
+  return MAX_REVIEW_ARTIFACT_BYTES;
+}
+
+export function reviewArtifactKindsFromJob(job?: JobRead): string[] | undefined {
+  const result = job?.result_json;
+  if (
+    job?.status !== "succeeded"
+    || !result
+    || typeof result !== "object"
+    || Array.isArray(result)
+    || typeof result.bundle_object_key !== "string"
+    || result.bundle_object_key.length < 1
+    || typeof result.bundle_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(result.bundle_sha256)
+    || !Number.isSafeInteger(result.bundle_size_bytes)
+    || Number(result.bundle_size_bytes) < 1
+    || Number(result.bundle_size_bytes) > MAX_REVIEW_ARTIFACT_BYTES
+    || typeof result.manifest_object_key !== "string"
+    || result.manifest_object_key.length < 1
+    || typeof result.manifest_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(result.manifest_sha256)
+    || !Number.isSafeInteger(result.manifest_size_bytes)
+    || Number(result.manifest_size_bytes) < 1
+    || Number(result.manifest_size_bytes) > MAX_REVIEW_CORE_DOCUMENT_BYTES
+    || !Array.isArray(result.evidence_artifacts)
+    || result.evidence_artifacts.length > MAX_REVIEW_EVIDENCE_ARTIFACTS
+  ) return undefined;
+
+  const kinds = ["production_bundle", "manifest"];
+  const objectKeys = new Set([result.bundle_object_key, result.manifest_object_key]);
+  let totalBytes = 0;
+  for (const value of result.evidence_artifacts) {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const artifact = value as Record<string, unknown>;
+    const kind = artifact.kind;
+    const sizeBytes = artifact.size_bytes;
+    const objectKey = artifact.object_key;
+    if (
+      !hasExactKeys(artifact, REVIEW_EVIDENCE_RESULT_KEYS)
+      || typeof kind !== "string"
+      || !reviewArtifactKindIsAllowed(kind)
+      || typeof objectKey !== "string"
+      || objectKey.length < 1
+      || objectKeys.has(objectKey)
+      || typeof artifact.sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(artifact.sha256)
+      || !Number.isSafeInteger(sizeBytes)
+      || Number(sizeBytes) < 1
+      || Number(sizeBytes) > reviewArtifactSizeLimit(kind)
+      || artifact.content_type !== expectedReviewArtifactContentType(kind)
+    ) return undefined;
+    totalBytes += Number(sizeBytes);
+    if (totalBytes > MAX_REVIEW_EVIDENCE_BYTES) return undefined;
+    kinds.push(kind);
+    objectKeys.add(objectKey);
+  }
+  if (new Set(kinds.map((kind) => kind.toLowerCase())).size !== kinds.length) {
+    return undefined;
+  }
+  return kinds;
+}
+
 export function blockedCamEvidenceKindIsForbidden(kind: string): boolean {
   return !BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS.has(kind);
 }
@@ -561,13 +1024,18 @@ export function reviewPackageArtifactInventoryIsTruthful(
     "cam_status" | "validation_program_included"
   > | undefined,
   statusClaimed = status !== undefined,
+  expectedKinds?: readonly string[],
 ): boolean {
   if (statusClaimed !== (status !== undefined)) return false;
-  if (!status || !statusClaimed) return false;
+  if (!status || !statusClaimed || !expectedKinds) return false;
   const kinds = artifacts.map((artifact) => artifact.kind);
   if (
     kinds.some((kind) => !kind)
     || new Set(kinds.map((kind) => kind.toLowerCase())).size !== kinds.length
+    || new Set(expectedKinds.map((kind) => kind.toLowerCase())).size !== expectedKinds.length
+    || expectedKinds.some((kind) => !reviewArtifactKindIsAllowed(kind))
+    || kinds.length !== expectedKinds.length
+    || expectedKinds.some((kind) => !kinds.includes(kind))
   ) return false;
 
   const requiredKinds = status.cam_status === "BLOCKED"
@@ -578,16 +1046,9 @@ export function reviewPackageArtifactInventoryIsTruthful(
   if (status.cam_status === "BLOCKED") {
     return !kinds.some(blockedCamEvidenceKindIsForbidden);
   }
-  return status.validation_program_included === true;
-}
-
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expectedKeys: readonly string[],
-): boolean {
-  const actualKeys = Object.keys(value);
-  return actualKeys.length === expectedKeys.length
-    && expectedKeys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+  return status.validation_program_included === true
+    && kinds.every((kind) => GENERATED_CAM_ALLOWED_ARTIFACT_KINDS.has(kind)
+      || SETUP_SHEET_KIND_PATTERN.test(kind));
 }
 
 export function designReviewPackageStatusFromJob(
@@ -876,23 +1337,42 @@ export function artifactFileExtension(
 
 export function artifactDownloadFileName(
   artifact: Pick<ArtifactRead, "kind" | "content_type">,
+  projectId: string,
   revision: number,
 ): string {
-  const canonicalApiNames: Record<string, string> = {
-    production_bundle: `custombuild-design-review-rev-${revision}.zip`,
-    manifest: `custombuild-design-review-rev-${revision}-manifest.json`,
-    stock_selection: `custombuild-stock-selection-rev-${revision}.json`,
-    generation_plan: `custombuild-generation-plan-rev-${revision}.json`,
-    supplier_handoff: `custombuild-cnc-shop-handoff-rev-${revision}.json`,
-    manufacturing_intent: `custombuild-manufacturing-intent-rev-${revision}.json`,
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(projectId)) {
+    throw new ApiError("Artefaktens projektidentitet är ogiltig.");
+  }
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new ApiError("Artefaktens revision är ogiltig.");
+  }
+  const canonicalIdentities: Record<string, readonly [string, string, string]> = {
+    production_bundle: ["design-review", "application/zip", "zip"],
+    manifest: ["design-review-manifest", "application/json", "json"],
+    manufacturing_intent: ["manufacturing-intent", "application/json", "json"],
+    supplier_handoff: ["cnc-shop-handoff", "application/json", "json"],
+    dfm_report: ["dfm-report", "application/json", "json"],
+    design_review_package_status: ["design-review-package-status", "application/json", "json"],
+    stock_selection: ["stock-selection", "application/json", "json"],
+    generation_plan: ["generation-plan", "application/json", "json"],
+    operations: ["machine-neutral-operations", "application/json", "json"],
+    validation_backplot: ["validation-backplot", "image/svg+xml", "svg"],
+    design_glb: ["design", "model/gltf-binary", "glb"],
+    design_fcstd: ["design", "application/vnd.freecad", "FCStd"],
+    cad_interchange_status: ["cad-interchange-status", "application/json", "json"],
+    source_provenance: ["source-provenance", "application/json", "json"],
+    workshop_readiness: ["workshop-readiness", "application/json", "json"],
+    assembly_readiness: ["assembly-readiness", "application/json", "json"],
   };
-  const canonicalApiName = canonicalApiNames[artifact.kind];
-  if (canonicalApiName) return canonicalApiName;
-  const safeKind = artifact.kind
-    .toLocaleLowerCase("en-US")
-    .replaceAll(/[^a-z0-9._-]+/g, "-")
-    .replaceAll(/^-+|-+$/g, "") || "artifact";
-  return `custombuild-${safeKind}-rev-${revision}.${artifactFileExtension(artifact)}`;
+  let identity = canonicalIdentities[artifact.kind];
+  if (!identity) {
+    const setupMatch = /^setup_sheet_([0-9]{3})$/.exec(artifact.kind);
+    if (setupMatch) identity = [`setup-sheet-${setupMatch[1]}`, "image/svg+xml", "svg"];
+  }
+  if (!identity || artifact.content_type !== identity[1]) {
+    throw new ApiError("Artefaktens typ och medieformat matchar inte serverns filnamnskontrakt.");
+  }
+  return `custombuild-project-${projectId}-${identity[0]}-rev-${revision}.${identity[2]}`;
 }
 
 function sameArtifactIdentity(left: ArtifactRead, right: ArtifactRead): boolean {
@@ -925,6 +1405,8 @@ export function ProductionWorkflow({
   active = true,
   principal,
   showRevisionHistory = false,
+  workshopContextDraftState,
+  onWorkshopContextDraftStateChange,
 }: ProductionWorkflowProps) {
   const defaultApi = useMemo(() => new CustombuildApiClient(), []);
   const api = apiClient ?? defaultApi;
@@ -932,7 +1414,13 @@ export function ProductionWorkflow({
   const [job, setJob] = useState<JobRead>();
   const [artifacts, setArtifacts] = useState<ArtifactRead[]>([]);
   const [designApproved, setDesignApproved] = useState(false);
+  const [designApproverId, setDesignApproverId] = useState<string>();
+  const [camApprovedJobId, setCamApprovedJobId] = useState<string>();
+  const [camApproverId, setCamApproverId] = useState<string>();
+  const [release, setRelease] = useState<ReleaseRead>();
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false);
+  const [camApprovalConfirmed, setCamApprovalConfirmed] = useState(false);
+  const [releaseConfirmed, setReleaseConfirmed] = useState(false);
   const [busy, setBusy] = useState<BusyAction>();
   const [error, setError] = useState<string>();
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback>();
@@ -943,14 +1431,47 @@ export function ProductionWorkflow({
   const [loadedStorageKey, setLoadedStorageKey] = useState<string>();
   const [serverSynchronized, setServerSynchronized] = useState(false);
   const [synchronizing, setSynchronizing] = useState(false);
+  const [serverProjectId, setServerProjectId] = useState<string>();
+  const [externalEvidence, setExternalEvidence] = useState<ExternalEvidenceRead[]>([]);
+  const [selectedRetentionEvidenceId, setSelectedRetentionEvidenceId] = useState<string>();
+  const [selectedGeneralEvidence, setSelectedGeneralEvidence] = useState<GeneralEvidenceSelection>({});
+  const [approvedGeneralEvidenceIds, setApprovedGeneralEvidenceIds] = useState<string[]>([]);
+  const [approvalEvidenceValid, setApprovalEvidenceValid] = useState(true);
+  const [localWorkshopContextDraftState, setLocalWorkshopContextDraftState] =
+    useState<WorkshopContextDraftState>(
+      () => createWorkshopContextDraftState(spec, spec.workshop_context),
+    );
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceLoadError, setEvidenceLoadError] = useState<string>();
   const saveBlockReasonId = useId();
   const warningAcknowledgementHelpId = useId();
   const handoffGuidanceName = useId();
+  const retentionEvidenceSelectId = useId();
+  const retentionEvidenceUploadId = useId();
+  const retentionEvidenceUploadHelpId = useId();
   const nextActionHeadingRef = useRef<HTMLHeadingElement>(null);
   const previousActiveStepRef = useRef<number | undefined>(undefined);
   const stepFocusInitializedRef = useRef(false);
   const pendingDownloadUrlsRef = useRef(new Map<string, number | undefined>());
+  const retentionSpecSignatureRef = useRef<string | undefined>(undefined);
   const storageKey = productionSessionKey(principal, projectId, spec.design_id);
+  const retentionSpecSignature = JSON.stringify(spec);
+  const activeWorkshopContextDraftState = workshopContextDraftState
+    ?? localWorkshopContextDraftState;
+  const workshopContextBlocked = activeWorkshopContextDraftState.dirty
+    || !activeWorkshopContextDraftState.valid;
+  const workshopContextBlockReason = workshopContextBlocked
+    ? "Verkstadsprofilen har osparade eller ofullständiga uppgifter. Slutför alla fält eller välj Återgå till lagerobundet paket innan du sparar, godkänner eller skapar underlag."
+    : undefined;
+
+  const updateWorkshopContextDraftState = useCallback((state: WorkshopContextDraftState) => {
+    setLocalWorkshopContextDraftState(state);
+    onWorkshopContextDraftStateChange?.(state);
+  }, [onWorkshopContextDraftStateChange]);
+
+  useEffect(() => {
+    onWorkshopContextDraftStateChange?.(activeWorkshopContextDraftState);
+  }, [activeWorkshopContextDraftState, onWorkshopContextDraftStateChange]);
 
   useEffect(() => () => {
     for (const [objectUrl, timer] of pendingDownloadUrlsRef.current) {
@@ -970,9 +1491,20 @@ export function ProductionWorkflow({
       setJob(stored?.job);
       setArtifacts([]);
       setDesignApproved(Boolean(stored?.designApproved));
+      setDesignApproverId(undefined);
+      setCamApprovedJobId(undefined);
+      setCamApproverId(undefined);
+      setRelease(stored?.release);
       setWarningsAcknowledged(false);
+      setCamApprovalConfirmed(false);
+      setReleaseConfirmed(false);
       setActionFeedback(undefined);
       setError(undefined);
+      setExternalEvidence([]);
+      setSelectedGeneralEvidence({});
+      setApprovedGeneralEvidenceIds([]);
+      setApprovalEvidenceValid(true);
+      setEvidenceLoadError(undefined);
       setLoadedStorageKey(storageKey);
     });
     return () => { cancelled = true; };
@@ -997,7 +1529,18 @@ export function ProductionWorkflow({
           setJob(undefined);
           setArtifacts([]);
           setDesignApproved(false);
+          setDesignApproverId(undefined);
+          setCamApprovedJobId(undefined);
+          setCamApproverId(undefined);
+          setRelease(undefined);
           setWarningsAcknowledged(false);
+          setCamApprovalConfirmed(false);
+          setReleaseConfirmed(false);
+          setServerProjectId(undefined);
+          setSelectedRetentionEvidenceId(undefined);
+          setExternalEvidence([]);
+          setApprovedGeneralEvidenceIds([]);
+          setApprovalEvidenceValid(true);
           setServerSynchronized(true);
           setError(undefined);
           return;
@@ -1006,8 +1549,14 @@ export function ProductionWorkflow({
         const state = await api.getProductionState(resolvedProjectId);
         if (cancelled) return;
         const restoredVersion = state.version ?? undefined;
+        const restoredRetention = retentionBindingFromVersion(restoredVersion);
+        api.setJointRetentionEvidence?.(resolvedProjectId, restoredRetention?.evidenceId);
         let restoredJob = state.latest_job ?? undefined;
         const designApproval = state.approvals.find((approval) => approval.approval_type === "design");
+        const camApproval = state.approvals.find((approval) => approval.approval_type === "cam");
+        const restoredApprovalEvidence = designApproval
+          ? approvalExternalEvidenceIds(designApproval.overrides_json)
+          : [];
         let restoredArtifacts: ArtifactRead[] = [];
         if (restoredJob?.status === "succeeded") {
           try {
@@ -1024,12 +1573,31 @@ export function ProductionWorkflow({
         }
 
         setVersion(restoredVersion);
+        setServerProjectId(resolvedProjectId);
+        setSelectedRetentionEvidenceId(restoredRetention?.evidenceId);
+        setSelectedGeneralEvidence({});
+        setApprovedGeneralEvidenceIds(restoredApprovalEvidence ?? []);
+        setApprovalEvidenceValid(restoredApprovalEvidence !== undefined);
         setJob(restoredJob);
         setArtifacts(restoredArtifacts);
         setDesignApproved(Boolean(designApproval));
+        setDesignApproverId(designApproval?.approved_by);
+        setCamApprovedJobId(
+          restoredJob?.status === "succeeded"
+          && camApproval?.generation_job_id === restoredJob.id
+          && camApproval.manifest_sha256 === restoredJob.result_json?.manifest_sha256
+          && camApproval.production_context_hash === restoredJob.production_context_hash
+            ? restoredJob.id
+            : undefined,
+        );
+        setCamApproverId(camApproval?.approved_by);
+        setRelease(state.release ?? undefined);
         setWarningsAcknowledged(false);
+        setCamApprovalConfirmed(false);
+        setReleaseConfirmed(false);
         setError(undefined);
         setServerSynchronized(true);
+        if (restoredRetention) onRequestServerPreviewRetry?.();
       } catch (caught) {
         if (cancelled) return;
         const message = `Serverstatus kunde inte återställas. ${errorMessage(caught)}`;
@@ -1044,20 +1612,89 @@ export function ProductionWorkflow({
     })();
 
     return () => { cancelled = true; };
-  }, [active, api, loadedStorageKey, projectId, projectName, storageKey]);
+  }, [
+    active,
+    api,
+    loadedStorageKey,
+    onRequestServerPreviewRetry,
+    projectId,
+    projectName,
+    storageKey,
+  ]);
+
+  useEffect(() => {
+    const previousSignature = retentionSpecSignatureRef.current;
+    retentionSpecSignatureRef.current = retentionSpecSignature;
+    if (
+      previousSignature === undefined
+      || previousSignature === retentionSpecSignature
+      || !serverProjectId
+      || !selectedRetentionEvidenceId
+    ) return;
+    api.setJointRetentionEvidence?.(serverProjectId, undefined);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      setSelectedRetentionEvidenceId(undefined);
+      setSelectedGeneralEvidence({});
+      setJob(undefined);
+      setArtifacts([]);
+      setDesignApproved(false);
+      setDesignApproverId(undefined);
+      setCamApprovedJobId(undefined);
+      setCamApproverId(undefined);
+      setRelease(undefined);
+      setApprovedGeneralEvidenceIds([]);
+      setApprovalEvidenceValid(true);
+      setWarningsAcknowledged(false);
+      setCamApprovalConfirmed(false);
+      setReleaseConfirmed(false);
+      setActionFeedback({
+        tone: "busy",
+        message: "Designen ändrades. Tidigare evidens har kopplats bort och måste väljas igen för den nya geometrin.",
+      });
+    });
+    return () => { cancelled = true; };
+  }, [api, retentionSpecSignature, selectedRetentionEvidenceId, serverProjectId]);
+
+  useEffect(() => {
+    if (!active || !serverSynchronized || !serverProjectId || !api.listExternalEvidence) return;
+    let cancelled = false;
+    const loadEvidence = api.listExternalEvidence.bind(api);
+    void Promise.resolve()
+      .then(() => {
+        if (cancelled) return [] as ExternalEvidenceRead[];
+        setEvidenceLoading(true);
+        setEvidenceLoadError(undefined);
+        return loadEvidence(serverProjectId);
+      })
+      .then((evidence) => {
+        if (cancelled) return;
+        setExternalEvidence(evidence);
+      })
+      .catch((caught: unknown) => {
+        if (cancelled) return;
+        setExternalEvidence([]);
+        setEvidenceLoadError(
+          `Serverevidensen kunde inte hämtas. ${errorMessage(caught)}`,
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setEvidenceLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [active, api, serverProjectId, serverSynchronized]);
 
   useEffect(() => {
     if (loadedStorageKey !== storageKey) return;
     writeProductionSession(window.sessionStorage, storageKey, {
       version,
       job,
-      release: undefined,
+      release,
       designApproved,
-      // Kept only for backward compatibility with already persisted v2 sessions.
-      // The simplified user flow no longer exposes release numbers or locking.
-      releaseNumber: "R1",
+      releaseNumber: release?.release_number ?? `R${version?.revision ?? 1}`,
     });
-  }, [designApproved, job, loadedStorageKey, storageKey, version]);
+  }, [designApproved, job, loadedStorageKey, release, storageKey, version]);
 
   useEffect(() => {
     if (
@@ -1155,6 +1792,76 @@ export function ProductionWorkflow({
     version.design_hash !== design.design_hash
     || !versionProductionContextMatches(version, spec)
   ));
+  const mayDesign = hasWorkflowCapability(principal, "design");
+  const mayReview = hasWorkflowCapability(principal, "review");
+  const mayGenerate = hasWorkflowCapability(principal, "generate");
+  const frozenProductionContext = useMemo<RevisionProductionContextSnapshot | undefined>(() => {
+    const result = version?.result_json;
+    if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+    try {
+      return parseRevisionProductionContext(result.production_context);
+    } catch {
+      return undefined;
+    }
+  }, [version]);
+  const reviewerMaySelectEvidence = canSelectExternalEvidence(principal);
+  const mayDownloadRetentionEvidence = canDownloadJointRetentionEvidence(principal);
+  const restoredRetentionBinding = retentionBindingFromVersion(version);
+  const boundRetentionEvidence = restoredRetentionBinding
+    ? externalEvidence.find((evidence) => (
+        evidence.id === restoredRetentionBinding.evidenceId
+        && evidence.evidence_type === "joint_retention"
+        && evidence.rule_id === RETENTION_RULE_ID
+        && evidence.content_type === "application/json"
+        && evidenceMetadataIsCurrent(
+          evidence,
+          version?.project_id ?? "",
+          restoredRetentionBinding.baseDesignHash,
+        )
+      ))
+    : undefined;
+  const retentionDownloadBlockReason = !mayDownloadRetentionEvidence
+    ? "Endast reviewer, operator, production, admin eller owner får hämta den signerade originalfilen."
+    : !api.downloadJointRetentionEvidence
+      ? "Den autentiserade evidenshämtningen är inte tillgänglig i den här klientanslutningen."
+      : !restoredRetentionBinding
+        ? "Den sparade revisionen har ingen serverbunden retentionsevidens att hämta."
+        : !boundRetentionEvidence
+          ? "Den bundna evidensposten är inte aktuell i serverregistret. Hämta om status innan filen används."
+          : undefined;
+  const selectedRetentionRow = externalEvidence.find(
+    (evidence) => evidence.id === selectedRetentionEvidenceId,
+  );
+  const retentionBaseDesignHash = selectedRetentionRow?.design_hash
+    ?? restoredRetentionBinding?.baseDesignHash
+    ?? design.design_hash;
+  const retentionEvidenceOptions = externalEvidence
+    .filter((evidence) => (
+      evidence.evidence_type === "joint_retention"
+      && evidence.rule_id === RETENTION_RULE_ID
+      && evidence.content_type === "application/json"
+      && evidence.expires_at !== null
+      && evidenceMetadataIsCurrent(evidence, serverProjectId ?? "", retentionBaseDesignHash)
+    ))
+    .sort((left, right) => right.created_at.localeCompare(left.created_at));
+  const generalEvidenceOptions = version
+    ? externalEvidence.filter((evidence) => (
+        evidence.evidence_type !== "joint_retention"
+        && GENERAL_EVIDENCE_TYPES.includes(evidence.evidence_type as GeneralEvidenceType)
+        && evidenceMetadataIsCurrent(evidence, version.project_id, version.design_hash)
+      ))
+    : [];
+  const selectedGeneralEvidenceIds = GENERAL_EVIDENCE_TYPES
+    .map((evidenceType) => selectedGeneralEvidence[evidenceType])
+    .filter((evidenceId): evidenceId is string => (
+      typeof evidenceId === "string"
+      && generalEvidenceOptions.some((evidence) => evidence.id === evidenceId)
+    ));
+  const generationEvidenceIds = approvedGeneralEvidenceIds.filter((evidenceId) => (
+    generalEvidenceOptions.some((evidence) => evidence.id === evidenceId)
+  ));
+  const approvedEvidenceCurrent = approvalEvidenceValid
+    && generationEvidenceIds.length === approvedGeneralEvidenceIds.length;
   const approvalWarningRuleIds = serverApprovalWarningRuleIds(design.rule_evaluations);
   const acknowledgementWarningRuleIds = [...new Set(
     design.rule_evaluations
@@ -1185,10 +1892,12 @@ export function ProductionWorkflow({
     ),
   );
   const camBlocked = reviewPackageStatus?.cam_status === "BLOCKED";
+  const expectedReviewArtifactKinds = reviewArtifactKindsFromJob(job);
   const requiredArtifactsComplete = reviewPackageArtifactInventoryIsTruthful(
     artifacts,
     reviewPackageStatus,
     reviewPackageStatusClaimed,
+    expectedReviewArtifactKinds,
   );
   const workshopReadiness = workshopReadinessFromJob(job);
   const softwareStatusByCode = new Map(
@@ -1203,7 +1912,11 @@ export function ProductionWorkflow({
   const stockBlocked = blockedCamCode === STOCK_PROFILE_MISSING_CODE;
   const grainBlocked = blockedCamCode === DFM_GRAIN_MISSING_CODE;
   const registrationBlocked = blockedCamCode === TWO_SIDED_REGISTRATION_MISSING_CODE;
-  const retentionBlocked = blockedCamCode === DADO_RETENTION_EVIDENCE_MISSING_CODE;
+  const dadoRetentionBlocked = blockedCamCode === DADO_RETENTION_EVIDENCE_MISSING_CODE;
+  const backPanelRetentionBlocked = (
+    blockedCamCode === BACK_PANEL_RETENTION_EVIDENCE_MISSING_CODE
+  );
+  const retentionBlocked = dadoRetentionBlocked || backPanelRetentionBlocked;
   const dfmBlocked = stockBlocked || grainBlocked;
   const jobDfmStatus = job?.result_json?.dfm_status;
   const blockedCamReviewIsTruthful = Boolean(
@@ -1255,7 +1968,11 @@ export function ProductionWorkflow({
   const completedArtifactSet = Boolean(
     job?.status === "succeeded" && requiredArtifactsComplete && productionBundle,
   );
-  const designApprovalBlockReason = partCustomizationBlockReason
+  const designApprovalBlockReason = !mayReview
+    ? "Endast reviewer, admin eller owner får godkänna designkontrollen."
+    : workshopContextBlockReason
+      ? workshopContextBlockReason
+    : partCustomizationBlockReason
     ?? (hardBlockingEvaluations.length > 0
     ? `${hardBlockingEvaluations.length} blockerande krav måste åtgärdas i ritningen och kontrolleras igen innan underlaget kan skapas.`
     : acknowledgementWarningRuleIds.length > 0 && !warningsAcknowledged
@@ -1266,6 +1983,57 @@ export function ProductionWorkflow({
     && workshopReadiness
     && (camBlocked ? blockedCamReviewIsTruthful : workshopReadiness.design_review_ready),
   );
+  const camValidationPackageEligible = Boolean(
+    designReviewReady
+    && !camBlocked
+    && job?.status === "succeeded"
+    && job.result_json?.authoritative_geometry === true
+    && job.result_json.machine_program_mode === "VALIDATION_DRY_RUN"
+    && job.result_json.production_machine_program === false
+    && reviewPackageStatus?.cam_status === "VALIDATION_GENERATED"
+    && workshopReadiness?.physical_cutting_authorized === false
+    && manifestSha256,
+  );
+  const camApprovalCurrent = Boolean(
+    camValidationPackageEligible
+    && job
+    && camApprovedJobId === job.id
+    && designApproverId
+    && camApproverId
+    && designApproverId !== camApproverId,
+  );
+  const immutableReviewReleased = Boolean(
+    release
+    && camApprovalCurrent
+    && release.status === "released"
+    && release.release_kind === "design_review"
+    && release.machine_use === "validation_only"
+    && release.manifest_sha256 === manifestSha256
+    && version?.status === "released"
+    && version.immutable,
+  );
+  const camApprovalBlockReason = immutableReviewReleased
+    ? undefined
+    : !mayReview
+      ? "Endast reviewer, admin eller owner får godkänna CAM-valideringspaketet."
+      : !designApproverId
+        ? "Serverns designgranskare kunde inte identifieras. Hämta om projektstatus innan CAM godkänns."
+        : principal?.user_id === designApproverId
+          ? "Maker–checker kräver att en annan person än designgranskaren godkänner CAM-valideringspaketet."
+          : !camValidationPackageEligible
+            ? "Paketet saknar en komplett serververifierad bindning till auktoritativ geometri, manifest eller icke-skärande valideringsprogram."
+            : !camApprovalConfirmed
+              ? "Bekräfta att exakt paket och manifest har granskats och att programmet inte är skärande CNC-kod."
+              : undefined;
+  const releaseBlockReason = immutableReviewReleased
+    ? undefined
+    : !mayReview
+      ? "Endast reviewer, admin eller owner får låsa en designgranskningsrevision."
+      : !camApprovalCurrent
+        ? "En aktuell CAM-granskning bunden till exakt detta jobb och manifest krävs före revisionslåset."
+        : !releaseConfirmed
+          ? "Bekräfta att låset endast gäller designgranskning och aldrig auktoriserar fysisk kapning."
+          : undefined;
   const missingSoftwareEvidenceCount = workshopReadiness?.software_evidence
     .filter((item) => item.status !== "VERIFIED").length ?? 0;
   const completedPackageIssue = !completedArtifactSet
@@ -1289,6 +2057,10 @@ export function ProductionWorkflow({
       : 2;
   const saveBlockReason = busy
     ? "En serveråtgärd pågår. Vänta tills den är klar."
+    : !mayDesign
+      ? "Endast designer, admin eller owner får ändra, spara och kontrollera designrevisioner."
+    : workshopContextBlockReason
+      ? workshopContextBlockReason
     : partCustomizationBlockReason
       ? partCustomizationBlockReason
     : !serverSynchronized
@@ -1298,6 +2070,17 @@ export function ProductionWorkflow({
         : version?.immutable && !stale
           ? "Den sparade modellen kan inte ändras. Gör en ändring i modellen och spara igen."
           : undefined;
+  const generationBlockReason = !mayGenerate
+    ? "Designen är godkänd. En designer, admin eller owner måste nu skapa underlaget."
+    : workshopContextBlockReason
+      ? workshopContextBlockReason
+    : immutableReviewReleased || version?.immutable
+      ? "Revisionen är immutable och kan inte genereras om. Skapa en ny designrevision för nästa paket."
+    : !approvalEvidenceValid
+      ? "Godkännandets evidenslista är ogiltig och kan inte användas för generation."
+      : !approvedEvidenceCurrent
+        ? "Godkänd serverevidens kan inte längre verifieras mot den aktuella revisionen."
+        : partCustomizationBlockReason;
 
   useEffect(() => {
     if (!stepFocusInitializedRef.current) {
@@ -1356,10 +2139,159 @@ export function ProductionWorkflow({
     setJob(undefined);
     setArtifacts([]);
     setDesignApproved(false);
+    setDesignApproverId(undefined);
+    setCamApprovedJobId(undefined);
+    setCamApproverId(undefined);
+    setRelease(undefined);
+    setApprovedGeneralEvidenceIds([]);
+    setApprovalEvidenceValid(true);
     setWarningsAcknowledged(false);
+    setCamApprovalConfirmed(false);
+    setReleaseConfirmed(false);
+  }
+
+  function updateWorkshopContext(
+    context: WorkshopProductionContext | undefined,
+    legacyPatch: Partial<Pick<
+      DesignSpec,
+      | "stock_width_mm"
+      | "stock_height_mm"
+      | "stock_count"
+      | "back_stock_width_mm"
+      | "back_stock_height_mm"
+      | "back_stock_count"
+      | "machine_profile_id"
+    >>,
+  ) {
+    if (!mayDesign || !onApplyDesignChange) {
+      setActionFeedback({
+        tone: "error",
+        message: "Endast en behörig designer kan ändra den revisionsbundna verkstadsprofilen.",
+      });
+      return;
+    }
+    resetDownstream();
+    onApplyDesignChange(
+      { ...legacyPatch, workshop_context: context },
+      context
+        ? "Verkstadsprofilen ändrades. En ny designrevision krävs före nästa generering."
+        : legacyPatch.machine_profile_id
+          ? "Maskinens versionslåsta valideringsprofil ändrades. En ny designrevision krävs före nästa generering."
+        : "Verkstadsprofilen togs bort. En ny lagerobunden designrevision krävs.",
+    );
+  }
+
+  function selectRetentionEvidence(evidenceId: string) {
+    if (!mayDesign || !serverProjectId || !api.setJointRetentionEvidence) {
+      setActionFeedback({
+        tone: "error",
+        message: "Endast designer, admin eller owner kan binda retention till nästa designrevision.",
+      });
+      return;
+    }
+    const normalizedEvidenceId = evidenceId || undefined;
+    if (
+      normalizedEvidenceId
+      && !retentionEvidenceOptions.some((evidence) => evidence.id === normalizedEvidenceId)
+    ) {
+      setActionFeedback({
+        tone: "error",
+        message: "Den valda retentionsevidensen är inte aktuell för exakt denna design.",
+      });
+      return;
+    }
+    api.setJointRetentionEvidence(serverProjectId, normalizedEvidenceId);
+    setSelectedRetentionEvidenceId(normalizedEvidenceId);
+    setSelectedGeneralEvidence({});
+    resetDownstream();
+    setActionFeedback({
+      tone: "busy",
+      message: normalizedEvidenceId
+        ? "Retentionsevidensen serververifieras mot exakt geometri och versionsbundna regler…"
+        : "Retentionsevidensen har kopplats bort. En obunden serverpreview hämtas…",
+    });
+    onRequestServerPreviewRetry?.();
+  }
+
+  function uploadRetentionEvidence(file: File | undefined) {
+    if (!file) return;
+    if (
+      !reviewerMaySelectEvidence
+      || !serverProjectId
+      || !api.uploadExternalEvidence
+      || design.source !== "server-preview"
+      || !/^[a-f0-9]{64}$/.test(design.design_hash)
+    ) {
+      setActionFeedback({
+        tone: "error",
+        message: "Uppladdning kräver reviewer-, admin- eller ownerbehörighet, ett serverprojekt och den aktuella serverberäknade designhashen.",
+      });
+      return;
+    }
+
+    void perform(
+      "evidence-upload",
+      "Den certifierarsignerade retentionsevidensen laddas upp till serverregistret…",
+      async () => {
+        const metadata = await retentionEvidenceUploadMetadata(file);
+        const uploaded = await api.uploadExternalEvidence!(serverProjectId, {
+          document: file,
+          evidenceType: "joint_retention",
+          ruleId: RETENTION_RULE_ID,
+          catalogId: metadata.catalogId,
+          catalogVersion: metadata.catalogVersion,
+          designHash: design.design_hash,
+          expiresAt: metadata.expiresAt,
+        });
+        setExternalEvidence((current) => [
+          uploaded,
+          ...current.filter((evidence) => evidence.id !== uploaded.id),
+        ]);
+        setEvidenceLoadError(undefined);
+        return "Filen finns nu i serverregistret. Uppladdningen godkände eller band den inte; en designer måste välja posten för nästa revision, där servern verifierar hela trustkedjan.";
+      },
+    );
+  }
+
+  function selectGeneralEvidence(evidenceType: GeneralEvidenceType, evidenceId: string) {
+    if (!reviewerMaySelectEvidence) {
+      setActionFeedback({
+        tone: "error",
+        message: "Endast en behörig granskare kan välja kompletterande serverevidens.",
+      });
+      return;
+    }
+    if (
+      evidenceId
+      && !generalEvidenceOptions.some((evidence) => (
+        evidence.id === evidenceId && evidence.evidence_type === evidenceType
+      ))
+    ) {
+      setActionFeedback({
+        tone: "error",
+        message: "Det kompletterande beviset är inte aktuellt för den sparade revisionen.",
+      });
+      return;
+    }
+    setSelectedGeneralEvidence((currentSelection) => ({
+      ...currentSelection,
+      [evidenceType]: evidenceId || undefined,
+    }));
+    resetDownstream();
+    setActionFeedback({
+      tone: "success",
+      message: evidenceId
+        ? "Kompletterande evidens har valts och kontrolleras åter av servern vid generation."
+        : "Det kompletterande beviset har kopplats bort.",
+    });
   }
 
   function saveRevision() {
+    if (!mayDesign || workshopContextBlocked) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: saveBlockReason ?? "Designrevisionen kan inte sparas." });
+      return;
+    }
     if (partCustomizationBlockReason) {
       setError(undefined);
       setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
@@ -1379,13 +2311,16 @@ export function ProductionWorkflow({
       const resolvedProjectId = projectId ?? (await api.ensureProject(projectName)).id;
       let saved: DesignVersionRead;
       try {
-        saved = await api.createVersion(
+        const createVersionArguments = [
           resolvedProjectId,
           spec,
           design.design_hash,
           version?.revision ?? 0,
           templateId,
-        );
+        ] as const;
+        saved = selectedRetentionEvidenceId
+          ? await api.createVersion(...createVersionArguments, selectedRetentionEvidenceId)
+          : await api.createVersion(...createVersionArguments);
       } catch (caught) {
         if (
           caught instanceof ApiError
@@ -1408,6 +2343,7 @@ export function ProductionWorkflow({
       }
       savedRevision = saved;
       resetDownstream();
+      setSelectedGeneralEvidence({});
       setVersion(saved);
       if (design.status !== "BLOCK" || stocklessReviewExpected) {
         const validated = await api.validateVersion(saved.project_id, saved.revision);
@@ -1440,6 +2376,19 @@ export function ProductionWorkflow({
   }
 
   function validateRevision() {
+    if (!mayDesign) {
+      setError(undefined);
+      setActionFeedback({
+        tone: "error",
+        message: "Endast designer, admin eller owner får kontrollera en designrevision.",
+      });
+      return;
+    }
+    if (workshopContextBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: workshopContextBlockReason });
+      return;
+    }
     if (partCustomizationBlockReason) {
       setError(undefined);
       setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
@@ -1454,12 +2403,25 @@ export function ProductionWorkflow({
   }
 
   function approveDesign() {
+    if (!mayReview) {
+      setError(undefined);
+      setActionFeedback({
+        tone: "error",
+        message: designApprovalBlockReason ?? "Din roll får inte godkänna designkontrollen.",
+      });
+      return;
+    }
+    if (workshopContextBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: workshopContextBlockReason });
+      return;
+    }
     if (partCustomizationBlockReason) {
       setError(undefined);
       setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
       return;
     }
-    void perform("design-approval", "Godkänner kontrollen och skapar underlaget…", async () => {
+    void perform("design-approval", "Godkänner designkontrollen…", async () => {
       if (!version) throw new ApiError("Ingen kontrollerad modell finns att godkänna.");
       if (hardBlockingEvaluations.length > 0) {
         throw new ApiError("Blockerande konstruktionskrav måste åtgärdas och kontrolleras igen innan underlaget kan skapas.");
@@ -1478,32 +2440,34 @@ export function ProductionWorkflow({
         warning_overrides: approvalWarningRuleIds.map((ruleId) => ({
           rule_id: ruleId,
           reason: "Varningen har granskats och godkänts i designkontrollen.",
-          evidence_ids: [],
+          evidence_ids: generalEvidenceOptions
+            .filter((evidence) => (
+              evidence.rule_id === ruleId
+              && selectedGeneralEvidenceIds.includes(evidence.id)
+            ))
+            .map((evidence) => evidence.id),
         })),
       });
       setVersion(approved);
       setDesignApproved(true);
-      const queued = await api.generateVersion(version.project_id, version.revision, {
-        stock_width_mm: spec.stock_width_mm,
-        stock_height_mm: spec.stock_height_mm,
-        stock_count: spec.stock_count,
-        back_stock_width_mm: spec.back_stock_width_mm,
-        back_stock_height_mm: spec.back_stock_height_mm,
-        back_stock_count: spec.back_stock_count,
-        machine_profile_id: generationMachineProfileId(spec.machine_profile_id),
-        postprocessor_id: "linuxcnc-validation-1.1.0",
-        include_step: true,
-        include_freecad_project: false,
-        include_validation_program: true,
-        external_evidence_ids: [],
-      });
-      setJob(queued);
-      setArtifacts([]);
-      return "Designkontrollen är godkänd och underlaget skapas nu.";
+      setDesignApproverId(principal?.user_id);
+      setCamApprovedJobId(undefined);
+      setCamApproverId(undefined);
+      setRelease(undefined);
+      setCamApprovalConfirmed(false);
+      setReleaseConfirmed(false);
+      setApprovedGeneralEvidenceIds(selectedGeneralEvidenceIds);
+      setApprovalEvidenceValid(true);
+      return "Designkontrollen är godkänd. En behörig designer kan nu skapa underlaget utan att ändra revisionen.";
     });
   }
 
   function generatePackage() {
+    if (generationBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: generationBlockReason });
+      return;
+    }
     if (partCustomizationBlockReason) {
       setError(undefined);
       setActionFeedback({ tone: "error", message: partCustomizationBlockReason });
@@ -1512,22 +2476,99 @@ export function ProductionWorkflow({
     void perform("generation", "Skapar ett nytt underlag…", async () => {
       if (!version) throw new ApiError("Ingen kontrollerad modell finns att skapa underlag för.");
       const queued = await api.generateVersion(version.project_id, version.revision, {
-        stock_width_mm: spec.stock_width_mm,
-        stock_height_mm: spec.stock_height_mm,
-        stock_count: spec.stock_count,
-        back_stock_width_mm: spec.back_stock_width_mm,
-        back_stock_height_mm: spec.back_stock_height_mm,
-        back_stock_count: spec.back_stock_count,
+        ...productionContextFromSpec(spec),
         machine_profile_id: generationMachineProfileId(spec.machine_profile_id),
         postprocessor_id: "linuxcnc-validation-1.1.0",
         include_step: true,
         include_freecad_project: false,
         include_validation_program: true,
-        external_evidence_ids: [],
+        external_evidence_ids: generationEvidenceIds,
       });
       setJob(queued);
       setArtifacts([]);
+      setCamApprovedJobId(undefined);
+      setCamApproverId(undefined);
+      setRelease(undefined);
+      setCamApprovalConfirmed(false);
+      setReleaseConfirmed(false);
       return "Ett nytt underlag skapas nu.";
+    });
+  }
+
+  function approveCamPackage() {
+    if (camApprovalBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: camApprovalBlockReason });
+      return;
+    }
+    void perform("cam-approval", "Binder CAM-granskningen till exakt jobb och manifest…", async () => {
+      if (!version || !job || job.status !== "succeeded") {
+        throw new ApiError("Ett slutfört serverjobb krävs för CAM-granskningen.");
+      }
+      if (!camValidationPackageEligible || !manifestSha256) {
+        throw new ApiError("CAM-valideringspaketet är inte komplett eller serververifierbart.");
+      }
+      if (!principal?.user_id || !designApproverId || principal.user_id === designApproverId) {
+        throw new ApiError("Maker–checker kräver en annan CAM-granskare än designgranskaren.");
+      }
+      if (!camApprovalConfirmed) {
+        throw new ApiError("Bekräfta den icke-skärande CAM-granskningen innan du fortsätter.");
+      }
+      const approved = await api.approveVersion(version.project_id, version.revision, {
+        approval_type: "cam",
+        reason: "Exakt genererat CAM-valideringspaket och manifest granskat. Godkännandet gäller endast icke-skärande validering och auktoriserar inte fysisk kapning.",
+        generation_job_id: job.id,
+        warning_overrides: [],
+      });
+      if (approved.status !== "approved" || approved.immutable) {
+        throw new ApiError("Servern bekräftade inte en aktuell, ännu olåst CAM-granskning.");
+      }
+      setVersion(approved);
+      setCamApprovedJobId(job.id);
+      setCamApproverId(principal.user_id);
+      setCamApprovalConfirmed(false);
+      setRelease(undefined);
+      setReleaseConfirmed(false);
+      return "CAM-valideringspaketet är godkänt och bundet till detta jobb. Nästa steg låser endast designgranskningen.";
+    });
+  }
+
+  function releaseDesignReview() {
+    if (releaseBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: releaseBlockReason });
+      return;
+    }
+    void perform("release", "Verifierar och låser designgranskningsrevisionen…", async () => {
+      if (!version || !job || !manifestSha256 || !camApprovalCurrent) {
+        throw new ApiError("Aktuell CAM-granskning och manifestbindning krävs före revisionslåset.");
+      }
+      if (!releaseConfirmed) {
+        throw new ApiError("Bekräfta designgranskningens begränsade användning innan du låser revisionen.");
+      }
+      const releaseNumber = `R${version.revision}`;
+      const released = await api.releaseVersion(
+        version.project_id,
+        version.revision,
+        releaseNumber,
+      );
+      if (
+        released.status !== "released"
+        || released.release_kind !== "design_review"
+        || released.machine_use !== "validation_only"
+        || released.manifest_sha256 !== manifestSha256
+        || released.release_number !== releaseNumber
+      ) {
+        throw new ApiError(
+          "Serverns revisionsbevis matchar inte exakt designgranskningspaket eller valideringsgräns.",
+        );
+      }
+      setRelease(released);
+      setVersion((currentVersion) => currentVersion
+        ? { ...currentVersion, status: "released", immutable: true }
+        : currentVersion);
+      setReleaseConfirmed(false);
+      return `Designgranskningsrevision ${released.release_number} är immutable och verifierbart bunden till manifestet. Den auktoriserar inte fysisk kapning.`;
     });
   }
 
@@ -1553,6 +2594,62 @@ export function ProductionWorkflow({
     }
   }
 
+  function downloadRetentionCertificationRequest() {
+    const request = design.retention_certification_request;
+    if (
+      design.source !== "server-preview"
+      || !request
+    ) {
+      setActionFeedback({
+        tone: "error",
+        message: "Ingen aktuell serverutfärdad certifieringsbegäran finns för designen.",
+      });
+      return;
+    }
+    try {
+      const blob = new Blob(
+        [canonicalRetentionCertificationRequestJson(request)],
+        { type: "application/json" },
+      );
+      startVerifiedBrowserDownload(
+        blob,
+        `custombuild-retention-certification-request-${request.source_design_hash}.json`,
+      );
+      setActionFeedback({
+        tone: "success",
+        message: "Serverns certifieringsbegäran har hämtats. Den är underlag till en extern certifierare, inte retentionsevidens eller ett godkännande.",
+      });
+    } catch (caught) {
+      setActionFeedback({ tone: "error", message: errorMessage(caught) });
+    }
+  }
+
+  function downloadBoundRetentionEvidence() {
+    if (retentionDownloadBlockReason) {
+      setError(undefined);
+      setActionFeedback({ tone: "error", message: retentionDownloadBlockReason });
+      return;
+    }
+    void perform("evidence-download", "Verifierar signerade originalbytes mot serverregistret…", async () => {
+      if (
+        !version
+        || !boundRetentionEvidence
+        || !api.downloadJointRetentionEvidence
+      ) {
+        throw new ApiError("Ingen aktuell serverbunden retentionsevidens finns att hämta.");
+      }
+      const blob = await api.downloadJointRetentionEvidence(
+        version.project_id,
+        boundRetentionEvidence,
+      );
+      startVerifiedBrowserDownload(
+        blob,
+        `custombuild-joint-retention-${boundRetentionEvidence.id}.json`,
+      );
+      return "Den certifierarsignerade originalfilen är hämtad och verifierad byte för byte. Hämtningen ändrar inte godkännande eller fysisk frisläppning.";
+    });
+  }
+
   async function currentVerifiedArtifacts(): Promise<ArtifactRead[]> {
     if (!job || !version || !designReviewReady) {
       throw new ApiError("Det finns inget verifierat granskningspaket att hämta.");
@@ -1563,6 +2660,7 @@ export function ProductionWorkflow({
       currentArtifacts,
       reviewPackageStatus,
       reviewPackageStatusClaimed,
+      expectedReviewArtifactKinds,
     )) {
       throw new ApiError(
         "Granskningspaketets aktuella artefaktlista är inte längre verifierbar. Skapa om paketet.",
@@ -1580,7 +2678,7 @@ export function ProductionWorkflow({
       const verifiedArtifact = await api.downloadArtifact(artifact);
       startVerifiedBrowserDownload(
         verifiedArtifact,
-        artifactDownloadFileName(artifact, version.revision),
+        artifactDownloadFileName(artifact, version.project_id, version.revision),
       );
       return "Granskningspaketet har hämtats.";
     });
@@ -1604,7 +2702,7 @@ export function ProductionWorkflow({
         const verifiedArtifact = await api.downloadArtifact(currentArtifact);
         startVerifiedBrowserDownload(
           verifiedArtifact,
-          artifactDownloadFileName(currentArtifact, version.revision),
+          artifactDownloadFileName(currentArtifact, version.project_id, version.revision),
         );
         return `${artifactRoleLabel(currentArtifact.kind)} har hämtats för designgranskning.`;
       },
@@ -1704,7 +2802,7 @@ export function ProductionWorkflow({
                     <strong>{evaluation.title}</strong>
                     <span>{evaluation.suggestion?.explanation || evaluation.summary}</span>
                   </div>
-                  {onApplyDesignChange && patch ? (
+                  {onApplyDesignChange && patch && mayDesign ? (
                     <button
                       type="button"
                       onClick={() => {
@@ -1728,6 +2826,213 @@ export function ProductionWorkflow({
         ? <p className="production-error" role="alert">{error}</p>
         : null}
 
+      <WorkshopContextEditor
+        spec={spec}
+        value={spec.workshop_context}
+        frozenContext={frozenProductionContext}
+        disabled={Boolean(busy) || !mayDesign || !onApplyDesignChange}
+        onChange={updateWorkshopContext}
+        draftState={activeWorkshopContextDraftState}
+        onDraftStateChange={updateWorkshopContextDraftState}
+      />
+      {!mayDesign ? (
+        <p className="production-action-guidance" role="status">
+          Verkstadsprofilen är skrivskyddad för din roll. En designer, admin eller owner måste
+          binda eller ändra råmaterial och tvåsidig registrering i en ny revision.
+        </p>
+      ) : null}
+
+      <section className="warning-acknowledgement" aria-label="Serververifierad tillverkningsevidens">
+        <header>
+          <h3>Serververifierad evidens</h3>
+          <p>
+            Endast aktuella, ej utgångna poster för detta projekt och rätt designhash visas.
+            Servern kontrollerar ändå signatur, checksumma, geometri, katalog och revokering igen;
+            ett val i gränssnittet är aldrig i sig ett godkännande.
+          </p>
+        </header>
+        {evidenceLoading ? (
+          <p className="production-action-guidance" role="status">
+            <LoaderCircle className="spin" aria-hidden="true" size={16} /> Hämtar aktuell serverevidens…
+          </p>
+        ) : null}
+        {evidenceLoadError ? <p className="production-error" role="alert">{evidenceLoadError}</p> : null}
+        {!api.listExternalEvidence ? (
+          <p className="production-warning" role="status">
+            Evidensregistret är inte tillgängligt i den här klientanslutningen. Retention och
+            evidensberoende steg förblir blockerade.
+          </p>
+        ) : null}
+        {design.retention_certification_request ? (
+          <div
+            className="production-guided-step"
+            role="region"
+            aria-label="Certifieringsbegäran för joint-retention"
+          >
+            <strong>Serverutfärdat underlag till extern certifierare</strong>
+            <p>
+              Begäran innehåller serverns exakta designhash, foggeometrifingerprint,
+              motor-/mallversioner, material och lastfall för denna design.
+            </p>
+            <button
+              type="button"
+              disabled={Boolean(busy)}
+              onClick={downloadRetentionCertificationRequest}
+            >
+              <Download aria-hidden="true" size={16} />
+              Hämta certifieringsbegäran (.json)
+            </button>
+            <small>
+              Detta är en begäran och ett provningsunderlag, inte signerad evidens och inte ett
+              godkännande. Filen ska skickas till en oberoende extern certifierare utan att
+              klienten återskapar eller ändrar hash- och versionsfälten.
+            </small>
+          </div>
+        ) : null}
+        <div className="production-guided-step">
+          <label htmlFor={retentionEvidenceUploadId}>
+            <strong>Ladda upp certifierarsignerad retention-JSON</strong>
+          </label>
+          <input
+            id={retentionEvidenceUploadId}
+            type="file"
+            accept=".json,application/json"
+            aria-label="Certifierarsignerad retention-JSON"
+            aria-describedby={retentionEvidenceUploadHelpId}
+            disabled={
+              evidenceLoading
+              || Boolean(busy)
+              || !reviewerMaySelectEvidence
+              || !serverProjectId
+              || !api.uploadExternalEvidence
+              || design.source !== "server-preview"
+            }
+            onChange={(event) => {
+              const input = event.currentTarget;
+              uploadRetentionEvidence(input.files?.[0]);
+              input.value = "";
+            }}
+          />
+          <small id={retentionEvidenceUploadHelpId}>
+            Filen måste komma direkt från en extern certifierare, vara application/json med
+            filändelsen .json och vara högst 20 MiB. Uppladdningen registrerar endast filen;
+            den godkänner eller binder inte retention till designen.
+          </small>
+          {!reviewerMaySelectEvidence ? (
+            <small>
+              Endast reviewer, admin eller owner får registrera certifierarens fil. En designer
+              kan därefter binda en serververifierbar post till nästa revision.
+            </small>
+          ) : null}
+        </div>
+        <div className="production-guided-step">
+          <label htmlFor={retentionEvidenceSelectId}>
+            <strong>Signerad retention för not/spår</strong>
+          </label>
+          <select
+            id={retentionEvidenceSelectId}
+            aria-label="Signerad retentionsevidens"
+            value={selectedRetentionEvidenceId ?? ""}
+            disabled={
+              evidenceLoading
+              || Boolean(busy)
+              || !mayDesign
+              || !serverProjectId
+              || !api.setJointRetentionEvidence
+              || stale
+            }
+            onChange={(event) => selectRetentionEvidence(event.target.value)}
+          >
+            <option value="">Ingen serververifierad retention vald</option>
+            {retentionEvidenceOptions.map((evidence) => (
+              <option key={evidence.id} value={evidence.id}>
+                {evidenceOptionLabel(evidence)}
+              </option>
+            ))}
+          </select>
+          <small>
+            {mayDesign
+              ? retentionEvidenceOptions.length > 0
+                ? "Valet hämtar en ny serverpreview och binds därefter till nästa revision."
+                : "Ingen aktuell signerad retentionsevidens matchar exakt denna design. CAM förblir blockerat."
+              : "Du kan läsa serverposterna, men endast designer, admin eller owner får binda retention till en ny revision."}
+          </small>
+        </div>
+        {restoredRetentionBinding ? (
+          <div
+            className="production-guided-step"
+            role="region"
+            aria-label="Signerad retention för verkstadsverifiering"
+          >
+            <strong>Certifierarens signerade originalfil</strong>
+            <p>
+              Hämta de exakt lagrade JSON-bytes som är bundna till den sparade revisionen. API:t
+              kontrollerar aktuell revision, Ed25519-signatur, aktiverat certifierarregister,
+              tenant, projekt, revokering, giltighet, lagringsledger, storlek och SHA-256 på nytt
+              före överföringen; webbläsaren verifierar sedan hela filen igen.
+            </p>
+            <button
+              type="button"
+              onClick={downloadBoundRetentionEvidence}
+              disabled={Boolean(busy) || Boolean(retentionDownloadBlockReason)}
+              aria-busy={busy === "evidence-download"}
+            >
+              {busy === "evidence-download"
+                ? <LoaderCircle className="spin" aria-hidden="true" size={16} />
+                : <Download aria-hidden="true" size={16} />}
+              Hämta signerad retention-JSON (originalbytes)
+            </button>
+            {boundRetentionEvidence ? (
+              <small>
+                Evidens-ID {boundRetentionEvidence.id} · SHA-256 {boundRetentionEvidence.sha256}
+              </small>
+            ) : null}
+            {retentionDownloadBlockReason ? <small>{retentionDownloadBlockReason}</small> : null}
+            <small>
+              Hämtningen är verifiering och arkivering. Den ändrar inget godkännande och
+              auktoriserar aldrig fysisk kapning.
+            </small>
+          </div>
+        ) : null}
+        {version ? (
+          <fieldset>
+            <legend>Kompletterande evidens för sparad revision</legend>
+            {GENERAL_EVIDENCE_TYPES.filter((evidenceType) => (
+              generalEvidenceOptions.some((evidence) => evidence.evidence_type === evidenceType)
+            )).map((evidenceType) => {
+              const options = generalEvidenceOptions.filter(
+                (evidence) => evidence.evidence_type === evidenceType,
+              );
+              return (
+                <label key={evidenceType}>
+                  <span>{GENERAL_EVIDENCE_LABELS[evidenceType]}</span>
+                  <select
+                    aria-label={`Kompletterande evidens: ${GENERAL_EVIDENCE_LABELS[evidenceType]}`}
+                    value={selectedGeneralEvidence[evidenceType] ?? ""}
+                    disabled={evidenceLoading || Boolean(busy) || !reviewerMaySelectEvidence || stale}
+                    onChange={(event) => selectGeneralEvidence(evidenceType, event.target.value)}
+                  >
+                    <option value="">Inget aktuellt bevis valt</option>
+                    {options.map((evidence) => (
+                      <option key={evidence.id} value={evidence.id}>
+                        {evidenceOptionLabel(evidence)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              );
+            })}
+            {generalEvidenceOptions.length === 0 ? (
+              <p>Ingen aktuell kompletterande evidens matchar den sparade versionshashen.</p>
+            ) : null}
+            <small>
+              Dessa poster måste matcha den sparade versionshashen och skickas separat vid
+              generation. Retention-ID:t dupliceras aldrig till denna lista.
+            </small>
+          </fieldset>
+        ) : null}
+      </section>
+
       <section className="production-next-action" aria-labelledby="production-next-action-heading">
         <header>
           <span>Nästa steg</span>
@@ -1737,7 +3042,13 @@ export function ProductionWorkflow({
               : busy === "save" || !version || stale || version.status === "draft"
                 ? "Kontrollera designen"
                 : designReviewReady
-                  ? "Hämta granskningspaket"
+                  ? immutableReviewReleased
+                    ? "Hämta låst granskningspaket"
+                    : camApprovalCurrent
+                      ? "Lås designgranskningsrevisionen"
+                      : camBlocked
+                        ? "Hämta granskningspaket"
+                        : "Granska CAM-valideringspaketet"
                   : "Skapa underlag"}
           </h3>
         </header>
@@ -1778,7 +3089,7 @@ export function ProductionWorkflow({
               type="button"
               className="production-primary-action"
               onClick={saveRevision}
-              disabled={Boolean(busy) || partCustomizationBlocked}
+              disabled={Boolean(busy) || partCustomizationBlocked || !mayDesign || workshopContextBlocked}
               aria-busy={busy === "save"}
               aria-describedby={saveBlockReason ? saveBlockReasonId : undefined}
             >
@@ -1804,7 +3115,7 @@ export function ProductionWorkflow({
                   type="button"
                   className="production-primary-action"
                   onClick={validateRevision}
-                  disabled={Boolean(busy) || partCustomizationBlocked}
+                  disabled={Boolean(busy) || partCustomizationBlocked || !mayDesign || workshopContextBlocked}
                   aria-busy={busy === "validate"}
                 >
                   {busy === "validate" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
@@ -1867,7 +3178,7 @@ export function ProductionWorkflow({
               aria-describedby={designApprovalBlockReason ? warningAcknowledgementHelpId : undefined}
             >
               {busy === "design-approval" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
-              Skapa underlag
+              Godkänn designkontroll
             </button>
             {designApprovalBlockReason ? <small id={warningAcknowledgementHelpId}>{designApprovalBlockReason}</small> : null}
           </div>
@@ -1909,7 +3220,7 @@ export function ProductionWorkflow({
                   type="button"
                   className="production-primary-action"
                   onClick={generatePackage}
-                  disabled={Boolean(busy) || partCustomizationBlocked}
+                  disabled={Boolean(busy) || Boolean(generationBlockReason)}
                   aria-busy={busy === "generation"}
                 >
                   {busy === "generation" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
@@ -1919,6 +3230,7 @@ export function ProductionWorkflow({
                       ? "Försök skapa underlag igen"
                       : "Skapa underlag"}
                 </button>
+                {generationBlockReason ? <small>{generationBlockReason}</small> : null}
               </>
             )}
           </div>
@@ -1933,12 +3245,13 @@ export function ProductionWorkflow({
                   type="button"
                   className="production-primary-action"
                   onClick={generatePackage}
-                  disabled={Boolean(busy) || partCustomizationBlocked}
+                  disabled={Boolean(busy) || Boolean(generationBlockReason)}
                   aria-busy={busy === "generation"}
                 >
                   {busy === "generation" ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
                   Skapa om underlag
                 </button>
+                {generationBlockReason ? <small>{generationBlockReason}</small> : null}
               </>
             ) : (
               <>
@@ -1958,30 +3271,122 @@ export function ProductionWorkflow({
                       ? "En exakt serverbunden lagerprofil saknas. Lagerinköp, nesting, operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Modellens mått och valda profiler har inte ändrats eller ersatts med antagna storformat."
                       : grainBlocked
                         ? "En riktad materialprofil saknar en exakt, strukturerad X/Y-bindning till den verkliga råskivan. Nesting, operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Uppladdade dokument och varningsgodkännanden kan inte ange eller låsa denna axel."
-                        : retentionBlocked
+                        : dadoRetentionBlocked
                           ? "Not/spår-förbanden saknar en versionsbunden, checksummeadresserad torr självlåsning eller mekanisk retention. Operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Lim, bärande geometri och granskningsgodkännanden ersätter inte retentionsevidens."
+                          : backPanelRetentionBlocked
+                            ? "Bakstycket saknar den kanoniska fyrsidiga mekaniska infångningen eller separat autentiserad retentionsevidens. Operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Paketet är fortfarande tillgängligt för designgranskning, inte kapning."
                           : "Tvåsidiga delar saknar en verifierad registrerings- och fixturplan. Nesting, operationer, setupblad, backplot och maskinvalideringskod har därför avsiktligt utelämnats. Inga WCS-, pinn- eller fixturdata har antagits."}
                   </p>
                 ) : null}
+                <section
+                  className="warning-acknowledgement"
+                  aria-label="CAM-granskning och immutable designrevision"
+                >
+                  <header>
+                    <h5>CAM-granskning och revisionslås</h5>
+                    <p>
+                      Två separata reviewers måste först godkänna design respektive exakt genererat
+                      CAM-valideringspaket. Revisionslåset fryser därefter designgranskningspaketet;
+                      det skapar aldrig en arbetsorder eller skärande CNC-kod.
+                    </p>
+                  </header>
+                  {immutableReviewReleased ? (
+                    <p className="production-check-passed" role="status">
+                      <Check aria-hidden="true" size={16} />
+                      <span>
+                        <strong>Immutable designgranskningsrevision {release?.release_number}.</strong>{" "}
+                        Manifest <code>{release?.manifest_sha256}</code> är låst för
+                        designgranskning och icke-skärande validering. Fysisk kapning är fortfarande
+                        inte auktoriserad.
+                      </span>
+                    </p>
+                  ) : camBlocked ? (
+                    <p className="production-warning" role="status">
+                      CAM-granskning och revisionslås är blockerade eftersom paketet sanningsenligt
+                      saknar CAM-valideringsfiler. Designgranskningspaketet kan fortfarande hämtas.
+                    </p>
+                  ) : !camApprovalCurrent ? (
+                    <>
+                      <label className="warning-acknowledgement-confirmation">
+                        <input
+                          type="checkbox"
+                          checked={camApprovalConfirmed}
+                          disabled={
+                            Boolean(busy)
+                            || !mayReview
+                            || !camValidationPackageEligible
+                            || !designApproverId
+                            || principal?.user_id === designApproverId
+                          }
+                          onChange={(event) => setCamApprovalConfirmed(event.target.checked)}
+                        />
+                        <span>
+                          Jag har granskat exakt jobb, manifest och maskinbunden validering. Jag
+                          förstår att programmet inte är skärande CNC-kod.
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="production-primary-action"
+                        onClick={approveCamPackage}
+                        disabled={Boolean(busy) || Boolean(camApprovalBlockReason)}
+                        aria-busy={busy === "cam-approval"}
+                      >
+                        {busy === "cam-approval"
+                          ? <LoaderCircle className="spin" aria-hidden="true" size={16} />
+                          : <Check aria-hidden="true" size={16} />}
+                        Godkänn CAM-valideringspaket
+                      </button>
+                      {camApprovalBlockReason ? <small>{camApprovalBlockReason}</small> : null}
+                    </>
+                  ) : (
+                    <>
+                      <p className="production-check-passed" role="status">
+                        <Check aria-hidden="true" size={16} />
+                        <span>
+                          <strong>CAM-granskningen är bunden till aktuellt jobb och manifest.</strong>{" "}
+                          Revisionen är ännu inte låst.
+                        </span>
+                      </p>
+                      <label className="warning-acknowledgement-confirmation">
+                        <input
+                          type="checkbox"
+                          checked={releaseConfirmed}
+                          disabled={Boolean(busy) || !mayReview}
+                          onChange={(event) => setReleaseConfirmed(event.target.checked)}
+                        />
+                        <span>
+                          Jag bekräftar att revisionslåset endast gäller immutable designgranskning
+                          och validering. Det auktoriserar aldrig fysisk kapning.
+                        </span>
+                      </label>
+                      <button
+                        type="button"
+                        className="production-primary-action"
+                        onClick={releaseDesignReview}
+                        disabled={Boolean(busy) || Boolean(releaseBlockReason)}
+                        aria-busy={busy === "release"}
+                      >
+                        {busy === "release"
+                          ? <LoaderCircle className="spin" aria-hidden="true" size={16} />
+                          : <Check aria-hidden="true" size={16} />}
+                        Lås designgranskningsrevision R{version?.revision}
+                      </button>
+                      {releaseBlockReason ? <small>{releaseBlockReason}</small> : null}
+                    </>
+                  )}
+                </section>
                 <p
-                  className={workshopReadiness?.physical_cutting_authorized
-                    ? "production-check-passed"
-                    : "production-warning"}
+                  className="production-warning"
                   role="status"
                   aria-label="Status för fysisk tillverkning"
                 >
-                  {workshopReadiness?.physical_cutting_authorized ? (
-                    <><strong>Fysisk kapning är auktoriserad av servern.</strong> Följ fortfarande verkstadens arbetsorder och säkerhetsrutiner.</>
-                  ) : (
-                    <>
-                      <strong>Ej frisläppt för fysisk kapning.</strong>{" "}
-                      {missingWorkshopRequirements.length} externa verkstadskrav återstår.
-                      Paketet är endast avsett för designgranskning och validering;
-                      {camBlocked
-                        ? " det innehåller inga CAM- eller maskinvalideringsfiler."
-                        : " använd inte valideringsprogrammet som skärande CNC-kod."}
-                    </>
-                  )}
+                  <strong>Ej frisläppt för fysisk kapning.</strong>{" "}
+                  {missingWorkshopRequirements.length} externa verkstadskrav återstår.
+                  Paketet är endast avsett för designgranskning och validering;
+                  {camBlocked
+                    ? " det innehåller inga CAM- eller maskinvalideringsfiler."
+                    : " använd inte valideringsprogrammet som skärande CNC-kod."}
                 </p>
                 <section
                   className="production-release-boundary"
@@ -1992,13 +3397,12 @@ export function ProductionWorkflow({
                     <strong>Klar för revision {version?.revision ?? "–"}</strong>
                     <small>Filerna får öppnas, jämföras och kommenteras som granskningsunderlag.</small>
                   </article>
-                  <article className={workshopReadiness?.physical_cutting_authorized ? "physical-ready" : "physical-blocked"}>
+                  <article className="physical-blocked">
                     <span>2 · Fysisk tillverkning</span>
-                    <strong>{workshopReadiness?.physical_cutting_authorized ? "Frisläppt" : "Ej frisläppt"}</strong>
+                    <strong>Ej frisläppt</strong>
                     <small>
-                      {workshopReadiness?.physical_cutting_authorized
-                        ? "Följ den godkända arbetsordern och verkstadens säkerhetsrutiner."
-                        : `${missingWorkshopRequirements.length} externa krav återstår. Filerna är inte en arbetsorder eller skärande CNC-kod.`}
+                      {missingWorkshopRequirements.length} externa krav återstår. Filerna är inte
+                      en arbetsorder eller skärande CNC-kod.
                     </small>
                   </article>
                 </section>
@@ -2083,7 +3487,7 @@ export function ProductionWorkflow({
                     </div>
                     <div>
                       <dt>Fysisk frisläppning</dt>
-                      <dd>{workshopReadiness?.physical_cutting_authorized ? "Frisläppt" : "Ej frisläppt"}</dd>
+                      <dd>Ej frisläppt</dd>
                     </div>
                     <div>
                       <dt>Dokumentspråk</dt>
@@ -2125,9 +3529,13 @@ export function ProductionWorkflow({
                       ))}
                     </ul>
                     <p>
-                      Kunddokumenten ingår i ZIP-filen, inte som separata hämtningar. Listan
-                      beskriver det nuvarande paketschemat, inte en separat serverinventering.
-                      Använd paketets manifest för att kontrollera aktuell förekomst, identitet och checksumma.
+                      Börja med <code>START-HERE.md</code> och kontrollera <code>manifest.json</code>.
+                      Paketet kan innehålla STEP-modellen, delarnas sida A/B som DXF och SVG samt
+                      versionslåsta JSON-scheman. När en exakt verkstadsprofil är bunden och
+                      bearbetningsgrinden passerar listas även råmaterialval, generationsplan,
+                      operationer och setupblad.
+                      Manifestet är den auktoritativa inventeringen för faktisk förekomst, identitet
+                      och checksumma; den här listan är inte ett tillstånd att kapa.
                     </p>
                   </section>
                   <section
@@ -2214,9 +3622,10 @@ export function ProductionWorkflow({
                   {busy === "download" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
                   Ladda ned granskningspaket (.zip)
                 </button>
-                <button type="button" onClick={generatePackage} disabled={Boolean(busy) || partCustomizationBlocked}>
+                <button type="button" onClick={generatePackage} disabled={Boolean(busy) || Boolean(generationBlockReason)}>
                   <RefreshCw aria-hidden="true" size={15} /> Skapa om granskningspaket
                 </button>
+                {generationBlockReason ? <small>{generationBlockReason}</small> : null}
               </>
             )}
           </div>

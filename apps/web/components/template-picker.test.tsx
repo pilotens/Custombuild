@@ -175,6 +175,21 @@ describe("TemplatePicker Explore entry", () => {
     );
   });
 
+  it("accepts an exact three-decimal dimension despite binary floating-point representation", () => {
+    const onBriefChange = vi.fn();
+    renderPicker({ onBriefChange });
+    fireEvent.click(screen.getByRole("button", { name: /Skapa med Custombuild/ }));
+    const width = screen.getByRole("spinbutton", { name: "Planerad bredd" });
+    fireEvent.change(width, { target: { value: "256.001" } });
+
+    expect(width).toHaveAttribute("aria-invalid", "false");
+    expect(screen.queryByText("Ange högst tre decimaler (en tusendels millimeter).")).not.toBeInTheDocument();
+    const continueButton = screen.getByRole("button", { name: "Visa tre startförslag" });
+    expect(continueButton).toBeEnabled();
+    fireEvent.click(continueButton);
+    expect(onBriefChange).toHaveBeenLastCalledWith(expect.objectContaining({ width_mm: 256.001 }));
+  });
+
   it("rejects dimensions below the server's whole-micrometre resolution", () => {
     renderPicker();
     fireEvent.click(screen.getByRole("button", { name: /Skapa med Custombuild/ }));

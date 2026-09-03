@@ -42,14 +42,31 @@ def test_worker_image_installs_locked_cad_group_but_api_does_not() -> None:
     worker = Path("services/worker/Dockerfile").read_text(encoding="utf-8")
     compose = Path("compose.yml").read_text(encoding="utf-8")
     compose_config = yaml.safe_load(compose)
+    generation_command = [
+        "python",
+        "-m",
+        "custombuild_worker.generation_startup",
+        "--loglevel=INFO",
+        "--concurrency=2",
+        "--queues=generation",
+    ]
 
     assert "--group cad" not in api
     assert "--group cad" in worker
-    assert '"worker", "--loglevel=INFO"' in worker
+    assert (
+        'CMD ["python", "-m", "custombuild_worker.generation_startup", '
+        '"--loglevel=INFO", "--concurrency=2", "--queues=generation"]'
+        in worker
+    )
     assert '"--beat"' not in worker
     assert compose.count('"beat", "--schedule=/tmp/celerybeat-schedule"') == 1
     assert "  scheduler:" in compose
     assert '"--loglevel=WARNING"' in compose
+    assert compose_config["services"]["worker"]["command"] == generation_command
+    assert (
+        compose_config["services"]["worker"]["environment"]["CELERY_EXPECTED_QUEUE"]
+        == "generation"
+    )
     scheduler_probe = compose_config["services"]["scheduler"]["healthcheck"]["test"]
     assert scheduler_probe[:3] == ["CMD", "/opt/custombuild-venv/bin/python", "-c"]
     assert "celerybeat-schedule*" in scheduler_probe[3]

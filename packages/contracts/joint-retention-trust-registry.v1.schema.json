@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Custombuild joint-retention trust registry v1",
+  "description": "Operator-owned allow-list and revocation state for external joint-retention certifier keys. No trusted issuer or key is bundled with Custombuild.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "issuers",
+    "revoked_statement_sha256",
+    "revoked_system_versions"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "custombuild.joint-retention-trust-registry.v1"
+    },
+    "issuers": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/issuer"
+      }
+    },
+    "revoked_statement_sha256": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/sha256"
+      }
+    },
+    "revoked_system_versions": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}@[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "stableKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "issuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer_id",
+        "key_id",
+        "role",
+        "public_key_base64",
+        "not_before",
+        "not_after",
+        "revoked_at"
+      ],
+      "properties": {
+        "issuer_id": {
+          "$ref": "#/$defs/stableKey"
+        },
+        "key_id": {
+          "$ref": "#/$defs/stableKey"
+        },
+        "role": {
+          "const": "joint_retention_certifier"
+        },
+        "public_key_base64": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "minLength": 44,
+          "maxLength": 44,
+          "pattern": "^[A-Za-z0-9+/]{42}[AEIMQUYcgkosw048]=$"
+        },
+        "not_before": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "not_after": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "revoked_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

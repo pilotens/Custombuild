@@ -97,9 +97,20 @@ STORAGE_ATTESTOR_SIGNATURES = (
     ),
     "public.custombuild_storage_invalidate_capacity(text)",
 )
+JOINT_RETENTION_RUNTIME_SIGNATURES = (
+    "public.custombuild_joint_retention_assert_registry(text,text)",
+)
 ROLE_FUNCTION_PRIVILEGES: dict[str, tuple[str, ...]] = {
-    "custombuild_api": STORAGE_QUOTA_MUTATOR_SIGNATURES + STORAGE_API_RETRY_SIGNATURES,
-    "custombuild_worker": STORAGE_QUOTA_MUTATOR_SIGNATURES + STORAGE_REAPER_SIGNATURES,
+    "custombuild_api": (
+        STORAGE_QUOTA_MUTATOR_SIGNATURES
+        + STORAGE_API_RETRY_SIGNATURES
+        + JOINT_RETENTION_RUNTIME_SIGNATURES
+    ),
+    "custombuild_worker": (
+        STORAGE_QUOTA_MUTATOR_SIGNATURES
+        + STORAGE_REAPER_SIGNATURES
+        + JOINT_RETENTION_RUNTIME_SIGNATURES
+    ),
 }
 
 

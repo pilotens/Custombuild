@@ -34,9 +34,13 @@ from custombuild_domain import (
 )
 from custombuild_manufacturing import (
     ADJACENT_RELIEF_CLEARANCE_WARNING_CODE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+    JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
     MANUFACTURING_INTENT_SCHEMA_VERSION,
     SUPPLIER_HANDOFF_PATH,
     SUPPLIER_HANDOFF_SCHEMA_VERSION,
+    ArtifactFile,
     ManifestContext,
     Point2D,
     Side,
@@ -49,10 +53,20 @@ from custombuild_manufacturing import (
     sha256_hex,
 )
 from custombuild_manufacturing.adapters import adapt_design_result
+from custombuild_manufacturing.quality import (
+    OPERATIONS_JSON_SCHEMA_PATH,
+    operations_json_schema,
+)
 from ezdxf.filemanagement import read as read_dxf
 
 PROJECT_ID = "audit-custom-shelving"
 REVISION = 7
+_TEST_ONLY_SIGNED_RETENTION_EVIDENCE_BYTES = canonical_json_bytes(
+    {
+        "evidence_id": "test-only.signed-evidence",
+        "fixture_scope": "integration-test-only",
+    }
+)
 
 
 def _custom_request() -> BookcasePreviewInput:
@@ -86,7 +100,12 @@ def _custom_request() -> BookcasePreviewInput:
     )
 
 
-def _test_only_retention_contract(spec: Any, design: Any) -> JointRetentionContract:
+def _test_only_retention_contract(
+    spec: Any,
+    design: Any,
+    *,
+    evidence_bytes: bytes,
+) -> JointRetentionContract:
     """Create structurally complete *test-only* input for the server binder.
 
     The synthetic hashes are not presented as supplier evidence.  This unit
@@ -102,7 +121,7 @@ def _test_only_retention_contract(spec: Any, design: Any) -> JointRetentionContr
         method=JointRetentionMethod.MECHANICAL,
         catalog_entry_sha256="1" * 64,
         evidence_id="test-only.signed-evidence",
-        evidence_sha256="2" * 64,
+        evidence_sha256=sha256_hex(evidence_bytes),
         installation_instruction_id="test-only.instructions",
         installation_instruction_version="v1",
         installation_instruction_sha256="3" * 64,
@@ -166,7 +185,11 @@ def _stock_and_registration(
     registrations = {
         stock.stock_id: {
             sheet_index: TwoSidedRegistration(
+                declaration_authority="CLIENT_DECLARED",
                 method_id=f"audit:{stock.stock_id}:{sheet_index}",
+                fixture_method_version="fixture-v1",
+                pin_diameter_um=6_000,
+                position_tolerance_um=500,
                 points=(
                     Point2D(50_000, 50_000),
                     Point2D(stock.width_um - 50_000, 50_000),
@@ -286,7 +309,12 @@ def test_non_default_custom_shelving_flows_to_complete_supplier_package() -> Non
     assert spec.parameters.bay_width_ratios_ppm == (210_000, 470_000, 320_000)
     assert spec.parameters.shelf_height_ratios_ppm == (140_000, 370_000, 630_000, 860_000)
 
-    retention = _test_only_retention_contract(spec, unbound_design)
+    evidence_bytes = _TEST_ONLY_SIGNED_RETENTION_EVIDENCE_BYTES
+    retention = _test_only_retention_contract(
+        spec,
+        unbound_design,
+        evidence_bytes=evidence_bytes,
+    )
     bound_spec, design, _ = bind_joint_retention(spec, retention)
     assert unbound_design.parts == design.parts
     assert bound_spec.joint_retention == retention
@@ -362,6 +390,14 @@ def test_non_default_custom_shelving_flows_to_complete_supplier_package() -> Non
         include_step=True,
         include_validation_program=False,
         two_sided_registration_by_stock=registrations,
+        additional_artifacts=(
+            ArtifactFile(
+                JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+                evidence_bytes,
+                JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+                JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+            ),
+        ),
     )
 
     assert bundle.operations is not None
@@ -377,6 +413,7 @@ def test_non_default_custom_shelving_flows_to_complete_supplier_package() -> Non
         payloads = {
             name: archive.read(name) for name in archive.namelist() if name != "manifest.json"
         }
+    assert payloads[JOINT_RETENTION_SIGNED_EVIDENCE_PATH] == evidence_bytes
 
     frozen_spec = json.loads(payloads["design/design-spec.json"])
     assert frozen_spec["spec"] == bound_spec.model_dump(mode="json")
@@ -525,6 +562,7 @@ def test_non_default_custom_shelving_flows_to_complete_supplier_package() -> Non
     operations = json.loads(payloads["cam/operations.json"])
     assert operations["design_hash"] == design.design_hash
     assert operations["mode"] == "VALIDATION"
+    assert payloads[OPERATIONS_JSON_SCHEMA_PATH] == operations_json_schema()
 
     handoff = json.loads(payloads[SUPPLIER_HANDOFF_PATH])
     assert handoff["schema_version"] == SUPPLIER_HANDOFF_SCHEMA_VERSION
@@ -550,6 +588,15 @@ def test_non_default_custom_shelving_flows_to_complete_supplier_package() -> Non
     }
     assert handoff["operation_binding"]["document_path"] == "cam/operations.json"
     assert handoff["operation_binding"]["status"] == "MACHINE_NEUTRAL_VALIDATION_ONLY"
+    assert handoff["operation_binding"]["document_sha256"] == sha256_hex(
+        payloads["cam/operations.json"]
+    )
+    assert handoff["operation_binding"]["json_schema_path"] == (
+        OPERATIONS_JSON_SCHEMA_PATH
+    )
+    assert handoff["operation_binding"]["json_schema_sha256"] == sha256_hex(
+        payloads[OPERATIONS_JSON_SCHEMA_PATH]
+    )
     handoff_warnings = handoff["dfm_review_warnings"]
     assert len(handoff_warnings) == 4
     assert {

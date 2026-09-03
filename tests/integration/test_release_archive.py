@@ -162,7 +162,8 @@ def test_superseded_release_keeps_its_exact_immutable_package() -> None:
         assert downloaded.status_code == 200
         assert downloaded.content == b"x" * 128
         assert downloaded.headers["content-disposition"] == (
-            'attachment; filename="custombuild-release-ARCHIVE-R1-rev-1.zip"'
+            f'attachment; filename="custombuild-project-{first["project_id"]}-'
+            'release-ARCHIVE-R1-design-review-rev-1.zip"'
         )
         assert downloaded.headers["content-length"] == "128"
         assert downloaded.headers["etag"] == f'"{bundle["sha256"]}"'
