@@ -176,19 +176,6 @@ async function bindStructuredWorkshopContext(page: Page, projectId: string): Pro
     sheetCount: String(WORKSHOP_STOCK_PROFILES[1].sheet_count),
   });
 
-  const persistedContext = page.waitForResponse((response) => {
-    if (
-      response.request().method() !== "PUT"
-      || requestPath(response.request()) !== `/v1/projects/${projectId}/draft`
-      || !response.ok()
-    ) return false;
-    const payload = response.request().postDataJSON() as {
-      workspace_spec?: { production_context?: { two_sided_registrations?: unknown[] } };
-    };
-    return payload.workspace_spec?.production_context?.two_sided_registrations?.length
-      === WORKSHOP_REGISTRATIONS.length;
-  }, { timeout: 30_000 });
-
   const registrationGroup = editor.getByRole("group", {
     name: "Tvåsidig registrering per fysisk skiva",
   });
@@ -209,12 +196,29 @@ async function bindStructuredWorkshopContext(page: Page, projectId: string): Pro
     await registrationGroup.getByLabel("Pinne 1, X (mm)").nth(index).fill("80");
     await registrationGroup.getByLabel("Pinne 1, Y (mm)").nth(index).fill("30");
     await registrationGroup.getByLabel("Pinne 2, X (mm)").nth(index).fill("2360");
+    const persistedContext = index === WORKSHOP_REGISTRATIONS.length - 1
+      ? page.waitForResponse((response) => {
+          if (
+            response.request().method() !== "PUT"
+            || requestPath(response.request()) !== `/v1/projects/${projectId}/draft`
+            || !response.ok()
+          ) return false;
+          const payload = response.request().postDataJSON() as {
+            workspace_spec?: { production_context?: { two_sided_registrations?: unknown[] } };
+          };
+          return payload.workspace_spec?.production_context?.two_sided_registrations?.length
+            === WORKSHOP_REGISTRATIONS.length;
+        }, { timeout: 30_000 })
+      : undefined;
     await registrationGroup.getByLabel("Pinne 2, Y (mm)").nth(index).fill("30");
+    if (persistedContext) {
+      await Promise.all([
+        persistedContext,
+        expect(editor.getByText("Verkstadsprofilen är komplett och exakt bunden till aktuella designval."))
+          .toBeVisible({ timeout: 30_000 }),
+      ]);
+    }
   }
-
-  await expect(editor.getByText("Verkstadsprofilen är komplett och exakt bunden till aktuella designval."))
-    .toBeVisible();
-  await persistedContext;
 }
 
 interface LiveRolePrincipal {
