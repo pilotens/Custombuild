@@ -41,6 +41,8 @@ const SCREENED_STOCK_PASS_PATHS = [
   { ruleId: "DFM-STOCK-001", ruleVersion: "1.0.0", title: "Delar ryms i råmaterial" },
 ] as const;
 
+const WORKSHOP_MACHINE_PROFILE_ID = "custombuild-router-5125-linuxcnc" as const;
+
 const CAM_BLOCKED_FORBIDDEN_ARTIFACT_KIND = /(?:stock|nest|placement|label_index|measurement_plan|operation|tool|setup|backplot|machine|ngc)/i;
 
 function camBlockedArtifactKindIsForbidden(kind: string): boolean {
@@ -80,13 +82,13 @@ const WORKSHOP_STOCK_PROFILES = [
     material_id: "birch-plywood",
     material_version: "screening-2026.1",
     sheet_width_um: 2_440_000,
-    sheet_height_um: 1_220_000,
+    sheet_height_um: 2_200_000,
     thickness_um: 17_800,
     sheet_count: 4,
     trim_margin_um: 10_000,
     kerf_um: 6_000,
     grain_direction: "X",
-    allow_rotation: false,
+    allow_rotation: true,
     defect_zones: [],
     fixture_keep_out_zones: [],
   },
@@ -98,13 +100,13 @@ const WORKSHOP_STOCK_PROFILES = [
     material_id: "birch-plywood-6",
     material_version: "screening-2026.1",
     sheet_width_um: 2_440_000,
-    sheet_height_um: 1_220_000,
+    sheet_height_um: 2_200_000,
     thickness_um: 6_000,
     sheet_count: 2,
     trim_margin_um: 10_000,
     kerf_um: 6_000,
     grain_direction: "X",
-    allow_rotation: false,
+    allow_rotation: true,
     defect_zones: [],
     fixture_keep_out_zones: [],
   },
@@ -137,29 +139,33 @@ const WORKSHOP_REGISTRATIONS = [
 
 async function bindStructuredWorkshopContext(page: Page, projectId: string): Promise<void> {
   const editor = page.getByRole("region", { name: "Råmaterial och tvåsidig registrering" });
+  await editor.getByRole("radio", { name: /Router 5125/ }).check();
   await editor.getByRole("button", {
     name: "Bind leverantörsdeklarerad verkstadsprofil",
   }).click();
 
   const fillProfile = async (
     name: "Stomskivor" | "Bakstyckesskivor",
-    values: { profileId: string; profileVersion: string },
+    values: { profileId: string; profileVersion: string; sheetHeightMm: string },
   ) => {
     const profile = editor.getByRole("group", { name });
     await profile.getByLabel("Leverantörens profil-ID (deklarerat)").fill(values.profileId);
     await profile.getByLabel("Profilversion eller batch").fill(values.profileVersion);
+    await profile.getByLabel("Skivhöjd (mm)").fill(values.sheetHeightMm);
     await profile.getByLabel("Trimkant (mm)").fill("10");
     await profile.getByLabel("Kerf/verktygsspalt (mm)").fill("6");
     await profile.getByLabel("Fiberriktning i råskivan").selectOption("X");
-    await profile.getByLabel("Tillåt 90° rotation vid nesting").selectOption("false");
+    await profile.getByLabel("Tillåt 90° rotation vid nesting").selectOption("true");
   };
   await fillProfile("Stomskivor", {
     profileId: WORKSHOP_STOCK_PROFILES[0].supplier_profile_id,
     profileVersion: WORKSHOP_STOCK_PROFILES[0].supplier_profile_version,
+    sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[0].sheet_height_um / 1_000),
   });
   await fillProfile("Bakstyckesskivor", {
     profileId: WORKSHOP_STOCK_PROFILES[1].supplier_profile_id,
     profileVersion: WORKSHOP_STOCK_PROFILES[1].supplier_profile_version,
+    sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[1].sheet_height_um / 1_000),
   });
 
   const persistedContext = page.waitForResponse((response) => {
@@ -487,12 +493,12 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   expect(createPayload.production_context).toMatchObject({
     stock_width_mm: 2_440,
-    stock_height_mm: 1_220,
+    stock_height_mm: 2_200,
     stock_count: 4,
     back_stock_width_mm: 2_440,
-    back_stock_height_mm: 1_220,
+    back_stock_height_mm: 2_200,
     back_stock_count: 2,
-    machine_profile_id: "custombuild-router-1325-linuxcnc",
+    machine_profile_id: WORKSHOP_MACHINE_PROFILE_ID,
     stock_profiles: WORKSHOP_STOCK_PROFILES,
     two_sided_registrations: WORKSHOP_REGISTRATIONS,
   });
@@ -563,12 +569,12 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   const generationPayload = generationResponse.request().postDataJSON() as Record<string, unknown>;
   expect(generationPayload).toMatchObject({
     stock_width_mm: 2_440,
-    stock_height_mm: 1_220,
+    stock_height_mm: 2_200,
     stock_count: 4,
     back_stock_width_mm: 2_440,
-    back_stock_height_mm: 1_220,
+    back_stock_height_mm: 2_200,
     back_stock_count: 2,
-    machine_profile_id: "custombuild-router-1325-linuxcnc",
+    machine_profile_id: WORKSHOP_MACHINE_PROFILE_ID,
     stock_profiles: WORKSHOP_STOCK_PROFILES,
     two_sided_registrations: WORKSHOP_REGISTRATIONS,
     include_step: true,
@@ -601,7 +607,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(completedJob.status).toBe("succeeded");
   expect(completedJob.result_json).toMatchObject({
     authoritative_geometry: true,
-    dfm_status: "PASS",
+    dfm_status: "WARNING",
     nesting_layouts: [],
     machine_program_mode: "CAM_BLOCKED",
     production_machine_program: false,
@@ -912,7 +918,7 @@ test("retention går genom en verkligt rollseparerad granskningskedja", async ({
   expect(generationResponse.request().postDataJSON()).toMatchObject({
     stock_profiles: WORKSHOP_STOCK_PROFILES,
     two_sided_registrations: WORKSHOP_REGISTRATIONS,
-    machine_profile_id: "custombuild-router-1325-linuxcnc",
+    machine_profile_id: WORKSHOP_MACHINE_PROFILE_ID,
     postprocessor_id: "linuxcnc-validation-1.1.0",
     include_validation_program: true,
   });
