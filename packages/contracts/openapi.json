@@ -1573,6 +1573,11 @@
       },
       "ReleaseRead": {
         "properties": {
+          "bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Bundle Sha256",
+            "type": "string"
+          },
           "machine_use": {
             "const": "validation_only",
             "title": "Machine Use",
@@ -1582,6 +1587,11 @@
             "pattern": "^[a-f0-9]{64}$",
             "title": "Manifest Sha256",
             "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
           },
           "release_id": {
             "title": "Release Id",
@@ -1606,9 +1616,11 @@
           "release_id",
           "release_number",
           "status",
+          "bundle_sha256",
           "manifest_sha256",
           "release_kind",
-          "machine_use"
+          "machine_use",
+          "physical_cutting_authorized"
         ],
         "title": "ReleaseRead",
         "type": "object"

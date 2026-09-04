@@ -2600,8 +2600,13 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         release.get("release_kind") == "design_review",
         "review lock was incorrectly represented as a physical release",
     )
+    require(release.get("bundle_sha256") == bundle_sha, "release bundle hash mismatch")
     require(release.get("manifest_sha256") == manifest_sha, "release manifest hash mismatch")
     require(release.get("machine_use") == "validation_only", "release overstates machine safety")
+    require(
+        release.get("physical_cutting_authorized") is False,
+        "release authorizes physical cutting",
+    )
     frozen = mapping(nordic.json("GET", base), "released version")
     require(
         frozen.get("immutable") is True and frozen.get("status") == "released",

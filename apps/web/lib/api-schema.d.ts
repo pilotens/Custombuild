@@ -1150,6 +1150,8 @@ export interface components {
         };
         /** ReleaseRead */
         ReleaseRead: {
+            /** Bundle Sha256 */
+            bundle_sha256: string;
             /**
              * Machine Use
              * @constant
@@ -1157,6 +1159,11 @@ export interface components {
             machine_use: "validation_only";
             /** Manifest Sha256 */
             manifest_sha256: string;
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
             /** Release Id */
             release_id: string;
             /**

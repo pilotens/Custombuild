@@ -174,44 +174,52 @@ def start_here_markdown() -> bytes:
         "permission to cut material. The CNC shop must create, simulate, review and approve "
         "its own CAM and setup before any physical operation.",
         "",
-        "The ZIP is **checksummed but unsigned**. SHA-256 can detect an accidental byte change "
-        "relative to its contained manifest; it does not prove who published the package or "
-        "detect a coordinated rewrite of both files and manifest. Obtain "
-        "the ZIP through the authenticated Custombuild download and independently confirm the "
-        "project, revision and design hash with the customer.",
+        "The ZIP is **checksummed but unsigned**. Internal SHA-256 values can detect a byte "
+        "change relative to its contained manifest, while the required whole-ZIP SHA-256 can "
+        "detect any byte change, including a coordinated internal rewrite, relative to an "
+        "independently supplied digest. Neither mechanism is a publisher signature. Obtain the "
+        "ZIP through the authenticated Custombuild download, obtain its exact bundle SHA-256 "
+        "from an authenticated out-of-band order record, and independently confirm the project, "
+        "revision and design hash with the customer.",
         "",
         "## Verify before review",
         "",
         "Treat the received ZIP only as untrusted data; do not extract it and never execute "
         "anything contained in it. Obtain the separately distributed, reviewed standard-library "
         "verifier through a trusted channel, install it outside the download, and run Python "
-        "3.11 or newer with the exact filename and independently confirmed order identity:",
+        "3.11 or newer with the exact filename, independently confirmed bundle SHA-256, and "
+        "order identity:",
         "",
         "```sh",
         'python3 -I /trusted/verify_production_package.py "<downloaded-package>.zip" '
+        '--expect-bundle-sha256 "<64-char-bundle-sha256>" '
         '--expect-project-id "<project-id>" '
         '--expect-revision "<revision>" --expect-design-hash "<64-char-design-hash>"',
         "```",
         "",
         "On Windows, use `py -3 -I C:\\trusted\\verify_production_package.py` followed by the "
         "package path and options. The trusted verifier needs no Custombuild installation or "
-        "third-party Python package. Accept only a JSON result with `status` equal to `PASS` and "
-        "process exit code 0. Preserve the JSON result with the shop review record.",
+        "third-party Python package. Accept only a JSON result with `status` equal to `PASS`, "
+        "process exit code 0, `details.external_bundle_sha256_match` equal to `true`, and "
+        "`details.bundle_sha256` equal to the authenticated out-of-band value. Preserve the JSON "
+        "result with the shop review record.",
         "",
         "The verifier rejects unsafe, duplicate or case-alias paths before extraction; requires "
-        "the exact v5 manifest inventory with no extra or missing files; checks every declared "
-        "byte size and SHA-256; recalculates `production_context_hash`; and compares any supplied "
-        "project, revision and design hash. Those expected values compare unsigned manifest claims "
-        "only; they do not independently reconstruct design semantics or establish authenticity. "
-        "The guide is inventoried and checksummed; the verifier is intentionally outside the "
-        "untrusted ZIP and must come from a trusted channel.",
+        "the whole-ZIP SHA-256 against the required external value before interpreting ZIP "
+        "metadata; requires the exact v5 manifest inventory with no extra or missing files; "
+        "checks every declared byte size and SHA-256; recalculates `production_context_hash`; and "
+        "compares any supplied project, revision and design hash. Those expected identity values "
+        "compare unsigned manifest claims only; they do not independently reconstruct design "
+        "semantics or establish authenticity. The guide is inventoried and checksummed; the "
+        "verifier is intentionally outside the untrusted ZIP and must come from a trusted channel.",
         "",
-        "A verifier `PASS` proves only internal manifest consistency and can detect accidental "
-        "corruption. It cannot detect a malicious coordinated rewrite of both payloads and the "
-        "unsigned manifest. It does not authenticate the publisher or evidence issuer. It does "
-        "not establish current revocation or expiry status for external signed evidence. It does "
-        "not authorize physical cutting, machining or assembly. Obtain the ZIP through the "
-        "authenticated Custombuild download and confirm its order identity out of band.",
+        "A verifier `PASS` proves internal manifest consistency and an exact byte match to the "
+        "caller-supplied bundle digest. That match detects a malicious coordinated internal "
+        "rewrite only relative to the supplied digest. The digest source must be authenticated "
+        "out of band; a digest delivered with the same untrusted ZIP does not authenticate the "
+        "publisher or evidence issuer and is not a publisher signature. A pass does not establish "
+        "current revocation or expiry status for external signed evidence and does not authorize "
+        "physical cutting, machining or assembly.",
         "",
         "After the verifier passes, validate `manufacturing/manufacturing-intent.json`, optional "
         "`cam/operations.json`, and `shop/supplier-handoff.json` against their exact "

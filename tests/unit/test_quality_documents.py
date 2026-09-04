@@ -91,6 +91,8 @@ def test_start_here_exposes_registration_math_and_unverified_authority_boundary(
     guide = start_here_markdown().decode("utf-8")
 
     assert "checksummed but unsigned" in guide
+    assert '--expect-bundle-sha256 "<64-char-bundle-sha256>"' in guide
+    assert "authenticated out-of-band order record" in guide
     assert "validation/stock-selection.json" in guide
     assert "validation/generation-plan.json" in guide
     assert "CLIENT_DECLARED" in guide
@@ -191,16 +193,21 @@ def test_start_here_explains_supplier_boundary_and_all_acceptance_questions() ->
     assert guide.startswith("# START HERE")
     assert "checksummed but unsigned" in guide
     assert 'python3 -I /trusted/verify_production_package.py "<downloaded-package>.zip"' in guide
+    assert '--expect-bundle-sha256 "<64-char-bundle-sha256>"' in guide
     assert "no Custombuild installation" in guide
     assert "status` equal to `PASS`" in guide
+    assert "details.external_bundle_sha256_match" in guide
+    assert "details.bundle_sha256" in guide
+    assert "digest source must be authenticated" in guide
+    assert "not a publisher signature" in guide
     assert "does not authenticate the publisher" in guide
     assert "does not authorize physical cutting" in guide
     assert "current revocation or expiry status" in guide
     assert "No executable verifier or `__main__.py` is included" in guide
     assert "never execute anything contained in it" in guide
-    assert "malicious coordinated rewrite" in guide
+    assert "malicious coordinated internal rewrite" in guide
     assert "authenticate the publisher or evidence issuer" in guide
-    assert "expected values compare unsigned manifest claims only" in guide
+    assert "expected identity values compare unsigned manifest claims only" in guide
     assert "do not independently reconstruct design semantics" in guide
     assert "no approved executable G-code" in guide
     assert "CUT intent versus REFERENCE material" in guide

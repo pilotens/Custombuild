@@ -35,6 +35,8 @@ import {
   productionSuggestionPatch,
   retentionEvidenceUploadMetadata,
   reviewArtifactKindsFromJob,
+  reviewBundleArtifactMatchesJob,
+  reviewBundleSha256FromJob,
   reviewPackageArtifactInventoryIsTruthful,
   serverApprovalWarningRuleIds,
   workshopRequirementPresentation,
@@ -441,9 +443,11 @@ const immutableDesignReviewRelease: ReleaseRead = {
   release_id: "22222222-2222-4222-8222-222222222222",
   release_number: "R1",
   status: "released",
+  bundle_sha256: "b".repeat(64),
   manifest_sha256: "d".repeat(64),
   release_kind: "design_review",
   machine_use: "validation_only",
+  physical_cutting_authorized: false,
 };
 
 const blockedCamJob: JobRead = {
@@ -526,7 +530,7 @@ function jobWithReadiness(
 const bundle: ArtifactRead = {
   id: "artifact-bundle",
   kind: "production_bundle",
-  sha256: "d".repeat(64),
+  sha256: "b".repeat(64),
   size_bytes: 2_400_000,
   content_type: "application/zip",
   download_url: "https://artifacts.example.test/underlag.zip?signature=fresh",
@@ -535,7 +539,13 @@ const bundle: ArtifactRead = {
 
 const completeArtifacts: ArtifactRead[] = [
   bundle,
-  { ...bundle, id: "manifest", kind: "manifest", content_type: "application/json" },
+  {
+    ...bundle,
+    id: "manifest",
+    kind: "manifest",
+    sha256: "d".repeat(64),
+    content_type: "application/json",
+  },
   {
     ...bundle,
     id: "manufacturing-intent",
@@ -561,7 +571,13 @@ const completeArtifacts: ArtifactRead[] = [
 
 const blockedReviewArtifacts: ArtifactRead[] = [
   bundle,
-  { ...bundle, id: "manifest", kind: "manifest", content_type: "application/json" },
+  {
+    ...bundle,
+    id: "manifest",
+    kind: "manifest",
+    sha256: "d".repeat(64),
+    content_type: "application/json",
+  },
   {
     ...bundle,
     id: "manufacturing-intent",
@@ -1065,6 +1081,25 @@ describe("review package artifact inventory", () => {
   it("derives the exact persisted inventory from bounded successful-job metadata", () => {
     expect(reviewArtifactKindsFromJob(succeededJob)).toEqual(completeArtifactKinds);
     expect(reviewArtifactKindsFromJob(blockedCamJob)).toEqual(blockedArtifactKinds);
+    expect(reviewBundleSha256FromJob(succeededJob)).toBe("b".repeat(64));
+    expect(reviewBundleArtifactMatchesJob(
+      completeArtifacts,
+      reviewBundleSha256FromJob(succeededJob),
+    )).toBe(true);
+  });
+
+  it("rejects a bundle artifact whose checksum is not the successful job checksum", () => {
+    const changedArtifacts = completeArtifacts.map((artifact) => (
+      artifact.kind === "production_bundle"
+        ? { ...artifact, sha256: "c".repeat(64) }
+        : artifact
+    ));
+
+    expect(reviewBundleArtifactMatchesJob(
+      changedArtifacts,
+      reviewBundleSha256FromJob(succeededJob),
+    )).toBe(false);
+    expect(reviewBundleSha256FromJob({ ...succeededJob, status: "running" })).toBeUndefined();
   });
 
   it.each([
@@ -2735,6 +2770,7 @@ describe("ProductionWorkflow", () => {
       within(packageIdentity).getByText("Svenska PDF:er · tekniska datafält på engelska"),
     ).toBeVisible();
     expect(within(packageIdentity).getByText("2.4 MB")).toBeVisible();
+    expect(within(packageIdentity).getByText("b".repeat(64))).toBeVisible();
     expect(within(packageIdentity).getByText("d".repeat(64))).toBeVisible();
     expect(within(packageIdentity).getByText("Designgranskningspaket (ZIP)")).toBeVisible();
     expect(within(packageIdentity).getByText("Lagerurval")).toBeVisible();
@@ -2872,10 +2908,72 @@ describe("ProductionWorkflow", () => {
 
     await waitFor(() => expect(api.releaseVersion).toHaveBeenCalledWith(project.id, 1, "R1"));
     expect(await screen.findByText(/Immutable designgranskningsrevision R1/i)).toBeVisible();
+    const releasedZipVerification = screen.getByRole("region", {
+      name: "Verifiera frisläppt ZIP",
+    });
+    expect(within(releasedZipVerification).getByText(
+      `--expect-bundle-sha256 ${"b".repeat(64)}`,
+    )).toBeVisible();
+    expect(within(releasedZipVerification).getByText(
+      /PASS bekräftar filidentiteten men auktoriserar inte fysisk kapning/i,
+    )).toBeVisible();
     expect(screen.getByRole("status", { name: "Status för fysisk tillverkning" })).toHaveTextContent(
       "Ej frisläppt för fysisk kapning",
     );
     expect(screen.queryByText(/Fysisk kapning är auktoriserad/i)).not.toBeInTheDocument();
+  });
+
+  it("rejects a release response bound to another ZIP checksum", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: reviewerPrincipal.user_id,
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    vi.mocked(api.approveVersion).mockResolvedValue(version("approved"));
+    vi.mocked(api.releaseVersion).mockResolvedValue({
+      ...immutableDesignReviewRelease,
+      bundle_sha256: "c".repeat(64),
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={secondReviewerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox", {
+      name: /Jag har granskat exakt jobb, manifest och maskinbunden validering/i,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Godkänn CAM-valideringspaket" }));
+    expect(await screen.findByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox", {
+      name: /Jag bekräftar att revisionslåset endast gäller immutable designgranskning/i,
+    }));
+    fireEvent.click(screen.getByRole("button", {
+      name: "Lås designgranskningsrevision R1",
+    }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /revisionsbevis matchar inte exakt designgranskningspaket/i,
+    );
+    expect(screen.queryByText(/Immutable designgranskningsrevision R1/i)).not.toBeInTheDocument();
   });
 
   it("does not let the design reviewer approve the CAM validation package", async () => {
@@ -3092,6 +3190,53 @@ describe("ProductionWorkflow", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/SHA-256-identiteten/i);
     expect(api.downloadArtifact).toHaveBeenCalledWith(bundle);
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(anchorClick).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the refreshed ZIP artifact checksum differs from the job", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    const changedArtifacts = completeArtifacts.map((artifact) => (
+      artifact.kind === "production_bundle"
+        ? { ...artifact, sha256: "c".repeat(64) }
+        : artifact
+    ));
+    vi.mocked(api.listArtifacts)
+      .mockResolvedValueOnce(completeArtifacts)
+      .mockResolvedValueOnce(changedArtifacts);
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL");
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+
+    expect(await screen.findByText(/aktuella artefaktlista/i)).toBeVisible();
+    expect(api.downloadArtifact).not.toHaveBeenCalled();
     expect(createObjectUrl).not.toHaveBeenCalled();
     expect(anchorClick).not.toHaveBeenCalled();
   });

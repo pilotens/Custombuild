@@ -1714,14 +1714,24 @@ def run_offline_verifier(
     tmp_path: Path,
     payload: bytes,
     *arguments: str,
+    include_bundle_digest: bool = True,
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, Any]]:
     package_path = tmp_path / "custombuild-test-package.zip"
     package_path.write_bytes(payload)
-    verifier_file = (
-        Path(__file__).resolve().parents[2] / "scripts" / "verify_production_package.py"
+    effective_arguments = arguments
+    has_bundle_digest = any(
+        argument == "--expect-bundle-sha256" or argument.startswith("--expect-bundle-sha256=")
+        for argument in arguments
     )
+    if include_bundle_digest and not has_bundle_digest:
+        effective_arguments = (
+            *arguments,
+            "--expect-bundle-sha256",
+            sha256_hex(payload),
+        )
+    verifier_file = Path(__file__).resolve().parents[2] / "scripts" / "verify_production_package.py"
     completed = subprocess.run(  # noqa: S603 - fixed interpreter and test-owned package path
-        [sys.executable, "-I", verifier_file, str(package_path), *arguments],
+        [sys.executable, "-I", verifier_file, str(package_path), *effective_arguments],
         check=False,
         capture_output=True,
         text=True,
@@ -1732,7 +1742,7 @@ def run_offline_verifier(
 
     canonical_stdout = io.StringIO()
     canonical_exit_code = offline_package_verifier.main(
-        [str(package_path), *arguments],
+        [str(package_path), *effective_arguments],
         stdout=canonical_stdout,
     )
     canonical_output = canonical_stdout.getvalue()
@@ -1752,6 +1762,88 @@ def test_distributed_trusted_verifier_is_byte_identical_to_canonical_source() ->
     )
 
     assert distributed_file.read_bytes() == Path(canonical_file).read_bytes()
+
+
+def test_offline_verifier_requires_expected_bundle_sha256(tmp_path: Path) -> None:
+    _, _, payload = package_fixture()
+
+    completed, result = run_offline_verifier(
+        tmp_path,
+        payload,
+        include_bundle_digest=False,
+    )
+
+    assert completed.returncode == 2
+    assert result["status"] == "FAIL"
+    assert result["error"]["code"] == "INVALID_ARGUMENTS"
+
+
+@pytest.mark.parametrize("invalid_digest", ("", "A" * 64, "0" * 63, "not-a-digest"))
+def test_offline_verifier_rejects_invalid_expected_bundle_sha256(
+    tmp_path: Path,
+    invalid_digest: str,
+) -> None:
+    _, _, payload = package_fixture()
+
+    completed, result = run_offline_verifier(
+        tmp_path,
+        payload,
+        "--expect-bundle-sha256",
+        invalid_digest,
+    )
+
+    assert completed.returncode == 2
+    assert result["status"] == "FAIL"
+    assert result["error"]["code"] == "INVALID_ARGUMENTS"
+
+
+def test_offline_verifier_rejects_wrong_expected_bundle_sha256_before_zip_semantics(
+    tmp_path: Path,
+) -> None:
+    payload = b"not-a-zip"
+
+    completed, result = run_offline_verifier(
+        tmp_path,
+        payload,
+        "--expect-bundle-sha256",
+        "0" * 64,
+    )
+
+    assert completed.returncode == 3
+    assert result["status"] == "FAIL"
+    assert result["error"]["code"] == "BUNDLE_SHA256_MISMATCH"
+
+
+def test_offline_verifier_rejects_coordinated_rehash_against_original_bundle_sha256(
+    tmp_path: Path,
+) -> None:
+    _, _, payload = package_fixture()
+    original_bundle_sha256 = sha256_hex(payload)
+    files = zip_entries(payload)
+    forged = rehash_supplier_bound_artifact(
+        payload,
+        path=START_HERE_PATH,
+        data=files[START_HERE_PATH] + b"\nattacker-controlled rewrite\n",
+    )
+    assert sha256_hex(forged) != original_bundle_sha256
+
+    internally_consistent, internally_consistent_result = run_offline_verifier(
+        tmp_path,
+        forged,
+    )
+    assert internally_consistent.returncode == 0
+    assert internally_consistent_result["details"]["external_bundle_sha256_match"] is True
+
+    completed, result = run_offline_verifier(
+        tmp_path,
+        forged,
+        "--expect-bundle-sha256",
+        original_bundle_sha256,
+    )
+
+    assert completed.returncode == 3
+    assert result["status"] == "FAIL"
+    assert result["error"]["code"] == "BUNDLE_SHA256_MISMATCH"
 
 
 @pytest.mark.parametrize(
@@ -1944,6 +2036,8 @@ def test_v5_zip_contains_no_executable_verifier_and_separate_trusted_verifier_pa
         "authenticity": "NOT_AUTHENTICATED",
         "checksums_verified": True,
         "details": {
+            "bundle_sha256": sha256_hex(payload),
+            "external_bundle_sha256_match": True,
             "identity": {
                 "design_hash": context.design_hash,
                 "project_id": context.project_id,
@@ -1958,17 +2052,21 @@ def test_v5_zip_contains_no_executable_verifier_and_separate_trusted_verifier_pa
         "physical_cutting_authorized": False,
         "schema_version": OFFLINE_REPORT_SCHEMA_VERSION,
         "status": "PASS",
-        "verifier_version": "custombuild-offline-package-verifier-1.1.0",
+        "verifier_version": "custombuild-offline-package-verifier-1.2.0",
         "warnings": [
             (
-                "SHA-256 verifies internal consistency relative to this unsigned manifest and "
-                "can detect accidental corruption; it does not authenticate the publisher or "
-                "issuer."
+                "Artifact SHA-256 values verify internal consistency relative to this unsigned "
+                "manifest; they do not authenticate the publisher or issuer."
             ),
             (
-                "A malicious party able to rewrite both payloads and the unsigned manifest can "
-                "create a new internally consistent ZIP; this verifier cannot detect that "
-                "coordinated rewrite."
+                "The required expected bundle SHA-256 must come from an authenticated, "
+                "out-of-band source independent of the received ZIP; a digest delivered with "
+                "the same untrusted ZIP does not authenticate it."
+            ),
+            (
+                "A matching external bundle digest detects byte changes, including a "
+                "coordinated internal rewrite, relative to that supplied digest; the match is "
+                "not a publisher signature."
             ),
             (
                 "Expected project, revision and design-hash options compare unsigned manifest "

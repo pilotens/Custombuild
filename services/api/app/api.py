@@ -1947,6 +1947,35 @@ def _release_matches_frozen_job(
         return False
 
 
+def _release_bundle_sha256(release: Release) -> str:
+    """Return the exact outer ZIP identity frozen by one release.
+
+    The digest is duplicated in the frozen generation result and its immutable
+    artifact-row inventory. Requiring both copies to agree prevents the release
+    response from presenting an unbound value as a shop handoff identity.
+    """
+
+    result = release.generation_result_json
+    inventory = release.artifact_inventory_json
+    if not isinstance(result, Mapping) or not isinstance(inventory, list):
+        raise _release_archive_error()
+    digest = result.get("bundle_sha256")
+    bundle_rows = tuple(
+        item
+        for item in inventory
+        if isinstance(item, Mapping) and item.get("kind") == "production_bundle"
+    )
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"[a-f0-9]{64}", digest) is None
+        or len(bundle_rows) != 1
+        or bundle_rows[0].get("sha256") != digest
+        or bundle_rows[0].get("content_type") != "application/zip"
+    ):
+        raise _release_archive_error()
+    return digest
+
+
 def _release_archive_binding(
     release: Release,
     version: DesignVersion,
@@ -5478,13 +5507,16 @@ def get_production_state(
     )
     release_payload: dict[str, Any] | None = None
     if release is not None:
+        bundle_sha256 = _release_bundle_sha256(release)
         release_payload = {
             "release_id": release.id,
             "release_number": release.release_number,
             "status": "released",
+            "bundle_sha256": bundle_sha256,
             "manifest_sha256": release.manifest_sha256,
             "release_kind": "design_review",
             "machine_use": "validation_only",
+            "physical_cutting_authorized": False,
         }
     return {
         "project_id": project.id,
@@ -6437,13 +6469,16 @@ def release_version(
                 status_code=409,
                 detail="The stored release does not match the checked immutable package",
             )
+        bundle_sha256 = _release_bundle_sha256(existing_release)
         return {
             "release_id": existing_release.id,
             "release_number": existing_release.release_number,
             "status": version.status.value,
+            "bundle_sha256": bundle_sha256,
             "manifest_sha256": existing_release.manifest_sha256,
             "release_kind": "design_review",
             "machine_use": "validation_only",
+            "physical_cutting_authorized": False,
         }
     release = Release(
         organization_id=principal.organization_id,
@@ -6460,6 +6495,7 @@ def release_version(
     version.immutable = True
     session.add(release)
     session.flush()
+    bundle_sha256 = _release_bundle_sha256(release)
     audit(
         session,
         principal,
@@ -6468,9 +6504,13 @@ def release_version(
         release.id,
         {
             "release_number": payload.release_number,
+            "bundle_sha256": bundle_sha256,
             "manifest_sha256": manifest_sha,
             "generation_job_id": job.id,
             "production_context_hash": job.production_context_hash,
+            "release_scope": "design_review",
+            "machine_use": "validation_only",
+            "physical_cutting_authorized": False,
             "artifact_inventory": release_inventory,
         },
     )
@@ -6478,9 +6518,11 @@ def release_version(
         "release_id": release.id,
         "release_number": release.release_number,
         "status": version.status.value,
+        "bundle_sha256": bundle_sha256,
         "manifest_sha256": manifest_sha,
         "release_kind": "design_review",
         "machine_use": "validation_only",
+        "physical_cutting_authorized": False,
     }
 
 

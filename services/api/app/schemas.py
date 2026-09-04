@@ -1197,9 +1197,11 @@ class ReleaseRead(BaseModel):
     release_id: str
     release_number: str
     status: Literal["released"]
+    bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     release_kind: Literal["design_review"]
     machine_use: Literal["validation_only"]
+    physical_cutting_authorized: Literal[False]
 
 
 class ApprovalRead(BaseModel):

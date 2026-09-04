@@ -692,25 +692,37 @@ ACTUAL_VERIFIER_SHA256="$(sha256sum /trusted/verify_production_package.py | awk 
 test "$ACTUAL_VERIFIER_SHA256" = "$EXPECTED_VERIFIER_SHA256"
 ```
 
-Verify the ZIP as data, using project, revision and design hash obtained independently
-from the authenticated order record:
+Verify the ZIP as data. Obtain the exact lowercase bundle SHA-256 from an
+authenticated order record through an out-of-band channel independent of the ZIP,
+along with the project, revision and design hash:
 
 ```bash
+EXPECTED_BUNDLE_SHA256='<64-char-bundle-sha256>'
 python3 -I /trusted/verify_production_package.py package.zip \
+  --expect-bundle-sha256 "$EXPECTED_BUNDLE_SHA256" \
   --expect-project-id '<project-id>' \
   --expect-revision '<revision>' \
   --expect-design-hash '<64-char-design-hash>'
 ```
 
-Accept only exit code 0 and JSON `status: PASS`, and retain that JSON in the shop
-review record. A pass proves internal manifest consistency and can detect accidental
-corruption. It cannot detect a malicious coordinated rewrite of both the unsigned
-manifest and payloads, authenticate Custombuild or an evidence issuer, establish
-current evidence revocation/expiry, or authorize physical cutting, machining or
-assembly. The expected-identity options compare unsigned manifest claims only; they
-do not independently reconstruct design semantics or establish authenticity. Use the
-authenticated server for those trust checks and the shop's own controlled release
-process for any machine operation.
+Accept only exit code 0, JSON `status: PASS`,
+`details.external_bundle_sha256_match: true`, and a `details.bundle_sha256` equal to
+the authenticated out-of-band value; retain that JSON in the shop review record. The
+verifier reads at most 32 MiB into one byte snapshot, compares the SHA-256 of that
+exact snapshot before interpreting ZIP metadata, and performs all ZIP and manifest
+checks against the same bytes. This prevents a path-swap race between hashing and
+inspection.
+
+A pass proves internal manifest consistency and an exact byte match relative to the
+caller-supplied digest. That external match detects accidental corruption and a
+coordinated internal rewrite relative to the recorded original digest, but the digest
+itself is not a publisher signature. If the digest arrives with the same untrusted ZIP
+or through an unauthenticated channel, the match does not authenticate Custombuild or
+an evidence issuer. A pass also does not establish current evidence revocation/expiry
+or authorize physical cutting, machining or assembly. The expected-identity options
+compare unsigned manifest claims only; they do not independently reconstruct design
+semantics or establish authenticity. Use the authenticated server for those trust
+checks and the shop's own controlled release process for any machine operation.
 
 ## Optional FreeCAD worker
 

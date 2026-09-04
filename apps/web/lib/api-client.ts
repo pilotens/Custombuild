@@ -183,6 +183,51 @@ function asRecord(value: unknown): JsonRecord | undefined {
     : undefined;
 }
 
+const RELEASE_READ_KEYS = [
+  "release_id",
+  "release_number",
+  "status",
+  "bundle_sha256",
+  "manifest_sha256",
+  "release_kind",
+  "machine_use",
+  "physical_cutting_authorized",
+] as const;
+
+function strictReleaseRead(value: unknown, expectedReleaseNumber?: string): ReleaseRead {
+  const payload = asRecord(value);
+  if (
+    !payload
+    || Object.keys(payload).length !== RELEASE_READ_KEYS.length
+    || RELEASE_READ_KEYS.some((key) => !Object.prototype.hasOwnProperty.call(payload, key))
+    || typeof payload.release_id !== "string"
+    || !CANONICAL_UUID_PATTERN.test(payload.release_id)
+    || typeof payload.release_number !== "string"
+    || !/^[A-Z0-9][A-Z0-9._-]{0,39}$/.test(payload.release_number)
+    || (expectedReleaseNumber !== undefined && payload.release_number !== expectedReleaseNumber)
+    || payload.status !== "released"
+    || typeof payload.bundle_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(payload.bundle_sha256)
+    || typeof payload.manifest_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(payload.manifest_sha256)
+    || payload.machine_use !== "validation_only"
+    || payload.release_kind !== "design_review"
+    || payload.physical_cutting_authorized !== false
+  ) {
+    throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
+  }
+  return {
+    release_id: payload.release_id,
+    release_number: payload.release_number,
+    status: payload.status,
+    bundle_sha256: payload.bundle_sha256,
+    manifest_sha256: payload.manifest_sha256,
+    release_kind: payload.release_kind,
+    machine_use: payload.machine_use,
+    physical_cutting_authorized: false,
+  };
+}
+
 function asNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -1593,10 +1638,21 @@ export class CustombuildApiClient {
   }
 
   async getProductionState(projectId: string): Promise<ProductionStateRead> {
-    return this.request<ProductionStateRead>(
+    const payload = await this.request<unknown>(
       `/v1/projects/${encodeURIComponent(projectId)}/production-state`,
       { method: "GET" },
     );
+    const state = asRecord(payload);
+    if (!state || !Object.prototype.hasOwnProperty.call(state, "release")) {
+      throw new ApiError("Serverns produktionsstatus saknar ett entydigt frisläppningsfält.");
+    }
+    if (state.release !== null) {
+      return {
+        ...(payload as ProductionStateRead),
+        release: strictReleaseRead(state.release),
+      };
+    }
+    return payload as ProductionStateRead;
   }
 
   async createVersion(
@@ -1938,38 +1994,7 @@ export class CustombuildApiClient {
         body: JSON.stringify({ release_number: releaseNumber, confirmation: "RELEASE" }),
       },
     );
-    const requiredKeys = [
-      "release_id",
-      "release_number",
-      "status",
-      "manifest_sha256",
-      "release_kind",
-      "machine_use",
-    ] as const;
-    if (
-      Object.keys(payload).length !== requiredKeys.length
-      || requiredKeys.some((key) => !Object.prototype.hasOwnProperty.call(payload, key))
-      || typeof payload.release_id !== "string"
-      || !CANONICAL_UUID_PATTERN.test(payload.release_id)
-      || typeof payload.release_number !== "string"
-      || !/^[A-Z0-9][A-Z0-9._-]{0,39}$/.test(payload.release_number)
-      || payload.release_number !== releaseNumber
-      || payload.status !== "released"
-      || typeof payload.manifest_sha256 !== "string"
-      || !/^[a-f0-9]{64}$/.test(payload.manifest_sha256)
-      || payload.machine_use !== "validation_only"
-      || payload.release_kind !== "design_review"
-    ) {
-      throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
-    }
-    return {
-      release_id: payload.release_id,
-      release_number: payload.release_number,
-      status: payload.status,
-      manifest_sha256: payload.manifest_sha256,
-      release_kind: payload.release_kind,
-      machine_use: payload.machine_use,
-    };
+    return strictReleaseRead(payload, releaseNumber);
   }
 
   async previewDesign(

@@ -1595,9 +1595,11 @@ describe("production API contract", () => {
       release_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       release_number: "R7",
       status: "released",
+      bundle_sha256: "b".repeat(64),
       manifest_sha256: "f".repeat(64),
       release_kind: "design_review",
       machine_use: "validation_only",
+      physical_cutting_authorized: false,
     };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
       JSON.stringify(release),
@@ -1620,10 +1622,13 @@ describe("production API contract", () => {
       { ...release, release_number: "R8" },
       { ...release, release_number: "lowercase" },
       { ...release, status: "design_validated" },
+      { ...release, bundle_sha256: "B".repeat(64) },
+      { ...release, bundle_sha256: "b".repeat(63) },
       { ...release, manifest_sha256: "F".repeat(64) },
       { ...release, manifest_sha256: "f".repeat(63) },
       { ...release, release_kind: "physical_production" },
       { ...release, machine_use: "production" },
+      { ...release, physical_cutting_authorized: true },
       { ...release, extra_server_claim: true },
     ];
     for (const invalid of invalidResponses) {
@@ -1646,6 +1651,52 @@ describe("production API contract", () => {
         /ofullständigt frisläppningsbevis/i,
       );
     }
+  });
+
+  it("strictly validates restored release evidence in production state", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const release = {
+      release_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      release_number: "R7",
+      status: "released",
+      bundle_sha256: "b".repeat(64),
+      manifest_sha256: "f".repeat(64),
+      release_kind: "design_review",
+      machine_use: "validation_only",
+      physical_cutting_authorized: false,
+    };
+    const state = {
+      project_id: projectId,
+      version: null,
+      approvals: [],
+      latest_job: null,
+      release,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(
+      JSON.stringify(state),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.getProductionState(projectId)).resolves.toEqual(state);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      ...state,
+      release: { ...release, bundle_sha256: "B".repeat(64) },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(api.getProductionState(projectId)).rejects.toThrow(
+      /ofullständigt frisläppningsbevis/i,
+    );
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      project_id: projectId,
+      version: null,
+      approvals: [],
+      latest_job: null,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(api.getProductionState(projectId)).rejects.toThrow(
+      /saknar ett entydigt frisläppningsfält/i,
+    );
   });
 
   it("shows FastAPI validation details instead of a generic 422 message", async () => {

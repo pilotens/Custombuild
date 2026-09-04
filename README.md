@@ -171,10 +171,12 @@ one-shot recovery and attestation barriers rerun before writers.
    when its complete CAM evidence set exists. A CAM-blocked review package cannot
    enter this step.
 7. Lock the design-review revision. It becomes immutable and exposes the
-   checksum-verified ZIP through an authenticated, expiring download. The ZIP
-   itself is not digitally signed and remains validation-only; an offline copy
-   therefore needs a separately trusted digest or publisher signature and can
-   never authorize physical machining.
+   checksum-verified ZIP and its exact outer-file SHA-256 through the authenticated
+   release view. Give that digest to the recipient over a separately trusted
+   channel and require it with `--expect-bundle-sha256` in the offline verifier.
+   The ZIP itself is not digitally signed and remains validation-only; matching
+   the externally obtained digest proves exact byte identity, not publisher
+   signature, and can never authorize physical machining.
 8. Any later design revision supersedes the old review lock, cancels unfinished
    old work and prevents new access to its stale artifacts.
 

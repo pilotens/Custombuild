@@ -4347,6 +4347,28 @@ def test_artifact_expectations_reject_total_bytes_and_duplicate_object_keys() ->
     assert duplicate_invalid == ["dfm_report"]
 
 
+def test_release_bundle_identity_requires_matching_frozen_zip_inventory() -> None:
+    digest = "b" * 64
+    release = SimpleNamespace(
+        generation_result_json={"bundle_sha256": digest},
+        artifact_inventory_json=[
+            {
+                "kind": "production_bundle",
+                "sha256": digest,
+                "content_type": "application/zip",
+            }
+        ],
+    )
+
+    assert api_module._release_bundle_sha256(release) == digest
+
+    release.artifact_inventory_json[0]["sha256"] = "c" * 64
+    with pytest.raises(HTTPException) as exc_info:
+        api_module._release_bundle_sha256(release)
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "Released package failed immutable integrity verification"
+
+
 def _manifest_document_for_job(
     job: GenerationJob,
     readiness_expectation: storage_module.StoredObjectExpectation,
@@ -11159,8 +11181,22 @@ def test_cam_approval_is_bound_to_exact_job_context_and_manifest() -> None:
         with get_session_factory()() as session:
             persisted_second = session.get(GenerationJob, second_job["id"])
             assert persisted_second is not None
+            expected_bundle_sha = persisted_second.result_json["bundle_sha256"]
             expected_manifest_sha = persisted_second.result_json["manifest_sha256"]
+            release_audit = session.scalar(
+                select(AuditEvent).where(
+                    AuditEvent.action == "design_version.released",
+                    AuditEvent.entity_id == released.json()["release_id"],
+                )
+            )
+            assert release_audit is not None
+            assert release_audit.payload_json["bundle_sha256"] == expected_bundle_sha
+            assert release_audit.payload_json["release_scope"] == "design_review"
+            assert release_audit.payload_json["machine_use"] == "validation_only"
+            assert release_audit.payload_json["physical_cutting_authorized"] is False
+        assert released.json()["bundle_sha256"] == expected_bundle_sha
         assert released.json()["manifest_sha256"] == expected_manifest_sha
+        assert released.json()["physical_cutting_authorized"] is False
         repeated = client.post(
             f"{base}/release",
             headers=HEADERS,
@@ -11243,6 +11279,8 @@ def test_production_state_restores_current_revision_approvals_job_and_release() 
         )
         assert state["release"]["release_id"] == released["release_id"]
         assert state["release"]["release_number"] == "R7"
+        assert state["release"]["bundle_sha256"] == released["bundle_sha256"]
+        assert state["release"]["physical_cutting_authorized"] is False
 
 
 def test_warning_requires_attributed_override_and_is_frozen_into_job_context() -> None:

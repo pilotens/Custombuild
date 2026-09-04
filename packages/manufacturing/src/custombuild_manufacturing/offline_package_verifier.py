@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import re
 import sys
@@ -17,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn, TextIO
 
-VERIFIER_VERSION = "custombuild-offline-package-verifier-1.1.0"
+VERIFIER_VERSION = "custombuild-offline-package-verifier-1.2.0"
 REPORT_SCHEMA_VERSION = "custombuild.offline-package-verification.v1"
 MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 ARTIFACT_SCHEMA_VERSION = "custombuild.production-artifacts.v1"
@@ -79,10 +80,13 @@ _MANIFEST_KEYS = frozenset(
 )
 _ARTIFACT_KEYS = frozenset({"path", "media_type", "role", "size_bytes", "sha256"})
 _BOUNDARY_WARNINGS = (
-    "SHA-256 verifies internal consistency relative to this unsigned manifest and can detect "
-    "accidental corruption; it does not authenticate the publisher or issuer.",
-    "A malicious party able to rewrite both payloads and the unsigned manifest can create a "
-    "new internally consistent ZIP; this verifier cannot detect that coordinated rewrite.",
+    "Artifact SHA-256 values verify internal consistency relative to this unsigned manifest; "
+    "they do not authenticate the publisher or issuer.",
+    "The required expected bundle SHA-256 must come from an authenticated, out-of-band source "
+    "independent of the received ZIP; a digest delivered with the same untrusted ZIP does not "
+    "authenticate it.",
+    "A matching external bundle digest detects byte changes, including a coordinated internal "
+    "rewrite, relative to that supplied digest; the match is not a publisher signature.",
     "Expected project, revision and design-hash options compare unsigned manifest claims only; "
     "they do not independently reconstruct design semantics or establish authenticity.",
     "A PASS does not authorize physical cutting, machining, or assembly.",
@@ -437,20 +441,35 @@ def _validate_expected_identity(
 def verify_package(
     package_path: Path,
     *,
+    expected_bundle_sha256: str,
     expected_project_id: str | None = None,
     expected_revision: str | None = None,
     expected_design_hash: str | None = None,
 ) -> dict[str, Any]:
     """Verify one v5 ZIP without extracting it or importing project code."""
 
+    if (
+        not isinstance(expected_bundle_sha256, str)
+        or _DIGEST.fullmatch(expected_bundle_sha256) is None
+    ):
+        _fail("INVALID_ARGUMENTS", "expected bundle hash must be a lowercase SHA-256")
     try:
-        package_size = package_path.stat().st_size
+        with package_path.open("rb") as package_stream:
+            package_bytes = package_stream.read(MAX_PACKAGE_BYTES)
+            exceeds_size_limit = bool(package_stream.read(1))
     except OSError as exc:
-        _fail("PACKAGE_IO_ERROR", f"cannot stat package: {exc}")
-    if package_size <= 0 or package_size > MAX_PACKAGE_BYTES:
+        _fail("PACKAGE_IO_ERROR", f"cannot read package: {exc}")
+    if not package_bytes or exceeds_size_limit:
         _fail("PACKAGE_SIZE_INVALID", "package is empty or exceeds the 32 MiB safety limit")
+
+    bundle_sha256 = hashlib.sha256(package_bytes).hexdigest()
+    if bundle_sha256 != expected_bundle_sha256:
+        _fail(
+            "BUNDLE_SHA256_MISMATCH",
+            "package ZIP SHA-256 differs from the independently supplied expected bundle hash",
+        )
     try:
-        archive = zipfile.ZipFile(package_path, mode="r")
+        archive = zipfile.ZipFile(io.BytesIO(package_bytes), mode="r")
     except (OSError, zipfile.BadZipFile) as exc:
         _fail("INVALID_ZIP", f"package is not a readable ZIP: {exc}")
     with archive:
@@ -498,6 +517,8 @@ def verify_package(
         _validate_joint_retention_sidecar(archive, entries)
 
     return {
+        "bundle_sha256": bundle_sha256,
+        "external_bundle_sha256_match": True,
         "identity": {
             "design_hash": manifest["design_hash"],
             "project_id": manifest["project_id"],
@@ -565,6 +586,14 @@ def _parser() -> StructuredArgumentParser:
         "package",
         help="untrusted package ZIP to verify as data",
     )
+    parser.add_argument(
+        "--expect-bundle-sha256",
+        dest="expected_bundle_sha256",
+        required=True,
+        help=(
+            "lowercase SHA-256 of the exact ZIP obtained from an authenticated, out-of-band source"
+        ),
+    )
     parser.add_argument("--expect-project-id", dest="expected_project_id")
     parser.add_argument("--expect-revision", dest="expected_revision")
     parser.add_argument("--expect-design-hash", dest="expected_design_hash")
@@ -584,6 +613,8 @@ def main(
         args = _parser().parse_args(arguments)
         package_path = Path(args.package)
         package_name = package_path.name
+        if _DIGEST.fullmatch(args.expected_bundle_sha256) is None:
+            _fail("INVALID_ARGUMENTS", "expected bundle hash must be a lowercase SHA-256")
         for name, value in (
             ("project ID", args.expected_project_id),
             ("revision", args.expected_revision),
@@ -597,6 +628,7 @@ def main(
             _fail("INVALID_ARGUMENTS", "expected design hash must be a lowercase SHA-256")
         details = verify_package(
             package_path,
+            expected_bundle_sha256=args.expected_bundle_sha256,
             expected_project_id=args.expected_project_id,
             expected_revision=args.expected_revision,
             expected_design_hash=args.expected_design_hash,

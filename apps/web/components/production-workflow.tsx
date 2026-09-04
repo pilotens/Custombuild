@@ -1013,6 +1013,31 @@ export function reviewArtifactKindsFromJob(job?: JobRead): string[] | undefined 
   return kinds;
 }
 
+export function reviewBundleSha256FromJob(job?: JobRead): string | undefined {
+  const result = job?.result_json;
+  if (
+    job?.status !== "succeeded"
+    || !result
+    || typeof result !== "object"
+    || Array.isArray(result)
+    || typeof result.bundle_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(result.bundle_sha256)
+  ) return undefined;
+  return result.bundle_sha256;
+}
+
+export function reviewBundleArtifactMatchesJob(
+  artifacts: readonly Pick<ArtifactRead, "kind" | "sha256" | "content_type">[],
+  bundleSha256: string | undefined,
+): boolean {
+  if (!bundleSha256) return false;
+  const bundles = artifacts.filter((artifact) => artifact.kind === "production_bundle");
+  const bundle = bundles[0];
+  return bundles.length === 1
+    && bundle?.content_type === "application/zip"
+    && bundle.sha256 === bundleSha256;
+}
+
 export function blockedCamEvidenceKindIsForbidden(kind: string): boolean {
   return !BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS.has(kind);
 }
@@ -1881,6 +1906,7 @@ export function ProductionWorkflow({
     job?.status === "failed" && productionErrorHasCode(job.error, STOCK_PROFILE_MISSING_CODE),
   );
   const productionBundle = artifacts.find((artifact) => artifact.kind === "production_bundle");
+  const bundleSha256 = reviewBundleSha256FromJob(job);
   const reviewPackageStatus = designReviewPackageStatusFromJob(job);
   const reviewPackageStatusClaimed = Boolean(
     job?.result_json
@@ -1898,7 +1924,7 @@ export function ProductionWorkflow({
     reviewPackageStatus,
     reviewPackageStatusClaimed,
     expectedReviewArtifactKinds,
-  );
+  ) && reviewBundleArtifactMatchesJob(artifacts, bundleSha256);
   const workshopReadiness = workshopReadinessFromJob(job);
   const softwareStatusByCode = new Map(
     workshopReadiness?.software_evidence.map((item) => [item.code, item.status]) ?? [],
@@ -1992,6 +2018,7 @@ export function ProductionWorkflow({
     && job.result_json.production_machine_program === false
     && reviewPackageStatus?.cam_status === "VALIDATION_GENERATED"
     && workshopReadiness?.physical_cutting_authorized === false
+    && bundleSha256
     && manifestSha256,
   );
   const camApprovalCurrent = Boolean(
@@ -2008,7 +2035,9 @@ export function ProductionWorkflow({
     && release.status === "released"
     && release.release_kind === "design_review"
     && release.machine_use === "validation_only"
+    && release.bundle_sha256 === bundleSha256
     && release.manifest_sha256 === manifestSha256
+    && release.physical_cutting_authorized === false
     && version?.status === "released"
     && version.immutable,
   );
@@ -2540,8 +2569,8 @@ export function ProductionWorkflow({
       return;
     }
     void perform("release", "Verifierar och låser designgranskningsrevisionen…", async () => {
-      if (!version || !job || !manifestSha256 || !camApprovalCurrent) {
-        throw new ApiError("Aktuell CAM-granskning och manifestbindning krävs före revisionslåset.");
+      if (!version || !job || !bundleSha256 || !manifestSha256 || !camApprovalCurrent) {
+        throw new ApiError("Aktuell CAM-granskning samt ZIP- och manifestbindning krävs före revisionslåset.");
       }
       if (!releaseConfirmed) {
         throw new ApiError("Bekräfta designgranskningens begränsade användning innan du låser revisionen.");
@@ -2556,7 +2585,9 @@ export function ProductionWorkflow({
         released.status !== "released"
         || released.release_kind !== "design_review"
         || released.machine_use !== "validation_only"
+        || released.bundle_sha256 !== bundleSha256
         || released.manifest_sha256 !== manifestSha256
+        || released.physical_cutting_authorized !== false
         || released.release_number !== releaseNumber
       ) {
         throw new ApiError(
@@ -2661,7 +2692,7 @@ export function ProductionWorkflow({
       reviewPackageStatus,
       reviewPackageStatusClaimed,
       expectedReviewArtifactKinds,
-    )) {
+    ) || !reviewBundleArtifactMatchesJob(currentArtifacts, bundleSha256)) {
       throw new ApiError(
         "Granskningspaketets aktuella artefaktlista är inte längre verifierbar. Skapa om paketet.",
       );
@@ -3291,15 +3322,28 @@ export function ProductionWorkflow({
                     </p>
                   </header>
                   {immutableReviewReleased ? (
-                    <p className="production-check-passed" role="status">
-                      <Check aria-hidden="true" size={16} />
-                      <span>
-                        <strong>Immutable designgranskningsrevision {release?.release_number}.</strong>{" "}
-                        Manifest <code>{release?.manifest_sha256}</code> är låst för
-                        designgranskning och icke-skärande validering. Fysisk kapning är fortfarande
-                        inte auktoriserad.
-                      </span>
-                    </p>
+                    <>
+                      <p className="production-check-passed" role="status">
+                        <Check aria-hidden="true" size={16} />
+                        <span>
+                          <strong>Immutable designgranskningsrevision {release?.release_number}.</strong>{" "}
+                          Manifest <code>{release?.manifest_sha256}</code> och ZIP{" "}
+                          <code>{release?.bundle_sha256}</code> är låsta för designgranskning och
+                          icke-skärande validering. Fysisk kapning är fortfarande inte auktoriserad.
+                        </span>
+                      </p>
+                      <section aria-label="Verifiera frisläppt ZIP">
+                        <p>
+                          Verifiera den hämtade ZIP-filen med den separat betrodda verifieraren och
+                          exakt denna frisläppningsbindning:
+                        </p>
+                        <code>--expect-bundle-sha256 {release?.bundle_sha256}</code>
+                        <p>
+                          Ett verifierings-PASS bekräftar filidentiteten men auktoriserar inte fysisk
+                          kapning.
+                        </p>
+                      </section>
+                    </>
                   ) : camBlocked ? (
                     <p className="production-warning" role="status">
                       CAM-granskning och revisionslås är blockerade eftersom paketet sanningsenligt
@@ -3500,6 +3544,10 @@ export function ProductionWorkflow({
                     <div>
                       <dt>Artefakter</dt>
                       <dd>{artifacts.length}</dd>
+                    </div>
+                    <div className="production-package-hash">
+                      <dt>ZIP SHA-256</dt>
+                      <dd><code>{bundleSha256 ?? "Saknas"}</code></dd>
                     </div>
                     <div className="production-package-hash">
                       <dt>Manifest SHA-256</dt>
