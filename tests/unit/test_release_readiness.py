@@ -1311,7 +1311,7 @@ def hardened_compose_config() -> dict[str, object]:
     }
     worker = hardened_service(networks=["backend"]) | {
         "healthcheck": {"test": ["CMD", "worker-probe"]},
-        "command": ["celery", "worker", "--queues=generation"],
+        "command": list(release_readiness.REVIEWED_GENERATION_WORKER_COMMAND),
         "environment": {
             "REDIS_URL": "redis://:strong-secret@redis:6379/0",
             "CELERY_EXPECTED_QUEUE": "generation",
@@ -1475,6 +1475,18 @@ def test_hardening_rejects_cross_routed_or_missing_maintenance_worker() -> None:
 
     assert "maintenance-worker is not an isolated singleton" in issues
     assert "maintenance-worker health is not bound to its exact Celery queue" in issues
+
+
+def test_hardening_rejects_generation_worker_that_bypasses_registry_preflight() -> None:
+    config = hardened_compose_config()
+    config["services"]["worker"]["command"] = [
+        "celery",
+        "worker",
+        "--concurrency=2",
+        "--queues=generation",
+    ]
+
+    assert "worker is not isolated to the generation queue" in compose_hardening_issues(config)
 
 
 @pytest.mark.parametrize(

@@ -78,6 +78,14 @@ VULNERABILITY_EXCEPTION_SCHEMA = "custombuild.vulnerability-exceptions.v2"
 VULNERABILITY_SEVERITIES = frozenset({"Negligible", "Low", "Medium", "High", "Critical"})
 REVIEWED_GRYPE_SCAN_ACTION = "anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
 REVIEWED_GRYPE_VERSION = "v0.110.0"
+REVIEWED_GENERATION_WORKER_COMMAND = (
+    "python",
+    "-m",
+    "custombuild_worker.generation_startup",
+    "--loglevel=INFO",
+    "--concurrency=2",
+    "--queues=generation",
+)
 PRODUCTION_SEMANTIC_SOURCE_PATHS = (
     "packages/manufacturing/src/custombuild_manufacturing/package.py",
     "packages/manufacturing/src/custombuild_manufacturing/readiness.py",
@@ -2111,15 +2119,14 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
             return " ".join(str(item) for item in value)
         return ""
 
-    generation_command = celery_command("worker")
+    generation_command_value = services.get("worker", {}).get("command", [])
     maintenance_command = celery_command("maintenance-worker")
     storage_reaper_command = celery_command("storage-reaper-worker")
     scheduler_command = celery_command("scheduler")
-    if (
-        " worker " not in f" {generation_command} "
-        or "--queues=generation" not in generation_command
-        or "--queues=maintenance" in generation_command
-    ):
+    # The reviewed wrapper verifies the activated retention registry before it
+    # execs the fixed Celery generation consumer. A direct Celery invocation,
+    # even on the right queue, bypasses that production startup trust boundary.
+    if generation_command_value != list(REVIEWED_GENERATION_WORKER_COMMAND):
         issues.append("worker is not isolated to the generation queue")
     if (
         " worker " not in f" {maintenance_command} "
