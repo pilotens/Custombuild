@@ -296,6 +296,7 @@ class OutboxEvent(IdMixin, TimestampMixin, TenantMixin, Base):
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON)
     available_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=utcnow,
         server_default=func.current_timestamp(),
     )
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
