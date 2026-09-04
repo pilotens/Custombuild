@@ -633,6 +633,28 @@ describe("deterministic bookcase preview", () => {
     expect(stockRule?.summary).toContain("kan inte placeras inom");
   });
 
+  it("screens the live review fixture with its declared sheet capacity", () => {
+    const result = resolveDesign({
+      ...DEFAULT_DESIGN_SPEC,
+      width_mm: 1_800,
+      height_mm: 2_100,
+      depth_mm: 320,
+      divider_count: 2,
+      stock_width_mm: 2_440,
+      stock_height_mm: 2_200,
+      stock_count: 5,
+      back_stock_width_mm: 2_440,
+      back_stock_height_mm: 2_200,
+      back_stock_count: 2,
+      machine_profile_id: "custombuild-router-5125-linuxcnc",
+    });
+
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "DFM-STOCK-001"))
+      .toMatchObject({ status: "PASS", affected_part_ids: [] });
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "DFM-MACHINE-001"))
+      .toMatchObject({ status: "PASS", affected_part_ids: [] });
+  });
+
   it("nests 6 mm backs only on the selected back stock profile", () => {
     const blocked = resolveDesign({
       ...DEFAULT_DESIGN_SPEC,

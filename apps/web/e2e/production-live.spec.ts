@@ -84,7 +84,7 @@ const WORKSHOP_STOCK_PROFILES = [
     sheet_width_um: 2_440_000,
     sheet_height_um: 2_200_000,
     thickness_um: 17_800,
-    sheet_count: 4,
+    sheet_count: 5,
     trim_margin_um: 10_000,
     kerf_um: 6_000,
     grain_direction: "X",
@@ -113,7 +113,7 @@ const WORKSHOP_STOCK_PROFILES = [
 ] as const;
 
 const WORKSHOP_REGISTRATIONS = [
-  ...Array.from({ length: 4 }, (_, sheetIndex) => ({
+  ...Array.from({ length: 5 }, (_, sheetIndex) => ({
     stock_role: "carcass" as const,
     sheet_index: sheetIndex,
     declaration_authority: "CLIENT_DECLARED" as const,
@@ -146,12 +146,18 @@ async function bindStructuredWorkshopContext(page: Page, projectId: string): Pro
 
   const fillProfile = async (
     name: "Stomskivor" | "Bakstyckesskivor",
-    values: { profileId: string; profileVersion: string; sheetHeightMm: string },
+    values: {
+      profileId: string;
+      profileVersion: string;
+      sheetHeightMm: string;
+      sheetCount: string;
+    },
   ) => {
     const profile = editor.getByRole("group", { name });
     await profile.getByLabel("Leverantörens profil-ID (deklarerat)").fill(values.profileId);
     await profile.getByLabel("Profilversion eller batch").fill(values.profileVersion);
     await profile.getByLabel("Skivhöjd (mm)").fill(values.sheetHeightMm);
+    await profile.getByLabel("Antal fysiska skivor").fill(values.sheetCount);
     await profile.getByLabel("Trimkant (mm)").fill("10");
     await profile.getByLabel("Kerf/verktygsspalt (mm)").fill("6");
     await profile.getByLabel("Fiberriktning i råskivan").selectOption("X");
@@ -161,11 +167,13 @@ async function bindStructuredWorkshopContext(page: Page, projectId: string): Pro
     profileId: WORKSHOP_STOCK_PROFILES[0].supplier_profile_id,
     profileVersion: WORKSHOP_STOCK_PROFILES[0].supplier_profile_version,
     sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[0].sheet_height_um / 1_000),
+    sheetCount: String(WORKSHOP_STOCK_PROFILES[0].sheet_count),
   });
   await fillProfile("Bakstyckesskivor", {
     profileId: WORKSHOP_STOCK_PROFILES[1].supplier_profile_id,
     profileVersion: WORKSHOP_STOCK_PROFILES[1].supplier_profile_version,
     sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[1].sheet_height_um / 1_000),
+    sheetCount: String(WORKSHOP_STOCK_PROFILES[1].sheet_count),
   });
 
   const persistedContext = page.waitForResponse((response) => {
@@ -494,10 +502,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(createPayload.production_context).toMatchObject({
     stock_width_mm: 2_440,
     stock_height_mm: 2_200,
-    stock_count: 4,
+    stock_count: WORKSHOP_STOCK_PROFILES[0].sheet_count,
     back_stock_width_mm: 2_440,
     back_stock_height_mm: 2_200,
-    back_stock_count: 2,
+    back_stock_count: WORKSHOP_STOCK_PROFILES[1].sheet_count,
     machine_profile_id: WORKSHOP_MACHINE_PROFILE_ID,
     stock_profiles: WORKSHOP_STOCK_PROFILES,
     two_sided_registrations: WORKSHOP_REGISTRATIONS,
@@ -570,10 +578,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(generationPayload).toMatchObject({
     stock_width_mm: 2_440,
     stock_height_mm: 2_200,
-    stock_count: 4,
+    stock_count: WORKSHOP_STOCK_PROFILES[0].sheet_count,
     back_stock_width_mm: 2_440,
     back_stock_height_mm: 2_200,
-    back_stock_count: 2,
+    back_stock_count: WORKSHOP_STOCK_PROFILES[1].sheet_count,
     machine_profile_id: WORKSHOP_MACHINE_PROFILE_ID,
     stock_profiles: WORKSHOP_STOCK_PROFILES,
     two_sided_registrations: WORKSHOP_REGISTRATIONS,
