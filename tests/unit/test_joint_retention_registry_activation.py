@@ -535,3 +535,10 @@ def test_migration_has_global_locked_function_only_acl_and_downgrade_guard() -> 
     assert "JOINT_RETENTION_REGISTRY_DOWNGRADE_BLOCKED" in source
     assert 'schema="public" if bind.dialect.name == "postgresql" else None' in source
     assert '"INSERT INTO public.joint_retention_registry_state "' in source
+    # PostgreSQL accepts unqualified SQL aliases such as BIGINT and BOOLEAN, but
+    # their actual pg_catalog type names are int8 and bool.  Qualifying an alias
+    # (for example pg_catalog.bigint) makes a fresh PostgreSQL migration fail.
+    assert "pg_catalog.int8" in source
+    assert "pg_catalog.bool" in source
+    assert "pg_catalog.bigint" not in source
+    assert "pg_catalog.boolean" not in source

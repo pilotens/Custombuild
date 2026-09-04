@@ -853,6 +853,7 @@ describe("manufacturing feature disclosure", () => {
     const overlay = screen.getByRole("region", { name: "Bearbetningsöversikt" });
     expect(overlay).toHaveAttribute("aria-live", "polite");
     expect(overlay).toHaveAttribute("data-geometry-source", "metadata-only");
+    expect(overlay).toHaveStyle({ bottom: "64px" });
     expect(overlay.querySelector("details")).toHaveAttribute("open");
     expect(within(overlay).getByText("side-left")).toBeInTheDocument();
     expect(within(overlay).getByRole("list", { name: "Bearbetningsposter för Vänster gavel" }))

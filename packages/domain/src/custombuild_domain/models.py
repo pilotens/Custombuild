@@ -22,6 +22,11 @@ from .enums import (
     ReinforcementMode,
     ShelfMount,
 )
+from .geometry import (
+    allocate_bay_widths_um,
+    allocate_shelf_positions_um,
+    shelf_opening_heights_um,
+)
 from .identity import content_hash
 from .units import mm
 
@@ -285,8 +290,8 @@ class BookcaseParameters(FrozenModel):
             raise ValueError("height leaves no usable internal opening")
         if self.depth_um <= t:
             raise ValueError("depth must exceed material thickness")
-        inner_width = self.width_um - 2 * t - self.vertical_divider_count * t
-        if inner_width <= 0:
+        carcass_inner_width = self.width_um - 2 * t
+        if carcass_inner_width - self.vertical_divider_count * t <= 0:
             raise ValueError("vertical dividers consume all internal width")
         bay_count = self.vertical_divider_count + 1
         if self.bay_width_ratios_ppm:
@@ -307,8 +312,14 @@ class BookcaseParameters(FrozenModel):
                 raise ValueError(
                     "custom shelf centres must be ordered and separated by at least 5 percent"
                 )
+        bay_widths = allocate_bay_widths_um(
+            carcass_inner_width,
+            t,
+            self.vertical_divider_count,
+            self.bay_width_ratios_ppm,
+        )
         minimum_shelf_width = 2 * self.shelf_side_clearance_um + mm(40)
-        if inner_width // bay_count < minimum_shelf_width:
+        if any(width < minimum_shelf_width for width in bay_widths):
             raise ValueError("divider layout leaves an unmanufacturable shelf width")
         shelf_zone_bottom = (
             self.plinth_height_um + self.base_cabinet_height_um
@@ -316,7 +327,20 @@ class BookcaseParameters(FrozenModel):
             else self.plinth_height_um + t
         )
         shelf_zone_height = self.height_um - t - shelf_zone_bottom
-        if shelf_zone_height - self.shelf_count * t < (self.shelf_count + 1) * mm(40):
+        shelf_positions = allocate_shelf_positions_um(
+            shelf_zone_bottom,
+            shelf_zone_height,
+            t,
+            self.shelf_count,
+            self.shelf_height_ratios_ppm,
+        )
+        shelf_openings = shelf_opening_heights_um(
+            shelf_zone_bottom,
+            shelf_zone_height,
+            t,
+            shelf_positions,
+        )
+        if any(opening < mm(40) for opening in shelf_openings):
             raise ValueError("shelf layout leaves an unmanufacturable opening height")
         if self.base_cabinet_count:
             if self.base_cabinet_height_um < mm(300):
@@ -325,10 +349,16 @@ class BookcaseParameters(FrozenModel):
                 raise ValueError("base cabinet depth must equal the furniture depth")
             if self.base_cabinet_height_um >= self.height_um - t - mm(200):
                 raise ValueError("base cabinet leaves no usable upper shelving zone")
-            base_opening = (
-                self.width_um - (self.base_cabinet_count + 1) * t
-            ) // self.base_cabinet_count
-            if base_opening < mm(200):
+            base_openings = (
+                bay_widths
+                if self.base_cabinet_count == bay_count
+                else allocate_bay_widths_um(
+                    carcass_inner_width,
+                    t,
+                    self.base_cabinet_count - 1,
+                )
+            )
+            if any(opening < mm(200) for opening in base_openings):
                 raise ValueError("base cabinet layout leaves an unmanufacturable module width")
         elif self.base_cabinet_height_um or self.base_cabinet_depth_um:
             raise ValueError("base cabinet dimensions require at least one cabinet module")

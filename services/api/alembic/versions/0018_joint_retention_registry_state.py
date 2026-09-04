@@ -36,7 +36,7 @@ def _configure_postgresql_security() -> None:
           p_registry_sha256 pg_catalog.text,
           p_operator_reference_sha256 pg_catalog.text
         )
-        RETURNS TABLE (activated_epoch pg_catalog.bigint, changed pg_catalog.boolean)
+        RETURNS TABLE (activated_epoch pg_catalog.int8, changed pg_catalog.bool)
         LANGUAGE plpgsql
         SECURITY DEFINER
         SET search_path TO pg_catalog, public
@@ -45,7 +45,7 @@ def _configure_postgresql_security() -> None:
           v_state public.joint_retention_registry_state%ROWTYPE;
           v_old_issuer pg_catalog.jsonb;
           v_new_issuer pg_catalog.jsonb;
-          v_next_epoch pg_catalog.bigint;
+          v_next_epoch pg_catalog.int8;
         BEGIN
           PERFORM pg_catalog.pg_advisory_xact_lock(4340449326452121818);
           IF p_registry IS NULL
@@ -271,13 +271,13 @@ def _configure_postgresql_security() -> None:
           p_registry_canonical_json pg_catalog.text,
           p_registry_sha256 pg_catalog.text
         )
-        RETURNS pg_catalog.bigint
+        RETURNS pg_catalog.int8
         LANGUAGE plpgsql
         SECURITY DEFINER
         SET search_path TO pg_catalog, public
         AS $function$
         DECLARE
-          v_epoch pg_catalog.bigint;
+          v_epoch pg_catalog.int8;
           v_registry_sha256 pg_catalog.text;
           v_registry_canonical_json pg_catalog.text;
         BEGIN

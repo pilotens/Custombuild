@@ -13,6 +13,7 @@ from .enums import (
     PartRole,
     ShelfMount,
 )
+from .geometry import allocate_bay_widths_um, allocate_shelf_positions_um
 from .identity import content_hash, stable_id
 from .models import (
     AssemblyEdge,
@@ -531,21 +532,12 @@ class BookcaseEngine:
         divider_count: int,
         ratios_ppm: tuple[int, ...] = (),
     ) -> tuple[int, ...]:
-        bay_count = divider_count + 1
-        available = inner_width_um - divider_count * thickness_um
-        if ratios_ppm and len(ratios_ppm) == bay_count:
-            total = sum(ratios_ppm)
-            widths = [(available * ratio) // total for ratio in ratios_ppm]
-            remainder = available - sum(widths)
-            order = sorted(
-                range(bay_count),
-                key=lambda index: (-(available * ratios_ppm[index] % total), index),
-            )
-            for index in order[:remainder]:
-                widths[index] += 1
-            return tuple(widths)
-        base, remainder = divmod(available, bay_count)
-        return tuple(base + (1 if index < remainder else 0) for index in range(bay_count))
+        return allocate_bay_widths_um(
+            inner_width_um,
+            thickness_um,
+            divider_count,
+            ratios_ppm,
+        )
 
     @staticmethod
     def _shelf_positions(
@@ -555,24 +547,13 @@ class BookcaseEngine:
         shelf_count: int,
         ratios_ppm: tuple[int, ...] = (),
     ) -> tuple[int, ...]:
-        if shelf_count == 0:
-            return ()
-        if ratios_ppm and len(ratios_ppm) == shelf_count:
-            return tuple(
-                bottom_surface_z_um
-                + (inner_height_um * ratio + 500_000) // 1_000_000
-                - thickness_um // 2
-                for ratio in ratios_ppm
-            )
-        clear_total = inner_height_um - shelf_count * thickness_um
-        opening, remainder = divmod(clear_total, shelf_count + 1)
-        cursor = bottom_surface_z_um
-        positions: list[int] = []
-        for row in range(shelf_count):
-            cursor += opening + (1 if row < remainder else 0)
-            positions.append(cursor)
-            cursor += thickness_um
-        return tuple(positions)
+        return allocate_shelf_positions_um(
+            bottom_surface_z_um,
+            inner_height_um,
+            thickness_um,
+            shelf_count,
+            ratios_ppm,
+        )
 
     def _build_joints(
         self,

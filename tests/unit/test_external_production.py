@@ -201,8 +201,10 @@ def valid_config() -> dict:
             "worker": {
                 "build": common_build,
                 "command": [
-                    "celery",
-                    "worker",
+                    "python",
+                    "-m",
+                    "custombuild_worker.generation_startup",
+                    "--loglevel=INFO",
                     "--concurrency=2",
                     "--queues=generation",
                 ],
@@ -343,6 +345,22 @@ def test_accepts_fail_closed_external_production_contract() -> None:
             expected_vcs_ref="a" * 40,
         )
         == []
+    )
+
+
+def test_rejects_generation_worker_that_bypasses_registry_startup_gate() -> None:
+    config = valid_config()
+    config["services"]["worker"]["command"] = [
+        "celery",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=2",
+        "--queues=generation",
+    ]
+
+    assert (
+        "worker does not consume only the generation queue"
+        in external_production_issues(config)
     )
 
 

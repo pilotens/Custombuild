@@ -339,7 +339,8 @@ export function viewerFeatureAccessibilityDescription(feature: ManufacturingFeat
 const MACHINING_OVERLAY_STYLE: CSSProperties = {
   position: "absolute",
   zIndex: 8,
-  bottom: 48,
+  // Keep the full 24 px mobile width handle exposed below the overlay.
+  bottom: 64,
   left: 12,
   width: "min(430px, calc(100% - 24px))",
   maxHeight: "min(58%, 390px)",

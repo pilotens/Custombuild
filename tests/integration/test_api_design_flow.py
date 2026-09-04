@@ -2434,6 +2434,7 @@ def test_preview_accepts_binary_float_five_percent_shelf_spacing() -> None:
             headers=HEADERS,
             json=valid_spec()
             | {
+                "height_mm": 2000,
                 "shelf_count": 2,
                 "shelf_height_ratios": [0.1, 0.15],
             },

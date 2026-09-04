@@ -259,11 +259,24 @@ def external_production_issues(
             return " ".join(str(item) for item in value)
         return ""
 
+    worker_command_value = _mapping(services["worker"]).get("command", [])
     worker_command = command_text("worker")
     maintenance_command = command_text("maintenance-worker")
     storage_reaper_command = command_text("storage-reaper-worker")
     scheduler_command = command_text("scheduler")
-    if " worker " not in f" {worker_command} " or "--queues=generation" not in worker_command:
+    reviewed_generation_command = [
+        "python",
+        "-m",
+        "custombuild_worker.generation_startup",
+        "--loglevel=INFO",
+        "--concurrency=2",
+        "--queues=generation",
+    ]
+    # The wrapper performs the fail-closed retention-registry preflight and then
+    # execs a fixed Celery worker command.  Accepting a direct ``celery worker``
+    # invocation here would let an otherwise valid production overlay bypass
+    # that startup trust boundary.
+    if worker_command_value != reviewed_generation_command:
         issues.append("worker does not consume only the generation queue")
     if "--queues=maintenance" in worker_command:
         issues.append("worker consumes the maintenance queue")
