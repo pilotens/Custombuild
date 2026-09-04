@@ -440,6 +440,40 @@ def test_live_acceptance_allows_machine_independent_worker_document() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("path", "role", "media_type"),
+    (
+        ("START-HERE.md", "PACKAGE_GUIDE", "text/markdown"),
+        (
+            "evidence/joint-retention/signed-evidence.json",
+            "JOINT_RETENTION_SIGNED_EVIDENCE",
+            "application/json",
+        ),
+        (
+            "schemas/manufacturing-intent.v1.schema.json",
+            "JSON_SCHEMA",
+            "application/schema+json",
+        ),
+        (
+            "schemas/operations.v2.schema.json",
+            "JSON_SCHEMA",
+            "application/schema+json",
+        ),
+        (
+            "schemas/supplier-handoff.v3.schema.json",
+            "JSON_SCHEMA",
+            "application/schema+json",
+        ),
+    ),
+)
+def test_live_acceptance_allows_canonical_review_contract_artifacts(
+    path: str,
+    role: str,
+    media_type: str,
+) -> None:
+    assert blocked_cam_artifact_violation(path, role, media_type) is False
+
+
 def test_live_acceptance_allows_only_the_canonical_stock_selection_snapshot() -> None:
     assert (
         blocked_cam_artifact_violation(

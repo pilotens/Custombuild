@@ -230,6 +230,7 @@ FORBIDDEN_BLOCKED_CAM_ROLES: Final = frozenset(
 )
 BLOCKED_CAM_ALLOWED_ARTIFACTS: Final = frozenset(
     {
+        ("START-HERE.md", "PACKAGE_GUIDE", "text/markdown"),
         ("assembly/assembly-manual.pdf", "ASSEMBLY_REVIEW_MANUAL", "application/pdf"),
         ("assembly/assembly-readiness.json", "ASSEMBLY_READINESS", "application/json"),
         ("bom/bom.csv", "BOM", "text/csv"),
@@ -239,6 +240,11 @@ BLOCKED_CAM_ALLOWED_ARTIFACTS: Final = frozenset(
         ("cut-list/cut-list.csv", "CUT_LIST", "text/csv"),
         ("design/design-spec.json", "FROZEN_DESIGN_SPEC", "application/json"),
         ("design/result-summary.json", "DESIGN_RESULT_SUMMARY", "application/json"),
+        (
+            "evidence/joint-retention/signed-evidence.json",
+            "JOINT_RETENTION_SIGNED_EVIDENCE",
+            "application/json",
+        ),
         ("labels/part-labels.pdf", "PART_LABELS", "application/pdf"),
         ("materials/material-list.csv", "MATERIAL_LIST", "text/csv"),
         (
@@ -249,6 +255,21 @@ BLOCKED_CAM_ALLOWED_ARTIFACTS: Final = frozenset(
         ("model/design.glb", "WEB_PREVIEW_GLB", "model/gltf-binary"),
         ("model/design.step", "AUTHORITATIVE_STEP", "model/step"),
         ("qa/measurement-protocol.pdf", "QA_PROTOCOL", "application/pdf"),
+        (
+            "schemas/manufacturing-intent.v1.schema.json",
+            "JSON_SCHEMA",
+            "application/schema+json",
+        ),
+        (
+            "schemas/operations.v2.schema.json",
+            "JSON_SCHEMA",
+            "application/schema+json",
+        ),
+        (
+            "schemas/supplier-handoff.v3.schema.json",
+            "JSON_SCHEMA",
+            "application/schema+json",
+        ),
         (
             "validation/cad-interchange-status.json",
             "CAD_INTERCHANGE_STATUS",
