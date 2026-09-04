@@ -87,12 +87,13 @@ def test_postgres_bootstrap_is_rls_bound_serialized_and_atomic() -> None:
         assert issuer_column == ("character varying", 64, "YES")
         issuer_check = session.scalar(
             text(
-                "SELECT pg_catalog.pg_get_constraintdef(constraint.oid) "
-                "FROM pg_catalog.pg_constraint constraint "
-                "JOIN pg_catalog.pg_class relation ON relation.oid = constraint.conrelid "
+                "SELECT pg_catalog.pg_get_constraintdef(constraint_row.oid) "
+                "FROM pg_catalog.pg_constraint constraint_row "
+                "JOIN pg_catalog.pg_class relation "
+                "ON relation.oid = constraint_row.conrelid "
                 "JOIN pg_catalog.pg_namespace namespace ON namespace.oid = relation.relnamespace "
                 "WHERE namespace.nspname = 'public' AND relation.relname = 'users' "
-                "AND constraint.conname = 'ck_users_oidc_issuer_sha256_format'"
+                "AND constraint_row.conname = 'ck_users_oidc_issuer_sha256_format'"
             )
         )
         assert isinstance(issuer_check, str)

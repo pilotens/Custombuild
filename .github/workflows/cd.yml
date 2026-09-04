@@ -204,9 +204,9 @@ jobs:
           set -euo pipefail
           image="custombuild-${{ matrix.component }}:${GITHUB_SHA}"
           if [ "${{ matrix.component }}" = "seaweedfs" ]; then
-            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "4.41"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "4.45"
             test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "https://github.com/seaweedfs/seaweedfs"
-            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.upstream-source.sha256" }}')" = "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.upstream-source.sha256" }}')" = "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
           else
             test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
             test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"

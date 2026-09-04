@@ -34,7 +34,11 @@ def _postgres_engines() -> tuple[Engine, Engine, Engine, Engine] | None:
     )
     if any(value is None for value in values):
         return None
-    return tuple(create_engine(str(value)) for value in values)  # type: ignore[return-value]
+    migrator = activation._engine(str(values[0]))
+    application_engines = tuple(
+        create_engine(str(value)) for value in values[1:]
+    )
+    return (migrator, *application_engines)  # type: ignore[return-value]
 
 
 def _registry() -> dict[str, Any]:

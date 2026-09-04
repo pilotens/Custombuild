@@ -2214,7 +2214,7 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             "width_mm": 900,
             "shelf_count": 3,
             "load_per_shelf_kg": 31,
-            "reinforcement_mode": "auto",
+            "reinforcement_mode": "manual",
         }
     )
     overloaded = mapping(

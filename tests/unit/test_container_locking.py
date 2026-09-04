@@ -460,19 +460,21 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
     ) in dockerfile
     assert "ENV GOTOOLCHAIN=local" in dockerfile
     assert (
-        "ADD --checksum=sha256:6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
+        "ADD --checksum=sha256:800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
     ) in dockerfile
     overrides_sha256 = hashlib.sha256(overrides).hexdigest()
-    assert overrides_sha256 == "f787879847f3b5e1eaba89ee03a43997f11787ece23c4aab0cce4978f0942b50"
+    assert overrides_sha256 == "3ae484c86166bb6cd88f24398577d99ed06ea8bf5c9384d5288094d7d7048d05"
     assert f"ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256={overrides_sha256}" in dockerfile
-    assert "go.etcd.io/etcd/client/pkg/v3@v3.6.14" in dockerfile
-    assert "golang.org/x/crypto@v0.55.0" in dockerfile
+    assert "github.com/apache/thrift@v0.24.0" in dockerfile
+    assert "go.etcd.io/etcd/client/pkg/v3@v3.7.1" in dockerfile
+    assert "golang.org/x/crypto@v0.56.0" in dockerfile
     assert "golang.org/x/image@v0.45.0" in dockerfile
     assert "golang.org/x/text@v0.41.0" in dockerfile
-    assert 'go.etcd.io/etcd/client/pkg/v3)" = "v3.6.12"' in dockerfile
-    assert 'golang.org/x/crypto)" = "v0.54.0"' in dockerfile
+    assert "go mod edit -dropreplace=github.com/apache/thrift" in dockerfile
+    assert 'go.etcd.io/etcd/client/pkg/v3)" = "v3.7.1"' in dockerfile
+    assert 'golang.org/x/crypto)" = "v0.55.0"' in dockerfile
     assert 'golang.org/x/image)" = "v0.44.0"' in dockerfile
-    assert dockerfile.count("-mod=readonly") == 9
+    assert dockerfile.count("-mod=readonly") == 11
     assert "go mod verify" in dockerfile
     assert "FROM scratch AS runtime" in dockerfile
     assert "USER 1000:1000" in dockerfile
@@ -486,8 +488,9 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
     )
     for expected in (
         'test "$go_version" = "1.26.6"',
-        'test "$etcd_client_pkg_version" = "3.6.14"',
-        'test "$x_crypto_version" = "0.55.0"',
+        'test "$apache_thrift_version" = "0.24.0"',
+        'test "$etcd_client_pkg_version" = "3.7.1"',
+        'test "$x_crypto_version" = "0.56.0"',
         'test "$x_image_version" = "0.45.0"',
         'test "$x_text_version" = "0.41.0"',
         f'test "$security_overrides_sha256" = "{overrides_sha256}"',
