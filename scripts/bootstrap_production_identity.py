@@ -357,21 +357,29 @@ def bootstrap_identity(session: Session, raw_request: BootstrapRequest) -> Boots
                     email=request.email,
                     name=request.user_name,
                 ),
-                Membership(
-                    organization_id=request.organization_id,
-                    user_id=request.user_id,
-                    role=request.role,
-                ),
-                AuditEvent(
-                    id=audit_event_id,
-                    organization_id=request.organization_id,
-                    actor_id=request.user_id,
-                    action=BOOTSTRAP_AUDIT_ACTION,
-                    entity_type="user",
-                    entity_id=request.user_id,
-                    payload_json=audit_payload,
-                ),
             ]
+        )
+        # These models intentionally have no ORM relationships. Flush the FK
+        # targets in dependency order so PostgreSQL never has to infer it.
+        session.flush()
+        session.add(
+            Membership(
+                organization_id=request.organization_id,
+                user_id=request.user_id,
+                role=request.role,
+            )
+        )
+        session.flush()
+        session.add(
+            AuditEvent(
+                id=audit_event_id,
+                organization_id=request.organization_id,
+                actor_id=request.user_id,
+                action=BOOTSTRAP_AUDIT_ACTION,
+                entity_type="user",
+                entity_id=request.user_id,
+                payload_json=audit_payload,
+            )
         )
         session.flush()
         return BootstrapResult(
@@ -476,30 +484,34 @@ def provision_additional_member(
     audit_event = session.get(AuditEvent, audit_event_id)
     state_present = (user is not None, membership is not None, audit_event is not None)
     if not any(state_present):
-        session.add_all(
-            [
-                User(
-                    id=request.user_id,
-                    oidc_sub=expected_identity_key,
-                    oidc_issuer_sha256=expected_issuer_sha256,
-                    email=request.email,
-                    name=request.user_name,
-                ),
-                Membership(
-                    organization_id=request.organization_id,
-                    user_id=request.user_id,
-                    role=request.role,
-                ),
-                AuditEvent(
-                    id=audit_event_id,
-                    organization_id=request.organization_id,
-                    actor_id=request.user_id,
-                    action=MEMBER_AUDIT_ACTION,
-                    entity_type="user",
-                    entity_id=request.user_id,
-                    payload_json=audit_payload,
-                ),
-            ]
+        session.add(
+            User(
+                id=request.user_id,
+                oidc_sub=expected_identity_key,
+                oidc_issuer_sha256=expected_issuer_sha256,
+                email=request.email,
+                name=request.user_name,
+            )
+        )
+        session.flush()
+        session.add(
+            Membership(
+                organization_id=request.organization_id,
+                user_id=request.user_id,
+                role=request.role,
+            )
+        )
+        session.flush()
+        session.add(
+            AuditEvent(
+                id=audit_event_id,
+                organization_id=request.organization_id,
+                actor_id=request.user_id,
+                action=MEMBER_AUDIT_ACTION,
+                entity_type="user",
+                entity_id=request.user_id,
+                payload_json=audit_payload,
+            )
         )
         session.flush()
         return BootstrapResult(

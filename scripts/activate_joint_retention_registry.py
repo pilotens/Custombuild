@@ -248,51 +248,6 @@ def _guard_database_connection(session: Session) -> None:
         raise RegistryActivationError(
             "joint-retention registry functions are missing or have unsafe ownership"
         )
-    privileges = session.execute(
-        text(
-            "SELECT "
-            "pg_catalog.has_function_privilege('custombuild_api', "
-            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
-            "'EXECUTE'), "
-            "pg_catalog.has_function_privilege('custombuild_worker', "
-            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
-            "'EXECUTE'), "
-            "pg_catalog.has_function_privilege('custombuild_storage_attestor', "
-            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
-            "'EXECUTE'), "
-            "pg_catalog.has_function_privilege('custombuild_api', "
-            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
-            "pg_catalog.has_function_privilege('custombuild_worker', "
-            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
-            "pg_catalog.has_function_privilege('custombuild_storage_attestor', "
-            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
-            "pg_catalog.has_function_privilege('custombuild_migrator', "
-            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
-            "'EXECUTE'), "
-            "pg_catalog.has_function_privilege('custombuild_migrator', "
-            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
-            "pg_catalog.has_table_privilege('custombuild_api', "
-            "'public.joint_retention_registry_state', 'SELECT,INSERT,UPDATE,DELETE'), "
-            "pg_catalog.has_table_privilege('custombuild_worker', "
-            "'public.joint_retention_registry_state', 'SELECT,INSERT,UPDATE,DELETE'), "
-            "pg_catalog.has_table_privilege('custombuild_storage_attestor', "
-            "'public.joint_retention_registry_state', 'SELECT,INSERT,UPDATE,DELETE')"
-        )
-    ).one()
-    if tuple(privileges) != (
-        False,
-        False,
-        False,
-        True,
-        True,
-        False,
-        True,
-        True,
-        False,
-        False,
-        False,
-    ):
-        raise RegistryActivationError("joint-retention registry privileges are not exact")
     unexpected_acl = tuple(
         session.execute(
             text(
@@ -365,6 +320,51 @@ def _guard_database_connection(session: Session) -> None:
         raise RegistryActivationError(
             "joint-retention registry objects have unexpected direct ACL grantees"
         )
+    privileges = session.execute(
+        text(
+            "SELECT "
+            "pg_catalog.has_function_privilege('custombuild_api', "
+            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
+            "'EXECUTE'), "
+            "pg_catalog.has_function_privilege('custombuild_worker', "
+            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
+            "'EXECUTE'), "
+            "pg_catalog.has_function_privilege('custombuild_storage_attestor', "
+            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
+            "'EXECUTE'), "
+            "pg_catalog.has_function_privilege('custombuild_api', "
+            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
+            "pg_catalog.has_function_privilege('custombuild_worker', "
+            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
+            "pg_catalog.has_function_privilege('custombuild_storage_attestor', "
+            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
+            "pg_catalog.has_function_privilege('custombuild_migrator', "
+            "'public.custombuild_joint_retention_install_registry(jsonb,text,text,text)', "
+            "'EXECUTE'), "
+            "pg_catalog.has_function_privilege('custombuild_migrator', "
+            "'public.custombuild_joint_retention_assert_registry(text,text)', 'EXECUTE'), "
+            "pg_catalog.has_table_privilege('custombuild_api', "
+            "'public.joint_retention_registry_state', 'SELECT,INSERT,UPDATE,DELETE'), "
+            "pg_catalog.has_table_privilege('custombuild_worker', "
+            "'public.joint_retention_registry_state', 'SELECT,INSERT,UPDATE,DELETE'), "
+            "pg_catalog.has_table_privilege('custombuild_storage_attestor', "
+            "'public.joint_retention_registry_state', 'SELECT,INSERT,UPDATE,DELETE')"
+        )
+    ).one()
+    if tuple(privileges) != (
+        False,
+        False,
+        False,
+        True,
+        True,
+        False,
+        True,
+        True,
+        False,
+        False,
+        False,
+    ):
+        raise RegistryActivationError("joint-retention registry privileges are not exact")
     current_revisions = tuple(
         session.execute(
             text("SELECT version_num FROM public.alembic_version ORDER BY version_num")

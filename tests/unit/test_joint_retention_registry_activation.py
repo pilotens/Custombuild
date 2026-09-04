@@ -440,8 +440,8 @@ def _guarded_activation_session(
         role_result,
         relations_result,
         functions_result,
-        privileges_result,
         unexpected_result,
+        privileges_result,
         revisions_result,
         lock_result,
     )
@@ -462,7 +462,7 @@ def test_operator_database_guard_accepts_only_exact_registry_acl(
     activation._guard_database_connection(session)
 
     calls = cast(Mock, session).execute.call_args_list
-    acl_statement = str(calls[4].args[0])
+    acl_statement = str(calls[3].args[0])
     assert "pg_catalog.aclexplode" in acl_statement
     assert "acl.grantee = 0 THEN 'PUBLIC'" in acl_statement
     assert "custombuild_api', 'custombuild_worker'" in acl_statement
