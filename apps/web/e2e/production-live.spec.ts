@@ -762,9 +762,13 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   const unexpectedFailedRequests = failedRequests.filter(
     (failure) =>
       !(
-        failure.endsWith(": net::ERR_ABORTED")
+        failure.startsWith("POST ")
         // The editor intentionally cancels a superseded latest-wins preview request.
         && failure.includes("/v1/designs/autofix")
+        && (
+          failure.endsWith(": net::ERR_ABORTED")
+          || failure.endsWith(": NS_BINDING_ABORTED")
+        )
       ),
   );
   expect(unexpectedFailedRequests).toEqual([]);
