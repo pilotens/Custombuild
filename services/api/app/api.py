@@ -49,9 +49,11 @@ from custombuild_manufacturing import (
     MAX_EVIDENCE_ARTIFACTS,
     MAX_EVIDENCE_TOTAL_BYTES,
     MAX_READINESS_STATUS_BYTES,
+    SERVER_OWNED_PRODUCTION_PROFILE,
     STOCK_PROFILE_MISSING_CODE,
     SUPPLIER_HANDOFF_PATH,
     SUPPLIER_HANDOFF_ROLE,
+    WORKSHOP_ACCEPTED_STATUS,
     ArtifactError,
     CAMStageStatus,
     DesignReviewPackageStatus,
@@ -70,6 +72,23 @@ from custombuild_manufacturing import (
     validate_manifest_context_contract,
     validate_workshop_evidence_binding,
 )
+from custombuild_manufacturing.cam_candidate_package import (
+    CAM_CANDIDATE_BACKPLOT_PATH,
+    CAM_CANDIDATE_MACHINE_PROFILE_PATH,
+    CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH,
+    CAM_CANDIDATE_PROGRAM_INDEX_PATH,
+    CAM_CANDIDATE_PROGRAM_ROOT,
+    CAM_CANDIDATE_REPORT_PATH,
+    CAM_CANDIDATE_TOOLPATH_PATH,
+    read_and_verify_cam_candidate_package,
+)
+from custombuild_manufacturing.cam_software_provenance import (
+    CAMSoftwareProvenanceError,
+    cam_software_provenance_sha256,
+    parse_supported_cam_implementation_identity,
+    producer_build_identity_from_engine_context,
+    validate_cam_software_provenance,
+)
 from custombuild_manufacturing.package import PRODUCTION_MANIFEST_SCHEMA_VERSION
 from custombuild_manufacturing.production_context import (
     ProductionContextError,
@@ -78,6 +97,11 @@ from custombuild_manufacturing.production_context import (
     contexts_equal,
     generation_context_hash,
     resolve_production_components,
+)
+from custombuild_manufacturing.production_machine_profile import (
+    ProductionMachineProfileError,
+    load_production_machine_profile,
+    production_machine_profile_job_binding,
 )
 from custombuild_manufacturing.readiness import (
     LEGACY_WORKSHOP_READINESS_SCHEMA_VERSION,
@@ -226,6 +250,10 @@ PrincipalDep = Annotated[Principal, Depends(get_principal)]
 DesignerDep = Annotated[Principal, Depends(require_capability(Capability.DESIGN))]
 GeneratorDep = Annotated[Principal, Depends(require_capability(Capability.GENERATE))]
 ReviewerDep = Annotated[Principal, Depends(require_capability(Capability.REVIEW))]
+ProductionReleaseDep = Annotated[
+    Principal,
+    Depends(require_capability(Capability.PRODUCTION_RELEASE)),
+]
 JointRetentionEvidenceDownloadDep = Annotated[
     Principal,
     Depends(require_capability(Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD)),
@@ -251,6 +279,8 @@ _UPLOAD_STORAGE_RESERVATION_LEASE = timedelta(minutes=15)
 _PRODUCTION_MANIFEST_MAX_BYTES = MAX_CORE_DOCUMENT_BYTES
 _REVIEW_STORAGE_TOTAL_SECONDS = 60.0
 _REVIEW_DOCUMENT_MAX_BYTES = {
+    "production_bundle": artifact_size_limit("production_bundle"),
+    "cam_candidate_bundle": artifact_size_limit("cam_candidate_bundle"),
     "workshop_readiness": _WORKSHOP_READINESS_MAX_BYTES,
     "dfm_report": _DFM_REPORT_MAX_BYTES,
     "design_review_package_status": _DESIGN_REVIEW_PACKAGE_STATUS_MAX_BYTES,
@@ -547,6 +577,7 @@ def _approval_binding(approval: Approval) -> _ApprovalBinding:
         approval.generation_job_id,
         approval.production_context_hash,
         approval.manifest_sha256,
+        approval.cam_candidate_bundle_sha256,
         canonical_hash(approval.overrides_json),
         approval.created_at,
         approval.updated_at,
@@ -1710,6 +1741,7 @@ def _require_current_artifacts(
 
 _ARTIFACT_DOWNLOAD_IDENTITIES: Mapping[str, tuple[str, str]] = {
     "production_bundle": ("design-review", "application/zip"),
+    "cam_candidate_bundle": ("cam-candidate", "application/zip"),
     "manifest": ("design-review-manifest", "application/json"),
     "manufacturing_intent": ("manufacturing-intent", "application/json"),
     "supplier_handoff": ("cnc-shop-handoff", "application/json"),
@@ -1725,6 +1757,14 @@ _ARTIFACT_DOWNLOAD_IDENTITIES: Mapping[str, tuple[str, str]] = {
     "source_provenance": ("source-provenance", "application/json"),
     "workshop_readiness": ("workshop-readiness", "application/json"),
     "assembly_readiness": ("assembly-readiness", "application/json"),
+    "cutting_toolpaths": ("cutting-toolpaths", "application/json"),
+    "machine_program_index": ("machine-program-index", "application/json"),
+    "cutting_program_validation_report": (
+        "cutting-program-validation-report",
+        "application/json",
+    ),
+    "cutting_backplot": ("cutting-backplot", "image/svg+xml"),
+    "production_machine_profile": ("production-machine-profile", "application/json"),
 }
 _ARTIFACT_DOWNLOAD_EXTENSIONS: Mapping[str, str] = {
     "application/json": ".json",
@@ -1732,8 +1772,80 @@ _ARTIFACT_DOWNLOAD_EXTENSIONS: Mapping[str, str] = {
     "application/zip": ".zip",
     "image/svg+xml": ".svg",
     "model/gltf-binary": ".glb",
+    "text/x-gcode": ".ngc",
 }
 _SETUP_SHEET_ARTIFACT_KIND_PATTERN = re.compile(r"setup_sheet_([0-9]{3})")
+_MACHINE_PROGRAM_ARTIFACT_KIND_PATTERN = re.compile(r"machine_program_([0-9]{3})")
+_CAM_CANDIDATE_ARTIFACT_KINDS = frozenset(
+    {
+        "cam_candidate_bundle",
+        "cutting_toolpaths",
+        "machine_program_index",
+        "cutting_program_validation_report",
+        "cutting_backplot",
+        "production_machine_profile",
+    }
+)
+
+
+def _is_cam_candidate_artifact_kind(kind: str) -> bool:
+    return (
+        kind in _CAM_CANDIDATE_ARTIFACT_KINDS
+        or _MACHINE_PROGRAM_ARTIFACT_KIND_PATTERN.fullmatch(kind) is not None
+    )
+
+
+def _can_read_cam_candidate_artifacts(principal: Principal) -> bool:
+    return Capability.EXECUTABLE_CAM_DOWNLOAD in capabilities_for_role(principal.role)
+
+
+def _can_read_current_cam_review_artifacts(principal: Principal) -> bool:
+    """Restrict mutable/current cutting bytes to the explicit review surface.
+
+    Operators and production releasers consume executable CAM only through an
+    immutable release archive.  Sharing the generic executable-download
+    capability with them must not expose a successful but still unapproved job.
+    """
+
+    capabilities = capabilities_for_role(principal.role)
+    return {
+        Capability.EXECUTABLE_CAM_DOWNLOAD,
+        Capability.REVIEW,
+    } <= capabilities
+
+
+def _require_cam_candidate_artifact_read(
+    principal: Principal,
+    artifact_kind: str,
+) -> None:
+    """Keep executable cutting data behind its own least-privilege boundary."""
+
+    if _is_cam_candidate_artifact_kind(artifact_kind) and not (
+        _can_read_cam_candidate_artifacts(principal)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Capability {Capability.EXECUTABLE_CAM_DOWNLOAD.value} required",
+        )
+
+
+def _require_current_cam_review_artifact_read(
+    principal: Principal,
+    artifact_kind: str,
+) -> None:
+    """Authorize executable bytes on the current-job reviewer surface only."""
+
+    _require_cam_candidate_artifact_read(principal, artifact_kind)
+    if _is_cam_candidate_artifact_kind(artifact_kind) and not (
+        _can_read_current_cam_review_artifacts(principal)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"Capability {Capability.REVIEW.value} required for current "
+                "executable CAM review artifacts"
+            ),
+        )
 
 
 def _require_retention_bound_bundle_download_capability(
@@ -1786,10 +1898,15 @@ def _artifact_filename(
     identity = _ARTIFACT_DOWNLOAD_IDENTITIES.get(kind)
     if identity is None:
         setup_match = _SETUP_SHEET_ARTIFACT_KIND_PATTERN.fullmatch(kind)
-        if setup_match is None:
+        machine_program_match = _MACHINE_PROGRAM_ARTIFACT_KIND_PATTERN.fullmatch(kind)
+        if setup_match is not None:
+            stem = f"setup-sheet-{setup_match.group(1)}"
+            expected_content_type = "image/svg+xml"
+        elif machine_program_match is not None:
+            stem = f"machine-program-{machine_program_match.group(1)}"
+            expected_content_type = "text/x-gcode"
+        else:
             raise ValueError("artifact kind is invalid")
-        stem = f"setup-sheet-{setup_match.group(1)}"
-        expected_content_type = "image/svg+xml"
     else:
         stem, expected_content_type = identity
     if content_type != expected_content_type:
@@ -1976,6 +2093,250 @@ def _release_bundle_sha256(release: Release) -> str:
     return digest
 
 
+def _release_inventory_artifact_sha256(
+    release: Release,
+    *,
+    kind: str,
+    content_type: str,
+) -> str:
+    """Resolve one exact artifact identity from the frozen release inventory."""
+
+    inventory = release.artifact_inventory_json
+    if not isinstance(inventory, list):
+        raise _release_archive_error()
+    rows = tuple(
+        item for item in inventory if isinstance(item, Mapping) and item.get("kind") == kind
+    )
+    if len(rows) != 1:
+        raise _release_archive_error()
+    digest = rows[0].get("sha256")
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"[a-f0-9]{64}", digest) is None
+        or rows[0].get("content_type") != content_type
+    ):
+        raise _release_archive_error()
+    return digest
+
+
+def _design_review_release_payload(release: Release) -> dict[str, Any]:
+    """Return the legacy validation-only receipt without executable claims."""
+
+    return {
+        "release_id": release.id,
+        "release_number": release.release_number,
+        "status": "released",
+        "bundle_sha256": _release_bundle_sha256(release),
+        "manifest_sha256": release.manifest_sha256,
+        "release_kind": "design_review",
+        "machine_use": "validation_only",
+        "physical_cutting_authorized": False,
+    }
+
+
+_CAM_APPROVAL_RELEASE_SNAPSHOT_KEYS = {
+    "schema_version",
+    "approval_id",
+    "organization_id",
+    "design_version_id",
+    "approval_type",
+    "approved_by",
+    "reason",
+    "generation_job_id",
+    "production_context_hash",
+    "manifest_sha256",
+    "candidate_bundle_sha256",
+    "overrides_json",
+    "created_at",
+    "updated_at",
+    "binding_sha256",
+}
+
+
+def _canonical_release_timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _cam_approval_release_snapshot(cam_approval: Approval) -> dict[str, Any]:
+    """Freeze every approval-owned field needed to audit an executable release."""
+
+    snapshot = {
+        "schema_version": "custombuild.cam-approval-release-binding.v1",
+        "approval_id": cam_approval.id,
+        "organization_id": cam_approval.organization_id,
+        "design_version_id": cam_approval.design_version_id,
+        "approval_type": cam_approval.approval_type,
+        "approved_by": cam_approval.approved_by,
+        "reason": cam_approval.reason,
+        "generation_job_id": cam_approval.generation_job_id,
+        "production_context_hash": cam_approval.production_context_hash,
+        "manifest_sha256": cam_approval.manifest_sha256,
+        "candidate_bundle_sha256": cam_approval.cam_candidate_bundle_sha256,
+        "overrides_json": json.loads(canonical_json_bytes(cam_approval.overrides_json)),
+        "created_at": _canonical_release_timestamp(cam_approval.created_at),
+        "updated_at": _canonical_release_timestamp(cam_approval.updated_at),
+    }
+    snapshot["binding_sha256"] = canonical_hash(snapshot)
+    return snapshot
+
+
+def _validated_frozen_cam_approval_snapshot(release: Release) -> dict[str, Any]:
+    raw = release.cam_approval_snapshot_json
+    if not isinstance(raw, Mapping) or set(raw) != _CAM_APPROVAL_RELEASE_SNAPSHOT_KEYS:
+        raise _release_archive_error()
+    snapshot = dict(raw)
+    binding_sha256 = snapshot.pop("binding_sha256", None)
+    uuid_fields = (
+        "approval_id",
+        "organization_id",
+        "design_version_id",
+        "approved_by",
+        "generation_job_id",
+    )
+    hash_fields = (
+        "production_context_hash",
+        "manifest_sha256",
+        "candidate_bundle_sha256",
+    )
+    if (
+        any(
+            not isinstance(snapshot.get(field), str)
+            or _CANONICAL_UUID_PATTERN.fullmatch(str(snapshot.get(field))) is None
+            for field in uuid_fields
+        )
+        or any(
+            not isinstance(snapshot.get(field), str)
+            or re.fullmatch(r"[a-f0-9]{64}", str(snapshot.get(field))) is None
+            for field in hash_fields
+        )
+        or snapshot.get("schema_version") != "custombuild.cam-approval-release-binding.v1"
+        or snapshot.get("approval_type") != "cam"
+        or not isinstance(snapshot.get("reason"), str)
+        or not 5 <= len(str(snapshot["reason"])) <= 2000
+        or snapshot.get("overrides_json") != []
+        or not isinstance(binding_sha256, str)
+        or re.fullmatch(r"[a-f0-9]{64}", binding_sha256) is None
+        or canonical_hash(snapshot) != binding_sha256
+        or release.cam_approval_binding_sha256 != binding_sha256
+        or release.cam_approval_id != snapshot.get("approval_id")
+        or release.organization_id != snapshot.get("organization_id")
+        or release.design_version_id != snapshot.get("design_version_id")
+        or release.generation_job_id != snapshot.get("generation_job_id")
+        or release.production_context_hash != snapshot.get("production_context_hash")
+        or release.manifest_sha256 != snapshot.get("manifest_sha256")
+    ):
+        raise _release_archive_error()
+    for field in ("created_at", "updated_at"):
+        value = snapshot.get(field)
+        if not isinstance(value, str):
+            raise _release_archive_error()
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise _release_archive_error() from exc
+        if parsed.tzinfo is None or _canonical_release_timestamp(parsed) != value:
+            raise _release_archive_error()
+    return {**snapshot, "binding_sha256": binding_sha256}
+
+
+def _executable_cam_release_payload(release: Release) -> dict[str, Any]:
+    """Build and independently cross-check the immutable executable-CAM receipt."""
+
+    result = release.generation_result_json
+    candidate = result.get("cam_candidate") if isinstance(result, Mapping) else None
+    if not isinstance(candidate, Mapping):
+        raise _release_archive_error()
+    candidate_bundle_sha256 = candidate.get("bundle_sha256")
+    candidate_manifest_sha256 = candidate.get("manifest_sha256")
+    profile_document_sha256 = candidate.get("production_machine_profile_sha256")
+    profile_payload_sha256 = candidate.get("production_profile_payload_sha256")
+    hash_values = (
+        candidate_bundle_sha256,
+        candidate_manifest_sha256,
+        profile_document_sha256,
+        profile_payload_sha256,
+    )
+    if any(
+        not isinstance(value, str) or re.fullmatch(r"[a-f0-9]{64}", value) is None
+        for value in hash_values
+    ):
+        raise _release_archive_error()
+    assert isinstance(candidate_bundle_sha256, str)
+    assert isinstance(candidate_manifest_sha256, str)
+    assert isinstance(profile_document_sha256, str)
+    assert isinstance(profile_payload_sha256, str)
+
+    design_review_bundle_sha256 = _release_bundle_sha256(release)
+    frozen_candidate_sha256 = _release_inventory_artifact_sha256(
+        release,
+        kind="cam_candidate_bundle",
+        content_type="application/zip",
+    )
+    frozen_profile_sha256 = _release_inventory_artifact_sha256(
+        release,
+        kind="production_machine_profile",
+        content_type="application/json",
+    )
+    program_inventory_sha256 = _release_inventory_artifact_sha256(
+        release,
+        kind="machine_program_index",
+        content_type="application/json",
+    )
+    cam_approval = _validated_frozen_cam_approval_snapshot(release)
+    if (
+        candidate_bundle_sha256 != cam_approval["candidate_bundle_sha256"]
+        or candidate_bundle_sha256 != frozen_candidate_sha256
+        or profile_document_sha256 != frozen_profile_sha256
+        or candidate.get("base_design_review_bundle_sha256") != design_review_bundle_sha256
+        or candidate.get("workshop_acceptance_required") is not True
+        or candidate.get("physical_cutting_authorized") is not False
+    ):
+        raise _release_archive_error()
+
+    return {
+        "release_id": release.id,
+        "release_number": release.release_number,
+        "status": "released",
+        "release_kind": "executable_cam",
+        "machine_use": "executable_cam_candidate",
+        "design_review_bundle": {
+            "bundle_sha256": design_review_bundle_sha256,
+            "manifest_sha256": release.manifest_sha256,
+        },
+        "executable_cam": {
+            "candidate_bundle_sha256": candidate_bundle_sha256,
+            "candidate_manifest_sha256": candidate_manifest_sha256,
+            "production_profile_document_sha256": profile_document_sha256,
+            "production_profile_payload_sha256": profile_payload_sha256,
+            "program_inventory_sha256": program_inventory_sha256,
+            "cam_approval": cam_approval,
+            "workshop_acceptance_required": True,
+        },
+        "physical_cutting_authorized": False,
+    }
+
+
+def _release_read_payload(release: Release) -> dict[str, Any]:
+    """Discriminate historical design-review and executable-CAM releases."""
+
+    result = release.generation_result_json
+    candidate = result.get("cam_candidate") if isinstance(result, Mapping) else None
+    if candidate is None:
+        if any(
+            value is not None
+            for value in (
+                release.cam_approval_id,
+                release.cam_approval_binding_sha256,
+                release.cam_approval_snapshot_json,
+            )
+        ):
+            raise _release_archive_error()
+        return _design_review_release_payload(release)
+    return _executable_cam_release_payload(release)
+
+
 def _release_archive_binding(
     release: Release,
     version: DesignVersion,
@@ -1995,6 +2356,13 @@ def _release_archive_binding(
                 release.released_by,
                 release.manifest_sha256,
                 release.generation_job_id,
+                release.cam_approval_id,
+                release.cam_approval_binding_sha256,
+                (
+                    canonical_json_bytes(release.cam_approval_snapshot_json)
+                    if isinstance(release.cam_approval_snapshot_json, Mapping)
+                    else None
+                ),
                 release.production_context_hash,
                 canonical_json_bytes(release.generation_result_json),
                 canonical_json_bytes(release.artifact_inventory_json),
@@ -2144,6 +2512,10 @@ def _resolve_release_archive(
         or _CANONICAL_UUID_PATTERN.fullmatch(release.id) is None
         or _CANONICAL_UUID_PATTERN.fullmatch(version.id) is None
         or _CANONICAL_UUID_PATTERN.fullmatch(release.generation_job_id) is None
+        or (
+            release.cam_approval_id is not None
+            and _CANONICAL_UUID_PATTERN.fullmatch(release.cam_approval_id) is None
+        )
         or version.immutable is not True
         or version.status
         not in {DesignStatus.released, DesignStatus.superseded, DesignStatus.archived}
@@ -2155,6 +2527,7 @@ def _resolve_release_archive(
         or not release.artifact_inventory_json
     ):
         raise _release_archive_error()
+    _release_read_payload(release)
 
     jobs = tuple(
         session.scalars(
@@ -2290,6 +2663,8 @@ def _verify_release_archive_owned(
             verified_download_kind=verified_download_kind,
             verified_download=verified_download,
             build_identity=_release_build_identity(archive.job),
+            allow_test_only_profiles=get_settings().app_env == "test",
+            require_current_cam_implementations=False,
         )
     except ArtifactStorageUnavailableError as exc:
         raise _storage_unavailable() from exc
@@ -2949,7 +3324,553 @@ def _generation_result_claims_are_safe(result_json: Mapping[str, Any]) -> bool:
     )
 
 
-def _workshop_readiness_is_valid(result_json: Mapping[str, Any]) -> bool:
+def _cutting_candidate_result_is_valid(
+    result_json: Mapping[str, Any],
+    *,
+    require_current_implementations: bool = True,
+) -> bool:
+    """Validate the additive cutting-candidate result and public inventory."""
+
+    if type(require_current_implementations) is not bool:
+        return False
+
+    candidate = result_json.get("cam_candidate")
+    if not isinstance(candidate, Mapping) or set(candidate) != {
+        "schema_version",
+        "status",
+        "mode",
+        "physical_cutting_authorized",
+        "workshop_acceptance_required",
+        "base_design_review_bundle_sha256",
+        "bundle_sha256",
+        "bundle_size_bytes",
+        "manifest_sha256",
+        "candidate_context_hash",
+        "software_provenance",
+        "software_provenance_sha256",
+        "production_profile_job_binding",
+        "production_profile_payload_sha256",
+        "execution_context_sha256",
+        "production_machine_profile_sha256",
+        "postprocessor_machine_profile_sha256",
+        "toolpaths_sha256",
+        "program_count",
+        "postprocessor",
+    }:
+        return False
+    if (
+        result_json.get("cam_status") != "CUTTING_CANDIDATE_GENERATED"
+        or result_json.get("machine_program_mode") != "EXECUTABLE_CAM_CANDIDATE"
+        or result_json.get("production_machine_program") is not True
+        or result_json.get("physical_cutting_authorized") is not False
+        or result_json.get("workshop_acceptance_required") is not True
+        or candidate.get("schema_version") != "custombuild.cam-candidate-result.v2"
+        or candidate.get("status") != "CUTTING_CANDIDATE_GENERATED"
+        or candidate.get("mode") != "EXECUTABLE_CAM_CANDIDATE"
+        or candidate.get("physical_cutting_authorized") is not False
+        or candidate.get("workshop_acceptance_required") is not True
+        or candidate.get("base_design_review_bundle_sha256") != result_json.get("bundle_sha256")
+    ):
+        return False
+    hash_fields = {
+        "base_design_review_bundle_sha256",
+        "bundle_sha256",
+        "manifest_sha256",
+        "candidate_context_hash",
+        "software_provenance_sha256",
+        "production_profile_payload_sha256",
+        "execution_context_sha256",
+        "production_machine_profile_sha256",
+        "postprocessor_machine_profile_sha256",
+        "toolpaths_sha256",
+    }
+    if any(
+        not isinstance(candidate.get(field), str)
+        or re.fullmatch(r"[0-9a-f]{64}", str(candidate.get(field))) is None
+        for field in hash_fields
+    ):
+        return False
+    software_provenance = candidate.get("software_provenance")
+    if not isinstance(software_provenance, Mapping):
+        return False
+    try:
+        validate_cam_software_provenance(
+            software_provenance,
+            allow_test_only=True,
+            require_current_implementations=require_current_implementations,
+        )
+        implementation_identity = parse_supported_cam_implementation_identity(
+            software_provenance["implementations"]
+        )
+        postprocessor = candidate.get("postprocessor")
+        if not isinstance(postprocessor, Mapping) or dict(postprocessor) != {
+            "id": implementation_identity.postprocessor_id,
+            "version": implementation_identity.postprocessor_version,
+        }:
+            return False
+        if cam_software_provenance_sha256(
+            software_provenance,
+            allow_test_only=True,
+            require_current_implementations=require_current_implementations,
+        ) != candidate.get("software_provenance_sha256"):
+            return False
+    except (
+        CAMSoftwareProvenanceError,
+        KeyError,
+        TypeError,
+        ValueError,
+        RecursionError,
+    ):
+        return False
+    bundle_size = candidate.get("bundle_size_bytes")
+    program_count = candidate.get("program_count")
+    if (
+        not valid_artifact_size("cam_candidate_bundle", bundle_size)
+        or type(program_count) is not int
+        or not 1 <= program_count <= 999
+    ):
+        return False
+
+    evidence = result_json.get("evidence_artifacts")
+    if not isinstance(evidence, list) or any(not isinstance(item, Mapping) for item in evidence):
+        return False
+    by_kind: dict[str, Mapping[str, Any]] = {}
+    for item in evidence:
+        kind = item.get("kind")
+        if not isinstance(kind, str) or kind in by_kind:
+            return False
+        by_kind[kind] = item
+    singleton_types = {
+        "cam_candidate_bundle": "application/zip",
+        "cutting_toolpaths": "application/json",
+        "machine_program_index": "application/json",
+        "cutting_program_validation_report": "application/json",
+        "cutting_backplot": "image/svg+xml",
+        "production_machine_profile": "application/json",
+    }
+    if any(
+        kind not in by_kind or by_kind[kind].get("content_type") != content_type
+        for kind, content_type in singleton_types.items()
+    ):
+        return False
+    program_kinds = sorted(
+        kind for kind in by_kind if re.fullmatch(r"machine_program_[0-9]{3}", kind)
+    )
+    if program_kinds != [f"machine_program_{index:03d}" for index in range(1, program_count + 1)]:
+        return False
+    if any(by_kind[kind].get("content_type") != "text/x-gcode" for kind in program_kinds):
+        return False
+    bundle_item = by_kind["cam_candidate_bundle"]
+    toolpath_item = by_kind["cutting_toolpaths"]
+    profile_item = by_kind["production_machine_profile"]
+    return (
+        bundle_item.get("sha256") == candidate.get("bundle_sha256")
+        and bundle_item.get("size_bytes") == bundle_size
+        and toolpath_item.get("sha256") == candidate.get("toolpaths_sha256")
+        and profile_item.get("sha256") == candidate.get("production_machine_profile_sha256")
+    )
+
+
+def _cam_candidate_bundle_sha256(result_json: Mapping[str, Any]) -> str:
+    """Return the required executable bundle identity or reject promotion."""
+
+    candidate = result_json.get("cam_candidate")
+    if candidate is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "CAM promotion requires a verified executable cutting candidate; "
+                "generate a new job with include_cutting_candidate enabled"
+            ),
+        )
+    if not isinstance(candidate, Mapping):
+        raise HTTPException(status_code=409, detail="The CAM candidate binding is malformed")
+    digest = candidate.get("bundle_sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise HTTPException(status_code=409, detail="The CAM candidate binding is malformed")
+    return digest
+
+
+def _require_promotable_cam_candidate_profile(job: GenerationJob) -> None:
+    """Require the candidate's accepted profile to remain current at promotion."""
+
+    result_json = job.result_json if isinstance(job.result_json, Mapping) else {}
+    candidate = result_json.get("cam_candidate")
+    if candidate is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "CAM promotion requires a verified executable cutting candidate; "
+                "generate a new job with include_cutting_candidate enabled"
+            ),
+        )
+    request = job.request_json if isinstance(job.request_json, Mapping) else {}
+    request_binding = request.get("production_machine_profile")
+    candidate_binding = (
+        candidate.get("production_profile_job_binding") if isinstance(candidate, Mapping) else None
+    )
+    bindings = (request_binding, candidate_binding)
+    if any(not isinstance(binding, Mapping) for binding in bindings):
+        raise HTTPException(
+            status_code=409,
+            detail="CAM promotion requires a workshop-accepted production profile",
+        )
+    assert isinstance(request_binding, Mapping)
+    assert isinstance(candidate_binding, Mapping)
+    request_acceptance = request_binding.get("acceptance")
+    candidate_acceptance = candidate_binding.get("acceptance")
+    if (
+        request_binding.get("profile_class") != SERVER_OWNED_PRODUCTION_PROFILE
+        or candidate_binding.get("profile_class") != SERVER_OWNED_PRODUCTION_PROFILE
+        or not isinstance(request_acceptance, Mapping)
+        or not isinstance(candidate_acceptance, Mapping)
+        or request_acceptance.get("status") != WORKSHOP_ACCEPTED_STATUS
+        or candidate_acceptance.get("status") != WORKSHOP_ACCEPTED_STATUS
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="CAM promotion requires a workshop-accepted production profile",
+        )
+
+    settings = get_settings()
+    try:
+        current_profile = load_production_machine_profile(
+            settings.production_cam_profile_source,
+            allow_test_only=settings.app_env == "test",
+        )
+        current_binding = production_machine_profile_job_binding(current_profile)
+        if canonical_json_bytes(current_binding) != canonical_json_bytes(
+            request_binding
+        ) or canonical_json_bytes(current_binding) != canonical_json_bytes(candidate_binding):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "CAM candidate uses a stale production machine profile; "
+                    "generate and review a new cutting candidate"
+                ),
+            )
+    except HTTPException:
+        raise
+    except (
+        OSError,
+        ProductionMachineProfileError,
+        RecursionError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "CAM promotion cannot verify the current production machine profile; "
+                "restore the protected profile and regenerate the cutting candidate"
+            ),
+        ) from exc
+
+
+def _cam_candidate_job_binding_is_valid(
+    job: GenerationJob,
+    result_json: Mapping[str, Any],
+    expectations: Mapping[str, StoredObjectExpectation],
+    *,
+    require_current_implementations: bool = True,
+) -> bool:
+    if type(require_current_implementations) is not bool:
+        return False
+    request = job.request_json
+    if not isinstance(request, Mapping):
+        return False
+    requested = request.get("include_cutting_candidate", False)
+    candidate_kinds = {
+        kind
+        for kind in expectations
+        if kind
+        in {
+            "cam_candidate_bundle",
+            "cutting_toolpaths",
+            "machine_program_index",
+            "cutting_program_validation_report",
+            "cutting_backplot",
+            "production_machine_profile",
+        }
+        or re.fullmatch(r"machine_program_[0-9]{3}", kind) is not None
+    }
+    if requested is False:
+        return (
+            request.get("production_machine_profile") is None
+            and result_json.get("cam_candidate") is None
+            and result_json.get("cam_status") is None
+            and result_json.get("physical_cutting_authorized") is None
+            and result_json.get("workshop_acceptance_required") is None
+            and not candidate_kinds
+        )
+    if requested is not True or not _cutting_candidate_result_is_valid(
+        result_json,
+        require_current_implementations=require_current_implementations,
+    ):
+        return False
+    binding = request.get("production_machine_profile")
+    candidate = result_json.get("cam_candidate")
+    if not isinstance(binding, Mapping) or not isinstance(candidate, Mapping):
+        return False
+    try:
+        producer_build = validate_cam_software_provenance(
+            candidate.get("software_provenance"),
+            allow_test_only=True,
+            require_current_implementations=require_current_implementations,
+        )
+        expected_producer_build = producer_build_identity_from_engine_context(
+            job.production_engine_context_json,
+            allow_test_only=True,
+        )
+        return (
+            canonical_json_bytes(binding)
+            == canonical_json_bytes(candidate.get("production_profile_job_binding"))
+            and canonical_json_bytes(producer_build.as_dict())
+            == canonical_json_bytes(expected_producer_build.as_dict())
+            and candidate.get("production_profile_payload_sha256") == binding["payload_sha256"]
+            and candidate.get("production_machine_profile_sha256") == binding["document_sha256"]
+            and candidate.get("execution_context_sha256") == binding["execution_context_sha256"]
+            and candidate.get("postprocessor_machine_profile_sha256")
+            == binding["postprocessor_profile"]["config_sha256"]
+        )
+    except (KeyError, TypeError, ValueError, RecursionError):
+        return False
+
+
+def _cam_candidate_package_binding_is_valid(
+    job: GenerationJob,
+    result_json: Mapping[str, Any],
+    verified_documents: Mapping[str, bytes],
+    *,
+    allow_test_only_profiles: bool,
+    require_current_implementations: bool = True,
+) -> bool:
+    if type(require_current_implementations) is not bool:
+        return False
+    candidate = result_json.get("cam_candidate")
+    candidate_payload = verified_documents.get("cam_candidate_bundle")
+    if candidate is None:
+        return candidate_payload is None
+    base_payload = verified_documents.get("production_bundle")
+    if (
+        not isinstance(candidate, Mapping)
+        or candidate_payload is None
+        or base_payload is None
+        or not isinstance(job.request_json, Mapping)
+        or not isinstance(job.production_engine_context_json, Mapping)
+    ):
+        return False
+    request_binding = job.request_json.get("production_machine_profile")
+    candidate_binding = candidate.get("production_profile_job_binding")
+    if not isinstance(request_binding, Mapping) or not isinstance(candidate_binding, Mapping):
+        return False
+    try:
+        expected_producer_build = producer_build_identity_from_engine_context(
+            job.production_engine_context_json,
+            allow_test_only=allow_test_only_profiles,
+        )
+        reader_kwargs: dict[str, Any] = {
+            "base_design_review_bundle": base_payload,
+            "expected_producer_source_manifest_sha256": (
+                expected_producer_build.source_manifest_sha256
+            ),
+            "allow_test_only": allow_test_only_profiles,
+        }
+        if not require_current_implementations:
+            reader_kwargs["require_current_implementations"] = False
+        manifest = read_and_verify_cam_candidate_package(candidate_payload, **reader_kwargs)
+        toolpaths = manifest.get("toolpaths")
+        base = manifest.get("base_design_review")
+        postprocessor = manifest.get("postprocessor")
+        production_profile = manifest.get("production_profile")
+        production_machine_profile = manifest.get("production_machine_profile")
+        software_provenance = manifest.get("software_provenance")
+        if not all(
+            isinstance(item, Mapping)
+            for item in (
+                toolpaths,
+                base,
+                postprocessor,
+                production_profile,
+                production_machine_profile,
+            )
+        ):
+            return False
+        assert isinstance(toolpaths, Mapping)
+        assert isinstance(base, Mapping)
+        assert isinstance(postprocessor, Mapping)
+        assert isinstance(production_profile, Mapping)
+        assert isinstance(production_machine_profile, Mapping)
+
+        acceptance = production_profile.get("acceptance")
+        embedded_postprocessor_profile = production_profile.get("postprocessor_profile")
+        request_acceptance = request_binding.get("acceptance")
+        request_postprocessor_profile = request_binding.get("postprocessor_profile")
+        if not all(
+            isinstance(item, Mapping)
+            for item in (
+                acceptance,
+                embedded_postprocessor_profile,
+                request_acceptance,
+                request_postprocessor_profile,
+            )
+        ):
+            return False
+        assert isinstance(acceptance, Mapping)
+        assert isinstance(embedded_postprocessor_profile, Mapping)
+        assert isinstance(request_acceptance, Mapping)
+        assert isinstance(request_postprocessor_profile, Mapping)
+
+        entries_raw = manifest.get("artifacts")
+        evidence_raw = result_json.get("evidence_artifacts")
+        if (
+            not isinstance(entries_raw, list)
+            or any(not isinstance(entry, Mapping) for entry in entries_raw)
+            or not isinstance(evidence_raw, list)
+            or any(not isinstance(entry, Mapping) for entry in evidence_raw)
+        ):
+            return False
+        entries = {str(entry["path"]): entry for entry in entries_raw}
+        evidence = {str(entry["kind"]): entry for entry in evidence_raw}
+        if len(entries) != len(entries_raw) or len(evidence) != len(evidence_raw):
+            return False
+        public_paths = {
+            CAM_CANDIDATE_TOOLPATH_PATH: "cutting_toolpaths",
+            CAM_CANDIDATE_PROGRAM_INDEX_PATH: "machine_program_index",
+            CAM_CANDIDATE_REPORT_PATH: "cutting_program_validation_report",
+            CAM_CANDIDATE_BACKPLOT_PATH: "cutting_backplot",
+            CAM_CANDIDATE_MACHINE_PROFILE_PATH: "production_machine_profile",
+        }
+        for path, kind in public_paths.items():
+            package_entry = entries.get(path)
+            stored_entry = evidence.get(kind)
+            if (
+                not isinstance(package_entry, Mapping)
+                or not isinstance(stored_entry, Mapping)
+                or stored_entry.get("sha256") != package_entry.get("sha256")
+                or stored_entry.get("size_bytes") != package_entry.get("size_bytes")
+                or stored_entry.get("content_type") != package_entry.get("media_type")
+            ):
+                return False
+        program_entries = sorted(
+            (
+                entry
+                for path, entry in entries.items()
+                if path.startswith(CAM_CANDIDATE_PROGRAM_ROOT)
+                and entry.get("role") == "EXECUTABLE_CAM_CANDIDATE_PROGRAM"
+            ),
+            key=lambda entry: str(entry["path"]),
+        )
+        if len(program_entries) != candidate.get("program_count"):
+            return False
+        for order, package_entry in enumerate(program_entries, start=1):
+            stored_entry = evidence.get(f"machine_program_{order:03d}")
+            if (
+                not isinstance(stored_entry, Mapping)
+                or package_entry.get("media_type") != "text/x-gcode"
+                or stored_entry.get("sha256") != package_entry.get("sha256")
+                or stored_entry.get("size_bytes") != package_entry.get("size_bytes")
+                or stored_entry.get("content_type") != package_entry.get("media_type")
+            ):
+                return False
+
+        expected_acceptance = {
+            "status": request_acceptance.get("status"),
+            "evidence_id": request_acceptance.get("evidence_id"),
+            "evidence_version": request_acceptance.get("evidence_version"),
+            "evidence_sha256": request_acceptance.get("evidence_sha256"),
+        }
+        expected_embedded_postprocessor = {
+            "path": CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH,
+            "profile_id": request_postprocessor_profile.get("profile_id"),
+            "version": request_postprocessor_profile.get("version"),
+            "config_sha256": request_postprocessor_profile.get("config_sha256"),
+        }
+        expected_request_binding = {
+            "schema_version": production_profile.get("schema_version"),
+            "profile_class": production_profile.get("profile_class"),
+            "document_sha256": production_profile.get("document_sha256"),
+            "payload_sha256": production_profile.get("payload_sha256"),
+            "execution_context_sha256": production_profile.get("execution_context_sha256"),
+            "acceptance": dict(acceptance),
+            "postprocessor_profile": {
+                "profile_id": embedded_postprocessor_profile.get("profile_id"),
+                "version": embedded_postprocessor_profile.get("version"),
+                "config_sha256": embedded_postprocessor_profile.get("config_sha256"),
+            },
+        }
+        profile_entry = entries[CAM_CANDIDATE_MACHINE_PROFILE_PATH]
+        return (
+            manifest.get("status") == "CUTTING_CANDIDATE_GENERATED"
+            and manifest.get("mode") == "EXECUTABLE_CAM_CANDIDATE"
+            and manifest.get("release_scope") == "cam_candidate"
+            and manifest.get("machine_use") == "executable_cam_candidate"
+            and manifest.get("physical_cutting_authorized") is False
+            and manifest.get("workshop_acceptance_required") is True
+            and hashlib.sha256(candidate_payload).hexdigest() == candidate.get("bundle_sha256")
+            and len(candidate_payload) == candidate.get("bundle_size_bytes")
+            and hashlib.sha256(canonical_json_bytes(manifest)).hexdigest()
+            == candidate.get("manifest_sha256")
+            and manifest.get("candidate_context_hash") == candidate.get("candidate_context_hash")
+            and canonical_json_bytes(software_provenance)
+            == canonical_json_bytes(candidate.get("software_provenance"))
+            and canonical_json_bytes(
+                validate_cam_software_provenance(
+                    software_provenance,
+                    allow_test_only=allow_test_only_profiles,
+                    require_current_implementations=require_current_implementations,
+                ).as_dict()
+            )
+            == canonical_json_bytes(expected_producer_build.as_dict())
+            and cam_software_provenance_sha256(
+                software_provenance,
+                allow_test_only=allow_test_only_profiles,
+                require_current_implementations=require_current_implementations,
+            )
+            == candidate.get("software_provenance_sha256")
+            and base.get("bundle_sha256") == candidate.get("base_design_review_bundle_sha256")
+            and toolpaths.get("sha256") == candidate.get("toolpaths_sha256")
+            and canonical_json_bytes(candidate_binding) == canonical_json_bytes(request_binding)
+            and canonical_json_bytes(request_binding)
+            == canonical_json_bytes(expected_request_binding)
+            and production_profile.get("path") == CAM_CANDIDATE_MACHINE_PROFILE_PATH
+            and production_profile.get("document_sha256") == profile_entry.get("sha256")
+            and production_profile.get("size_bytes") == profile_entry.get("size_bytes")
+            and production_profile.get("schema_version") == request_binding.get("schema_version")
+            and production_profile.get("profile_class") == request_binding.get("profile_class")
+            and production_profile.get("payload_sha256")
+            == request_binding.get("payload_sha256")
+            == candidate.get("production_profile_payload_sha256")
+            and production_profile.get("document_sha256")
+            == request_binding.get("document_sha256")
+            == candidate.get("production_machine_profile_sha256")
+            and production_profile.get("execution_context_sha256")
+            == request_binding.get("execution_context_sha256")
+            == candidate.get("execution_context_sha256")
+            and dict(acceptance) == expected_acceptance
+            and dict(embedded_postprocessor_profile) == expected_embedded_postprocessor
+            and production_machine_profile.get("profile_id")
+            == request_postprocessor_profile.get("profile_id")
+            and production_machine_profile.get("version")
+            == request_postprocessor_profile.get("version")
+            and production_machine_profile.get("config_sha256")
+            == request_postprocessor_profile.get("config_sha256")
+            == candidate.get("postprocessor_machine_profile_sha256")
+            and {
+                "id": postprocessor.get("id"),
+                "version": postprocessor.get("version"),
+            }
+            == candidate.get("postprocessor")
+        )
+    except (ArtifactError, KeyError, TypeError, ValueError, RecursionError):
+        return False
+
+
+def _workshop_readiness_is_valid(
+    result_json: Mapping[str, Any],
+    *,
+    require_current_cam_implementations: bool = True,
+) -> bool:
     """Validate the report structure and its separate machine-program safety claims."""
 
     if not _generation_result_claims_are_safe(result_json):
@@ -2968,10 +3889,15 @@ def _workshop_readiness_is_valid(result_json: Mapping[str, Any]) -> bool:
     if source_schema_version != LEGACY_WORKSHOP_READINESS_SCHEMA_VERSION or fields_present:
         if fields_present != program_fields:
             return False
-        if (
-            result_json.get("machine_program_mode") != "VALIDATION_DRY_RUN"
-            or result_json.get("production_machine_program") is not False
-        ):
+        mode = result_json.get("machine_program_mode")
+        production_program = result_json.get("production_machine_program")
+        if mode == "EXECUTABLE_CAM_CANDIDATE" and production_program is True:
+            if not _cutting_candidate_result_is_valid(
+                result_json,
+                require_current_implementations=require_current_cam_implementations,
+            ):
+                return False
+        elif mode != "VALIDATION_DRY_RUN" or production_program is not False:
             return False
 
     return normalized.design_review_ready and normalized.missing_evidence_count > 0
@@ -3054,7 +3980,12 @@ def _blocked_cam_review_package_is_valid(result_json: Mapping[str, Any]) -> bool
     )
 
 
-def _design_review_package_is_valid(result_json: Mapping[str, Any], *, require_cam: bool) -> bool:
+def _design_review_package_is_valid(
+    result_json: Mapping[str, Any],
+    *,
+    require_cam: bool,
+    require_current_cam_implementations: bool = True,
+) -> bool:
     raw_status = result_json.get("design_review_package_status")
     package_status = _design_review_package_status(result_json)
     if raw_status is None or package_status is None:
@@ -3063,7 +3994,10 @@ def _design_review_package_is_valid(result_json: Mapping[str, Any], *, require_c
         return not require_cam and _blocked_cam_review_package_is_valid(result_json)
     if package_status.validation_program_included is not True:
         return False
-    return _workshop_readiness_is_valid(result_json)
+    return _workshop_readiness_is_valid(
+        result_json,
+        require_current_cam_implementations=require_current_cam_implementations,
+    )
 
 
 def _reject_nonfinite_json(value: str) -> None:
@@ -3275,7 +4209,7 @@ def _manifest_evidence_matches_expectations(
     expectations: Mapping[str, StoredObjectExpectation],
 ) -> bool:
     for kind, expectation in expectations.items():
-        if kind in {"production_bundle", "manifest"}:
+        if kind in {"production_bundle", "manifest"} or _is_cam_candidate_artifact_kind(kind):
             continue
         entry = _manifest_evidence_entry(kind, inventory)
         if (
@@ -3298,10 +4232,27 @@ def _review_document_binding_issues(
     verified_documents: Mapping[str, bytes],
     *,
     build_identity: BuildIdentityValues | None = None,
+    allow_test_only_profiles: bool = False,
+    require_current_cam_implementations: bool = True,
 ) -> list[str]:
     """Bind the successful job claims to their exact readiness and manifest bytes."""
 
     invalid: list[str] = []
+    if not _cam_candidate_job_binding_is_valid(
+        job,
+        result_json,
+        expectations,
+        require_current_implementations=require_current_cam_implementations,
+    ):
+        invalid.append("cam_candidate")
+    if not _cam_candidate_package_binding_is_valid(
+        job,
+        result_json,
+        verified_documents,
+        allow_test_only_profiles=allow_test_only_profiles,
+        require_current_implementations=require_current_cam_implementations,
+    ):
+        invalid.append("cam_candidate_bundle")
     stored_dfm_report = None
     stored_readiness: WorkshopReadinessReport | None = None
     stored_package_status: DesignReviewPackageStatus | None = None
@@ -3697,6 +4648,8 @@ def _review_evidence_issues(
     verified_download_kind: str | None = None,
     verified_download: VerifiedStoredObject | None = None,
     build_identity: BuildIdentityValues | None = None,
+    allow_test_only_profiles: bool | None = None,
+    require_current_cam_implementations: bool = True,
 ) -> tuple[list[str], list[str], bool]:
     """Serialize expensive evidence verification per tenant and always release."""
 
@@ -3711,6 +4664,12 @@ def _review_evidence_issues(
             verified_download_kind=verified_download_kind,
             verified_download=verified_download,
             build_identity=build_identity,
+            allow_test_only_profiles=(
+                get_settings().app_env == "test"
+                if allow_test_only_profiles is None
+                else allow_test_only_profiles
+            ),
+            require_current_cam_implementations=require_current_cam_implementations,
         )
 
 
@@ -3725,6 +4684,8 @@ def _review_evidence_issues_owned(
     verified_download_kind: str | None = None,
     verified_download: VerifiedStoredObject | None = None,
     build_identity: BuildIdentityValues | None = None,
+    allow_test_only_profiles: bool = False,
+    require_current_cam_implementations: bool = True,
 ) -> tuple[list[str], list[str], bool]:
     """Return missing/invalid evidence without changing the reviewed job."""
 
@@ -3798,7 +4759,11 @@ def _review_evidence_issues_owned(
         }
         invalid.extend(sorted(forbidden_kinds))
     invalid.extend(sorted(set(by_kind) - set(expectations)))
-    readiness_valid = _design_review_package_is_valid(result_json, require_cam=require_cam)
+    readiness_valid = _design_review_package_is_valid(
+        result_json,
+        require_cam=require_cam,
+        require_current_cam_implementations=require_current_cam_implementations,
+    )
     if result_invalid:
         # Result metadata is the authority for the exact storage inventory.  If
         # it is ambiguous, fail closed before reading any caller-selected key.
@@ -3806,11 +4771,25 @@ def _review_evidence_issues_owned(
     verified_documents: dict[str, bytes] = {}
     consumed_verified_download = False
     retain_review_documents = stream_hash or bind_review_documents
+    candidate_sidecar_present = "cam_candidate_bundle" in expectations
+
+    def retain_payload(kind: str) -> bool:
+        if kind not in _REVIEW_DOCUMENT_MAX_BYTES:
+            return False
+        # The two ZIPs are only parsed together when a cutting candidate exists.
+        # Reading the much larger base ZIP for every legacy/design-review listing
+        # would add no validation and would exceed the established review-reader
+        # contract.  A caller-selected base ZIP is already held by its verified
+        # download token and does not need to be materialized for semantic checks.
+        if kind in {"production_bundle", "cam_candidate_bundle"}:
+            return candidate_sidecar_present
+        return True
+
     retained_bytes = sum(
         expectation.size_bytes
         for kind, expectation in expectations.items()
         if retain_review_documents
-        and kind in _REVIEW_DOCUMENT_MAX_BYTES
+        and retain_payload(kind)
         # A target document is already covered by the open verified token's
         # reservation until the response closes.
         and kind != verified_download_kind
@@ -3832,7 +4811,9 @@ def _review_evidence_issues_owned(
                 invalid.append(kind)
                 continue
             try:
-                review_limit = _REVIEW_DOCUMENT_MAX_BYTES.get(kind)
+                review_limit = (
+                    _REVIEW_DOCUMENT_MAX_BYTES.get(kind) if retain_payload(kind) else None
+                )
                 if kind == verified_download_kind and verified_download is not None:
                     consumed_verified_download = True
                     if (
@@ -3865,6 +4846,8 @@ def _review_evidence_issues_owned(
                     expectations,
                     verified_documents,
                     build_identity=build_identity,
+                    allow_test_only_profiles=allow_test_only_profiles,
+                    require_current_cam_implementations=(require_current_cam_implementations),
                 )
             )
     return sorted(set(missing)), sorted(set(invalid)), readiness_valid
@@ -4021,6 +5004,7 @@ def _require_review_evidence(
     build_identity: BuildIdentityValues | None = None,
     trust_registry_json: str | None = None,
     production_mode: bool | None = None,
+    allow_test_only_profiles: bool | None = None,
 ) -> None:
     """Require persisted, checksum-addressed evidence for the exact successful job."""
 
@@ -4036,6 +5020,11 @@ def _require_review_evidence(
                 require_cam=require_cam,
                 bind_review_documents=bind_review_documents,
                 build_identity=build_identity,
+                allow_test_only_profiles=(
+                    get_settings().app_env == "test"
+                    if allow_test_only_profiles is None
+                    else allow_test_only_profiles
+                ),
             )
         except ArtifactStorageUnavailableError as exc:
             raise _storage_unavailable() from exc
@@ -4155,6 +5144,7 @@ def _prepare_review_artifact_download_within_deadline(
                 bind_review_documents=True,
                 verified_download_kind=artifact_kind,
                 verified_download=verified,
+                allow_test_only_profiles=get_settings().app_env == "test",
             )
         except ArtifactStorageUnavailableError as exc:
             raise _storage_unavailable() from exc
@@ -5507,17 +6497,7 @@ def get_production_state(
     )
     release_payload: dict[str, Any] | None = None
     if release is not None:
-        bundle_sha256 = _release_bundle_sha256(release)
-        release_payload = {
-            "release_id": release.id,
-            "release_number": release.release_number,
-            "status": "released",
-            "bundle_sha256": bundle_sha256,
-            "manifest_sha256": release.manifest_sha256,
-            "release_kind": "design_review",
-            "machine_use": "validation_only",
-            "physical_cutting_authorized": False,
-        }
+        release_payload = _release_read_payload(release)
     return {
         "project_id": project.id,
         "version": version,
@@ -5692,6 +6672,41 @@ def generate_version(
         )
     except ProductionContextError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.include_cutting_candidate:
+        settings = get_settings()
+        try:
+            production_profile = load_production_machine_profile(
+                settings.production_cam_profile_source,
+                allow_test_only=settings.app_env == "test",
+            )
+        except (ProductionMachineProfileError, ValueError, OSError) as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "PRODUCTION_CAM_PROFILE_UNAVAILABLE: the server has no exact, valid "
+                    "workshop-owned production CAM profile"
+                ),
+            ) from exc
+        source_profile = production_profile.execution_context
+        if (
+            source_profile.source_machine_profile_id != resolved.machine.profile_id
+            or source_profile.source_machine_profile_version != resolved.machine.version
+            or source_profile.source_machine_profile_fingerprint
+            != hashlib.sha256(canonical_json_bytes(resolved.machine)).hexdigest()
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "PRODUCTION_CAM_SOURCE_PROFILE_MISMATCH: the configured production CAM "
+                    "profile is not bound to the frozen validation machine"
+                ),
+            )
+        # The request body contains only the opt-in switch.  Persist this
+        # canonical server-owned receipt so the worker can independently reject
+        # profile, acceptance-evidence or postprocessor drift.
+        request_json["production_machine_profile"] = production_machine_profile_job_binding(
+            production_profile
+        )
     production_context_hash = generation_context_hash(
         design_context_hash=version.context_hash,
         design_version_id=version.id,
@@ -5983,6 +6998,7 @@ def approve_version(
         raise HTTPException(status_code=409, detail="Design validation is required")
     approved_job: GenerationJob | None = None
     approved_manifest_sha: str | None = None
+    approved_cam_candidate_sha: str | None = None
     approved_overrides: list[dict[str, Any]] = []
     if payload.approval_type == "cam":
         # Retention is a frozen design invariant, not review evidence.  Surface
@@ -6035,6 +7051,7 @@ def approve_version(
                 status_code=409,
                 detail="The selected successful generation job is required for CAM approval",
             )
+        _require_promotable_cam_candidate_profile(approved_job)
         _require_current_generation_context(approved_job, version)
         if approved_job.request_json.get("approved_design_review") != (
             _design_approval_snapshot(design_approval)
@@ -6049,6 +7066,7 @@ def approve_version(
         approved_manifest_sha = str(approved_job.result_json.get("manifest_sha256", ""))
         if len(approved_manifest_sha) != 64:
             raise HTTPException(status_code=409, detail="The selected job has no checked manifest")
+        approved_cam_candidate_sha = _cam_candidate_bundle_sha256(approved_job.result_json)
         _require_review_evidence(
             session,
             principal.organization_id,
@@ -6086,7 +7104,6 @@ def approve_version(
                         "artifact or its interchange-status evidence"
                     ),
                 )
-        version.status = DesignStatus.cam_validated
     elif payload.generation_job_id is not None:
         raise HTTPException(
             status_code=422, detail="generation_job_id is only valid for CAM approval"
@@ -6200,6 +7217,12 @@ def approve_version(
                 )
             )
             version.status = DesignStatus.design_validated
+    if payload.approval_type == "cam":
+        assert approved_job is not None
+        # Production evidence verification performs object-store I/O. Re-read
+        # the protected server profile after that I/O and immediately before
+        # mutating approval state so an A -> B rotation cannot promote A.
+        _require_promotable_cam_candidate_profile(approved_job)
     if approval is None:
         session.add(
             Approval(
@@ -6213,6 +7236,7 @@ def approve_version(
                     approved_job.production_context_hash if approved_job else None
                 ),
                 manifest_sha256=approved_manifest_sha,
+                cam_candidate_bundle_sha256=approved_cam_candidate_sha,
                 overrides_json=approved_overrides,
             )
         )
@@ -6224,6 +7248,7 @@ def approve_version(
             approved_job.production_context_hash if approved_job else None
         )
         approval.manifest_sha256 = approved_manifest_sha
+        approval.cam_candidate_bundle_sha256 = approved_cam_candidate_sha
         approval.overrides_json = approved_overrides
     # Only a CAM action that passed the exact job/context/evidence checks above
     # may promote a version. Merely finding two historical approval rows is unsafe.
@@ -6240,6 +7265,7 @@ def approve_version(
             "reason": payload.reason,
             "generation_job_id": approved_job.id if approved_job else None,
             "manifest_sha256": approved_manifest_sha,
+            "cam_candidate_bundle_sha256": approved_cam_candidate_sha,
             "warning_overrides": approved_overrides,
         },
     )
@@ -6323,7 +7349,7 @@ def release_version(
     revision: int,
     payload: ReleaseCreate,
     session: SessionDep,
-    principal: ReviewerDep,
+    principal: ProductionReleaseDep,
 ) -> dict[str, Any]:
     version = tenant_version(session, principal, project_id, revision)
     session.refresh(version, with_for_update=True)
@@ -6392,6 +7418,7 @@ def release_version(
     )
     if job is None or not job.result_json:
         raise HTTPException(status_code=409, detail="Successful checked generation is required")
+    _require_promotable_cam_candidate_profile(job)
     _require_current_generation_context(job, version)
     if job.request_json.get("approved_design_review") != _design_approval_snapshot(design_approval):
         raise HTTPException(
@@ -6439,13 +7466,18 @@ def release_version(
     manifest_sha = str(job.result_json.get("manifest_sha256", ""))
     if len(manifest_sha) != 64:
         raise HTTPException(status_code=409, detail="Checked manifest is missing")
+    cam_candidate_sha = _cam_candidate_bundle_sha256(job.result_json)
     if (
         cam_approval.production_context_hash != job.production_context_hash
         or cam_approval.manifest_sha256 != manifest_sha
+        or cam_approval.cam_candidate_bundle_sha256 != cam_candidate_sha
     ):
         raise HTTPException(
             status_code=409,
-            detail="CAM approval does not match the selected production context and manifest",
+            detail=(
+                "CAM approval does not match the selected production context, manifest "
+                "and cutting candidate"
+            ),
         )
     release_artifacts = tuple(
         session.scalars(
@@ -6463,27 +7495,32 @@ def release_version(
     frozen_generation_result = json.loads(canonical_json_bytes(job.result_json))
     if not isinstance(frozen_generation_result, dict):
         raise HTTPException(status_code=409, detail="Checked generation result is malformed")
+    # Artifact/evidence verification above performs object-store I/O. Re-read
+    # the protected server profile after all of it and immediately before a
+    # release is returned or persisted so profile rotation fails closed.
+    _require_promotable_cam_candidate_profile(job)
     if existing_release is not None:
         if not _release_matches_frozen_job(existing_release, job, release_inventory):
             raise HTTPException(
                 status_code=409,
                 detail="The stored release does not match the checked immutable package",
             )
-        bundle_sha256 = _release_bundle_sha256(existing_release)
-        return {
-            "release_id": existing_release.id,
-            "release_number": existing_release.release_number,
-            "status": version.status.value,
-            "bundle_sha256": bundle_sha256,
-            "manifest_sha256": existing_release.manifest_sha256,
-            "release_kind": "design_review",
-            "machine_use": "validation_only",
-            "physical_cutting_authorized": False,
-        }
+        return _release_read_payload(existing_release)
+    executable_release = isinstance(frozen_generation_result.get("cam_candidate"), Mapping)
+    cam_approval_snapshot = (
+        _cam_approval_release_snapshot(cam_approval) if executable_release else None
+    )
     release = Release(
         organization_id=principal.organization_id,
         design_version_id=version.id,
         generation_job_id=job.id,
+        cam_approval_id=(cam_approval.id if executable_release else None),
+        cam_approval_binding_sha256=(
+            str(cam_approval_snapshot["binding_sha256"])
+            if cam_approval_snapshot is not None
+            else None
+        ),
+        cam_approval_snapshot_json=cam_approval_snapshot,
         release_number=payload.release_number,
         released_by=principal.user_id,
         manifest_sha256=manifest_sha,
@@ -6496,6 +7533,7 @@ def release_version(
     session.add(release)
     session.flush()
     bundle_sha256 = _release_bundle_sha256(release)
+    release_payload = _release_read_payload(release)
     audit(
         session,
         principal,
@@ -6506,24 +7544,17 @@ def release_version(
             "release_number": payload.release_number,
             "bundle_sha256": bundle_sha256,
             "manifest_sha256": manifest_sha,
+            "cam_candidate_bundle_sha256": cam_candidate_sha,
             "generation_job_id": job.id,
             "production_context_hash": job.production_context_hash,
-            "release_scope": "design_review",
-            "machine_use": "validation_only",
+            "release_scope": release_payload["release_kind"],
+            "machine_use": release_payload["machine_use"],
             "physical_cutting_authorized": False,
+            "release_receipt": release_payload,
             "artifact_inventory": release_inventory,
         },
     )
-    return {
-        "release_id": release.id,
-        "release_number": release.release_number,
-        "status": version.status.value,
-        "bundle_sha256": bundle_sha256,
-        "manifest_sha256": manifest_sha,
-        "release_kind": "design_review",
-        "machine_use": "validation_only",
-        "physical_cutting_authorized": False,
-    }
+    return release_payload
 
 
 @router.get(
@@ -6547,6 +7578,10 @@ def list_release_artifacts(
     expires = int(time.time()) + get_settings().artifact_url_ttl_seconds
     result: list[dict[str, Any]] = []
     for item in archive.artifacts:
+        if _is_cam_candidate_artifact_kind(item.kind) and not (
+            _can_read_cam_candidate_artifacts(principal)
+        ):
+            continue
         signature_subject = _release_artifact_signature_subject(release_id, item.id)
         download_path = (
             f"/v1/releases/{release_id}/artifacts/{item.id}/download"
@@ -6604,6 +7639,7 @@ def download_release_artifact(
     artifact = next((item for item in archive.artifacts if item.id == artifact_id), None)
     if artifact is None:
         raise HTTPException(status_code=404, detail="Release artifact not found")
+    _require_cam_candidate_artifact_read(principal, artifact.kind)
     _require_retention_bound_bundle_download_capability(
         principal,
         archive.version,
@@ -6657,6 +7693,12 @@ def list_artifacts(
     if job is None:
         raise HTTPException(status_code=404, detail="Generation job not found")
     _require_current_artifacts(session, principal.organization_id, job)
+    if (
+        _can_read_current_cam_review_artifacts(principal)
+        and isinstance(job.result_json, Mapping)
+        and job.result_json.get("cam_candidate") is not None
+    ):
+        _require_promotable_cam_candidate_profile(job)
     _require_review_evidence(
         session,
         principal.organization_id,
@@ -6674,16 +7716,29 @@ def list_artifacts(
         job,
         populate_existing=True,
     )
-    artifacts = session.scalars(
-        select(Artifact).where(
-            Artifact.generation_job_id == job.id,
-            Artifact.organization_id == principal.organization_id,
+    artifacts = tuple(
+        session.scalars(
+            select(Artifact).where(
+                Artifact.generation_job_id == job.id,
+                Artifact.organization_id == principal.organization_id,
+            )
         )
     )
+    if _can_read_current_cam_review_artifacts(principal) and any(
+        _is_cam_candidate_artifact_kind(item.kind) for item in artifacts
+    ):
+        # Evidence verification above can involve object-store I/O.  Bind
+        # every newly signed current-job CAM link to the protected profile
+        # that is active immediately after that I/O.
+        _require_promotable_cam_candidate_profile(job)
     now = int(time.time())
     expires = now + get_settings().artifact_url_ttl_seconds
     result: list[dict[str, Any]] = []
     for item in artifacts:
+        if _is_cam_candidate_artifact_kind(item.kind) and not (
+            _can_read_current_cam_review_artifacts(principal)
+        ):
+            continue
         download_path = (
             f"/v1/artifacts/{item.id}/download?expires={expires}&signature="
             f"{sign_artifact_access(item.id, principal.organization_id, expires)}"
@@ -6733,6 +7788,7 @@ def download_artifact(
     )
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact not found")
+    _require_current_cam_review_artifact_read(principal, artifact.kind)
     job = session.scalar(
         select(GenerationJob).where(
             GenerationJob.id == artifact.generation_job_id,
@@ -6742,6 +7798,8 @@ def download_artifact(
     if job is None:
         raise HTTPException(status_code=404, detail="Generation job not found")
     version = _require_current_artifacts(session, principal.organization_id, job)
+    if _is_cam_candidate_artifact_kind(artifact.kind):
+        _require_promotable_cam_candidate_profile(job)
     _require_retention_bound_bundle_download_capability(
         principal,
         version,
@@ -6756,6 +7814,11 @@ def download_artifact(
             version,
             artifact.kind,
         )
+        if _is_cam_candidate_artifact_kind(artifact.kind):
+            # The package/profile can rotate while the object store is being
+            # read. Re-resolve the protected profile after all storage and
+            # semantic verification, immediately before response ownership.
+            _require_promotable_cam_candidate_profile(job)
         try:
             filename = _artifact_filename(
                 artifact.kind,

@@ -28,6 +28,9 @@ import {
   artifactReviewUseLabel,
   artifactRoleLabel,
   blockedCamEvidenceKindIsForbidden,
+  camApprovalCandidateBindingMatchesJob,
+  camCandidateArtifactsMatchJob,
+  camCandidateFromJob,
   canonicalRetentionCertificationRequestJson,
   designReviewPackageStatusFromJob,
   generationProgressMessage,
@@ -606,6 +609,175 @@ const blockedReviewArtifacts: ArtifactRead[] = [
 const completeArtifactKinds = completeArtifacts.map((artifact) => artifact.kind);
 const blockedArtifactKinds = blockedReviewArtifacts.map((artifact) => artifact.kind);
 
+function cuttingCandidateFixture(): {
+  job: JobRead;
+  artifacts: ArtifactRead[];
+} {
+  const candidateBundleHash = "a".repeat(64);
+  const productionProfileHash = "3".repeat(64);
+  const toolpathsHash = "5".repeat(64);
+  const candidateEvidence = [
+    {
+      kind: "cam_candidate_bundle",
+      object_key: "tenant/candidate/cam-candidate.zip",
+      sha256: candidateBundleHash,
+      size_bytes: 3_000_000,
+      content_type: "application/zip",
+    },
+    {
+      kind: "cutting_toolpaths",
+      object_key: "tenant/candidate/toolpaths.json",
+      sha256: toolpathsHash,
+      size_bytes: 12_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "machine_program_index",
+      object_key: "tenant/candidate/program-index.json",
+      sha256: "6".repeat(64),
+      size_bytes: 2_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "cutting_program_validation_report",
+      object_key: "tenant/candidate/validation-report.json",
+      sha256: "7".repeat(64),
+      size_bytes: 8_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "cutting_backplot",
+      object_key: "tenant/candidate/backplot.svg",
+      sha256: "8".repeat(64),
+      size_bytes: 24_000,
+      content_type: "image/svg+xml",
+    },
+    {
+      kind: "production_machine_profile",
+      object_key: "tenant/candidate/production-profile.json",
+      sha256: productionProfileHash,
+      size_bytes: 18_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "machine_program_001",
+      object_key: "tenant/candidate/program-001.ngc",
+      sha256: "9".repeat(64),
+      size_bytes: 32_000,
+      content_type: "text/x-gcode",
+    },
+    {
+      kind: "machine_program_002",
+      object_key: "tenant/candidate/program-002.ngc",
+      sha256: "0".repeat(64),
+      size_bytes: 31_000,
+      content_type: "text/x-gcode",
+    },
+  ];
+  const result = {
+    ...succeededJob.result_json,
+    evidence_artifacts: [
+      ...((succeededJob.result_json?.evidence_artifacts as Record<string, unknown>[]) ?? []),
+      ...candidateEvidence,
+    ],
+    cam_status: "CUTTING_CANDIDATE_GENERATED",
+    machine_program_mode: "EXECUTABLE_CAM_CANDIDATE",
+    production_machine_program: true,
+    physical_cutting_authorized: false,
+    workshop_acceptance_required: true,
+    cam_candidate: {
+      schema_version: "custombuild.cam-candidate-result.v2",
+      status: "CUTTING_CANDIDATE_GENERATED",
+      mode: "EXECUTABLE_CAM_CANDIDATE",
+      physical_cutting_authorized: false,
+      workshop_acceptance_required: true,
+      base_design_review_bundle_sha256: "b".repeat(64),
+      bundle_sha256: candidateBundleHash,
+      bundle_size_bytes: 3_000_000,
+      manifest_sha256: "e".repeat(64),
+      candidate_context_hash: "f".repeat(64),
+      software_provenance: {
+        schema_version: "custombuild.cam-software-provenance.v1",
+        code_root: {
+          kind: "SOURCE_MANIFEST_SHA256",
+          sha256: "a".repeat(64),
+        },
+        producer_build: {
+          schema_version: "custombuild.producer-build-identity.v1",
+          app_version: "1.0.0",
+          vcs_ref: "b".repeat(40),
+          source_manifest_sha256: "a".repeat(64),
+          dependency_lock_sha256: "c".repeat(64),
+        },
+        implementations: {
+          toolpath_schema_version: "custombuild.toolpaths.v1",
+          toolpath_engine_version: "production-toolpaths-1.1.0",
+          cutting_verifier_version: "cutting-program-verifier-1.1.0",
+          cutting_backplot_version: "cutting-backplot-1.1.0",
+          postprocessor_id: "linuxcnc-3axis-production",
+          postprocessor_version: "1.1.0",
+          gcode_parser_version: "linuxcnc-production-parser-1.3.0",
+          gcode_safety_validator_version: "linuxcnc-production-safety-1.3.0",
+          candidate_manifest_schema_version: "custombuild.cam-candidate-manifest.v2",
+          candidate_package_builder_version: "deterministic-cam-candidate-package-1.1.0",
+        },
+      },
+      software_provenance_sha256: "d".repeat(64),
+      production_profile_job_binding: {
+        acceptance: {
+          evidence_id: "shop-acceptance-2026-09",
+          evidence_sha256: "d".repeat(64),
+          evidence_version: "v1",
+          status: "WORKSHOP_ACCEPTED",
+        },
+        document_sha256: productionProfileHash,
+        execution_context_sha256: "2".repeat(64),
+        payload_sha256: "1".repeat(64),
+        postprocessor_profile: {
+          config_sha256: "4".repeat(64),
+          profile_id: "shop-router-01-linuxcnc",
+          version: "1.0.0",
+        },
+        profile_class: "SERVER_OWNED_PRODUCTION",
+        schema_version: "custombuild.production-machine-profile.v1",
+      },
+      production_profile_payload_sha256: "1".repeat(64),
+      execution_context_sha256: "2".repeat(64),
+      production_machine_profile_sha256: productionProfileHash,
+      postprocessor_machine_profile_sha256: "4".repeat(64),
+      toolpaths_sha256: toolpathsHash,
+      program_count: 2,
+      postprocessor: {
+        id: "linuxcnc-3axis-production",
+        version: "1.1.0",
+      },
+    },
+  };
+  return {
+    job: {
+      ...succeededJob,
+      production_engine_context_json: {
+        app_version: "1.0.0",
+        vcs_ref: "b".repeat(40),
+        source_manifest_sha256: "a".repeat(64),
+        dependency_lock_sha256: "c".repeat(64),
+      },
+      result_json: result,
+    },
+    artifacts: [
+      ...completeArtifacts,
+      ...candidateEvidence.map((claim, index) => ({
+        ...bundle,
+        id: `candidate-${index + 1}`,
+        kind: claim.kind,
+        sha256: claim.sha256,
+        size_bytes: claim.size_bytes,
+        content_type: claim.content_type,
+      })),
+    ],
+  };
+}
+
 function apiClient(state?: Partial<ProductionStateRead>): ProductionApi {
   return {
     configured: true,
@@ -1075,6 +1247,33 @@ describe("CNC-shop review artifact presentation", () => {
       0,
     )).toThrow(/revision/i);
   });
+
+  it("uses explicit cutting labels and server-identical names for candidate files", () => {
+    const program = {
+      kind: "machine_program_002",
+      content_type: "text/x-gcode",
+    } satisfies Pick<ArtifactRead, "kind" | "content_type">;
+    const candidate = {
+      kind: "cam_candidate_bundle",
+      content_type: "application/zip",
+    } satisfies Pick<ArtifactRead, "kind" | "content_type">;
+
+    expect(artifactRoleLabel(program.kind)).toBe("Skärande maskinprogram 002");
+    expect(artifactReviewUseLabel(program.kind)).toMatch(/Skärande LinuxCNC-program/);
+    expect(artifactFileExtension(program)).toBe("ngc");
+    expect(artifactDownloadFileName(program, project.id, 12)).toBe(
+      `custombuild-project-${project.id}-machine-program-002-rev-12.ngc`,
+    );
+    expect(artifactRoleLabel(candidate.kind)).toBe("Körbar CAM-kandidat (ZIP)");
+    expect(artifactDownloadFileName(candidate, project.id, 12)).toBe(
+      `custombuild-project-${project.id}-cam-candidate-rev-12.zip`,
+    );
+    expect(() => artifactDownloadFileName(
+      { kind: "machine_program_000", content_type: "text/x-gcode" },
+      project.id,
+      12,
+    )).toThrow(/filnamnskontrakt/i);
+  });
 });
 
 describe("review package artifact inventory", () => {
@@ -1294,6 +1493,183 @@ describe("review package artifact inventory", () => {
       false,
       completeArtifactKinds,
     )).toBe(false);
+  });
+});
+
+describe("camCandidateFromJob", () => {
+  it("accepts only the complete executable pair and dense public program inventory", () => {
+    const fixture = cuttingCandidateFixture();
+
+    const candidate = camCandidateFromJob(fixture.job);
+
+    expect(candidate).toMatchObject({
+      status: "CUTTING_CANDIDATE_GENERATED",
+      mode: "EXECUTABLE_CAM_CANDIDATE",
+      physical_cutting_authorized: false,
+      workshop_acceptance_required: true,
+      program_count: 2,
+      bundle_sha256: "a".repeat(64),
+    });
+    expect(workshopReadinessFromJob(fixture.job)?.design_review_ready).toBe(true);
+    expect(reviewArtifactKindsFromJob(fixture.job)).toEqual(
+      fixture.artifacts.map((artifact) => artifact.kind),
+    );
+    expect(camCandidateArtifactsMatchJob(fixture.job, fixture.artifacts)).toBe(true);
+  });
+
+  const invalidCandidateCases: {
+    name: string;
+    mutate: (root: Record<string, unknown>, candidate: Record<string, unknown>) => void;
+  }[] = [
+    {
+      name: "a required executable root flag is missing",
+      mutate: (root) => { delete root.workshop_acceptance_required; },
+    },
+    {
+      name: "the executable pair claims no production program",
+      mutate: (root) => { root.production_machine_program = false; },
+    },
+    {
+      name: "physical cutting is claimed as authorized",
+      mutate: (root) => { root.physical_cutting_authorized = true; },
+    },
+    {
+      name: "the candidate has an unknown field",
+      mutate: (_root, candidate) => { candidate.machine_start_authorized = true; },
+    },
+    {
+      name: "software provenance has an unknown field",
+      mutate: (_root, candidate) => {
+        const provenance = candidate.software_provenance as Record<string, unknown>;
+        provenance.container_digest = "a".repeat(64);
+      },
+    },
+    {
+      name: "the code root differs from the producer source manifest",
+      mutate: (_root, candidate) => {
+        const provenance = candidate.software_provenance as Record<string, unknown>;
+        const codeRoot = provenance.code_root as Record<string, unknown>;
+        codeRoot.sha256 = "f".repeat(64);
+      },
+    },
+    {
+      name: "a CAM implementation version is stale",
+      mutate: (_root, candidate) => {
+        const provenance = candidate.software_provenance as Record<string, unknown>;
+        const implementations = provenance.implementations as Record<string, unknown>;
+        implementations.cutting_verifier_version = "cutting-program-verifier-stale";
+      },
+    },
+    {
+      name: "the bundle hash differs from public evidence",
+      mutate: (_root, candidate) => { candidate.bundle_sha256 = "c".repeat(64); },
+    },
+    {
+      name: "the toolpath hash differs from public evidence",
+      mutate: (_root, candidate) => { candidate.toolpaths_sha256 = "c".repeat(64); },
+    },
+    {
+      name: "the declared program count differs from its rows",
+      mutate: (_root, candidate) => { candidate.program_count = 3; },
+    },
+    {
+      name: "the machine-program rows are sparse",
+      mutate: (root) => {
+        const evidence = root.evidence_artifacts as Record<string, unknown>[];
+        const second = evidence.find((row) => row.kind === "machine_program_002");
+        if (second) second.kind = "machine_program_003";
+      },
+    },
+    {
+      name: "a program uses a non-canonical four-digit suffix",
+      mutate: (root) => {
+        const evidence = root.evidence_artifacts as Record<string, unknown>[];
+        const second = evidence.find((row) => row.kind === "machine_program_002");
+        if (second) second.kind = "machine_program_1000";
+      },
+    },
+    {
+      name: "the postprocessor hash is detached from its profile binding",
+      mutate: (_root, candidate) => {
+        candidate.postprocessor_machine_profile_sha256 = "c".repeat(64);
+      },
+    },
+    {
+      name: "the production profile document hash is detached from its binding",
+      mutate: (_root, candidate) => {
+        candidate.production_machine_profile_sha256 = "c".repeat(64);
+      },
+    },
+    {
+      name: "a production profile carries test-only acceptance",
+      mutate: (_root, candidate) => {
+        const binding = candidate.production_profile_job_binding as Record<string, unknown>;
+        const acceptance = binding.acceptance as Record<string, unknown>;
+        acceptance.status = "TEST_ONLY";
+      },
+    },
+  ];
+
+  it.each(invalidCandidateCases)("rejects $name without mutating it", ({ mutate }) => {
+    const fixture = cuttingCandidateFixture();
+    const root = fixture.job.result_json as Record<string, unknown>;
+    const candidate = root.cam_candidate as Record<string, unknown>;
+    mutate(root, candidate);
+    const untouched = structuredClone(root);
+
+    expect(camCandidateFromJob(fixture.job)).toBeUndefined();
+    expect(reviewArtifactKindsFromJob(fixture.job)).toBeUndefined();
+    expect(root).toEqual(untouched);
+  });
+
+  it("rejects a fetched candidate artifact whose checksum changed after job completion", () => {
+    const fixture = cuttingCandidateFixture();
+    const changed = fixture.artifacts.map((artifact) => artifact.kind === "machine_program_002"
+      ? { ...artifact, sha256: "c".repeat(64) }
+      : artifact);
+
+    expect(camCandidateFromJob(fixture.job)).toBeDefined();
+    expect(camCandidateArtifactsMatchJob(fixture.job, changed)).toBe(false);
+  });
+
+  it.each([
+    ["app_version", "2.0.0"],
+    ["vcs_ref", "f".repeat(40)],
+    ["source_manifest_sha256", "f".repeat(64)],
+    ["dependency_lock_sha256", "f".repeat(64)],
+  ])("rejects producer %s drift from the frozen job", (field, replacement) => {
+    const fixture = cuttingCandidateFixture();
+    (fixture.job.production_engine_context_json as Record<string, unknown>)[field] = replacement;
+
+    expect(camCandidateFromJob(fixture.job)).toBeUndefined();
+  });
+});
+
+describe("camApprovalCandidateBindingMatchesJob", () => {
+  it("accepts the exact executable-candidate bundle hash", () => {
+    const fixture = cuttingCandidateFixture();
+
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: "a".repeat(64),
+    }, fixture.job)).toBe(true);
+  });
+
+  it("rejects a mismatched or null binding when the job has an executable candidate", () => {
+    const fixture = cuttingCandidateFixture();
+
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: "c".repeat(64),
+    }, fixture.job)).toBe(false);
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: null,
+    }, fixture.job)).toBe(false);
+  });
+
+  it("accepts null only when the job has no executable candidate and rejects a missing field", () => {
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: null,
+    }, succeededJob)).toBe(true);
+    expect(camApprovalCandidateBindingMatchesJob({}, succeededJob)).toBe(false);
   });
 });
 
@@ -1610,6 +1986,54 @@ describe("canonicalRetentionCertificationRequestJson", () => {
 });
 
 describe("ProductionWorkflow", () => {
+  it.each([
+    { selected: false, expected: false },
+    { selected: true, expected: true },
+  ])(
+    "sends explicit cutting-candidate opt-in=$expected while defaulting safely",
+    async ({ selected, expected }) => {
+      const api = apiClient({
+        version: version("design_validated"),
+        approvals: [{
+          approval_type: "design",
+          approved_by: "reviewer-1",
+          reason: "Designkontroll godkänd.",
+          generation_job_id: null,
+          production_context_hash: null,
+          manifest_sha256: null,
+          overrides_json: [],
+          created_at: "2026-08-01T08:00:00Z",
+          updated_at: "2026-08-01T08:00:00Z",
+        }],
+      });
+
+      render(
+        <ProductionWorkflow
+          apiClient={api}
+          spec={DEFAULT_DESIGN_SPEC}
+          design={designWith([], "PASS")}
+          onSummaryChange={vi.fn()}
+          principal={designerPrincipal}
+        />,
+      );
+
+      const option = await screen.findByRole("checkbox", {
+        name: /Skapa även körbar CAM-kandidat/,
+      });
+      expect(option).not.toBeChecked();
+      expect(screen.getByText(/Avmarkerad som standard/)).toBeVisible();
+      expect(screen.getByText(/aldrig en arbetsorder eller maskinstart/i)).toBeVisible();
+      if (selected) fireEvent.click(option);
+      fireEvent.click(screen.getByRole("button", { name: "Skapa underlag" }));
+
+      await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(
+        project.id,
+        1,
+        expect.objectContaining({ include_cutting_candidate: expected }),
+      ));
+    },
+  );
+
   it("downloads the exact server-issued certification request without calling an evidence API", async () => {
     const design = designWithCertificationRequest("f".repeat(64));
     const api = apiClient();
@@ -2705,6 +3129,331 @@ describe("ProductionWorkflow", () => {
     ));
     expect(applyDesignChange).not.toHaveBeenCalled();
     expect(screen.queryByText(/anpassats enbart för validering/i)).not.toBeInTheDocument();
+  });
+
+  it("restores CAM approval only for the exact executable-candidate bundle", async () => {
+    const fixture = cuttingCandidateFixture();
+    const camApproval = {
+      approval_type: "cam" as const,
+      approved_by: "reviewer-2",
+      reason: "Exakt CAM-kandidat granskad.",
+      generation_job_id: fixture.job.id,
+      production_context_hash: fixture.job.production_context_hash,
+      manifest_sha256: fixture.job.result_json?.manifest_sha256 as string,
+      cam_candidate_bundle_sha256: "a".repeat(64),
+      overrides_json: [],
+      created_at: "2026-08-01T08:05:00Z",
+      updated_at: "2026-08-01T08:05:00Z",
+    };
+    const api = apiClient({
+      version: version("approved"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }, camApproval],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={ownerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Godkänn CAM-granskning" }))
+      .not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["a mismatched hash", "c".repeat(64)],
+    ["a null hash", null],
+  ])("does not restore candidate CAM approval with %s", async (_name, candidateHash) => {
+    const fixture = cuttingCandidateFixture();
+    const camApproval = {
+      approval_type: "cam" as const,
+      approved_by: "reviewer-2",
+      reason: "Stale CAM approval.",
+      generation_job_id: fixture.job.id,
+      production_context_hash: fixture.job.production_context_hash,
+      manifest_sha256: fixture.job.result_json?.manifest_sha256 as string,
+      cam_candidate_bundle_sha256: candidateHash,
+      overrides_json: [],
+      created_at: "2026-08-01T08:05:00Z",
+      updated_at: "2026-08-01T08:05:00Z",
+    };
+    const api = apiClient({
+      version: version("approved"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }, camApproval],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={ownerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByRole("checkbox", {
+      name: /Jag har granskat exakt designjobb, manifest och den separata skärande CAM-kandidaten/i,
+    })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Godkänn CAM-granskning" })).toBeDisabled();
+    expect(screen.queryByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).not.toBeInTheDocument();
+  });
+
+  it("restores a null CAM candidate binding only when the job has no candidate", async () => {
+    const camApproval = {
+      approval_type: "cam" as const,
+      approved_by: "reviewer-2",
+      reason: "Valideringspaket granskat.",
+      generation_job_id: succeededJob.id,
+      production_context_hash: succeededJob.production_context_hash,
+      manifest_sha256: succeededJob.result_json?.manifest_sha256 as string,
+      cam_candidate_bundle_sha256: null,
+      overrides_json: [],
+      created_at: "2026-08-01T08:05:00Z",
+      updated_at: "2026-08-01T08:05:00Z",
+    };
+    const api = apiClient({
+      version: version("approved"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }, camApproval],
+      latest_job: succeededJob,
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={ownerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).toBeVisible();
+  });
+
+  it("shows and re-verifies every executable candidate file without implying machine start", async () => {
+    const fixture = cuttingCandidateFixture();
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+    vi.mocked(api.downloadArtifact).mockResolvedValue(new Blob(["verified candidate"]));
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-candidate");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const downloadedNames: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloadedNames.push(this.download);
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={secondReviewerPrincipal}
+      />,
+    );
+
+    const status = await screen.findByRole("status", {
+      name: "Status för körbar CAM-kandidat",
+    });
+    expect(within(status).getByText("Körbar CAM-kandidat klar")).toBeVisible();
+    expect(status).toHaveTextContent("2 checksummebundna, skärande LinuxCNC-program");
+    expect(status).toHaveTextContent("physical_cutting_authorized=false");
+    expect(status).toHaveTextContent("workshop_acceptance_required=true");
+    expect(status).toHaveTextContent(/inte en arbetsorder eller maskinstart/i);
+    expect(screen.getByRole("heading", {
+      level: 3,
+      name: "Granska körbar CAM-kandidat",
+    })).toBeVisible();
+    const physicalStatus = screen.getByRole("status", {
+      name: "Status för fysisk tillverkning",
+    });
+    expect(physicalStatus).toHaveTextContent(/innehåller skärande rörelser/i);
+    expect(physicalStatus).toHaveTextContent(/inte en arbetsorder eller maskinstart/i);
+
+    const serverFiles = screen.getByRole("region", {
+      name: "Separat verifierbara serverfiler",
+    });
+    for (const label of [
+      "Körbar CAM-kandidat (ZIP)",
+      "Skärande verktygsbanor",
+      "Körordning för maskinprogram",
+      "Oberoende CAM-kontrollrapport",
+      "Backplot för skärande rörelser",
+      "Bunden produktionsmaskinprofil",
+      "Skärande maskinprogram 001",
+      "Skärande maskinprogram 002",
+    ]) {
+      expect(within(serverFiles).getByText(label)).toBeVisible();
+      expect(within(serverFiles).getByRole("button", { name: `Hämta fil – ${label}` }))
+        .toBeEnabled();
+    }
+
+    fireEvent.click(within(status).getByRole("button", {
+      name: "Ladda ned CAM-kandidat (.zip)",
+    }));
+    await waitFor(() => expect(downloadedNames).toContain(
+      `custombuild-project-${project.id}-cam-candidate-rev-1.zip`,
+    ));
+    expect(api.downloadArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "cam_candidate_bundle",
+      sha256: "a".repeat(64),
+    }));
+
+    const programDownload = within(serverFiles).getByRole("button", {
+      name: "Hämta fil – Skärande maskinprogram 002",
+    });
+    await waitFor(() => expect(programDownload).toBeEnabled());
+    fireEvent.click(programDownload);
+    await waitFor(() => expect(downloadedNames).toContain(
+      `custombuild-project-${project.id}-machine-program-002-rev-1.ngc`,
+    ));
+    expect(await screen.findByText(/Hämtats efter förnyad checksummeverifiering/i))
+      .toBeVisible();
+  });
+
+  it("hard-blocks TEST_ONLY candidates from CAM approval and production-ready labelling", async () => {
+    const fixture = cuttingCandidateFixture();
+    const root = fixture.job.result_json as Record<string, unknown>;
+    const candidate = root.cam_candidate as Record<string, unknown>;
+    const binding = candidate.production_profile_job_binding as Record<string, unknown>;
+    const acceptance = binding.acceptance as Record<string, unknown>;
+    binding.profile_class = "TEST_ONLY";
+    acceptance.status = "TEST_ONLY";
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={secondReviewerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText(
+      "TEST_ONLY CAM-kandidat – ej produktionsgodkännbar",
+    )).toBeVisible();
+    expect(screen.queryByText("Körbar CAM-kandidat klar")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Godkänn CAM-granskning" })).toBeDisabled();
+    expect(screen.getByText(/TEST_ONLY-kandidater får aldrig CAM-godkännas/i)).toBeVisible();
+    expect(api.approveVersion).not.toHaveBeenCalled();
+  });
+
+  it("does not show candidate-ready controls for a malformed executable result", async () => {
+    const fixture = cuttingCandidateFixture();
+    const root = fixture.job.result_json as Record<string, unknown>;
+    const candidate = root.cam_candidate as Record<string, unknown>;
+    candidate.program_count = 3;
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/inte komplett/i);
+    expect(screen.queryByText("Körbar CAM-kandidat klar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", {
+      name: "Ladda ned CAM-kandidat (.zip)",
+    })).not.toBeInTheDocument();
+    expect(api.downloadArtifact).not.toHaveBeenCalled();
   });
 
   it("offers a truthful design-review ZIP without claiming physical authorization", async () => {

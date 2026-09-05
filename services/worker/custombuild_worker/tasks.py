@@ -98,6 +98,12 @@ from custombuild_manufacturing.production_context import (
     generation_context_hash,
     resolve_production_components,
 )
+from custombuild_manufacturing.production_machine_profile import (
+    LoadedProductionMachineProfile,
+    ProductionMachineProfileError,
+    load_production_machine_profile,
+    production_machine_profile_job_binding_json,
+)
 from custombuild_manufacturing.readiness import ReadinessValidationError
 from custombuild_rules import RuleStatus, evaluate_design
 from kombu import Queue  # type: ignore[import-untyped]
@@ -106,6 +112,7 @@ from redis.exceptions import RedisError
 from sqlalchemy import and_, create_engine, func, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 
+from .cam_candidate import build_worker_cam_candidate
 from .config import get_worker_settings
 from .documents import (
     VerifiedRetentionTrust,
@@ -215,7 +222,22 @@ _EVIDENCE_ARTIFACT_CONTRACTS: Mapping[str, tuple[str, str, str]] = {
         "ASSEMBLY_READINESS",
     ),
 }
+_CAM_CANDIDATE_EVIDENCE_CONTRACTS: Mapping[str, tuple[str, str]] = {
+    "cam_candidate_bundle": ("application/zip", "EXECUTABLE_CAM_CANDIDATE_BUNDLE"),
+    "cutting_toolpaths": ("application/json", "PRODUCTION_TOOLPATH_DOCUMENT"),
+    "machine_program_index": ("application/json", "PRODUCTION_PROGRAM_INDEX"),
+    "cutting_program_validation_report": (
+        "application/json",
+        "CUTTING_PROGRAM_VALIDATION_REPORT",
+    ),
+    "cutting_backplot": ("image/svg+xml", "CUTTING_BACKPLOT"),
+    "production_machine_profile": (
+        "application/json",
+        "PRODUCTION_MACHINE_PROFILE_DOCUMENT",
+    ),
+}
 _SETUP_EVIDENCE_PATH = re.compile(r"cam/setups/[A-Za-z0-9][A-Za-z0-9._-]*\.svg")
+_MACHINE_PROGRAM_EVIDENCE_KIND = re.compile(r"machine_program_[0-9]{3}")
 celery_app = Celery("custombuild-worker", broker=REDIS_URL, backend=REDIS_URL)
 GENERATION_QUEUE = "generation"
 MAINTENANCE_QUEUE = "maintenance"
@@ -1264,6 +1286,49 @@ def _generation_storage_claims(
         raise ProductionBlockedError("generation storage inventory is invalid") from exc
 
 
+def _configured_cutting_candidate_profile(
+    request: Mapping[str, Any],
+) -> LoadedProductionMachineProfile | None:
+    """Resolve only the server-owned profile bound by the API at enqueue time."""
+
+    requested = request.get("include_cutting_candidate", False)
+    persisted_binding = request.get("production_machine_profile")
+    if type(requested) is not bool:
+        raise ProductionBlockedError("cutting candidate opt-in must be a boolean")
+    if not requested:
+        if persisted_binding is not None:
+            raise ProductionBlockedError(
+                "production machine profile binding exists without cutting-candidate opt-in"
+            )
+        return None
+    if request.get("include_validation_program") is not True:
+        raise ProductionBlockedError(
+            "cutting candidate requires the complete validation-program review package"
+        )
+    if not isinstance(persisted_binding, Mapping):
+        raise ProductionBlockedError(
+            "cutting candidate has no server-owned production machine profile binding"
+        )
+    try:
+        profile = load_production_machine_profile(
+            WORKER_SETTINGS.production_cam_profile_source,
+            allow_test_only=WORKER_SETTINGS.app_env == "test",
+        )
+        if canonical_json_bytes(persisted_binding) != (
+            production_machine_profile_job_binding_json(profile)
+        ):
+            raise ProductionBlockedError(
+                "production machine profile changed after the generation job was queued"
+            )
+    except ProductionBlockedError:
+        raise
+    except (ProductionMachineProfileError, TypeError, ValueError) as exc:
+        raise ProductionBlockedError(
+            "configured production machine profile is unavailable or invalid"
+        ) from exc
+    return profile
+
+
 def _generate(
     job: GenerationJob,
     version: DesignVersion,
@@ -1283,6 +1348,18 @@ def _generate(
     lease_guard.check()
     attempt_id = _generation_attempt_id(job.id, lease_token)
     resolved = _resolve_current_job_context(job, version)
+    cutting_profile = _configured_cutting_candidate_profile(job.request_json)
+    if cutting_profile is not None:
+        source_profile = cutting_profile.execution_context
+        if (
+            source_profile.source_machine_profile_id != resolved.machine.profile_id
+            or source_profile.source_machine_profile_version != resolved.machine.version
+            or source_profile.source_machine_profile_fingerprint
+            != resolved.context.machine_profile_fingerprint
+        ):
+            raise ProductionBlockedError(
+                "production CAM profile is detached from the frozen validation machine"
+            )
     try:
         capability = require_template_for_revision(
             version.template_id,
@@ -1455,6 +1532,11 @@ def _generate(
         two_sided_registration_by_stock=registrations,
         additional_artifacts=documents,
     )
+    cutting_candidate = (
+        build_worker_cam_candidate(bundle, cutting_profile, resolved.context)
+        if cutting_profile is not None
+        else None
+    )
     if bundle.manifest.get("generation_context_hash") != job.production_context_hash:
         raise ProductionBlockedError("manifest generation context does not match frozen job")
     if canonical_json_bytes(bundle.manifest.get("production_engine_context")) != (
@@ -1487,6 +1569,15 @@ def _generate(
         for artifact in bundle.artifacts
         if artifact.path in _EVIDENCE_ARTIFACT_CONTRACTS or artifact.path.startswith("cam/setups/")
     ]
+    candidate_kind_by_path: dict[str, str] = {}
+    if cutting_candidate is not None:
+        for item in cutting_candidate.evidence:
+            if item.artifact.path in candidate_kind_by_path:
+                raise ProductionBlockedError(
+                    "cutting candidate contains duplicate persisted evidence paths"
+                )
+            candidate_kind_by_path[item.artifact.path] = item.kind
+            evidence_candidates.append(item.artifact)
     if len(evidence_candidates) > MAX_EVIDENCE_ARTIFACTS:
         raise ProductionBlockedError("generated evidence inventory exceeds its file-count limit")
     prepared_evidence: list[tuple[ArtifactFile, str, str, str]] = []
@@ -1497,13 +1588,27 @@ def _generate(
     setup_index = 0
     for artifact in sorted(evidence_candidates, key=lambda item: item.path):
         contract = _EVIDENCE_ARTIFACT_CONTRACTS.get(artifact.path)
-        if contract is None:
+        candidate_kind = candidate_kind_by_path.get(artifact.path)
+        if contract is not None:
+            kind, expected_media_type, expected_role = contract
+        elif candidate_kind is not None:
+            candidate_contract = _CAM_CANDIDATE_EVIDENCE_CONTRACTS.get(candidate_kind)
+            if candidate_contract is None:
+                if _MACHINE_PROGRAM_EVIDENCE_KIND.fullmatch(candidate_kind) is None:
+                    raise ProductionBlockedError(
+                        "generated cutting candidate evidence kind is invalid"
+                    )
+                candidate_contract = (
+                    "text/x-gcode",
+                    "EXECUTABLE_CAM_CANDIDATE_PROGRAM",
+                )
+            kind = candidate_kind
+            expected_media_type, expected_role = candidate_contract
+        else:
             setup_index += 1
             kind = f"setup_sheet_{setup_index:03d}"
             expected_media_type = "image/svg+xml"
             expected_role = "SETUP_SHEET"
-        else:
-            kind, expected_media_type, expected_role = contract
         if artifact.media_type != expected_media_type:
             raise ProductionBlockedError(
                 "generated evidence media type does not match its canonical path"
@@ -1590,7 +1695,11 @@ def _generate(
         "bundle_object_key": bundle_key,
         "manifest_object_key": manifest_key,
         "evidence_artifacts": evidence_artifacts,
-        "artifact_count": len(bundle.artifacts) + 1,
+        "artifact_count": (
+            len(bundle.artifacts)
+            + 1
+            + (0 if cutting_candidate is None else len(cutting_candidate.bundle.artifacts) + 1)
+        ),
         "generation_context_hash": job.production_context_hash,
         "production_engine_context_hash": resolved.context.fingerprint,
         "dfm_status": bundle.dfm_report.status.value,
@@ -1620,9 +1729,23 @@ def _generate(
         "freecad_project_generated": any(
             artifact.path == "model/design.fcstd" for artifact in bundle.artifacts
         ),
-        "machine_program_mode": "CAM_BLOCKED" if cam_blocked else "VALIDATION_DRY_RUN",
-        "production_machine_program": False,
+        "machine_program_mode": (
+            "EXECUTABLE_CAM_CANDIDATE"
+            if cutting_candidate is not None
+            else ("CAM_BLOCKED" if cam_blocked else "VALIDATION_DRY_RUN")
+        ),
+        "production_machine_program": cutting_candidate is not None,
         "workshop_readiness": bundle.workshop_readiness.as_dict(),
+        **(
+            {
+                "cam_status": "CUTTING_CANDIDATE_GENERATED",
+                "physical_cutting_authorized": False,
+                "workshop_acceptance_required": True,
+                "cam_candidate": cutting_candidate.result_claims,
+            }
+            if cutting_candidate is not None
+            else {}
+        ),
     }
     lease_guard.check()
     frozen_result = MappingProxyType(result)
@@ -1975,6 +2098,7 @@ def _validate_completion_evidence(
                 build_identity=WORKER_SETTINGS.build_identity,
                 trust_registry_json=WORKER_SETTINGS.joint_retention_trust_registry_json,
                 production_mode=WORKER_SETTINGS.app_env == "production",
+                allow_test_only_profiles=WORKER_SETTINGS.app_env == "test",
             )
     except (BotoCoreError, ClientError, OSError) as exc:
         raise ArtifactStorageUnavailableError(

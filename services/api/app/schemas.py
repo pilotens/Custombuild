@@ -20,6 +20,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     StringConstraints,
     field_validator,
     model_validator,
@@ -63,6 +64,7 @@ def _require_micrometre_precision(value: float) -> float:
     if not decimal_value.is_finite() or scaled != scaled.to_integral_value():
         raise ValueError("millimetre values must have at most 0.001 mm precision")
     return value
+
 
 WorkspacePartId = Annotated[
     str,
@@ -215,8 +217,7 @@ def _validate_workspace_ratios(
             or value > 0.95 + RATIO_COMPARISON_TOLERANCE
             or (
                 index > 0
-                and value - shelf_height_ratios[index - 1]
-                < 0.05 - RATIO_COMPARISON_TOLERANCE
+                and value - shelf_height_ratios[index - 1] < 0.05 - RATIO_COMPARISON_TOLERANCE
             )
             for index, value in enumerate(shelf_height_ratios)
         ):
@@ -344,9 +345,7 @@ class BookcasePreviewInput(BaseModel):
     def validate_custom_layout(self) -> BookcasePreviewInput:
         if not _legacy_back_panel_enabled(self.back_panel) and self.back_material_id is not None:
             raise ValueError("back_material_id requires an enabled back panel")
-        if self.plinth_height_mm is not None and (
-            self.plinth != (self.plinth_height_mm > 0)
-        ):
+        if self.plinth_height_mm is not None and (self.plinth != (self.plinth_height_mm > 0)):
             raise ValueError(
                 "plinth must be true exactly when explicit plinth_height_mm is greater than zero"
             )
@@ -878,21 +877,15 @@ class WorkshopTwoSidedRegistration(_StrictWorkshopModel):
             raise ValueError("two-sided registration must remain client-declared")
         if self.position_tolerance_um * 2 >= self.pin_diameter_um:
             raise ValueError("position_tolerance_um must be less than the pin radius")
-        footprint_radius_um = (
-            (self.pin_diameter_um + 1) // 2 + self.position_tolerance_um
-        )
-        minimum_center_distance_um = (
-            MIN_REGISTRATION_USABLE_BASELINE_UM + 2 * footprint_radius_um
-        )
+        footprint_radius_um = (self.pin_diameter_um + 1) // 2 + self.position_tolerance_um
+        minimum_center_distance_um = MIN_REGISTRATION_USABLE_BASELINE_UM + 2 * footprint_radius_um
         if any(
             (first.x_um - second.x_um) ** 2 + (first.y_um - second.y_um) ** 2
             < minimum_center_distance_um**2
             for index, first in enumerate(self.pins)
             for second in self.pins[index + 1 :]
         ):
-            raise ValueError(
-                "every registration pin pair must retain a 100000 um usable baseline"
-            )
+            raise ValueError("every registration pin pair must retain a 100000 um usable baseline")
         return self
 
 
@@ -909,8 +902,7 @@ def _validate_workshop_stock_context(value: Any) -> None:
     if "carcass" not in profiles_by_role:
         raise ValueError("structured stock_profiles require one carcass profile")
     identities = {
-        (profile.supplier_profile_id, profile.supplier_profile_version)
-        for profile in profiles
+        (profile.supplier_profile_id, profile.supplier_profile_version) for profile in profiles
     }
     if len(identities) != len(profiles):
         raise ValueError("supplier stock profile identities must be unique")
@@ -927,8 +919,7 @@ def _validate_workshop_stock_context(value: Any) -> None:
         width_mm, height_mm, sheet_count = legacy_by_role[role]
         if (
             profile.sheet_width_um != int(Decimal(str(width_mm)) * Decimal(1_000))
-            or profile.sheet_height_um
-            != int(Decimal(str(height_mm)) * Decimal(1_000))
+            or profile.sheet_height_um != int(Decimal(str(height_mm)) * Decimal(1_000))
             or profile.sheet_count != sheet_count
         ):
             raise ValueError(
@@ -937,8 +928,7 @@ def _validate_workshop_stock_context(value: Any) -> None:
 
     registrations = registrations_value or []
     registration_keys = [
-        (registration.stock_role, registration.sheet_index)
-        for registration in registrations
+        (registration.stock_role, registration.sheet_index) for registration in registrations
     ]
     if len(registration_keys) != len(set(registration_keys)):
         raise ValueError("two-sided registration stock/sheet identities must be unique")
@@ -949,9 +939,8 @@ def _validate_workshop_stock_context(value: Any) -> None:
         if registration.sheet_index >= profile.sheet_count:
             raise ValueError("two-sided registration references a sheet outside stock count")
         footprint_radius_um = (
-            (registration.pin_diameter_um + 1) // 2
-            + registration.position_tolerance_um
-        )
+            registration.pin_diameter_um + 1
+        ) // 2 + registration.position_tolerance_um
         existing_zones = (*profile.defect_zones, *profile.fixture_keep_out_zones)
         for pin in registration.pins:
             left = pin.x_um - footprint_radius_um
@@ -964,9 +953,7 @@ def _validate_workshop_stock_context(value: Any) -> None:
                 or right > profile.sheet_width_um
                 or top > profile.sheet_height_um
             ):
-                raise ValueError(
-                    "two-sided registration pin footprint lies outside the raw sheet"
-                )
+                raise ValueError("two-sided registration pin footprint lies outside the raw sheet")
             if any(
                 not (
                     right <= zone.x_um
@@ -976,9 +963,7 @@ def _validate_workshop_stock_context(value: Any) -> None:
                 )
                 for zone in existing_zones
             ):
-                raise ValueError(
-                    "two-sided registration pin footprint collides with a stock zone"
-                )
+                raise ValueError("two-sided registration pin footprint collides with a stock zone")
     profiles.sort(key=lambda profile: 0 if profile.role == "carcass" else 1)
     if registrations_value is not None:
         registrations_value.sort(
@@ -1010,6 +995,7 @@ class GenerationRequest(BaseModel):
     include_step: bool = True
     include_freecad_project: bool = False
     include_validation_program: bool = True
+    include_cutting_candidate: bool = False
     external_evidence_ids: list[str] = Field(default_factory=list, max_length=20)
     stock_profiles: list[WorkshopStockProfile] | None = Field(default=None, max_length=2)
     two_sided_registrations: list[WorkshopTwoSidedRegistration] | None = Field(
@@ -1040,6 +1026,8 @@ class GenerationRequest(BaseModel):
     def validate_cad_dependencies(self) -> GenerationRequest:
         if self.include_freecad_project and not self.include_step:
             raise ValueError("include_freecad_project requires include_step")
+        if self.include_cutting_candidate and not self.include_validation_program:
+            raise ValueError("include_cutting_candidate requires include_validation_program")
         _validate_workshop_stock_context(self)
         return self
 
@@ -1193,15 +1181,118 @@ class WorkshopRunBlockedResponse(BaseModel):
     detail: WorkshopRunBlockerDetail
 
 
-class ReleaseRead(BaseModel):
-    release_id: str
-    release_number: str
+class DesignReviewReleaseRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    release_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    release_number: str = Field(pattern=r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
     status: Literal["released"]
     bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     release_kind: Literal["design_review"]
     machine_use: Literal["validation_only"]
     physical_cutting_authorized: Literal[False]
+
+
+class DesignReviewBundleReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class CAMApprovalReleaseBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["custombuild.cam-approval-release-binding.v1"]
+    approval_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    generation_job_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    organization_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    design_version_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    approval_type: Literal["cam"]
+    approved_by: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    reason: str = Field(min_length=5, max_length=2000)
+    production_context_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    candidate_bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    # CAM approvals cannot carry design-warning overrides. Keeping this exact
+    # empty value also makes the release binding byte-identical in Python and
+    # browser JSON canonicalizers.
+    overrides_json: list[dict[str, Any]] = Field(max_length=0)
+    created_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+    updated_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+    binding_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class ExecutableCAMReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    candidate_bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    candidate_manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    production_profile_document_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    production_profile_payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    program_inventory_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    cam_approval: CAMApprovalReleaseBinding
+    workshop_acceptance_required: Literal[True]
+
+
+class ExecutableCAMReleaseRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    release_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    release_number: str = Field(pattern=r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
+    status: Literal["released"]
+    release_kind: Literal["executable_cam"]
+    machine_use: Literal["executable_cam_candidate"]
+    design_review_bundle: DesignReviewBundleReceipt
+    executable_cam: ExecutableCAMReceipt
+    physical_cutting_authorized: Literal[False]
+
+
+class ReleaseRead(
+    RootModel[
+        Annotated[
+            DesignReviewReleaseRead | ExecutableCAMReleaseRead,
+            Field(discriminator="release_kind"),
+        ]
+    ]
+):
+    """One immutable release receipt, discriminated by its actual release scope."""
 
 
 class ApprovalRead(BaseModel):
@@ -1215,6 +1306,10 @@ class ApprovalRead(BaseModel):
     generation_job_id: str | None
     production_context_hash: str | None
     manifest_sha256: str | None
+    cam_candidate_bundle_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
     overrides_json: list[dict[str, Any]]
     created_at: datetime
     updated_at: datetime

@@ -11,6 +11,7 @@ from typing import Any
 import custombuild_manufacturing.pipeline as manufacturing_pipeline
 import custombuild_manufacturing.production_context as production_context_contract
 import custombuild_manufacturing.review_status as review_status_contract
+import custombuild_worker.cam_candidate as worker_cam_candidate
 import custombuild_worker.tasks as worker_tasks
 import pytest
 from app.models import DesignStatus, DesignVersion, GenerationJob, JobStatus
@@ -339,6 +340,128 @@ def test_worker_accepts_only_the_exact_frozen_context() -> None:
     assert DOCUMENT_RENDERER_VERSION == "reportlab-production-documents-1.4.0"
     assert production_context_contract.DOCUMENT_RENDERER_VERSION == DOCUMENT_RENDERER_VERSION
     assert resolved.context.document_renderer_version == DOCUMENT_RENDERER_VERSION
+
+
+def test_worker_profile_binding_rejects_missing_unrequested_and_drifted_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ProductionBlockedError, match="without cutting-candidate opt-in"):
+        worker_tasks._configured_cutting_candidate_profile(
+            {"include_cutting_candidate": False, "production_machine_profile": {}}
+        )
+    with pytest.raises(ProductionBlockedError, match="no server-owned"):
+        worker_tasks._configured_cutting_candidate_profile(
+            {
+                "include_cutting_candidate": True,
+                "include_validation_program": True,
+            }
+        )
+
+    profile = object()
+    binding = {
+        "document_sha256": "d" * 64,
+        "payload_sha256": "a" * 64,
+    }
+    monkeypatch.setattr(
+        worker_tasks,
+        "WORKER_SETTINGS",
+        SimpleNamespace(
+            app_env="test",
+            production_cam_profile_source=b'{"server":"owned"}',
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "load_production_machine_profile",
+        lambda source, *, allow_test_only: (
+            profile if source == b'{"server":"owned"}' and allow_test_only is True else None
+        ),
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "production_machine_profile_job_binding_json",
+        lambda value: worker_tasks.canonical_json_bytes(binding) if value is profile else b"",
+    )
+
+    request = {
+        "include_cutting_candidate": True,
+        "include_validation_program": True,
+        "production_machine_profile": binding,
+    }
+    assert worker_tasks._configured_cutting_candidate_profile(request) is profile
+    request["production_machine_profile"] = {
+        **binding,
+        "document_sha256": "e" * 64,
+    }
+    with pytest.raises(ProductionBlockedError, match="changed after.*queued"):
+        worker_tasks._configured_cutting_candidate_profile(request)
+
+
+def test_worker_never_compiles_candidate_from_blocked_validation_cam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    blocked = SimpleNamespace(
+        operations=object(),
+        review_status=SimpleNamespace(
+            cam_status=worker_tasks.CAMStageStatus.BLOCKED,
+            operations_included=False,
+            nesting_included=False,
+            setup_sheets_included=False,
+            validation_backplot_included=False,
+            validation_program_included=False,
+            blocker_codes=("BLOCKED",),
+        ),
+        manifest={
+            "release_scope": "design_review",
+            "machine_use": "validation_only",
+            "physical_cutting_authorized": False,
+        },
+    )
+    monkeypatch.setattr(
+        worker_cam_candidate,
+        "generate_production_toolpaths",
+        lambda *_args: calls.append("compiled"),
+    )
+
+    with pytest.raises(ProductionBlockedError, match="unblocked, complete"):
+        worker_cam_candidate.build_worker_cam_candidate(blocked, object(), None)
+
+    assert calls == []
+
+
+def test_worker_rejects_a_resolved_engine_context_different_from_review_bundle() -> None:
+    frozen_context = {
+        "app_version": "1.0.0",
+        "vcs_ref": "a" * 40,
+        "source_manifest_sha256": "b" * 64,
+        "dependency_lock_sha256": "c" * 64,
+    }
+    complete = SimpleNamespace(
+        operations=object(),
+        review_status=SimpleNamespace(
+            cam_status=worker_tasks.CAMStageStatus.VALIDATION_GENERATED,
+            operations_included=True,
+            nesting_included=True,
+            setup_sheets_included=True,
+            validation_backplot_included=True,
+            validation_program_included=True,
+            blocker_codes=(),
+        ),
+        manifest={
+            "release_scope": "design_review",
+            "machine_use": "validation_only",
+            "physical_cutting_authorized": False,
+            "production_engine_context": frozen_context,
+        },
+    )
+
+    with pytest.raises(ProductionBlockedError, match="producer context differs"):
+        worker_cam_candidate.build_worker_cam_candidate(
+            complete,
+            object(),
+            {**frozen_context, "dependency_lock_sha256": "d" * 64},
+        )
 
 
 def test_worker_returns_review_package_when_two_sided_cam_registration_is_missing(
@@ -726,6 +849,169 @@ def test_worker_accepts_only_the_canonical_evidence_path_identity_contracts(
     assert len(writes) == len(_EVIDENCE_IDENTITY_CASES) + 2
 
 
+def test_worker_persists_complete_opt_in_cam_candidate_with_stable_public_kinds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job, version = _generation_ready_job_and_version()
+    receipt = {"payload_sha256": "a" * 64}
+    job.request_json = {
+        **job.request_json,
+        "include_cutting_candidate": True,
+        "production_machine_profile": receipt,
+    }
+    resolved = resolve_production_components(
+        machine_profile_id=job.request_json["machine_profile_id"],
+        postprocessor_id=job.request_json["postprocessor_id"],
+        **worker_tasks.WORKER_SETTINGS.build_identity,
+    )
+    job.production_context_hash = generation_context_hash(
+        design_context_hash=version.context_hash,
+        design_version_id=version.id,
+        revision=version.revision,
+        request=job.request_json,
+        production_engine_context=resolved.context,
+    )
+
+    def build_base(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        return SimpleNamespace(
+            zip_bytes=b"validation-review-bundle",
+            manifest={
+                "generation_context_hash": job.production_context_hash,
+                "production_engine_context": kwargs["context"].production_engine_context,
+                "release_scope": "design_review",
+                "machine_use": "validation_only",
+                "physical_cutting_authorized": False,
+            },
+            artifacts=(),
+            operations=object(),
+            review_status=SimpleNamespace(
+                cam_status=worker_tasks.CAMStageStatus.VALIDATION_GENERATED,
+                as_dict=lambda: {"cam_status": "VALIDATION_GENERATED"},
+            ),
+            dfm_report=SimpleNamespace(status=SimpleNamespace(value="PASS")),
+            layouts=(SimpleNamespace(utilization_ppm=500_000, used_sheet_count=1, stock_id="s"),),
+            workshop_readiness=SimpleNamespace(
+                as_dict=lambda: {"physical_cutting_authorized": False}
+            ),
+        )
+
+    candidate_artifacts = (
+        ArtifactFile(
+            "cam-candidate/cam-candidate.zip",
+            b"candidate-zip",
+            "application/zip",
+            "EXECUTABLE_CAM_CANDIDATE_BUNDLE",
+        ),
+        ArtifactFile(
+            "cam/toolpaths.v1.json",
+            b'{"toolpaths":true}',
+            "application/json",
+            "PRODUCTION_TOOLPATH_DOCUMENT",
+        ),
+        ArtifactFile(
+            "machine-production/program-index.v1.json",
+            b'{"programs":2}',
+            "application/json",
+            "PRODUCTION_PROGRAM_INDEX",
+        ),
+        ArtifactFile(
+            "validation/cutting-program-report.json",
+            b'{"result":"PASS"}',
+            "application/json",
+            "CUTTING_PROGRAM_VALIDATION_REPORT",
+        ),
+        ArtifactFile(
+            "cam/cutting-backplot.svg",
+            b"<svg/>",
+            "image/svg+xml",
+            "CUTTING_BACKPLOT",
+        ),
+        ArtifactFile(
+            "machine-production/production-machine-profile.v1.json",
+            b'{"profile":true}',
+            "application/json",
+            "PRODUCTION_MACHINE_PROFILE_DOCUMENT",
+        ),
+        ArtifactFile(
+            "machine-production/linuxcnc/001.setup.tool.production.ngc",
+            b"G0 X0 Y0 Z1\nM2\n",
+            "text/x-gcode",
+            "EXECUTABLE_CAM_CANDIDATE_PROGRAM",
+        ),
+        ArtifactFile(
+            "machine-production/linuxcnc/002.setup.tool.production.ngc",
+            b"G0 X1 Y1 Z1\nM2\n",
+            "text/x-gcode",
+            "EXECUTABLE_CAM_CANDIDATE_PROGRAM",
+        ),
+    )
+    kinds = (
+        "cam_candidate_bundle",
+        "cutting_toolpaths",
+        "machine_program_index",
+        "cutting_program_validation_report",
+        "cutting_backplot",
+        "production_machine_profile",
+        "machine_program_001",
+        "machine_program_002",
+    )
+    candidate = worker_cam_candidate.WorkerCAMCandidate(
+        bundle=SimpleNamespace(artifacts=candidate_artifacts),  # type: ignore[arg-type]
+        evidence=tuple(
+            worker_cam_candidate.CandidateEvidenceArtifact(kind, artifact)
+            for kind, artifact in zip(kinds, candidate_artifacts, strict=True)
+        ),
+        result_claims={"profile_binding": receipt},
+    )
+    writes: dict[str, tuple[bytes, str]] = {}
+    profile = SimpleNamespace(
+        execution_context=SimpleNamespace(
+            source_machine_profile_id=resolved.machine.profile_id,
+            source_machine_profile_version=resolved.machine.version,
+            source_machine_profile_fingerprint=resolved.context.machine_profile_fingerprint,
+        )
+    )
+    monkeypatch.setattr(worker_tasks, "build_production_bundle", build_base)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_configured_cutting_candidate_profile",
+        lambda request: profile if request["production_machine_profile"] == receipt else None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "build_worker_cam_candidate",
+        lambda base, loaded, engine_context: candidate
+        if (
+            base.operations is not None
+            and loaded is profile
+            and engine_context.as_dict() == job.production_engine_context_json
+        )
+        else None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_put_object",
+        lambda key, payload, content_type, **_kwargs: writes.__setitem__(
+            key, (payload, content_type)
+        ),
+    )
+
+    result = _generate_with_storage_lease(monkeypatch, job, version)
+
+    evidence = {item["kind"]: item for item in result["evidence_artifacts"]}
+    assert set(evidence) == set(kinds)
+    assert evidence["machine_program_001"]["content_type"] == "text/x-gcode"
+    assert evidence["machine_program_002"]["content_type"] == "text/x-gcode"
+    assert result["machine_program_mode"] == "EXECUTABLE_CAM_CANDIDATE"
+    assert result["production_machine_program"] is True
+    assert result["cam_status"] == "CUTTING_CANDIDATE_GENERATED"
+    assert result["physical_cutting_authorized"] is False
+    assert result["workshop_acceptance_required"] is True
+    assert result["cam_candidate"] == {"profile_binding": receipt}
+    assert len({item["object_key"] for item in evidence.values()}) == len(evidence)
+    assert len(writes) == len(evidence) + 2
+
+
 def test_worker_returns_stockless_review_package_when_stock_profile_is_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -904,7 +1190,6 @@ def test_worker_keeps_directional_stock_unbound_despite_opaque_grain_evidence(
     assert result["used_sheet_count"] == 0
     assert result["nesting_layouts"] == []
 
-
     software_status = {
         item["code"]: item["status"] for item in result["workshop_readiness"]["software_evidence"]
     }
@@ -1037,9 +1322,7 @@ def test_worker_passes_frozen_structured_stock_and_registration_to_pipeline(
     version.result_json["production_context"] = {
         **version.result_json["production_context"],
         "stock_profiles": copy.deepcopy(job.request_json["stock_profiles"]),
-        "two_sided_registrations": copy.deepcopy(
-            job.request_json["two_sided_registrations"]
-        ),
+        "two_sided_registrations": copy.deepcopy(job.request_json["two_sided_registrations"]),
     }
     resolved = resolve_production_components(
         machine_profile_id=job.request_json["machine_profile_id"],

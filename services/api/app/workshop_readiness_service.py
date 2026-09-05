@@ -79,8 +79,7 @@ def _block_executable_package_missing() -> NoReturn:
             "A design-review release cannot start a physical workshop run."
         ),
         solution=(
-            "Create a server-verified executable release package before preparing a "
-            "workshop run."
+            "Create a server-verified executable release package before preparing a workshop run."
         ),
     )
 
@@ -93,9 +92,24 @@ def _claims_executable_program(result: Mapping[str, Any]) -> bool:
     the current release model does not provide.
     """
 
-    return (
+    if (
         result.get("machine_program_mode") == "EXECUTABLE"
         and result.get("production_machine_program") is True
+    ):
+        return True
+
+    candidate = result.get("cam_candidate")
+    return (
+        result.get("cam_status") == "CUTTING_CANDIDATE_GENERATED"
+        and result.get("machine_program_mode") == "EXECUTABLE_CAM_CANDIDATE"
+        and result.get("production_machine_program") is True
+        and result.get("physical_cutting_authorized") is False
+        and result.get("workshop_acceptance_required") is True
+        and isinstance(candidate, Mapping)
+        and candidate.get("status") == "CUTTING_CANDIDATE_GENERATED"
+        and candidate.get("mode") == "EXECUTABLE_CAM_CANDIDATE"
+        and candidate.get("physical_cutting_authorized") is False
+        and candidate.get("workshop_acceptance_required") is True
     )
 
 

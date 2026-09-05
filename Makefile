@@ -1,4 +1,4 @@
-.PHONY: install test test-web coverage-gates lint typecheck build check openapi contracts golden e2e-list encoding environment-contract external-production-contract release-readiness source-manifest backup-freshness trusted-package-verifier-sha256 install-trusted-package-verifier
+.PHONY: install test test-web coverage-gates lint typecheck build check openapi contracts golden e2e-list encoding environment-contract external-production-contract release-readiness source-manifest backup-freshness trusted-package-verifier-sha256 install-trusted-package-verifier linuxcnc-interpreter-oracle
 
 PYTHONPATHS := packages/domain/src:packages/rule-engine/src:packages/manufacturing/src:packages/template-sdk/src:cad/src:cam/src:postprocessors/src:services/api:services/worker
 TRUSTED_PACKAGE_VERIFIER_SOURCE := packages/manufacturing/src/custombuild_manufacturing/offline_package_verifier.py
@@ -38,6 +38,9 @@ typecheck:
 	uv run mypy scripts/bootstrap_production_identity.py
 	uv run mypy scripts/joint_retention_certifier.py
 	uv run mypy scripts/verify_production_package.py
+	uv run mypy scripts/compile_cam_candidate.py
+	uv run mypy scripts/verify_cam_candidate.py
+	uv run mypy scripts/production_machine_profile.py
 	pnpm --dir apps/web typecheck
 
 build:
@@ -70,6 +73,9 @@ release-readiness:
 
 source-manifest:
 	uv run python scripts/source_manifest.py --repo .
+
+linuxcnc-interpreter-oracle:
+	python3 scripts/verify_linuxcnc_interpreter_oracle.py
 
 BACKUP_ROOT ?= test-results/backups
 

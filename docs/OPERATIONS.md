@@ -230,6 +230,34 @@ failed startup recovery or capacity attestation. A reaper failure is not a reaso
 to edit ledger state manually: leave the key fenced in `reaping`, correct the
 provider/database cause and let the token-bound recovery path reclaim it.
 
+Executable CAM also requires one workshop-accepted, canonical production-machine
+profile outside the image. Set `PRODUCTION_CAM_PROFILE_HOST_PATH` to its protected
+regular file and set `PRODUCTION_CAM_PROFILE_SHA256` to the lowercase SHA-256 of
+its exact bytes before composing the external-production overlay. Compose mounts
+the same file read-only into both API and generation worker and passes the same
+deployment trust pin to both services. It sets their
+`PRODUCTION_CAM_PROFILE_PATH` to
+`/run/custombuild-config/production-cam-profile.json`; production must keep
+`PRODUCTION_CAM_PROFILE_JSON` empty. The bind mount disables host-path creation,
+so an absent file blocks deployment instead of becoming an empty directory.
+API and worker read through one non-symlink descriptor and require device, inode,
+mode, size, mtime and ctime to remain identical before and after the bounded read;
+each read also hashes those exact file bytes and compares them with the independent
+deployment pin. Never edit the mounted file in place. Rotate the file and pin
+atomically and deploy both services together. A missing pin, pin mismatch,
+missing file, symlink, concurrent/torn update, oversized/non-canonical document,
+profile hash drift between API and worker, or unaccepted workshop evidence must
+keep cutting-candidate generation fail-closed. Never seed a production deployment
+from a test or example machine profile: controller behavior, travel, WCS, fixture,
+actual tool and recipe facts must come from the named workshop and be independently
+accepted. Production v1 additionally requires retained evidence for native
+`LINEAR_UNITS=mm`, exactly `COORDINATES=XYZ`, identity `trivkins`, exactly
+`[KINS] JOINTS=3`, the exact joint mapping `0:X/1:Y/2:Z`, and no extra
+controlled axes. Any other
+kinematics, gantry topology, axis set or native unit must block profile loading.
+The exact profile contract, compiler, receiving-workshop verifier and physical
+handoff boundary are documented in `docs/CAM_CANDIDATE_WORKSHOP_HANDOFF.md`.
+
 Provision `CAPACITY_ATTESTOR_DATABASE_USER=custombuild_storage_attestor` with a
 separate `CAPACITY_ATTESTOR_DATABASE_PASSWORD`; the attestor URL must use that
 exact login and secret. PostgreSQL init scripts provision and rotate it on a new

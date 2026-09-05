@@ -61,6 +61,18 @@
             "title": "Approved By",
             "type": "string"
           },
+          "cam_candidate_bundle_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cam Candidate Bundle Sha256"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -475,6 +487,188 @@
         "title": "BookcasePreviewInput",
         "type": "object"
       },
+      "CAMApprovalReleaseBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "approval_type": {
+            "const": "cam",
+            "title": "Approval Type",
+            "type": "string"
+          },
+          "approved_by": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Approved By",
+            "type": "string"
+          },
+          "binding_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Binding Sha256",
+            "type": "string"
+          },
+          "candidate_bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Bundle Sha256",
+            "type": "string"
+          },
+          "created_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+            "title": "Created At",
+            "type": "string"
+          },
+          "design_version_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Design Version Id",
+            "type": "string"
+          },
+          "generation_job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Generation Job Id",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "organization_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "overrides_json": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 0,
+            "title": "Overrides Json",
+            "type": "array"
+          },
+          "production_context_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Production Context Hash",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 5,
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "custombuild.cam-approval-release-binding.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "approval_id",
+          "generation_job_id",
+          "organization_id",
+          "design_version_id",
+          "approval_type",
+          "approved_by",
+          "reason",
+          "production_context_hash",
+          "manifest_sha256",
+          "candidate_bundle_sha256",
+          "overrides_json",
+          "created_at",
+          "updated_at",
+          "binding_sha256"
+        ],
+        "title": "CAMApprovalReleaseBinding",
+        "type": "object"
+      },
+      "DesignReviewBundleReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Bundle Sha256",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bundle_sha256",
+          "manifest_sha256"
+        ],
+        "title": "DesignReviewBundleReceipt",
+        "type": "object"
+      },
+      "DesignReviewReleaseRead": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Bundle Sha256",
+            "type": "string"
+          },
+          "machine_use": {
+            "const": "validation_only",
+            "title": "Machine Use",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "release_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "release_kind": {
+            "const": "design_review",
+            "title": "Release Kind",
+            "type": "string"
+          },
+          "release_number": {
+            "pattern": "^[A-Z0-9][A-Z0-9._-]{0,39}$",
+            "title": "Release Number",
+            "type": "string"
+          },
+          "status": {
+            "const": "released",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "release_id",
+          "release_number",
+          "status",
+          "bundle_sha256",
+          "manifest_sha256",
+          "release_kind",
+          "machine_use",
+          "physical_cutting_authorized"
+        ],
+        "title": "DesignReviewReleaseRead",
+        "type": "object"
+      },
       "DesignStatus": {
         "enum": [
           "concept",
@@ -652,6 +846,108 @@
         "title": "DesignVersionRead",
         "type": "object"
       },
+      "ExecutableCAMReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "cam_approval": {
+            "$ref": "#/components/schemas/CAMApprovalReleaseBinding"
+          },
+          "candidate_bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Bundle Sha256",
+            "type": "string"
+          },
+          "candidate_manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Manifest Sha256",
+            "type": "string"
+          },
+          "production_profile_document_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Production Profile Document Sha256",
+            "type": "string"
+          },
+          "production_profile_payload_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Production Profile Payload Sha256",
+            "type": "string"
+          },
+          "program_inventory_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Program Inventory Sha256",
+            "type": "string"
+          },
+          "workshop_acceptance_required": {
+            "const": true,
+            "title": "Workshop Acceptance Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidate_bundle_sha256",
+          "candidate_manifest_sha256",
+          "production_profile_document_sha256",
+          "production_profile_payload_sha256",
+          "program_inventory_sha256",
+          "cam_approval",
+          "workshop_acceptance_required"
+        ],
+        "title": "ExecutableCAMReceipt",
+        "type": "object"
+      },
+      "ExecutableCAMReleaseRead": {
+        "additionalProperties": false,
+        "properties": {
+          "design_review_bundle": {
+            "$ref": "#/components/schemas/DesignReviewBundleReceipt"
+          },
+          "executable_cam": {
+            "$ref": "#/components/schemas/ExecutableCAMReceipt"
+          },
+          "machine_use": {
+            "const": "executable_cam_candidate",
+            "title": "Machine Use",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "release_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "release_kind": {
+            "const": "executable_cam",
+            "title": "Release Kind",
+            "type": "string"
+          },
+          "release_number": {
+            "pattern": "^[A-Z0-9][A-Z0-9._-]{0,39}$",
+            "title": "Release Number",
+            "type": "string"
+          },
+          "status": {
+            "const": "released",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "release_id",
+          "release_number",
+          "status",
+          "release_kind",
+          "machine_use",
+          "design_review_bundle",
+          "executable_cam",
+          "physical_cutting_authorized"
+        ],
+        "title": "ExecutableCAMReleaseRead",
+        "type": "object"
+      },
       "ExternalEvidenceRead": {
         "properties": {
           "catalog_id": {
@@ -776,6 +1072,11 @@
             "maxItems": 20,
             "title": "External Evidence Ids",
             "type": "array"
+          },
+          "include_cutting_candidate": {
+            "default": false,
+            "title": "Include Cutting Candidate",
+            "type": "boolean"
           },
           "include_freecad_project": {
             "default": false,
@@ -1572,58 +1873,23 @@
         "type": "object"
       },
       "ReleaseRead": {
-        "properties": {
-          "bundle_sha256": {
-            "pattern": "^[a-f0-9]{64}$",
-            "title": "Bundle Sha256",
-            "type": "string"
+        "description": "One immutable release receipt, discriminated by its actual release scope.",
+        "discriminator": {
+          "mapping": {
+            "design_review": "#/components/schemas/DesignReviewReleaseRead",
+            "executable_cam": "#/components/schemas/ExecutableCAMReleaseRead"
           },
-          "machine_use": {
-            "const": "validation_only",
-            "title": "Machine Use",
-            "type": "string"
-          },
-          "manifest_sha256": {
-            "pattern": "^[a-f0-9]{64}$",
-            "title": "Manifest Sha256",
-            "type": "string"
-          },
-          "physical_cutting_authorized": {
-            "const": false,
-            "title": "Physical Cutting Authorized",
-            "type": "boolean"
-          },
-          "release_id": {
-            "title": "Release Id",
-            "type": "string"
-          },
-          "release_kind": {
-            "const": "design_review",
-            "title": "Release Kind",
-            "type": "string"
-          },
-          "release_number": {
-            "title": "Release Number",
-            "type": "string"
-          },
-          "status": {
-            "const": "released",
-            "title": "Status",
-            "type": "string"
-          }
+          "propertyName": "release_kind"
         },
-        "required": [
-          "release_id",
-          "release_number",
-          "status",
-          "bundle_sha256",
-          "manifest_sha256",
-          "release_kind",
-          "machine_use",
-          "physical_cutting_authorized"
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/DesignReviewReleaseRead"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutableCAMReleaseRead"
+          }
         ],
-        "title": "ReleaseRead",
-        "type": "object"
+        "title": "ReleaseRead"
       },
       "RevisionProductionContext": {
         "additionalProperties": false,

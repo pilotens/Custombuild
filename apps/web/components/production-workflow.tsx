@@ -595,6 +595,82 @@ interface WorkshopReadiness {
   workshop_evidence: ReadinessRequirement[];
 }
 
+interface CAMCandidateAcceptanceBinding {
+  evidence_id: string;
+  evidence_sha256: string;
+  evidence_version: string;
+  status: "WORKSHOP_ACCEPTED" | "TEST_ONLY";
+}
+
+interface CAMCandidatePostprocessorBinding {
+  config_sha256: string;
+  profile_id: string;
+  version: string;
+}
+
+interface CAMCandidateProductionProfileBinding {
+  acceptance: CAMCandidateAcceptanceBinding;
+  document_sha256: string;
+  execution_context_sha256: string;
+  payload_sha256: string;
+  postprocessor_profile: CAMCandidatePostprocessorBinding;
+  profile_class: "SERVER_OWNED_PRODUCTION" | "TEST_ONLY";
+  schema_version: "custombuild.production-machine-profile.v1";
+}
+
+interface CAMSoftwareProvenance {
+  schema_version: "custombuild.cam-software-provenance.v1";
+  code_root: {
+    kind: "SOURCE_MANIFEST_SHA256";
+    sha256: string;
+  };
+  producer_build: {
+    schema_version: "custombuild.producer-build-identity.v1";
+    app_version: string;
+    vcs_ref: string;
+    source_manifest_sha256: string;
+    dependency_lock_sha256: string;
+  };
+  implementations: {
+    toolpath_schema_version: "custombuild.toolpaths.v1";
+    toolpath_engine_version: "production-toolpaths-1.1.0";
+    cutting_verifier_version: "cutting-program-verifier-1.1.0";
+    cutting_backplot_version: "cutting-backplot-1.1.0";
+    postprocessor_id: "linuxcnc-3axis-production";
+    postprocessor_version: "1.1.0";
+    gcode_parser_version: "linuxcnc-production-parser-1.3.0";
+    gcode_safety_validator_version: "linuxcnc-production-safety-1.3.0";
+    candidate_manifest_schema_version: "custombuild.cam-candidate-manifest.v2";
+    candidate_package_builder_version: "deterministic-cam-candidate-package-1.1.0";
+  };
+}
+
+export interface CAMCandidateResult {
+  schema_version: "custombuild.cam-candidate-result.v2";
+  status: "CUTTING_CANDIDATE_GENERATED";
+  mode: "EXECUTABLE_CAM_CANDIDATE";
+  physical_cutting_authorized: false;
+  workshop_acceptance_required: true;
+  base_design_review_bundle_sha256: string;
+  bundle_sha256: string;
+  bundle_size_bytes: number;
+  manifest_sha256: string;
+  candidate_context_hash: string;
+  software_provenance: CAMSoftwareProvenance;
+  software_provenance_sha256: string;
+  production_profile_job_binding: CAMCandidateProductionProfileBinding;
+  production_profile_payload_sha256: string;
+  execution_context_sha256: string;
+  production_machine_profile_sha256: string;
+  postprocessor_machine_profile_sha256: string;
+  toolpaths_sha256: string;
+  program_count: number;
+  postprocessor: {
+    id: "linuxcnc-3axis-production";
+    version: "1.1.0";
+  };
+}
+
 export interface DesignReviewPackageStatus {
   schema_version: "custombuild.design-review-package-status.v1";
   package_status: "READY_FOR_DESIGN_REVIEW";
@@ -839,6 +915,426 @@ function hasExactKeys(
     && expectedKeys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
 }
 
+const CAM_CANDIDATE_RESULT_KEYS = [
+  "schema_version",
+  "status",
+  "mode",
+  "physical_cutting_authorized",
+  "workshop_acceptance_required",
+  "base_design_review_bundle_sha256",
+  "bundle_sha256",
+  "bundle_size_bytes",
+  "manifest_sha256",
+  "candidate_context_hash",
+  "software_provenance",
+  "software_provenance_sha256",
+  "production_profile_job_binding",
+  "production_profile_payload_sha256",
+  "execution_context_sha256",
+  "production_machine_profile_sha256",
+  "postprocessor_machine_profile_sha256",
+  "toolpaths_sha256",
+  "program_count",
+  "postprocessor",
+] as const;
+const CAM_CANDIDATE_PROFILE_BINDING_KEYS = [
+  "acceptance",
+  "document_sha256",
+  "execution_context_sha256",
+  "payload_sha256",
+  "postprocessor_profile",
+  "profile_class",
+  "schema_version",
+] as const;
+const CAM_CANDIDATE_ACCEPTANCE_KEYS = [
+  "evidence_id",
+  "evidence_sha256",
+  "evidence_version",
+  "status",
+] as const;
+const CAM_CANDIDATE_POSTPROCESSOR_BINDING_KEYS = [
+  "config_sha256",
+  "profile_id",
+  "version",
+] as const;
+const CAM_CANDIDATE_POSTPROCESSOR_KEYS = ["id", "version"] as const;
+const CAM_SOFTWARE_PROVENANCE_KEYS = [
+  "schema_version",
+  "code_root",
+  "producer_build",
+  "implementations",
+] as const;
+const CAM_CODE_ROOT_KEYS = ["kind", "sha256"] as const;
+const CAM_PRODUCER_BUILD_KEYS = [
+  "schema_version",
+  "app_version",
+  "vcs_ref",
+  "source_manifest_sha256",
+  "dependency_lock_sha256",
+] as const;
+const CAM_IMPLEMENTATION_VERSION_KEYS = [
+  "toolpath_schema_version",
+  "toolpath_engine_version",
+  "cutting_verifier_version",
+  "cutting_backplot_version",
+  "postprocessor_id",
+  "postprocessor_version",
+  "gcode_parser_version",
+  "gcode_safety_validator_version",
+  "candidate_manifest_schema_version",
+  "candidate_package_builder_version",
+] as const;
+const CAM_CANDIDATE_SINGLETON_CONTENT_TYPES = Object.freeze({
+  cam_candidate_bundle: "application/zip",
+  cutting_toolpaths: "application/json",
+  machine_program_index: "application/json",
+  cutting_program_validation_report: "application/json",
+  cutting_backplot: "image/svg+xml",
+  production_machine_profile: "application/json",
+} as const);
+const CAM_CANDIDATE_SINGLETON_KINDS = Object.freeze(
+  Object.keys(CAM_CANDIDATE_SINGLETON_CONTENT_TYPES),
+);
+const MACHINE_PROGRAM_KIND_PATTERN = /^machine_program_(00[1-9]|0[1-9]\d|[1-9]\d\d)$/;
+const CAM_CANDIDATE_ROOT_KEYS = [
+  "cam_status",
+  "machine_program_mode",
+  "production_machine_program",
+  "physical_cutting_authorized",
+  "workshop_acceptance_required",
+  "cam_candidate",
+] as const;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function isBoundedIdentity(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= 256;
+}
+
+function isCanonicalBuildIdentityText(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 200
+    && value === value.trim();
+}
+
+function isCAMCandidateArtifactKind(kind: string): boolean {
+  return Object.prototype.hasOwnProperty.call(CAM_CANDIDATE_SINGLETON_CONTENT_TYPES, kind)
+    || MACHINE_PROGRAM_KIND_PATTERN.test(kind);
+}
+
+function hasCAMCandidateSignal(result: Record<string, unknown>): boolean {
+  return [
+    "cam_status",
+    "physical_cutting_authorized",
+    "workshop_acceptance_required",
+    "cam_candidate",
+  ].some((key) => Object.prototype.hasOwnProperty.call(result, key))
+    || result.machine_program_mode === "EXECUTABLE_CAM_CANDIDATE"
+    || result.production_machine_program === true
+    || (Array.isArray(result.evidence_artifacts) && result.evidence_artifacts.some((value) => (
+      isRecord(value)
+      && typeof value.kind === "string"
+      && (
+        isCAMCandidateArtifactKind(value.kind)
+        || value.kind.startsWith("machine_program_")
+        || value.kind.startsWith("cam_candidate")
+      )
+    )));
+}
+
+function parseCAMCandidateProductionProfileBinding(
+  value: unknown,
+): CAMCandidateProductionProfileBinding | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, CAM_CANDIDATE_PROFILE_BINDING_KEYS)) {
+    return undefined;
+  }
+  const acceptance = value.acceptance;
+  const postprocessor = value.postprocessor_profile;
+  if (
+    !isRecord(acceptance)
+    || !hasExactKeys(acceptance, CAM_CANDIDATE_ACCEPTANCE_KEYS)
+    || !isRecord(postprocessor)
+    || !hasExactKeys(postprocessor, CAM_CANDIDATE_POSTPROCESSOR_BINDING_KEYS)
+    || value.schema_version !== "custombuild.production-machine-profile.v1"
+    || (
+      value.profile_class !== "SERVER_OWNED_PRODUCTION"
+      && value.profile_class !== "TEST_ONLY"
+    )
+    || !isSha256(value.document_sha256)
+    || !isSha256(value.payload_sha256)
+    || !isSha256(value.execution_context_sha256)
+    || !isBoundedIdentity(acceptance.evidence_id)
+    || !isBoundedIdentity(acceptance.evidence_version)
+    || !isSha256(acceptance.evidence_sha256)
+    || (
+      acceptance.status !== "WORKSHOP_ACCEPTED"
+      && acceptance.status !== "TEST_ONLY"
+    )
+    || (
+      value.profile_class === "SERVER_OWNED_PRODUCTION"
+      && acceptance.status !== "WORKSHOP_ACCEPTED"
+    )
+    || (value.profile_class === "TEST_ONLY" && acceptance.status !== "TEST_ONLY")
+    || !isBoundedIdentity(postprocessor.profile_id)
+    || !isBoundedIdentity(postprocessor.version)
+    || !isSha256(postprocessor.config_sha256)
+  ) return undefined;
+  return {
+    acceptance: {
+      evidence_id: acceptance.evidence_id,
+      evidence_sha256: acceptance.evidence_sha256,
+      evidence_version: acceptance.evidence_version,
+      status: acceptance.status,
+    },
+    document_sha256: value.document_sha256,
+    execution_context_sha256: value.execution_context_sha256,
+    payload_sha256: value.payload_sha256,
+    postprocessor_profile: {
+      config_sha256: postprocessor.config_sha256,
+      profile_id: postprocessor.profile_id,
+      version: postprocessor.version,
+    },
+    profile_class: value.profile_class,
+    schema_version: "custombuild.production-machine-profile.v1",
+  };
+}
+
+function parseCAMSoftwareProvenance(value: unknown): CAMSoftwareProvenance | undefined {
+  if (!isRecord(value) || !hasExactKeys(value, CAM_SOFTWARE_PROVENANCE_KEYS)) {
+    return undefined;
+  }
+  const codeRoot = value.code_root;
+  const producer = value.producer_build;
+  const implementations = value.implementations;
+  if (
+    value.schema_version !== "custombuild.cam-software-provenance.v1"
+    || !isRecord(codeRoot)
+    || !hasExactKeys(codeRoot, CAM_CODE_ROOT_KEYS)
+    || codeRoot.kind !== "SOURCE_MANIFEST_SHA256"
+    || !isSha256(codeRoot.sha256)
+    || !isRecord(producer)
+    || !hasExactKeys(producer, CAM_PRODUCER_BUILD_KEYS)
+    || producer.schema_version !== "custombuild.producer-build-identity.v1"
+    || !isCanonicalBuildIdentityText(producer.app_version)
+    || !isCanonicalBuildIdentityText(producer.vcs_ref)
+    || !isSha256(producer.source_manifest_sha256)
+    || !isSha256(producer.dependency_lock_sha256)
+    || codeRoot.sha256 !== producer.source_manifest_sha256
+    || !isRecord(implementations)
+    || !hasExactKeys(implementations, CAM_IMPLEMENTATION_VERSION_KEYS)
+    || implementations.toolpath_schema_version !== "custombuild.toolpaths.v1"
+    || implementations.toolpath_engine_version !== "production-toolpaths-1.1.0"
+    || implementations.cutting_verifier_version !== "cutting-program-verifier-1.1.0"
+    || implementations.cutting_backplot_version !== "cutting-backplot-1.1.0"
+    || implementations.postprocessor_id !== "linuxcnc-3axis-production"
+    || implementations.postprocessor_version !== "1.1.0"
+    || implementations.gcode_parser_version !== "linuxcnc-production-parser-1.3.0"
+    || implementations.gcode_safety_validator_version !== "linuxcnc-production-safety-1.3.0"
+    || implementations.candidate_manifest_schema_version
+      !== "custombuild.cam-candidate-manifest.v2"
+    || implementations.candidate_package_builder_version
+      !== "deterministic-cam-candidate-package-1.1.0"
+  ) return undefined;
+  return {
+    schema_version: "custombuild.cam-software-provenance.v1",
+    code_root: {
+      kind: "SOURCE_MANIFEST_SHA256",
+      sha256: codeRoot.sha256,
+    },
+    producer_build: {
+      schema_version: "custombuild.producer-build-identity.v1",
+      app_version: producer.app_version,
+      vcs_ref: producer.vcs_ref,
+      source_manifest_sha256: producer.source_manifest_sha256,
+      dependency_lock_sha256: producer.dependency_lock_sha256,
+    },
+    implementations: {
+      toolpath_schema_version: "custombuild.toolpaths.v1",
+      toolpath_engine_version: "production-toolpaths-1.1.0",
+      cutting_verifier_version: "cutting-program-verifier-1.1.0",
+      cutting_backplot_version: "cutting-backplot-1.1.0",
+      postprocessor_id: "linuxcnc-3axis-production",
+      postprocessor_version: "1.1.0",
+      gcode_parser_version: "linuxcnc-production-parser-1.3.0",
+      gcode_safety_validator_version: "linuxcnc-production-safety-1.3.0",
+      candidate_manifest_schema_version: "custombuild.cam-candidate-manifest.v2",
+      candidate_package_builder_version: "deterministic-cam-candidate-package-1.1.0",
+    },
+  };
+}
+
+/**
+ * Parse the executable CAM sidecar only when every safety claim, binding and
+ * public machine-program row agrees.  The base design-review result remains a
+ * separate validation-only release boundary.
+ */
+export function camCandidateFromJob(job?: JobRead): CAMCandidateResult | undefined {
+  const result = job?.result_json;
+  if (job?.status !== "succeeded" || !isRecord(result)) return undefined;
+  if (CAM_CANDIDATE_ROOT_KEYS.some((key) => !Object.prototype.hasOwnProperty.call(result, key))) {
+    return undefined;
+  }
+  const value = result.cam_candidate;
+  if (!isRecord(value) || !hasExactKeys(value, CAM_CANDIDATE_RESULT_KEYS)) return undefined;
+  const binding = parseCAMCandidateProductionProfileBinding(
+    value.production_profile_job_binding,
+  );
+  const softwareProvenance = parseCAMSoftwareProvenance(value.software_provenance);
+  const engineContext = job.production_engine_context_json;
+  const postprocessor = value.postprocessor;
+  const hashFields = [
+    "base_design_review_bundle_sha256",
+    "bundle_sha256",
+    "manifest_sha256",
+    "candidate_context_hash",
+    "software_provenance_sha256",
+    "production_profile_payload_sha256",
+    "execution_context_sha256",
+    "production_machine_profile_sha256",
+    "postprocessor_machine_profile_sha256",
+    "toolpaths_sha256",
+  ] as const;
+  if (
+    result.cam_status !== "CUTTING_CANDIDATE_GENERATED"
+    || result.machine_program_mode !== "EXECUTABLE_CAM_CANDIDATE"
+    || result.production_machine_program !== true
+    || result.physical_cutting_authorized !== false
+    || result.workshop_acceptance_required !== true
+    || value.schema_version !== "custombuild.cam-candidate-result.v2"
+    || value.status !== "CUTTING_CANDIDATE_GENERATED"
+    || value.mode !== "EXECUTABLE_CAM_CANDIDATE"
+    || value.physical_cutting_authorized !== false
+    || value.workshop_acceptance_required !== true
+    || !binding
+    || !softwareProvenance
+    || (
+      binding.profile_class === "SERVER_OWNED_PRODUCTION"
+      && !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(
+        softwareProvenance.producer_build.vcs_ref,
+      )
+    )
+    || !isRecord(engineContext)
+    || softwareProvenance.producer_build.app_version !== engineContext.app_version
+    || softwareProvenance.producer_build.vcs_ref !== engineContext.vcs_ref
+    || softwareProvenance.producer_build.source_manifest_sha256
+      !== engineContext.source_manifest_sha256
+    || softwareProvenance.producer_build.dependency_lock_sha256
+      !== engineContext.dependency_lock_sha256
+    || !isRecord(postprocessor)
+    || !hasExactKeys(postprocessor, CAM_CANDIDATE_POSTPROCESSOR_KEYS)
+    || postprocessor.id !== "linuxcnc-3axis-production"
+    || postprocessor.version !== "1.1.0"
+    || hashFields.some((field) => !isSha256(value[field]))
+    || value.base_design_review_bundle_sha256 !== result.bundle_sha256
+    || value.production_profile_payload_sha256 !== binding.payload_sha256
+    || value.execution_context_sha256 !== binding.execution_context_sha256
+    || value.production_machine_profile_sha256 !== binding.document_sha256
+    || value.postprocessor_machine_profile_sha256
+      !== binding.postprocessor_profile.config_sha256
+    || !Number.isSafeInteger(value.bundle_size_bytes)
+    || Number(value.bundle_size_bytes) < 1
+    || Number(value.bundle_size_bytes) > 32 * 1024 * 1024
+    || !Number.isSafeInteger(value.program_count)
+    || Number(value.program_count) < 1
+    || Number(value.program_count) > 999
+    || !Array.isArray(result.evidence_artifacts)
+  ) return undefined;
+
+  const candidateEvidence = new Map<string, Record<string, unknown>>();
+  for (const item of result.evidence_artifacts) {
+    if (!isRecord(item) || typeof item.kind !== "string") continue;
+    if (!isCAMCandidateArtifactKind(item.kind)) {
+      if (item.kind.startsWith("machine_program_") || item.kind.startsWith("cam_candidate")) {
+        return undefined;
+      }
+      continue;
+    }
+    if (
+      candidateEvidence.has(item.kind)
+      || !hasExactKeys(item, REVIEW_EVIDENCE_RESULT_KEYS)
+      || !isBoundedIdentity(item.object_key)
+      || !isSha256(item.sha256)
+      || !Number.isSafeInteger(item.size_bytes)
+      || Number(item.size_bytes) < 1
+      || Number(item.size_bytes) > MAX_REVIEW_ARTIFACT_BYTES
+    ) return undefined;
+    candidateEvidence.set(item.kind, item);
+  }
+  for (const [kind, contentType] of Object.entries(CAM_CANDIDATE_SINGLETON_CONTENT_TYPES)) {
+    if (candidateEvidence.get(kind)?.content_type !== contentType) return undefined;
+  }
+  const expectedProgramKinds = Array.from(
+    { length: Number(value.program_count) },
+    (_, index) => `machine_program_${String(index + 1).padStart(3, "0")}`,
+  );
+  const actualProgramKinds = [...candidateEvidence.keys()]
+    .filter((kind) => MACHINE_PROGRAM_KIND_PATTERN.test(kind))
+    .sort((left, right) => left.localeCompare(right));
+  if (
+    candidateEvidence.size !== CAM_CANDIDATE_SINGLETON_KINDS.length + expectedProgramKinds.length
+    || actualProgramKinds.length !== expectedProgramKinds.length
+    || actualProgramKinds.some((kind, index) => kind !== expectedProgramKinds[index])
+    || actualProgramKinds.some((kind) => (
+      candidateEvidence.get(kind)?.content_type !== "text/x-gcode"
+    ))
+    || candidateEvidence.get("cam_candidate_bundle")?.sha256 !== value.bundle_sha256
+    || candidateEvidence.get("cam_candidate_bundle")?.size_bytes !== value.bundle_size_bytes
+    || candidateEvidence.get("cutting_toolpaths")?.sha256 !== value.toolpaths_sha256
+    || candidateEvidence.get("production_machine_profile")?.sha256
+      !== value.production_machine_profile_sha256
+  ) return undefined;
+
+  return {
+    schema_version: "custombuild.cam-candidate-result.v2",
+    status: "CUTTING_CANDIDATE_GENERATED",
+    mode: "EXECUTABLE_CAM_CANDIDATE",
+    physical_cutting_authorized: false,
+    workshop_acceptance_required: true,
+    base_design_review_bundle_sha256: value.base_design_review_bundle_sha256 as string,
+    bundle_sha256: value.bundle_sha256 as string,
+    bundle_size_bytes: Number(value.bundle_size_bytes),
+    manifest_sha256: value.manifest_sha256 as string,
+    candidate_context_hash: value.candidate_context_hash as string,
+    software_provenance: softwareProvenance,
+    software_provenance_sha256: value.software_provenance_sha256 as string,
+    production_profile_job_binding: binding,
+    production_profile_payload_sha256: value.production_profile_payload_sha256 as string,
+    execution_context_sha256: value.execution_context_sha256 as string,
+    production_machine_profile_sha256: value.production_machine_profile_sha256 as string,
+    postprocessor_machine_profile_sha256: value.postprocessor_machine_profile_sha256 as string,
+    toolpaths_sha256: value.toolpaths_sha256 as string,
+    program_count: Number(value.program_count),
+    postprocessor: {
+      id: "linuxcnc-3axis-production",
+      version: "1.1.0",
+    },
+  };
+}
+
+/**
+ * A restored CAM approval is current only for the exact executable candidate
+ * carried by the restored job. Treat the response as untrusted so an absent
+ * binding cannot be confused with the explicit null used by non-CAM jobs.
+ */
+export function camApprovalCandidateBindingMatchesJob(
+  approval: unknown,
+  job?: JobRead,
+): boolean {
+  if (
+    !isRecord(approval)
+    || !Object.prototype.hasOwnProperty.call(approval, "cam_candidate_bundle_sha256")
+  ) return false;
+  const jobCandidateBundleSha256 = camCandidateFromJob(job)?.bundle_sha256 ?? null;
+  return approval.cam_candidate_bundle_sha256 === jobCandidateBundleSha256;
+}
+
 const GENERATED_CAM_REVIEW_ARTIFACT_KINDS = [
   "production_bundle",
   "manifest",
@@ -888,6 +1384,7 @@ const GENERATED_CAM_ALLOWED_ARTIFACT_KINDS = new Set([
   ...BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS,
   "operations",
   "validation_backplot",
+  ...CAM_CANDIDATE_SINGLETON_KINDS,
 ]);
 const SETUP_SHEET_KIND_PATTERN = /^setup_sheet_(?:00[1-9]|0[1-9]\d|[1-4]\d\d|5(?:0\d|1[0-2]))$/;
 const MAX_REVIEW_EVIDENCE_ARTIFACTS = 512;
@@ -917,6 +1414,7 @@ const REVIEW_ARTIFACT_CONTENT_TYPES: Readonly<Record<string, string>> = {
   workshop_readiness: "application/json",
   assembly_readiness: "application/json",
   design_review_package_status: "application/json",
+  ...CAM_CANDIDATE_SINGLETON_CONTENT_TYPES,
 };
 const REVIEW_READINESS_ARTIFACT_KINDS = new Set([
   "workshop_readiness",
@@ -937,12 +1435,15 @@ const REVIEW_CORE_DOCUMENT_ARTIFACT_KINDS = new Set([
 
 function reviewArtifactKindIsAllowed(kind: string): boolean {
   return GENERATED_CAM_ALLOWED_ARTIFACT_KINDS.has(kind)
-    || SETUP_SHEET_KIND_PATTERN.test(kind);
+    || SETUP_SHEET_KIND_PATTERN.test(kind)
+    || MACHINE_PROGRAM_KIND_PATTERN.test(kind);
 }
 
 function expectedReviewArtifactContentType(kind: string): string | undefined {
   return SETUP_SHEET_KIND_PATTERN.test(kind)
     ? "image/svg+xml"
+    : MACHINE_PROGRAM_KIND_PATTERN.test(kind)
+      ? "text/x-gcode"
     : REVIEW_ARTIFACT_CONTENT_TYPES[kind];
 }
 
@@ -1010,6 +1511,12 @@ export function reviewArtifactKindsFromJob(job?: JobRead): string[] | undefined 
   if (new Set(kinds.map((kind) => kind.toLowerCase())).size !== kinds.length) {
     return undefined;
   }
+  const candidate = camCandidateFromJob(job);
+  if (hasCAMCandidateSignal(result) !== Boolean(candidate)) return undefined;
+  if (
+    candidate
+    && designReviewPackageStatusFromJob(job)?.cam_status !== "VALIDATION_GENERATED"
+  ) return undefined;
   return kinds;
 }
 
@@ -1042,6 +1549,58 @@ export function blockedCamEvidenceKindIsForbidden(kind: string): boolean {
   return !BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS.has(kind);
 }
 
+function candidateArtifactKindsAreComplete(kinds: readonly string[]): boolean {
+  const candidateKinds = kinds.filter(isCAMCandidateArtifactKind);
+  if (candidateKinds.length === 0) return true;
+  if (!CAM_CANDIDATE_SINGLETON_KINDS.every((kind) => candidateKinds.includes(kind))) {
+    return false;
+  }
+  const programKinds = candidateKinds
+    .filter((kind) => MACHINE_PROGRAM_KIND_PATTERN.test(kind))
+    .sort((left, right) => left.localeCompare(right));
+  if (programKinds.length < 1) return false;
+  return programKinds.every((kind, index) => (
+    kind === `machine_program_${String(index + 1).padStart(3, "0")}`
+  ));
+}
+
+export function camCandidateArtifactsMatchJob(
+  job: JobRead | undefined,
+  artifacts: readonly Pick<
+    ArtifactRead,
+    "kind" | "sha256" | "size_bytes" | "content_type"
+  >[],
+): boolean {
+  const result = job?.result_json;
+  if (!isRecord(result)) return false;
+  const candidate = camCandidateFromJob(job);
+  const actualCandidateArtifacts = artifacts.filter((artifact) => (
+    isCAMCandidateArtifactKind(artifact.kind)
+  ));
+  if (!candidate) {
+    return !hasCAMCandidateSignal(result) && actualCandidateArtifacts.length === 0;
+  }
+  if (!Array.isArray(result.evidence_artifacts)) return false;
+  const expected = result.evidence_artifacts.filter((value): value is Record<string, unknown> => (
+    isRecord(value)
+    && typeof value.kind === "string"
+    && isCAMCandidateArtifactKind(value.kind)
+  ));
+  if (expected.length !== actualCandidateArtifacts.length) return false;
+  const actualByKind = new Map<string, typeof actualCandidateArtifacts[number]>();
+  for (const artifact of actualCandidateArtifacts) {
+    if (actualByKind.has(artifact.kind)) return false;
+    actualByKind.set(artifact.kind, artifact);
+  }
+  return expected.every((claim) => {
+    const artifact = actualByKind.get(String(claim.kind));
+    if (!artifact) return false;
+    return artifact.sha256 === claim.sha256
+      && artifact.size_bytes === claim.size_bytes
+      && artifact.content_type === claim.content_type;
+  });
+}
+
 export function reviewPackageArtifactInventoryIsTruthful(
   artifacts: readonly Pick<ArtifactRead, "kind">[],
   status: Pick<
@@ -1072,8 +1631,10 @@ export function reviewPackageArtifactInventoryIsTruthful(
     return !kinds.some(blockedCamEvidenceKindIsForbidden);
   }
   return status.validation_program_included === true
+    && candidateArtifactKindsAreComplete(kinds)
     && kinds.every((kind) => GENERATED_CAM_ALLOWED_ARTIFACT_KINDS.has(kind)
-      || SETUP_SHEET_KIND_PATTERN.test(kind));
+      || SETUP_SHEET_KIND_PATTERN.test(kind)
+      || MACHINE_PROGRAM_KIND_PATTERN.test(kind));
 }
 
 export function designReviewPackageStatusFromJob(
@@ -1210,13 +1771,16 @@ export function workshopReadinessFromJob(job?: JobRead): WorkshopReadiness | und
   );
   const hasSafeMachineProgramPair = result.machine_program_mode === "VALIDATION_DRY_RUN"
     && result.production_machine_program === false;
+  const hasExecutableCandidatePair = result.machine_program_mode === "EXECUTABLE_CAM_CANDIDATE"
+    && result.production_machine_program === true
+    && Boolean(camCandidateFromJob(job));
   const packageStatus = designReviewPackageStatusFromJob(job);
   const hasBlockedCamProgramPair = packageStatus?.cam_status === "BLOCKED"
     && result.machine_program_mode === "CAM_BLOCKED"
     && result.production_machine_program === false;
   const hasExpectedMachineProgramPair = packageStatus?.cam_status === "BLOCKED"
     ? hasBlockedCamProgramPair
-    : hasSafeMachineProgramPair;
+    : hasSafeMachineProgramPair || hasExecutableCandidatePair;
   if (
     (
       isV2
@@ -1230,7 +1794,11 @@ export function workshopReadinessFromJob(job?: JobRead): WorkshopReadiness | und
       isLegacyV1
       && (
         hasMachineProgramMode !== hasProductionMachineProgram
-        || (hasMachineProgramMode && !hasSafeMachineProgramPair)
+        || (
+          hasMachineProgramMode
+          && !hasSafeMachineProgramPair
+          && !hasExecutableCandidatePair
+        )
       )
     )
   ) return undefined;
@@ -1298,6 +1866,7 @@ function formatArtifactSize(sizeBytes: number): string {
 
 export function artifactRoleLabel(kind: string): string {
   if (kind === "production_bundle") return "Designgranskningspaket (ZIP)";
+  if (kind === "cam_candidate_bundle") return "Körbar CAM-kandidat (ZIP)";
   if (kind === "manifest") return "Manifest";
   if (kind === "dfm_report") return "Tillverkningsbarhetskontroll";
   if (kind === "stock_selection") return "Lagerurval";
@@ -1313,6 +1882,13 @@ export function artifactRoleLabel(kind: string): string {
   if (kind === "assembly_readiness") return "Monteringskontroll";
   if (kind === "supplier_handoff") return "Leverantörsöverlämning";
   if (kind === "manufacturing_intent") return "Maskinneutralt bearbetningsunderlag";
+  if (kind === "cutting_toolpaths") return "Skärande verktygsbanor";
+  if (kind === "machine_program_index") return "Körordning för maskinprogram";
+  if (kind === "cutting_program_validation_report") return "Oberoende CAM-kontrollrapport";
+  if (kind === "cutting_backplot") return "Backplot för skärande rörelser";
+  if (kind === "production_machine_profile") return "Bunden produktionsmaskinprofil";
+  const machineProgramMatch = MACHINE_PROGRAM_KIND_PATTERN.exec(kind);
+  if (machineProgramMatch) return `Skärande maskinprogram ${machineProgramMatch[1]}`;
   if (kind.startsWith("setup_sheet_")) return "Setupblad";
   return kind.replaceAll("_", " ");
 }
@@ -1325,11 +1901,15 @@ function artifactFormatLabel(artifact: Pick<ArtifactRead, "kind" | "content_type
   if (artifact.content_type === "image/svg+xml") return "SVG";
   if (artifact.content_type === "application/pdf") return "PDF";
   if (artifact.content_type === "text/csv") return "CSV";
+  if (artifact.content_type === "text/x-gcode") return "LinuxCNC G-kod";
   return artifact.content_type;
 }
 
 export function artifactReviewUseLabel(kind: string): string {
   if (kind === "production_bundle") return "Samlat underlag för designgranskning";
+  if (kind === "cam_candidate_bundle") {
+    return "Skärande CAM-kandidat – kräver verkstadsacceptans före maskinstart";
+  }
   if (kind === "design_glb") return "Visuell 3D-granskning";
   if (kind === "design_fcstd") return "Valfri CAD-granskning";
   if (kind === "validation_backplot") return "Icke-skärande validering";
@@ -1340,6 +1920,20 @@ export function artifactReviewUseLabel(kind: string): string {
   }
   if (kind === "manufacturing_intent") {
     return "Maskinneutralt bearbetningsunderlag för CNC-verkstadens granskning – inte körbar CNC-kod";
+  }
+  if (kind === "cutting_toolpaths") {
+    return "Exakta skärande verktygsbanor – inte arbetsorder eller maskinstart";
+  }
+  if (kind === "machine_program_index") {
+    return "Checksummebunden körordning – kräver operatörens acceptans";
+  }
+  if (kind === "cutting_program_validation_report") {
+    return "Oberoende programkontroll – auktoriserar inte fysisk kapning";
+  }
+  if (kind === "cutting_backplot") return "Visuell kontroll av skärande rörelser";
+  if (kind === "production_machine_profile") return "Maskin-, WCS-, verktygs- och fixturbindning";
+  if (MACHINE_PROGRAM_KIND_PATTERN.test(kind)) {
+    return "Skärande LinuxCNC-program – inte arbetsorder eller maskinstart";
   }
   return "Verifieringsbevis för designgranskning";
 }
@@ -1357,6 +1951,7 @@ export function artifactFileExtension(
   if (artifact.content_type === "image/svg+xml") return "svg";
   if (artifact.content_type === "application/pdf") return "pdf";
   if (artifact.content_type === "text/csv") return "csv";
+  if (artifact.content_type === "text/x-gcode") return "ngc";
   return "bin";
 }
 
@@ -1373,6 +1968,7 @@ export function artifactDownloadFileName(
   }
   const canonicalIdentities: Record<string, readonly [string, string, string]> = {
     production_bundle: ["design-review", "application/zip", "zip"],
+    cam_candidate_bundle: ["cam-candidate", "application/zip", "zip"],
     manifest: ["design-review-manifest", "application/json", "json"],
     manufacturing_intent: ["manufacturing-intent", "application/json", "json"],
     supplier_handoff: ["cnc-shop-handoff", "application/json", "json"],
@@ -1388,11 +1984,24 @@ export function artifactDownloadFileName(
     source_provenance: ["source-provenance", "application/json", "json"],
     workshop_readiness: ["workshop-readiness", "application/json", "json"],
     assembly_readiness: ["assembly-readiness", "application/json", "json"],
+    cutting_toolpaths: ["cutting-toolpaths", "application/json", "json"],
+    machine_program_index: ["machine-program-index", "application/json", "json"],
+    cutting_program_validation_report: [
+      "cutting-program-validation-report",
+      "application/json",
+      "json",
+    ],
+    cutting_backplot: ["cutting-backplot", "image/svg+xml", "svg"],
+    production_machine_profile: ["production-machine-profile", "application/json", "json"],
   };
   let identity = canonicalIdentities[artifact.kind];
   if (!identity) {
     const setupMatch = /^setup_sheet_([0-9]{3})$/.exec(artifact.kind);
     if (setupMatch) identity = [`setup-sheet-${setupMatch[1]}`, "image/svg+xml", "svg"];
+    const machineProgramMatch = MACHINE_PROGRAM_KIND_PATTERN.exec(artifact.kind);
+    if (machineProgramMatch) {
+      identity = [`machine-program-${machineProgramMatch[1]}`, "text/x-gcode", "ngc"];
+    }
   }
   if (!identity || artifact.content_type !== identity[1]) {
     throw new ApiError("Artefaktens typ och medieformat matchar inte serverns filnamnskontrakt.");
@@ -1446,6 +2055,7 @@ export function ProductionWorkflow({
   const [warningsAcknowledged, setWarningsAcknowledged] = useState(false);
   const [camApprovalConfirmed, setCamApprovalConfirmed] = useState(false);
   const [releaseConfirmed, setReleaseConfirmed] = useState(false);
+  const [includeCuttingCandidate, setIncludeCuttingCandidate] = useState(false);
   const [busy, setBusy] = useState<BusyAction>();
   const [error, setError] = useState<string>();
   const [actionFeedback, setActionFeedback] = useState<ActionFeedback>();
@@ -1523,6 +2133,7 @@ export function ProductionWorkflow({
       setWarningsAcknowledged(false);
       setCamApprovalConfirmed(false);
       setReleaseConfirmed(false);
+      setIncludeCuttingCandidate(false);
       setActionFeedback(undefined);
       setError(undefined);
       setExternalEvidence([]);
@@ -1612,6 +2223,7 @@ export function ProductionWorkflow({
           && camApproval?.generation_job_id === restoredJob.id
           && camApproval.manifest_sha256 === restoredJob.result_json?.manifest_sha256
           && camApproval.production_context_hash === restoredJob.production_context_hash
+          && camApprovalCandidateBindingMatchesJob(camApproval, restoredJob)
             ? restoredJob.id
             : undefined,
         );
@@ -1908,6 +2520,11 @@ export function ProductionWorkflow({
   const productionBundle = artifacts.find((artifact) => artifact.kind === "production_bundle");
   const bundleSha256 = reviewBundleSha256FromJob(job);
   const reviewPackageStatus = designReviewPackageStatusFromJob(job);
+  const camCandidate = camCandidateFromJob(job);
+  const camCandidateUsesTestProfile = (
+    camCandidate?.production_profile_job_binding.profile_class === "TEST_ONLY"
+  );
+  const camCandidateArtifactsVerified = camCandidateArtifactsMatchJob(job, artifacts);
   const reviewPackageStatusClaimed = Boolean(
     job?.result_json
     && typeof job.result_json === "object"
@@ -1924,7 +2541,9 @@ export function ProductionWorkflow({
     reviewPackageStatus,
     reviewPackageStatusClaimed,
     expectedReviewArtifactKinds,
-  ) && reviewBundleArtifactMatchesJob(artifacts, bundleSha256);
+  )
+    && reviewBundleArtifactMatchesJob(artifacts, bundleSha256)
+    && camCandidateArtifactsVerified;
   const workshopReadiness = workshopReadinessFromJob(job);
   const softwareStatusByCode = new Map(
     workshopReadiness?.software_evidence.map((item) => [item.code, item.status]) ?? [],
@@ -1980,6 +2599,9 @@ export function ProductionWorkflow({
     && /^[a-f0-9]{64}$/.test(job.result_json.manifest_sha256)
     ? job.result_json.manifest_sha256
     : undefined;
+  const camCandidateBundle = artifacts.find((artifact) => (
+    artifact.kind === "cam_candidate_bundle"
+  ));
   const artifactInventory = artifacts
     .map((artifact) => ({
       artifact,
@@ -2009,34 +2631,75 @@ export function ProductionWorkflow({
     && workshopReadiness
     && (camBlocked ? blockedCamReviewIsTruthful : workshopReadiness.design_review_ready),
   );
-  const camValidationPackageEligible = Boolean(
+  const camReviewPackageEligible = Boolean(
     designReviewReady
     && !camBlocked
     && job?.status === "succeeded"
     && job.result_json?.authoritative_geometry === true
-    && job.result_json.machine_program_mode === "VALIDATION_DRY_RUN"
-    && job.result_json.production_machine_program === false
+    && (
+      (
+        job.result_json.machine_program_mode === "VALIDATION_DRY_RUN"
+        && job.result_json.production_machine_program === false
+        && !camCandidate
+      )
+      || (
+        job.result_json.machine_program_mode === "EXECUTABLE_CAM_CANDIDATE"
+        && job.result_json.production_machine_program === true
+        && Boolean(camCandidate)
+        && !camCandidateUsesTestProfile
+        && camCandidateArtifactsVerified
+      )
+    )
     && reviewPackageStatus?.cam_status === "VALIDATION_GENERATED"
     && workshopReadiness?.physical_cutting_authorized === false
     && bundleSha256
     && manifestSha256,
   );
   const camApprovalCurrent = Boolean(
-    camValidationPackageEligible
+    camReviewPackageEligible
     && job
     && camApprovedJobId === job.id
     && designApproverId
     && camApproverId
     && designApproverId !== camApproverId,
   );
+  const releasedDesignReviewBundle = release?.release_kind === "executable_cam"
+    ? release.design_review_bundle
+    : release
+      ? {
+          bundle_sha256: release.bundle_sha256,
+          manifest_sha256: release.manifest_sha256,
+        }
+      : undefined;
+  const releasedScopeMatches = camCandidate
+    ? Boolean(
+        release?.release_kind === "executable_cam"
+        && release.machine_use === "executable_cam_candidate"
+        && release.executable_cam.candidate_bundle_sha256 === camCandidate.bundle_sha256
+        && release.executable_cam.candidate_manifest_sha256 === camCandidate.manifest_sha256
+        && release.executable_cam.production_profile_document_sha256
+          === camCandidate.production_machine_profile_sha256
+        && release.executable_cam.production_profile_payload_sha256
+          === camCandidate.production_profile_payload_sha256
+        && release.executable_cam.cam_approval.generation_job_id === job?.id
+        && release.executable_cam.cam_approval.production_context_hash
+          === job?.production_context_hash
+        && release.executable_cam.cam_approval.manifest_sha256 === manifestSha256
+        && release.executable_cam.cam_approval.candidate_bundle_sha256
+          === camCandidate.bundle_sha256
+        && release.executable_cam.workshop_acceptance_required === true,
+      )
+    : Boolean(
+        release?.release_kind === "design_review"
+        && release.machine_use === "validation_only",
+      );
   const immutableReviewReleased = Boolean(
     release
     && camApprovalCurrent
     && release.status === "released"
-    && release.release_kind === "design_review"
-    && release.machine_use === "validation_only"
-    && release.bundle_sha256 === bundleSha256
-    && release.manifest_sha256 === manifestSha256
+    && releasedScopeMatches
+    && releasedDesignReviewBundle?.bundle_sha256 === bundleSha256
+    && releasedDesignReviewBundle?.manifest_sha256 === manifestSha256
     && release.physical_cutting_authorized === false
     && version?.status === "released"
     && version.immutable,
@@ -2049,10 +2712,14 @@ export function ProductionWorkflow({
         ? "Serverns designgranskare kunde inte identifieras. Hämta om projektstatus innan CAM godkänns."
         : principal?.user_id === designApproverId
           ? "Maker–checker kräver att en annan person än designgranskaren godkänner CAM-valideringspaketet."
-          : !camValidationPackageEligible
-            ? "Paketet saknar en komplett serververifierad bindning till auktoritativ geometri, manifest eller icke-skärande valideringsprogram."
+          : !camReviewPackageEligible
+            ? camCandidateUsesTestProfile
+              ? "TEST_ONLY-kandidater får aldrig CAM-godkännas eller låsas som en granskad produktionskandidat. Skapa om paketet med en serverägd, verkstadsaccepterad produktionsprofil."
+              : "Paketet saknar en komplett serververifierad bindning till auktoritativ geometri, manifest, valideringsprogram eller begärd CAM-kandidat."
             : !camApprovalConfirmed
-              ? "Bekräfta att exakt paket och manifest har granskats och att programmet inte är skärande CNC-kod."
+              ? camCandidate
+                ? "Bekräfta att designgranskningspaketet och den separata skärande CAM-kandidaten har granskats, utan att godkänna en maskinstart."
+                : "Bekräfta att exakt paket och manifest har granskats och att valideringsprogrammet inte är skärande CNC-kod."
               : undefined;
   const releaseBlockReason = immutableReviewReleased
     ? undefined
@@ -2110,6 +2777,30 @@ export function ProductionWorkflow({
       : !approvedEvidenceCurrent
         ? "Godkänd serverevidens kan inte längre verifieras mot den aktuella revisionen."
         : partCustomizationBlockReason;
+  const cuttingCandidateOption = (
+    <section className="warning-acknowledgement" aria-label="Val av CAM-utdata">
+      <label className="warning-acknowledgement-confirmation">
+        <input
+          type="checkbox"
+          checked={includeCuttingCandidate && !stocklessReviewExpected}
+          disabled={Boolean(busy) || Boolean(generationBlockReason) || stocklessReviewExpected}
+          onChange={(event) => setIncludeCuttingCandidate(event.target.checked)}
+        />
+        <span>
+          <strong>Skapa även körbar CAM-kandidat</strong>
+          <small>
+            Avmarkerad som standard. När den väljs begärs checksummebundna skärande
+            LinuxCNC-program för serverns accepterade produktionsprofil.
+          </small>
+        </span>
+      </label>
+      <small>
+        {stocklessReviewExpected
+          ? "CAM-kandidaten kan inte begäras för ett lagerobundet eller CAM-blockerat underlag."
+          : "Kandidaten innehåller skärande rörelser men är aldrig en arbetsorder eller maskinstart; verkstaden måste verifiera och acceptera exakt paket."}
+      </small>
+    </section>
+  );
 
   useEffect(() => {
     if (!stepFocusInitializedRef.current) {
@@ -2504,15 +3195,21 @@ export function ProductionWorkflow({
     }
     void perform("generation", "Skapar ett nytt underlag…", async () => {
       if (!version) throw new ApiError("Ingen kontrollerad modell finns att skapa underlag för.");
-      const queued = await api.generateVersion(version.project_id, version.revision, {
+      const generationRequest: GenerationRequest & { include_cutting_candidate: boolean } = {
         ...productionContextFromSpec(spec),
         machine_profile_id: generationMachineProfileId(spec.machine_profile_id),
         postprocessor_id: "linuxcnc-validation-1.1.0",
         include_step: true,
         include_freecad_project: false,
         include_validation_program: true,
+        include_cutting_candidate: includeCuttingCandidate && !stocklessReviewExpected,
         external_evidence_ids: generationEvidenceIds,
-      });
+      };
+      const queued = await api.generateVersion(
+        version.project_id,
+        version.revision,
+        generationRequest,
+      );
       setJob(queued);
       setArtifacts([]);
       setCamApprovedJobId(undefined);
@@ -2534,18 +3231,20 @@ export function ProductionWorkflow({
       if (!version || !job || job.status !== "succeeded") {
         throw new ApiError("Ett slutfört serverjobb krävs för CAM-granskningen.");
       }
-      if (!camValidationPackageEligible || !manifestSha256) {
-        throw new ApiError("CAM-valideringspaketet är inte komplett eller serververifierbart.");
+      if (!camReviewPackageEligible || !manifestSha256) {
+        throw new ApiError("CAM-underlaget är inte komplett eller serververifierbart.");
       }
       if (!principal?.user_id || !designApproverId || principal.user_id === designApproverId) {
         throw new ApiError("Maker–checker kräver en annan CAM-granskare än designgranskaren.");
       }
       if (!camApprovalConfirmed) {
-        throw new ApiError("Bekräfta den icke-skärande CAM-granskningen innan du fortsätter.");
+        throw new ApiError("Bekräfta CAM-granskningen innan du fortsätter.");
       }
       const approved = await api.approveVersion(version.project_id, version.revision, {
         approval_type: "cam",
-        reason: "Exakt genererat CAM-valideringspaket och manifest granskat. Godkännandet gäller endast icke-skärande validering och auktoriserar inte fysisk kapning.",
+        reason: camCandidate
+          ? "Exakt designgranskningspaket, manifest och separat skärande CAM-kandidat granskade. Godkännandet låser endast designgranskningen och auktoriserar inte fysisk kapning eller maskinstart."
+          : "Exakt genererat CAM-valideringspaket och manifest granskat. Godkännandet gäller endast icke-skärande validering och auktoriserar inte fysisk kapning.",
         generation_job_id: job.id,
         warning_overrides: [],
       });
@@ -2558,7 +3257,9 @@ export function ProductionWorkflow({
       setCamApprovalConfirmed(false);
       setRelease(undefined);
       setReleaseConfirmed(false);
-      return "CAM-valideringspaketet är godkänt och bundet till detta jobb. Nästa steg låser endast designgranskningen.";
+      return camCandidate
+        ? "CAM-granskningen är bunden till designjobbet och den separata skärande kandidaten. Nästa steg låser ett verifierbart kvitto för båda paketen, inte en maskinstart."
+        : "CAM-valideringspaketet är godkänt och bundet till detta jobb. Nästa steg låser endast designgranskningen.";
     });
   }
 
@@ -2568,7 +3269,7 @@ export function ProductionWorkflow({
       setActionFeedback({ tone: "error", message: releaseBlockReason });
       return;
     }
-    void perform("release", "Verifierar och låser designgranskningsrevisionen…", async () => {
+    void perform("release", "Verifierar och låser releasekvittot…", async () => {
       if (!version || !job || !bundleSha256 || !manifestSha256 || !camApprovalCurrent) {
         throw new ApiError("Aktuell CAM-granskning samt ZIP- och manifestbindning krävs före revisionslåset.");
       }
@@ -2583,10 +3284,33 @@ export function ProductionWorkflow({
       );
       if (
         released.status !== "released"
-        || released.release_kind !== "design_review"
-        || released.machine_use !== "validation_only"
-        || released.bundle_sha256 !== bundleSha256
-        || released.manifest_sha256 !== manifestSha256
+        || (
+          camCandidate
+            ? released.release_kind !== "executable_cam"
+              || released.machine_use !== "executable_cam_candidate"
+              || released.design_review_bundle.bundle_sha256 !== bundleSha256
+              || released.design_review_bundle.manifest_sha256 !== manifestSha256
+              || released.executable_cam.candidate_bundle_sha256
+                !== camCandidate.bundle_sha256
+              || released.executable_cam.candidate_manifest_sha256
+                !== camCandidate.manifest_sha256
+              || released.executable_cam.production_profile_document_sha256
+                !== camCandidate.production_machine_profile_sha256
+              || released.executable_cam.production_profile_payload_sha256
+                !== camCandidate.production_profile_payload_sha256
+              || released.executable_cam.cam_approval.generation_job_id !== job.id
+              || released.executable_cam.cam_approval.production_context_hash
+                !== job.production_context_hash
+              || released.executable_cam.cam_approval.manifest_sha256
+                !== manifestSha256
+              || released.executable_cam.cam_approval.candidate_bundle_sha256
+                !== camCandidate.bundle_sha256
+              || released.executable_cam.workshop_acceptance_required !== true
+            : released.release_kind !== "design_review"
+              || released.machine_use !== "validation_only"
+              || released.bundle_sha256 !== bundleSha256
+              || released.manifest_sha256 !== manifestSha256
+        )
         || released.physical_cutting_authorized !== false
         || released.release_number !== releaseNumber
       ) {
@@ -2692,7 +3416,9 @@ export function ProductionWorkflow({
       reviewPackageStatus,
       reviewPackageStatusClaimed,
       expectedReviewArtifactKinds,
-    ) || !reviewBundleArtifactMatchesJob(currentArtifacts, bundleSha256)) {
+    )
+      || !reviewBundleArtifactMatchesJob(currentArtifacts, bundleSha256)
+      || !camCandidateArtifactsMatchJob(job, currentArtifacts)) {
       throw new ApiError(
         "Granskningspaketets aktuella artefaktlista är inte längre verifierbar. Skapa om paketet.",
       );
@@ -2735,7 +3461,9 @@ export function ProductionWorkflow({
           verifiedArtifact,
           artifactDownloadFileName(currentArtifact, version.project_id, version.revision),
         );
-        return `${artifactRoleLabel(currentArtifact.kind)} har hämtats för designgranskning.`;
+        return isCAMCandidateArtifactKind(currentArtifact.kind)
+          ? `${artifactRoleLabel(currentArtifact.kind)} har hämtats efter förnyad checksummeverifiering. Hämtningen är inte en maskinstart.`
+          : `${artifactRoleLabel(currentArtifact.kind)} har hämtats för designgranskning.`;
       },
     ).finally(() => {
       setDownloadingArtifactId((current) => (
@@ -3079,7 +3807,9 @@ export function ProductionWorkflow({
                       ? "Lås designgranskningsrevisionen"
                       : camBlocked
                         ? "Hämta granskningspaket"
-                        : "Granska CAM-valideringspaketet"
+                        : camCandidate
+                          ? "Granska körbar CAM-kandidat"
+                          : "Granska CAM-valideringspaketet"
                   : "Skapa underlag"}
           </h3>
         </header>
@@ -3247,6 +3977,7 @@ export function ProductionWorkflow({
                     ? productionFailureMessage(job?.error ?? "Underlaget kunde inte skapas. Försök igen när orsaken är åtgärdad.")
                     : "Skapa underlaget igen."}
                 </p>
+                {cuttingCandidateOption}
                 <button
                   type="button"
                   className="production-primary-action"
@@ -3272,6 +4003,7 @@ export function ProductionWorkflow({
             {!designReviewReady ? (
               <>
                 <p className="production-warning" role="alert">{completedPackageIssue}</p>
+                {cuttingCandidateOption}
                 <button
                   type="button"
                   className="production-primary-action"
@@ -3293,8 +4025,60 @@ export function ProductionWorkflow({
                 <p>
                   {camBlocked
                     ? "En ZIP-fil med design, ritningar och verifieringsrapporter är redo att hämtas. CAM-filer ingår inte."
-                    : "En ZIP-fil med ritningar, verifieringsrapporter och valideringsfiler är redo att hämtas."}
+                    : camCandidate
+                      ? "Designgranskningspaketet och en separat checksummebunden CAM-kandidat är redo att hämtas."
+                      : "En ZIP-fil med ritningar, verifieringsrapporter och valideringsfiler är redo att hämtas."}
                 </p>
+                {camCandidate ? (
+                  <section
+                    className="warning-acknowledgement"
+                    role="status"
+                    aria-label="Status för körbar CAM-kandidat"
+                  >
+                    <header>
+                      <h5>
+                        {camCandidateUsesTestProfile
+                          ? "TEST_ONLY CAM-kandidat – ej produktionsgodkännbar"
+                          : "Körbar CAM-kandidat klar"}
+                      </h5>
+                      <p>
+                        Kandidaten innehåller {camCandidate.program_count} checksummebundna,
+                        skärande LinuxCNC-program samt verktygsbanor, körordning, maskinprofil,
+                        oberoende kontrollrapport och backplot.
+                      </p>
+                    </header>
+                    <p className="production-warning">
+                      <strong>Ingen fysisk kapning är auktoriserad.</strong>{" "}
+                      <code>physical_cutting_authorized=false</code> och{" "}
+                      <code>workshop_acceptance_required=true</code>. Filerna innehåller skärande
+                      rörelser men är inte en arbetsorder eller maskinstart. CNC-operatören måste
+                      verifiera och acceptera exakt kandidat i verkstaden.
+                    </p>
+                    <p>
+                      Kandidathash <code>{camCandidate.bundle_sha256}</code>
+                    </p>
+                    {camCandidate.production_profile_job_binding.profile_class === "TEST_ONLY" ? (
+                      <p className="production-warning">
+                        <strong>Testprofil.</strong> Kandidaten får endast användas i testmiljö och
+                        är inte en accepterad produktionsprofil.
+                      </p>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="production-primary-action"
+                      onClick={() => {
+                        if (camCandidateBundle) downloadIndividualArtifact(camCandidateBundle);
+                      }}
+                      disabled={Boolean(busy) || !camCandidateBundle}
+                      aria-busy={busy === "download" && downloadingArtifactId === camCandidateBundle?.id}
+                    >
+                      {busy === "download" && downloadingArtifactId === camCandidateBundle?.id
+                        ? <LoaderCircle className="spin" aria-hidden="true" size={16} />
+                        : <Download aria-hidden="true" size={16} />}
+                      Ladda ned CAM-kandidat (.zip)
+                    </button>
+                  </section>
+                ) : null}
                 {camBlocked ? (
                   <p className="production-warning" role="status" aria-label="Status för CAM">
                     <strong>CAM är blockerat.</strong>{" "}
@@ -3316,9 +4100,9 @@ export function ProductionWorkflow({
                   <header>
                     <h5>CAM-granskning och revisionslås</h5>
                     <p>
-                      Två separata reviewers måste först godkänna design respektive exakt genererat
-                      CAM-valideringspaket. Revisionslåset fryser därefter designgranskningspaketet;
-                      det skapar aldrig en arbetsorder eller skärande CNC-kod.
+                      {camCandidate
+                        ? "Två separata reviewers måste först godkänna design respektive exakt genererat underlag. Releasekvittot fryser både designgranskningspaketet och den körbara CAM-kandidaten, men skapar aldrig en arbetsorder eller maskinstart."
+                        : "Två separata reviewers måste först godkänna design respektive exakt genererat CAM-valideringspaket. Revisionslåset fryser därefter designgranskningspaketet; det skapar aldrig en arbetsorder eller skärande CNC-kod."}
                     </p>
                   </header>
                   {immutableReviewReleased ? (
@@ -3327,17 +4111,38 @@ export function ProductionWorkflow({
                         <Check aria-hidden="true" size={16} />
                         <span>
                           <strong>Immutable designgranskningsrevision {release?.release_number}.</strong>{" "}
-                          Manifest <code>{release?.manifest_sha256}</code> och ZIP{" "}
-                          <code>{release?.bundle_sha256}</code> är låsta för designgranskning och
-                          icke-skärande validering. Fysisk kapning är fortfarande inte auktoriserad.
+                          Manifest <code>{releasedDesignReviewBundle?.manifest_sha256}</code> och ZIP{" "}
+                          <code>{releasedDesignReviewBundle?.bundle_sha256}</code> är låsta för designgranskning och
+                          icke-skärande validering. {camCandidate
+                            ? <>CAM-kandidaten <code>{release?.release_kind === "executable_cam"
+                                ? release.executable_cam.candidate_bundle_sha256
+                                : "saknas"}</code> och dess programinventering är separat låsta,
+                              men utgör inte en fysisk maskinstart.</>
+                            : "Fysisk kapning är fortfarande inte auktoriserad."}
                         </span>
                       </p>
+                      {release?.release_kind === "executable_cam" ? (
+                        <dl className="review-summary">
+                          <div>
+                            <dt>Produktionsprofil</dt>
+                            <dd><code>{release.executable_cam.production_profile_payload_sha256}</code></dd>
+                          </div>
+                          <div>
+                            <dt>Programinventering</dt>
+                            <dd><code>{release.executable_cam.program_inventory_sha256}</code></dd>
+                          </div>
+                          <div>
+                            <dt>CAM-godkännandets bindning</dt>
+                            <dd><code>{release.executable_cam.cam_approval.binding_sha256}</code></dd>
+                          </div>
+                        </dl>
+                      ) : null}
                       <section aria-label="Verifiera frisläppt ZIP">
                         <p>
                           Verifiera den hämtade ZIP-filen med den separat betrodda verifieraren och
                           exakt denna frisläppningsbindning:
                         </p>
-                        <code>--expect-bundle-sha256 {release?.bundle_sha256}</code>
+                        <code>--expect-bundle-sha256 {releasedDesignReviewBundle?.bundle_sha256}</code>
                         <p>
                           Ett verifierings-PASS bekräftar filidentiteten men auktoriserar inte fysisk
                           kapning.
@@ -3358,15 +4163,16 @@ export function ProductionWorkflow({
                           disabled={
                             Boolean(busy)
                             || !mayReview
-                            || !camValidationPackageEligible
+                            || !camReviewPackageEligible
                             || !designApproverId
                             || principal?.user_id === designApproverId
                           }
                           onChange={(event) => setCamApprovalConfirmed(event.target.checked)}
                         />
                         <span>
-                          Jag har granskat exakt jobb, manifest och maskinbunden validering. Jag
-                          förstår att programmet inte är skärande CNC-kod.
+                          {camCandidate
+                            ? "Jag har granskat exakt designjobb, manifest och den separata skärande CAM-kandidaten. Jag förstår att granskningen inte är en arbetsorder, fysisk frisläppning eller maskinstart."
+                            : "Jag har granskat exakt jobb, manifest och maskinbunden validering. Jag förstår att valideringsprogrammet inte är skärande CNC-kod."}
                         </span>
                       </label>
                       <button
@@ -3379,7 +4185,7 @@ export function ProductionWorkflow({
                         {busy === "cam-approval"
                           ? <LoaderCircle className="spin" aria-hidden="true" size={16} />
                           : <Check aria-hidden="true" size={16} />}
-                        Godkänn CAM-valideringspaket
+                        {camCandidate ? "Godkänn CAM-granskning" : "Godkänn CAM-valideringspaket"}
                       </button>
                       {camApprovalBlockReason ? <small>{camApprovalBlockReason}</small> : null}
                     </>
@@ -3430,7 +4236,9 @@ export function ProductionWorkflow({
                   Paketet är endast avsett för designgranskning och validering;
                   {camBlocked
                     ? " det innehåller inga CAM- eller maskinvalideringsfiler."
-                    : " använd inte valideringsprogrammet som skärande CNC-kod."}
+                    : camCandidate
+                      ? " den separata CAM-kandidaten innehåller skärande rörelser men är inte en arbetsorder eller maskinstart."
+                      : " använd inte valideringsprogrammet som skärande CNC-kod."}
                 </p>
                 <section
                   className="production-release-boundary"
@@ -3445,8 +4253,10 @@ export function ProductionWorkflow({
                     <span>2 · Fysisk tillverkning</span>
                     <strong>Ej frisläppt</strong>
                     <small>
-                      {missingWorkshopRequirements.length} externa krav återstår. Filerna är inte
-                      en arbetsorder eller skärande CNC-kod.
+                      {missingWorkshopRequirements.length} externa krav återstår.{" "}
+                      {camCandidate
+                        ? "CAM-kandidaten innehåller skärande kod, men filerna är inte en arbetsorder eller maskinstart."
+                        : "Filerna är inte en arbetsorder eller skärande CNC-kod."}
                     </small>
                   </article>
                 </section>
@@ -3501,11 +4311,15 @@ export function ProductionWorkflow({
                       </>
                     ) : (
                       <>
-                        <strong>Verkstadsöverlämningen är inte körklar.</strong>
+                        <strong>
+                          {camCandidate
+                            ? "CAM-kandidaten kräver verkstadens acceptans."
+                            : "Verkstadsöverlämningen är inte körklar."}
+                        </strong>
                         <p>
-                          Skicka ZIP-filen som granskningsunderlag, inte som ett färdigt maskinjobb. Verkstaden måste binda
-                          exakt råmaterial, fiberriktning, maskin, verktyg, nollpunkt och fixturering samt godkänna den
-                          slutliga körningen.
+                          {camCandidate
+                            ? "Skicka både designgranskningspaketet och den checksummebundna CAM-kandidaten. Kandidaten innehåller skärande program för den bundna profilen, men operatören måste verifiera identitet, råmaterial, verktyg, WCS, fixturering, simulering och körordning innan en separat maskinstart godkänns."
+                            : "Skicka ZIP-filen som granskningsunderlag, inte som ett färdigt maskinjobb. Verkstaden måste binda exakt råmaterial, fiberriktning, maskin, verktyg, nollpunkt och fixturering samt godkänna den slutliga körningen."}
                         </p>
                       </>
                     )}
@@ -3533,6 +4347,18 @@ export function ProductionWorkflow({
                       <dt>Fysisk frisläppning</dt>
                       <dd>Ej frisläppt</dd>
                     </div>
+                    {camCandidate ? (
+                      <>
+                        <div>
+                          <dt>CAM-kandidat</dt>
+                          <dd>{camCandidate.program_count} skärande program · kräver verkstadsacceptans</dd>
+                        </div>
+                        <div className="production-package-hash">
+                          <dt>CAM-kandidat SHA-256</dt>
+                          <dd><code>{camCandidate.bundle_sha256}</code></dd>
+                        </div>
+                      </>
+                    ) : null}
                     <div>
                       <dt>Dokumentspråk</dt>
                       <dd>Svenska PDF:er · tekniska datafält på engelska</dd>
@@ -3670,6 +4496,7 @@ export function ProductionWorkflow({
                   {busy === "download" ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
                   Ladda ned granskningspaket (.zip)
                 </button>
+                {cuttingCandidateOption}
                 <button type="button" onClick={generatePackage} disabled={Boolean(busy) || Boolean(generationBlockReason)}>
                   <RefreshCw aria-hidden="true" size={15} /> Skapa om granskningspaket
                 </button>

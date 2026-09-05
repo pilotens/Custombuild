@@ -723,8 +723,7 @@ def _worker_stock_projection_is_safe(tree: ast.Module, generate: FunctionNode) -
         imported_names = {
             alias.name
             for statement in tree.body
-            if isinstance(statement, ast.ImportFrom)
-            and statement.module == "app.design_service"
+            if isinstance(statement, ast.ImportFrom) and statement.module == "app.design_service"
             for alias in statement.names
         }
         if not {
@@ -986,15 +985,9 @@ def _uuid_incarnation_helpers_are_safe(tree: ast.Module) -> bool:
         if isinstance(node, ast.Return) and node.value is not None
     ]
     attempt_uuid5 = (
-        _str_wrapped_call(attempt_returns[0], "uuid5")
-        if len(attempt_returns) == 1
-        else None
+        _str_wrapped_call(attempt_returns[0], "uuid5") if len(attempt_returns) == 1 else None
     )
-    lease_uuid = (
-        _str_wrapped_call(canonical_lease, "UUID")
-        if canonical_lease is not None
-        else None
-    )
+    lease_uuid = _str_wrapped_call(canonical_lease, "UUID") if canonical_lease is not None else None
     attempt_safe = (
         job_uuid is not None
         and _call_uses_positional_paths(job_uuid, "UUID", (("job_id",),))
@@ -1022,9 +1015,7 @@ def _uuid_incarnation_helpers_are_safe(tree: ast.Module) -> bool:
         if isinstance(node, ast.Return) and node.value is not None
     ]
     artifact_uuid5 = (
-        _str_wrapped_call(artifact_returns[0], "uuid5")
-        if len(artifact_returns) == 1
-        else None
+        _str_wrapped_call(artifact_returns[0], "uuid5") if len(artifact_returns) == 1 else None
     )
     artifact_safe = (
         attempt_uuid is not None
@@ -1213,27 +1204,22 @@ def _generation_object_keys_are_attempt_bound(generate: FunctionNode) -> bool:
         and _binding_is_artifact_id_for_static_kind(
             bindings, "bundle_artifact_id", "production_bundle"
         )
-        and _binding_is_artifact_id_for_static_kind(
-            bindings, "manifest_artifact_id", "manifest"
-        )
+        and _binding_is_artifact_id_for_static_kind(bindings, "manifest_artifact_id", "manifest")
     )
 
 
 def _completion_persists_attempt_artifact_id(function: FunctionNode) -> bool:
     bindings = _function_bindings(function)
-    if (
-        not _binding_is_exact_call(
-            bindings,
-            "attempt_id",
-            "_generation_attempt_id",
-            (("job", "id"), ("lease_token",)),
-        )
-        or not _binding_is_exact_call(
-            bindings,
-            "artifact_id",
-            "_generation_artifact_id",
-            (("attempt_id",), ("kind",)),
-        )
+    if not _binding_is_exact_call(
+        bindings,
+        "attempt_id",
+        "_generation_attempt_id",
+        (("job", "id"), ("lease_token",)),
+    ) or not _binding_is_exact_call(
+        bindings,
+        "artifact_id",
+        "_generation_artifact_id",
+        (("attempt_id",), ("kind",)),
     ):
         return False
     constructors = [
@@ -1300,6 +1286,86 @@ def _worker_storage_incarnation_is_safe(tree: ast.Module) -> bool:
     )
 
 
+def _cutting_candidate_is_present(node: ast.expr | None) -> bool:
+    """Recognize only the direct, non-aliased executable-candidate discriminator."""
+
+    return (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.IsNot)
+        and len(node.comparators) == 1
+        and _expression_path(node.left) == ("cutting_candidate",)
+        and _static_ast_value(node.comparators[0]) is None
+    )
+
+
+def _legacy_worker_mode_is_bound(
+    mode: ast.expr | None,
+    *,
+    cam_blocked_claim_is_bound: bool,
+    review_status_is_bound: bool,
+) -> bool:
+    return (
+        isinstance(mode, ast.IfExp)
+        and _expression_path(mode.test) == ("cam_blocked",)
+        and _static_ast_value(mode.body) == "CAM_BLOCKED"
+        and _static_ast_value(mode.orelse) == "VALIDATION_DRY_RUN"
+        and cam_blocked_claim_is_bound
+        and review_status_is_bound
+    )
+
+
+def _executable_worker_claims_are_bound(
+    result: dict[str, ast.expr],
+    expansions: list[ast.expr],
+    *,
+    cam_blocked_claim_is_bound: bool,
+    review_status_is_bound: bool,
+) -> bool:
+    """Require one closed conditional expansion for every executable CAM claim."""
+
+    candidate_keys = {
+        "cam_status",
+        "physical_cutting_authorized",
+        "workshop_acceptance_required",
+        "cam_candidate",
+    }
+    if candidate_keys.intersection(result) or len(expansions) != 1:
+        return False
+    expansion = expansions[0]
+    if not isinstance(expansion, ast.IfExp) or not _cutting_candidate_is_present(expansion.test):
+        return False
+    if not isinstance(expansion.body, ast.Dict) or not isinstance(expansion.orelse, ast.Dict):
+        return False
+    body_parts = _dict_literal_parts(expansion.body)
+    empty_parts = _dict_literal_parts(expansion.orelse)
+    if body_parts is None or empty_parts != ({}, []):
+        return False
+    body, body_expansions = body_parts
+    if body_expansions or set(body) != candidate_keys:
+        return False
+    if (
+        _static_ast_value(body["cam_status"]) != "CUTTING_CANDIDATE_GENERATED"
+        or _static_ast_value(body["physical_cutting_authorized"]) is not False
+        or _static_ast_value(body["workshop_acceptance_required"]) is not True
+        or _expression_path(body["cam_candidate"]) != ("cutting_candidate", "result_claims")
+    ):
+        return False
+
+    mode = result.get("machine_program_mode")
+    return (
+        isinstance(mode, ast.IfExp)
+        and _cutting_candidate_is_present(mode.test)
+        and _static_ast_value(mode.body) == "EXECUTABLE_CAM_CANDIDATE"
+        and _legacy_worker_mode_is_bound(
+            mode.orelse,
+            cam_blocked_claim_is_bound=cam_blocked_claim_is_bound,
+            review_status_is_bound=review_status_is_bound,
+        )
+        and _cutting_candidate_is_present(result.get("production_machine_program"))
+    )
+
+
 def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) -> None:
     identity_keys = {
         "bundle_sha256",
@@ -1309,7 +1375,8 @@ def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) 
     }
     generate = _simple_function(tree, "_generate")
     returned_dict = _returned_dict_literal(generate) if generate is not None else None
-    result = _dict_literal_items(returned_dict) if returned_dict is not None else None
+    result_parts = _dict_literal_parts(returned_dict) if returned_dict is not None else None
+    result, expansions = result_parts if result_parts is not None else (None, [])
     if generate is None or result is None or not identity_keys.issubset(result):
         issues.append(f"{relative} has no unique immutable _generate result dictionary")
         return
@@ -1335,20 +1402,32 @@ def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) 
             and _expression_path(expression.left) == ("bundle", "review_status", "cam_status")
             and _expression_path(expression.comparators[0]) == ("CAMStageStatus", "BLOCKED")
         )
-    mode_is_strictly_bound = (
-        isinstance(mode, ast.IfExp)
-        and _expression_path(mode.test) == ("cam_blocked",)
-        and _static_ast_value(mode.body) == "CAM_BLOCKED"
-        and _static_ast_value(mode.orelse) == "VALIDATION_DRY_RUN"
-        and cam_blocked_claim_is_bound
-        and review_status_is_bound
+    executable_claims_are_bound = _executable_worker_claims_are_bound(
+        result,
+        expansions,
+        cam_blocked_claim_is_bound=cam_blocked_claim_is_bound,
+        review_status_is_bound=review_status_is_bound,
     )
+    legacy_mode_is_bound = not expansions and _legacy_worker_mode_is_bound(
+        mode,
+        cam_blocked_claim_is_bound=cam_blocked_claim_is_bound,
+        review_status_is_bound=review_status_is_bound,
+    )
+    mode_is_strictly_bound = legacy_mode_is_bound or executable_claims_are_bound
     if not mode_is_strictly_bound:
         issues.append(
             f"{relative} generation mode is not strictly bound to the checksum-bound review status"
         )
-    if _static_ast_value(result.get("production_machine_program")) is not False:
+    production_program_is_safe = (
+        legacy_mode_is_bound
+        and _static_ast_value(result.get("production_machine_program")) is False
+    ) or executable_claims_are_bound
+    if not production_program_is_safe:
         issues.append(f"{relative} generation result can claim a production machine program")
+    if expansions and not executable_claims_are_bound:
+        issues.append(
+            f"{relative} executable CAM claims are not atomically bound to one exact candidate"
+        )
     if not _worker_stock_projection_is_safe(tree, generate):
         issues.append(
             f"{relative} does not build unique role/thickness stock IDs with UNBOUND grain"
@@ -1541,9 +1620,7 @@ def _check_api_semantics(tree: ast.Module, relative: str, issues: list[str]) -> 
     if not has_exact_geometry_guard or not has_total_predicate_guard:
         issues.append(f"{relative} release path does not fail closed on generation claims")
     if not _release_archive_binds_artifact_id(tree):
-        issues.append(
-            f"{relative} does not bind stored generation idempotency to Artifact.id"
-        )
+        issues.append(f"{relative} does not bind stored generation idempotency to Artifact.id")
     if not _import_asset_uses_uuid_incarnation(tree):
         issues.append(f"{relative} does not give imported objects a UUID key incarnation")
 
@@ -1845,9 +1922,7 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         "DFM_GRAIN_MISSING": "DFM-GRAIN-001",
         "TWO_SIDED_REGISTRATION_MISSING": "TWO_SIDED_REGISTRATION_MISSING",
         "DADO_RETENTION_EVIDENCE_MISSING": "DADO_RETENTION_EVIDENCE_MISSING",
-        "BACK_PANEL_RETENTION_EVIDENCE_MISSING": (
-            "BACK_PANEL_RETENTION_EVIDENCE_MISSING"
-        ),
+        "BACK_PANEL_RETENTION_EVIDENCE_MISSING": ("BACK_PANEL_RETENTION_EVIDENCE_MISSING"),
     }
     for name, expected in expected_constants.items():
         values = assignments.get(name, [])
@@ -1871,9 +1946,7 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         not isinstance(required_action_values, dict)
         or set(required_action_values) != expected_blocker_codes
     ):
-        issues.append(
-            f"{relative} does not bind the exact supported blocked-CAM action set"
-        )
+        issues.append(f"{relative} does not bind the exact supported blocked-CAM action set")
     expected_retention_actions = {
         "DADO_RETENTION_EVIDENCE_MISSING": (
             "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
@@ -2228,9 +2301,7 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
     )
     if not redis_url_has_password(maintenance_redis_url):
         issues.append("maintenance-worker Redis connection is not password-authenticated")
-    storage_reaper_environment = services.get("storage-reaper-worker", {}).get(
-        "environment", {}
-    )
+    storage_reaper_environment = services.get("storage-reaper-worker", {}).get("environment", {})
     storage_reaper_redis_url: object = (
         storage_reaper_environment.get("REDIS_URL", "")
         if isinstance(storage_reaper_environment, dict)
@@ -2781,6 +2852,8 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "services/api/alembic/versions/0016_workshop_trust_persistence.py",
         "services/api/alembic/versions/0017_oidc_issuer_binding.py",
         "services/api/alembic/versions/0018_joint_retention_registry_state.py",
+        "services/api/alembic/versions/0019_cam_approval_candidate_sha.py",
+        "services/api/alembic/versions/0020_release_cam_approval_identity.py",
         "scripts/activate_joint_retention_registry.py",
         "scripts/bootstrap_production_identity.py",
         "services/api/app/oidc_identity.py",

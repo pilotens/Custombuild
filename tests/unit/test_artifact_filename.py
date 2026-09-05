@@ -43,6 +43,23 @@ def test_download_filenames_are_project_unique_and_keep_media_extensions() -> No
     )
 
 
+def test_cutting_candidate_filenames_are_explicit_and_machine_programs_are_ordered() -> None:
+    prefix = f"custombuild-project-{PROJECT_ID}-"
+    assert _artifact_filename(
+        "cam_candidate_bundle", 7, PROJECT_ID, "application/zip"
+    ) == f"{prefix}cam-candidate-rev-7.zip"
+    assert _artifact_filename(
+        "cutting_toolpaths", 7, PROJECT_ID, "application/json"
+    ) == f"{prefix}cutting-toolpaths-rev-7.json"
+    assert _artifact_filename(
+        "machine_program_003", 7, PROJECT_ID, "text/x-gcode"
+    ) == f"{prefix}machine-program-003-rev-7.ngc"
+    with pytest.raises(ValueError, match="content type"):
+        _artifact_filename("machine_program_003", 7, PROJECT_ID, "text/plain")
+    with pytest.raises(ValueError, match="kind"):
+        _artifact_filename("machine_program_3", 7, PROJECT_ID, "text/x-gcode")
+
+
 def test_release_download_filename_keeps_release_and_project_identity() -> None:
     first = _release_artifact_filename(
         PROJECT_ID,

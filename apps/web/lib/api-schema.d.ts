@@ -513,6 +513,8 @@ export interface components {
             approval_type: "design" | "cam";
             /** Approved By */
             approved_by: string;
+            /** Cam Candidate Bundle Sha256 */
+            cam_candidate_bundle_sha256?: string | null;
             /**
              * Created At
              * Format: date-time
@@ -711,6 +713,85 @@ export interface components {
              */
             width_mm: number;
         };
+        /** CAMApprovalReleaseBinding */
+        CAMApprovalReleaseBinding: {
+            /** Approval Id */
+            approval_id: string;
+            /**
+             * Approval Type
+             * @constant
+             */
+            approval_type: "cam";
+            /** Approved By */
+            approved_by: string;
+            /** Binding Sha256 */
+            binding_sha256: string;
+            /** Candidate Bundle Sha256 */
+            candidate_bundle_sha256: string;
+            /** Created At */
+            created_at: string;
+            /** Design Version Id */
+            design_version_id: string;
+            /** Generation Job Id */
+            generation_job_id: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /** Organization Id */
+            organization_id: string;
+            /** Overrides Json */
+            overrides_json: {
+                [key: string]: unknown;
+            }[];
+            /** Production Context Hash */
+            production_context_hash: string;
+            /** Reason */
+            reason: string;
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "custombuild.cam-approval-release-binding.v1";
+            /** Updated At */
+            updated_at: string;
+        };
+        /** DesignReviewBundleReceipt */
+        DesignReviewBundleReceipt: {
+            /** Bundle Sha256 */
+            bundle_sha256: string;
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+        };
+        /** DesignReviewReleaseRead */
+        DesignReviewReleaseRead: {
+            /** Bundle Sha256 */
+            bundle_sha256: string;
+            /**
+             * Machine Use
+             * @constant
+             */
+            machine_use: "validation_only";
+            /** Manifest Sha256 */
+            manifest_sha256: string;
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /** Release Id */
+            release_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            release_kind: "design_review";
+            /** Release Number */
+            release_number: string;
+            /**
+             * Status
+             * @constant
+             */
+            status: "released";
+        };
         /**
          * DesignStatus
          * @enum {string}
@@ -778,6 +859,54 @@ export interface components {
             /** Template Version */
             template_version: string;
         };
+        /** ExecutableCAMReceipt */
+        ExecutableCAMReceipt: {
+            cam_approval: components["schemas"]["CAMApprovalReleaseBinding"];
+            /** Candidate Bundle Sha256 */
+            candidate_bundle_sha256: string;
+            /** Candidate Manifest Sha256 */
+            candidate_manifest_sha256: string;
+            /** Production Profile Document Sha256 */
+            production_profile_document_sha256: string;
+            /** Production Profile Payload Sha256 */
+            production_profile_payload_sha256: string;
+            /** Program Inventory Sha256 */
+            program_inventory_sha256: string;
+            /**
+             * Workshop Acceptance Required
+             * @constant
+             */
+            workshop_acceptance_required: true;
+        };
+        /** ExecutableCAMReleaseRead */
+        ExecutableCAMReleaseRead: {
+            design_review_bundle: components["schemas"]["DesignReviewBundleReceipt"];
+            executable_cam: components["schemas"]["ExecutableCAMReceipt"];
+            /**
+             * Machine Use
+             * @constant
+             */
+            machine_use: "executable_cam_candidate";
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /** Release Id */
+            release_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            release_kind: "executable_cam";
+            /** Release Number */
+            release_number: string;
+            /**
+             * Status
+             * @constant
+             */
+            status: "released";
+        };
         /** ExternalEvidenceRead */
         ExternalEvidenceRead: {
             /** Catalog Id */
@@ -832,6 +961,11 @@ export interface components {
             back_stock_width_mm: number;
             /** External Evidence Ids */
             external_evidence_ids?: string[];
+            /**
+             * Include Cutting Candidate
+             * @default false
+             */
+            include_cutting_candidate: boolean;
             /**
              * Include Freecad Project
              * @default false
@@ -1148,37 +1282,11 @@ export interface components {
             /** Release Number */
             release_number: string;
         };
-        /** ReleaseRead */
-        ReleaseRead: {
-            /** Bundle Sha256 */
-            bundle_sha256: string;
-            /**
-             * Machine Use
-             * @constant
-             */
-            machine_use: "validation_only";
-            /** Manifest Sha256 */
-            manifest_sha256: string;
-            /**
-             * Physical Cutting Authorized
-             * @constant
-             */
-            physical_cutting_authorized: false;
-            /** Release Id */
-            release_id: string;
-            /**
-             * Release Kind
-             * @constant
-             */
-            release_kind: "design_review";
-            /** Release Number */
-            release_number: string;
-            /**
-             * Status
-             * @constant
-             */
-            status: "released";
-        };
+        /**
+         * ReleaseRead
+         * @description One immutable release receipt, discriminated by its actual release scope.
+         */
+        ReleaseRead: components["schemas"]["DesignReviewReleaseRead"] | components["schemas"]["ExecutableCAMReleaseRead"];
         /**
          * RevisionProductionContext
          * @description Production-affecting choices frozen when a design revision is created.

@@ -59,6 +59,50 @@ def _use_verified_in_process_objects(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda _version: False,
     )
 
+    def is_canonical_legacy_validation_result(result: dict[str, object]) -> bool:
+        readiness = result.get("workshop_readiness")
+        explicit_validation_claim = (
+            result.get("machine_program_mode") == "VALIDATION_DRY_RUN"
+            and result.get("production_machine_program") is False
+        )
+        historical_v1_claim = (
+            "machine_program_mode" not in result
+            and "production_machine_program" not in result
+            and isinstance(readiness, dict)
+            and readiness.get("schema_version") == flow.LEGACY_WORKSHOP_READINESS_SCHEMA_VERSION
+        )
+        return result.get("cam_candidate") is None and (
+            explicit_validation_claim or historical_v1_claim
+        )
+
+    def allow_only_canonical_legacy_validation_fixture(job: GenerationJob) -> None:
+        request = job.request_json if isinstance(job.request_json, dict) else {}
+        result = job.result_json if isinstance(job.result_json, dict) else {}
+        if request.get("include_cutting_candidate", False) is False and (
+            is_canonical_legacy_validation_result(result)
+        ):
+            return
+        flow._REAL_CAM_PROMOTION_GATE(job)
+
+    def legacy_validation_candidate_digest(result: dict[str, object]) -> str:
+        if is_canonical_legacy_validation_result(result):
+            return flow._LEGACY_VALIDATION_ONLY_CAM_DIGEST
+        return flow._REAL_CAM_CANDIDATE_DIGEST(result)
+
+    # These archive regressions intentionally exercise pre-executable-CAM
+    # validation releases. Keep only that exact legacy fixture isolated while
+    # every real or malformed candidate still goes through the production gate.
+    monkeypatch.setattr(
+        api_module,
+        "_require_promotable_cam_candidate_profile",
+        allow_only_canonical_legacy_validation_fixture,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "_cam_candidate_bundle_sha256",
+        legacy_validation_candidate_digest,
+    )
+
 
 def _release_first_revision_and_create_second(
     client: TestClient,
@@ -140,9 +184,7 @@ def test_superseded_release_keeps_its_exact_immutable_package() -> None:
         # package. Later deletion/replacement of mutable approval authorities
         # must not retroactively destroy the released archive.
         with get_session_factory().begin() as session:
-            session.execute(
-                delete(Approval).where(Approval.design_version_id == str(first["id"]))
-            )
+            session.execute(delete(Approval).where(Approval.design_version_id == str(first["id"])))
 
         listing = client.get(
             f"/v1/releases/{release['release_id']}/artifacts",

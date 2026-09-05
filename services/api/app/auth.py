@@ -72,6 +72,7 @@ class Capability(StrEnum):
     GENERATE = "generate"
     REVIEW = "review"
     JOINT_RETENTION_EVIDENCE_DOWNLOAD = "joint_retention_evidence_download"
+    EXECUTABLE_CAM_DOWNLOAD = "executable_cam_download"
     PRODUCTION_RELEASE = "production_release"
     WORKSHOP_PREPARE = "workshop_prepare"
     WORKSHOP_CHALLENGE = "workshop_challenge"
@@ -93,6 +94,7 @@ ROLE_CAPABILITIES: Final[Mapping[Role, frozenset[Capability]]] = MappingProxyTyp
         Role.operator: frozenset(
             {
                 Capability.READ,
+                Capability.EXECUTABLE_CAM_DOWNLOAD,
                 Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
                 Capability.WORKSHOP_CHALLENGE,
                 Capability.WORKSHOP_EVIDENCE,
@@ -109,6 +111,7 @@ ROLE_CAPABILITIES: Final[Mapping[Role, frozenset[Capability]]] = MappingProxyTyp
         Role.production: frozenset(
             {
                 Capability.READ,
+                Capability.EXECUTABLE_CAM_DOWNLOAD,
                 Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
                 Capability.PRODUCTION_RELEASE,
                 Capability.WORKSHOP_PREPARE,
@@ -120,6 +123,7 @@ ROLE_CAPABILITIES: Final[Mapping[Role, frozenset[Capability]]] = MappingProxyTyp
         Role.reviewer: frozenset(
             {
                 Capability.READ,
+                Capability.EXECUTABLE_CAM_DOWNLOAD,
                 Capability.REVIEW,
                 Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
                 Capability.WORKSHOP_VERIFY,

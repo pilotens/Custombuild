@@ -220,6 +220,20 @@ def validate_layout(
 
     for placement in layout.placements:
         instance = by_id.get(placement.instance_id)
+        if placement.stock_id != stock.stock_id:
+            issues.append(
+                DFMIssue(
+                    "NESTING_STOCK_BINDING_MISMATCH",
+                    Severity.BLOCK,
+                    "Placement stock identity does not match the nesting layout stock.",
+                    part_id=instance.part.part_id if instance else None,
+                    inputs={
+                        "instance_id": placement.instance_id,
+                        "expected_stock_id": stock.stock_id,
+                        "actual_stock_id": placement.stock_id,
+                    },
+                )
+            )
         if instance is None:
             issues.append(
                 DFMIssue(
@@ -231,6 +245,20 @@ def validate_layout(
                 )
             )
             continue
+        if placement.part_id != instance.part.part_id:
+            issues.append(
+                DFMIssue(
+                    "NESTING_PART_BINDING_MISMATCH",
+                    Severity.BLOCK,
+                    "Placement part identity does not match the referenced part instance.",
+                    part_id=instance.part.part_id,
+                    inputs={
+                        "instance_id": placement.instance_id,
+                        "expected_part_id": instance.part.part_id,
+                        "actual_part_id": placement.part_id,
+                    },
+                )
+            )
         if placement.instance_id in seen:
             issues.append(
                 DFMIssue(

@@ -38,6 +38,7 @@ from custombuild_manufacturing import (
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
+    DFM_ENGINE_VERSION,
     DFM_GRAIN_BLOCKER_CODE,
     JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
     JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
@@ -65,6 +66,7 @@ from custombuild_manufacturing import (
     generated_design_review_package_status,
     generation_plan_artifact,
     linuxcnc_reference_router_1325,
+    normalize_design_review_dfm_report,
     read_and_verify_package,
     registration_pin_keep_out_rectangles,
     sha256_hex,
@@ -3375,6 +3377,161 @@ def test_public_manifest_context_validator_accepts_builder_manifest() -> None:
     incomplete.pop("template_capability")
     with pytest.raises(ArtifactError, match="context field missing"):
         validate_manifest_context_contract(incomplete)
+
+
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    (
+        (("project_id",), 1, "context fields"),
+        (("domain_template_version",), "detached", "builder contract"),
+        (("template_capability",), {}, "capability context"),
+        (
+            ("template_capability", "template_version"),
+            "detached",
+            "capability context",
+        ),
+        (
+            ("template_capability", "capability_fingerprint"),
+            "0" * 64,
+            "capability context",
+        ),
+        (("template_capability_fingerprint",), 1, "context fields"),
+        (("production_engine_context",), {}, "engine context"),
+        (
+            ("production_engine_context", "template_capability_registry_version"),
+            "detached",
+            "engine context",
+        ),
+        (("generation_context_hash",), 1, "context fields"),
+        (("machine_profile",), [], "machine profile context"),
+        (("machine_profile", "version"), 1, "machine profile context"),
+        (("material_versions",), [1], "material_versions context"),
+        (("warnings",), ["z", "a"], "warnings context"),
+        (("overrides",), [{}, "invalid"], "overrides context"),
+        (("external_evidence",), {}, "external_evidence context"),
+        (("source_provenance",), {"source": "invented"}, "source provenance"),
+        (
+            ("source_provenance",),
+            {
+                "source": "reference_image",
+                "import_id": "short",
+                "image_sha256": "a" * 64,
+                "verified_model_fingerprint": "b" * 64,
+            },
+            "import ID",
+        ),
+        (
+            ("source_provenance",),
+            {
+                "source": "reference_image",
+                "import_id": "11111111-1111-4111-8111-111111111111",
+                "image_sha256": "z" * 64,
+                "verified_model_fingerprint": "b" * 64,
+            },
+            "image_sha256",
+        ),
+    ),
+)
+def test_public_manifest_context_validator_rejects_detached_context_fields(
+    path: tuple[str, ...],
+    value: object,
+    message: str,
+) -> None:
+    _, _, payload = package_fixture()
+    manifest = json.loads(json.dumps(read_and_verify_package(payload)))
+    target: dict[str, Any] = manifest
+    for component in path[:-1]:
+        nested = target[component]
+        assert isinstance(nested, dict)
+        target = nested
+    target[path[-1]] = value
+
+    with pytest.raises(ArtifactError, match=message):
+        validate_manifest_context_contract(manifest)
+
+
+_VALID_DFM_ISSUE = {
+    "code": "TEST_WARNING",
+    "severity": "WARNING",
+    "message": "Review the test condition",
+    "part_id": None,
+    "feature_id": None,
+    "setup_id": None,
+    "inputs": {},
+    "suggestion": None,
+}
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        ([], "unexpected structure"),
+        ({"engine_version": "detached", "issues": []}, "engine version"),
+        ({"engine_version": DFM_ENGINE_VERSION, "issues": {}}, "must be an array"),
+        (
+            {"engine_version": DFM_ENGINE_VERSION, "issues": [{}]},
+            "issue has an unexpected structure",
+        ),
+        (
+            {
+                "engine_version": DFM_ENGINE_VERSION,
+                "issues": [{**_VALID_DFM_ISSUE, "code": ""}],
+            },
+            "issue identity",
+        ),
+        (
+            {
+                "engine_version": DFM_ENGINE_VERSION,
+                "issues": [{**_VALID_DFM_ISSUE, "severity": 1}],
+            },
+            "issue severity",
+        ),
+        (
+            {
+                "engine_version": DFM_ENGINE_VERSION,
+                "issues": [{**_VALID_DFM_ISSUE, "severity": "UNKNOWN"}],
+            },
+            "issue severity",
+        ),
+        (
+            {
+                "engine_version": DFM_ENGINE_VERSION,
+                "issues": [{**_VALID_DFM_ISSUE, "part_id": 1}],
+            },
+            "issue reference",
+        ),
+        (
+            {
+                "engine_version": DFM_ENGINE_VERSION,
+                "issues": [{**_VALID_DFM_ISSUE, "inputs": []}],
+            },
+            "inputs must be an object",
+        ),
+        (
+            {
+                "engine_version": DFM_ENGINE_VERSION,
+                "issues": [{**_VALID_DFM_ISSUE, "suggestion": ""}],
+            },
+            "suggestion",
+        ),
+    ),
+)
+def test_normalize_design_review_dfm_report_rejects_noncanonical_payloads(
+    payload: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        normalize_design_review_dfm_report(payload)  # type: ignore[arg-type]
+
+
+def test_normalize_design_review_dfm_report_round_trips_canonical_issue() -> None:
+    report = normalize_design_review_dfm_report(
+        {"engine_version": DFM_ENGINE_VERSION, "issues": [_VALID_DFM_ISSUE]}
+    )
+
+    assert report.engine_version == DFM_ENGINE_VERSION
+    assert report.issues[0].code == "TEST_WARNING"
+    assert report.issues[0].severity is Severity.WARNING
 
 
 @pytest.mark.parametrize(

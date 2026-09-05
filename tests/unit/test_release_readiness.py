@@ -406,10 +406,7 @@ def _canonical_worker_resolver_source() -> str:
         "from app.design_service import (\n"
         "    stock_configuration_for_design,\n"
         "    two_sided_registration_for_design,\n"
-        ")\n\n"
-        + source[:stock_start]
-        + resolver
-        + source[evidence_start:]
+        ")\n\n" + source[:stock_start] + resolver + source[evidence_start:]
     )
 
 
@@ -496,12 +493,12 @@ def test_production_semantic_contract_requires_every_supported_blocked_cam_actio
 ) -> None:
     relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
     sources = dict(SEMANTIC_FIXTURE_SOURCES)
-    back_panel_action = '''    BACK_PANEL_RETENTION_EVIDENCE_MISSING: (
+    back_panel_action = """    BACK_PANEL_RETENTION_EVIDENCE_MISSING: (
         "Use only the canonical inset back whose four boundary grooves and multi-direction "
         "closing sequence prove mechanical capture, or bind independently authenticated "
         "back-panel retention evidence when that application class is implemented."
     ),
-'''
+"""
     assert back_panel_action in sources[relative]
     sources[relative] = sources[relative].replace(back_panel_action, "", 1)
     write_production_semantic_fixture(tmp_path, sources=sources)
@@ -509,12 +506,10 @@ def test_production_semantic_contract_requires_every_supported_blocked_cam_actio
     issues = production_semantic_contract_issues(tmp_path)
 
     assert any(
-        relative in issue and "exact supported blocked-CAM action set" in issue
-        for issue in issues
+        relative in issue and "exact supported blocked-CAM action set" in issue for issue in issues
     )
     assert any(
-        relative in issue and "retention blockers to canonical actions" in issue
-        for issue in issues
+        relative in issue and "retention blockers to canonical actions" in issue for issue in issues
     )
 
 
@@ -561,12 +556,10 @@ def test_production_semantic_contract_requires_a_statically_provable_action_map(
     issues = production_semantic_contract_issues(tmp_path)
 
     assert any(
-        relative in issue and "exact supported blocked-CAM action set" in issue
-        for issue in issues
+        relative in issue and "exact supported blocked-CAM action set" in issue for issue in issues
     )
     assert any(
-        relative in issue and "retention blockers to canonical actions" in issue
-        for issue in issues
+        relative in issue and "retention blockers to canonical actions" in issue for issue in issues
     )
 
 
@@ -976,6 +969,149 @@ def _generate():
     assert any(
         relative in issue and "unique immutable _generate result" in issue
         for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def _canonical_executable_worker_source() -> str:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = SEMANTIC_FIXTURE_SOURCES[relative]
+    legacy = """    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED
+    result = {
+        "bundle_sha256": "bundle",
+        "manifest_sha256": "manifest",
+        "bundle_object_key": bundle_key,
+        "manifest_object_key": manifest_key,
+        "evidence_artifacts": evidence_artifacts,
+        "generation_context_hash": "context",
+        "design_review_package_status": bundle.review_status.as_dict(),
+        "machine_program_mode": "CAM_BLOCKED" if cam_blocked else "VALIDATION_DRY_RUN",
+        "production_machine_program": False,
+    }
+"""
+    executable = """    cutting_candidate = build_worker_cam_candidate()
+    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED
+    result = {
+        "bundle_sha256": "bundle",
+        "manifest_sha256": "manifest",
+        "bundle_object_key": bundle_key,
+        "manifest_object_key": manifest_key,
+        "evidence_artifacts": evidence_artifacts,
+        "generation_context_hash": "context",
+        "design_review_package_status": bundle.review_status.as_dict(),
+        "machine_program_mode": (
+            "EXECUTABLE_CAM_CANDIDATE"
+            if cutting_candidate is not None
+            else ("CAM_BLOCKED" if cam_blocked else "VALIDATION_DRY_RUN")
+        ),
+        "production_machine_program": cutting_candidate is not None,
+        **(
+            {
+                "cam_status": "CUTTING_CANDIDATE_GENERATED",
+                "physical_cutting_authorized": False,
+                "workshop_acceptance_required": True,
+                "cam_candidate": cutting_candidate.result_claims,
+            }
+            if cutting_candidate is not None
+            else {}
+        ),
+    }
+"""
+    assert legacy in source
+    return source.replace(legacy, executable, 1)
+
+
+def test_worker_semantic_contract_accepts_atomic_executable_candidate_result(
+    tmp_path: Path,
+) -> None:
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[PRODUCTION_SEMANTIC_SOURCE_PATHS[2]] = _canonical_executable_worker_source()
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert production_semantic_contract_issues(tmp_path) == []
+
+
+def test_worker_semantic_contract_rejects_executable_result_post_mutation(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_executable_worker_source()
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source.replace(
+        "    frozen_result = MappingProxyType(result)",
+        '    result["physical_cutting_authorized"] = True\n'
+        "    frozen_result = MappingProxyType(result)",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "unique immutable _generate result" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def test_worker_semantic_contract_rejects_candidate_discriminator_alias(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_executable_worker_source().replace(
+        "    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED",
+        "    candidate_alias = cutting_candidate\n"
+        "    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED",
+        1,
+    )
+    source = source.replace(
+        "            if cutting_candidate is not None\n            else {}",
+        "            if candidate_alias is not None\n            else {}",
+        1,
+    )
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "not atomically bound" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+@pytest.mark.parametrize(
+    ("canonical", "unsafe"),
+    (
+        ('"cam_status": "CUTTING_CANDIDATE_GENERATED"', '"cam_status": "VALIDATED"'),
+        ('"physical_cutting_authorized": False', '"physical_cutting_authorized": True'),
+        ('"workshop_acceptance_required": True', '"workshop_acceptance_required": False'),
+        (
+            '"cam_candidate": cutting_candidate.result_claims',
+            '"cam_candidate": {}',
+        ),
+        (
+            '"production_machine_program": cutting_candidate is not None',
+            '"production_machine_program": True',
+        ),
+        ('"EXECUTABLE_CAM_CANDIDATE"', '"VALIDATION_DRY_RUN"'),
+        (
+            "            else {}\n        ),",
+            '            else {"cam_status": "CUTTING_CANDIDATE_GENERATED"}\n        ),',
+        ),
+    ),
+)
+def test_worker_semantic_contract_rejects_executable_candidate_downgrade(
+    tmp_path: Path,
+    canonical: str,
+    unsafe: str,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_executable_worker_source()
+    assert canonical in source
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source.replace(canonical, unsafe, 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    issues = production_semantic_contract_issues(tmp_path)
+    assert any(
+        relative in issue and ("not atomically bound" in issue or "not strictly bound" in issue)
+        for issue in issues
     )
 
 
@@ -1441,7 +1577,7 @@ def hardened_compose_config() -> dict[str, object]:
                         "condition": "service_healthy",
                         "restart": True,
                     }
-                }
+                },
             },
             "web": web,
             "postgres": datastore | {"restart": "no"},
@@ -1493,9 +1629,7 @@ def test_hardening_rejects_generation_worker_that_bypasses_registry_preflight() 
     ("mutation", "expected_issue"),
     [
         (
-            lambda config: config["services"]["postgres"].update(
-                {"restart": "unless-stopped"}
-            ),
+            lambda config: config["services"]["postgres"].update({"restart": "unless-stopped"}),
             "postgres automatic restart can bypass the storage-recovery barrier",
         ),
         (
@@ -1505,9 +1639,9 @@ def test_hardening_rejects_generation_worker_that_bypasses_registry_preflight() 
             "migrate does not restart after a Compose-managed PostgreSQL update",
         ),
         (
-            lambda config: config["services"]["storage-recovery"]["depends_on"][
-                "migrate"
-            ].update({"restart": False}),
+            lambda config: config["services"]["storage-recovery"]["depends_on"]["migrate"].update(
+                {"restart": False}
+            ),
             "storage-recovery does not restart after a Compose-managed migration",
         ),
         (

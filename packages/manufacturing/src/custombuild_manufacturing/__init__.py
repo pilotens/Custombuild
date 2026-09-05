@@ -1,5 +1,7 @@
 """Deterministic manufacturing engine for Custombuild."""
 
+# ruff: noqa: F401 -- this package intentionally declares lazy, type-only exports.
+
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
@@ -85,8 +87,45 @@ from .operations import (
     registration_pin_keep_out_radius_um,
     registration_pin_keep_out_rectangles,
 )
+from .production_machine_profile import (
+    MAX_PRODUCTION_MACHINE_PROFILE_BYTES,
+    PRODUCTION_MACHINE_PROFILE_SCHEMA_VERSION,
+    SERVER_OWNED_PRODUCTION_PROFILE,
+    TEST_ONLY_PROFILE,
+    TEST_ONLY_STATUS,
+    WORKSHOP_ACCEPTED_STATUS,
+    LoadedProductionMachineProfile,
+    ProductionMachineProfileError,
+    WorkshopAcceptanceEvidence,
+    load_production_execution_context,
+    load_production_machine_profile,
+    production_machine_profile_job_binding,
+    production_machine_profile_job_binding_json,
+)
 
 if TYPE_CHECKING:
+    from .cam_candidate_package import (
+        CAM_CANDIDATE_BACKPLOT_PATH,
+        CAM_CANDIDATE_MACHINE_PROFILE_PATH,
+        CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION,
+        CAM_CANDIDATE_PACKAGE_BUILDER_VERSION,
+        CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH,
+        CAM_CANDIDATE_PROGRAM_INDEX_PATH,
+        CAM_CANDIDATE_PROGRAM_INDEX_SCHEMA_VERSION,
+        CAM_CANDIDATE_PROGRAM_ROOT,
+        CAM_CANDIDATE_REPORT_PATH,
+        CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH,
+        CAM_CANDIDATE_SETUP_INSTRUCTIONS_SCHEMA_VERSION,
+        CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH,
+        CAM_CANDIDATE_SOURCE_OPERATIONS_PATH,
+        CAM_CANDIDATE_STATUS,
+        CAM_CANDIDATE_TOOLPATH_PATH,
+        CAM_CANDIDATE_VALIDATION_REPORT_SCHEMA_VERSION,
+        CAMCandidateBundle,
+        build_cam_candidate_bundle,
+        read_and_verify_cam_candidate_package,
+        read_operations_document_from_design_review_bundle,
+    )
     from .package import (
         GENERATION_PLAN_ARTIFACT_PATH,
         GENERATION_PLAN_ARTIFACT_ROLE,
@@ -198,6 +237,31 @@ _PACKAGE_EXPORTS = frozenset(
     }
 )
 
+_CAM_CANDIDATE_EXPORTS = frozenset(
+    {
+        "CAM_CANDIDATE_BACKPLOT_PATH",
+        "CAM_CANDIDATE_MACHINE_PROFILE_PATH",
+        "CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION",
+        "CAM_CANDIDATE_PACKAGE_BUILDER_VERSION",
+        "CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH",
+        "CAM_CANDIDATE_PROGRAM_INDEX_PATH",
+        "CAM_CANDIDATE_PROGRAM_INDEX_SCHEMA_VERSION",
+        "CAM_CANDIDATE_PROGRAM_ROOT",
+        "CAM_CANDIDATE_REPORT_PATH",
+        "CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH",
+        "CAM_CANDIDATE_SETUP_INSTRUCTIONS_SCHEMA_VERSION",
+        "CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH",
+        "CAM_CANDIDATE_SOURCE_OPERATIONS_PATH",
+        "CAM_CANDIDATE_STATUS",
+        "CAM_CANDIDATE_TOOLPATH_PATH",
+        "CAM_CANDIDATE_VALIDATION_REPORT_SCHEMA_VERSION",
+        "CAMCandidateBundle",
+        "build_cam_candidate_bundle",
+        "read_operations_document_from_design_review_bundle",
+        "read_and_verify_cam_candidate_package",
+    }
+)
+
 
 def __getattr__(name: str) -> Any:
     """Lazily expose cross-package artifact helpers without import cycles.
@@ -208,6 +272,11 @@ def __getattr__(name: str) -> Any:
     on whichever package happened to be imported first.
     """
 
+    if name in _CAM_CANDIDATE_EXPORTS:
+        module = import_module(".cam_candidate_package", __name__)
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
     if name not in _PACKAGE_EXPORTS:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     package_module = import_module(".package", __name__)
@@ -217,7 +286,7 @@ def __getattr__(name: str) -> Any:
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | _PACKAGE_EXPORTS)
+    return sorted(set(globals()) | _PACKAGE_EXPORTS | _CAM_CANDIDATE_EXPORTS)
 
 
 __all__ = [
@@ -234,9 +303,27 @@ __all__ = [
     "MAX_EVIDENCE_ARTIFACTS",
     "MAX_EVIDENCE_TOTAL_BYTES",
     "MAX_PRODUCTION_BUNDLE_BYTES",
+    "MAX_PRODUCTION_MACHINE_PROFILE_BYTES",
     "MAX_READINESS_STATUS_BYTES",
     "MAX_HTTP_REQUEST_BYTES",
     "CAMOperation",
+    "CAMCandidateBundle",
+    "CAM_CANDIDATE_BACKPLOT_PATH",
+    "CAM_CANDIDATE_MACHINE_PROFILE_PATH",
+    "CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION",
+    "CAM_CANDIDATE_PACKAGE_BUILDER_VERSION",
+    "CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH",
+    "CAM_CANDIDATE_PROGRAM_INDEX_PATH",
+    "CAM_CANDIDATE_PROGRAM_INDEX_SCHEMA_VERSION",
+    "CAM_CANDIDATE_PROGRAM_ROOT",
+    "CAM_CANDIDATE_REPORT_PATH",
+    "CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH",
+    "CAM_CANDIDATE_SETUP_INSTRUCTIONS_SCHEMA_VERSION",
+    "CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH",
+    "CAM_CANDIDATE_SOURCE_OPERATIONS_PATH",
+    "CAM_CANDIDATE_STATUS",
+    "CAM_CANDIDATE_TOOLPATH_PATH",
+    "CAM_CANDIDATE_VALIDATION_REPORT_SCHEMA_VERSION",
     "CLIENT_DECLARED_AUTHORITY",
     "CAMStageStatus",
     "DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
@@ -291,13 +378,17 @@ __all__ = [
     "PartSpec",
     "Placement",
     "Point2D",
+    "PRODUCTION_MACHINE_PROFILE_SCHEMA_VERSION",
     "ProductionBlockedError",
+    "ProductionMachineProfileError",
+    "LoadedProductionMachineProfile",
     "QUALITY_MEASUREMENT_PLAN_SCHEMA_VERSION",
     "SUPPLIER_HANDOFF_PATH",
     "SUPPLIER_HANDOFF_ROLE",
     "SUPPLIER_HANDOFF_SCHEMA_VERSION",
     "Rect",
     "Severity",
+    "SERVER_OWNED_PRODUCTION_PROFILE",
     "Setup",
     "Side",
     "StockSheet",
@@ -307,13 +398,18 @@ __all__ = [
     "STOCK_PROFILE_MISSING_REQUIRED_ACTION",
     "STOCK_SELECTION_SCHEMA_VERSION",
     "ToolSpec",
+    "TEST_ONLY_PROFILE",
+    "TEST_ONLY_STATUS",
     "TwoSidedRegistration",
     "TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE",
     "WORKSHOP_READINESS_SCHEMA_VERSION",
     "ReadinessRequirement",
     "ReadinessStatus",
     "WorkshopReadinessReport",
+    "WorkshopAcceptanceEvidence",
+    "WORKSHOP_ACCEPTED_STATUS",
     "build_deterministic_zip",
+    "build_cam_candidate_bundle",
     "blocked_cam_artifact_violation",
     "build_manifest",
     "build_production_bundle",
@@ -336,6 +432,8 @@ __all__ = [
     "grouped_bom_json",
     "linuxcnc_reference_router_1325",
     "linuxcnc_reference_router_5125",
+    "load_production_execution_context",
+    "load_production_machine_profile",
     "machine_profile_fingerprint",
     "normalize_design_review_package_status",
     "retention_evidence_blocker_code",
@@ -343,8 +441,12 @@ __all__ = [
     "label_index_csv",
     "manufacturing_intent_json",
     "quality_measurement_plan_json",
+    "production_machine_profile_job_binding",
+    "production_machine_profile_job_binding_json",
     "supplier_handoff_json",
     "read_and_verify_package",
+    "read_and_verify_cam_candidate_package",
+    "read_operations_document_from_design_review_bundle",
     "sha256_hex",
     "stock_purchase_csv",
     "stock_profile_missing_issue",

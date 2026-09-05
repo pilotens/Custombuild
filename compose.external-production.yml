@@ -167,10 +167,20 @@ services:
       ARTIFACT_SIGNING_SECRET: ${ARTIFACT_SIGNING_SECRET:?Set ARTIFACT_SIGNING_SECRET}
       ARTIFACT_STREAM_TIMEOUT_SECONDS: ${ARTIFACT_STREAM_TIMEOUT_SECONDS:-120}
       JOINT_RETENTION_TRUST_REGISTRY_JSON: ${JOINT_RETENTION_TRUST_REGISTRY_JSON:-}
+      PRODUCTION_CAM_PROFILE_PATH: /run/custombuild-config/production-cam-profile.json
+      PRODUCTION_CAM_PROFILE_JSON: ""
+      PRODUCTION_CAM_PROFILE_SHA256: ${PRODUCTION_CAM_PROFILE_SHA256:?Set the exact production CAM profile file SHA-256}
       S3_ENDPOINT: http://object-storage:8333
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:?Set S3_ACCESS_KEY}
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
+    volumes:
+      - type: bind
+        source: ${PRODUCTION_CAM_PROFILE_HOST_PATH:?Set the protected production CAM profile path}
+        target: /run/custombuild-config/production-cam-profile.json
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       storage-capacity-attestor:
         condition: service_healthy
@@ -198,6 +208,16 @@ services:
       S3_SECRET_KEY: ${S3_SECRET_KEY:?Set S3_SECRET_KEY}
       S3_BUCKET: ${S3_BUCKET:?Set S3_BUCKET}
       JOINT_RETENTION_TRUST_REGISTRY_JSON: ${JOINT_RETENTION_TRUST_REGISTRY_JSON:-}
+      PRODUCTION_CAM_PROFILE_PATH: /run/custombuild-config/production-cam-profile.json
+      PRODUCTION_CAM_PROFILE_JSON: ""
+      PRODUCTION_CAM_PROFILE_SHA256: ${PRODUCTION_CAM_PROFILE_SHA256:?Set the exact production CAM profile file SHA-256}
+    volumes:
+      - type: bind
+        source: ${PRODUCTION_CAM_PROFILE_HOST_PATH:?Set the protected production CAM profile path}
+        target: /run/custombuild-config/production-cam-profile.json
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       storage-capacity-attestor:
         condition: service_healthy

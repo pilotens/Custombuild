@@ -27,6 +27,10 @@ from app.models import (
     Role,
     User,
 )
+from custombuild_manufacturing.cam_software_provenance import (
+    build_cam_software_provenance,
+    cam_software_provenance_sha256,
+)
 from fastapi.testclient import TestClient
 from sqlalchemy import event, func, select
 from sqlalchemy.orm import ORMExecuteState
@@ -116,9 +120,7 @@ def _insert_generation_source(
                     manifest_sha256=manifest_sha256,
                     production_context_hash="d" * 64,
                     generation_result_json=deepcopy(result_snapshot),
-                    artifact_inventory_json=deepcopy(
-                        result_snapshot.get("artifact_inventory", [])
-                    ),
+                    artifact_inventory_json=deepcopy(result_snapshot.get("artifact_inventory", [])),
                 )
             )
     return project_id, job_id
@@ -229,10 +231,7 @@ def test_rejected_preparation_does_not_request_database_row_locks() -> None:
     locked_statements: list[str] = []
 
     def capture_row_locks(state: ORMExecuteState) -> None:
-        if (
-            state.is_select
-            and getattr(state.statement, "_for_update_arg", None) is not None
-        ):
+        if state.is_select and getattr(state.statement, "_for_update_arg", None) is not None:
             locked_statements.append(str(state.statement))
 
     with TestClient(app) as client:
@@ -277,6 +276,135 @@ def test_executable_json_claim_cannot_substitute_for_an_executable_package() -> 
 
     _assert_truthful_blocker(response, "WORKSHOP_EXECUTABLE_PACKAGE_MISSING")
     assert after == before
+
+
+def test_executable_cam_candidate_reports_unconnected_trust_path_without_writes() -> None:
+    base_bundle_sha256 = "b" * 64
+    candidate_bundle_sha256 = "c" * 64
+    toolpaths_sha256 = "d" * 64
+    production_profile_sha256 = "e" * 64
+    software_provenance = build_cam_software_provenance(
+        {
+            "schema_version": "custombuild.producer-build-identity.v1",
+            "app_version": "1.0.0",
+            "vcs_ref": "0" * 40,
+            "source_manifest_sha256": "9" * 64,
+            "dependency_lock_sha256": "a" * 64,
+        },
+    )
+    result = {
+        "manifest_sha256": "a" * 64,
+        "bundle_sha256": base_bundle_sha256,
+        "cam_status": "CUTTING_CANDIDATE_GENERATED",
+        "machine_program_mode": "EXECUTABLE_CAM_CANDIDATE",
+        "production_machine_program": True,
+        "physical_cutting_authorized": False,
+        "workshop_acceptance_required": True,
+        "cam_candidate": {
+            "schema_version": "custombuild.cam-candidate-result.v2",
+            "status": "CUTTING_CANDIDATE_GENERATED",
+            "mode": "EXECUTABLE_CAM_CANDIDATE",
+            "physical_cutting_authorized": False,
+            "workshop_acceptance_required": True,
+            "base_design_review_bundle_sha256": base_bundle_sha256,
+            "bundle_sha256": candidate_bundle_sha256,
+            "bundle_size_bytes": 1_024,
+            "manifest_sha256": "f" * 64,
+            "candidate_context_hash": "1" * 64,
+            "software_provenance": software_provenance,
+            "software_provenance_sha256": cam_software_provenance_sha256(software_provenance),
+            "production_profile_job_binding": {
+                "schema_version": "custombuild.production-machine-profile.v1",
+                "profile_class": "SERVER_OWNED_PRODUCTION",
+            },
+            "production_profile_payload_sha256": "2" * 64,
+            "execution_context_sha256": "3" * 64,
+            "production_machine_profile_sha256": production_profile_sha256,
+            "postprocessor_machine_profile_sha256": "4" * 64,
+            "toolpaths_sha256": toolpaths_sha256,
+            "program_count": 1,
+            "postprocessor": {
+                "id": software_provenance["implementations"]["postprocessor_id"],
+                "version": software_provenance["implementations"]["postprocessor_version"],
+            },
+        },
+        "evidence_artifacts": [
+            {
+                "kind": "cam_candidate_bundle",
+                "sha256": candidate_bundle_sha256,
+                "size_bytes": 1_024,
+                "content_type": "application/zip",
+            },
+            {
+                "kind": "cutting_toolpaths",
+                "sha256": toolpaths_sha256,
+                "size_bytes": 512,
+                "content_type": "application/json",
+            },
+            {
+                "kind": "machine_program_index",
+                "sha256": "5" * 64,
+                "size_bytes": 512,
+                "content_type": "application/json",
+            },
+            {
+                "kind": "cutting_program_validation_report",
+                "sha256": "6" * 64,
+                "size_bytes": 512,
+                "content_type": "application/json",
+            },
+            {
+                "kind": "cutting_backplot",
+                "sha256": "7" * 64,
+                "size_bytes": 512,
+                "content_type": "image/svg+xml",
+            },
+            {
+                "kind": "production_machine_profile",
+                "sha256": production_profile_sha256,
+                "size_bytes": 512,
+                "content_type": "application/json",
+            },
+            {
+                "kind": "machine_program_001",
+                "sha256": "8" * 64,
+                "size_bytes": 512,
+                "content_type": "text/x-gcode",
+            },
+        ],
+    }
+    assert api_module._cutting_candidate_result_is_valid(result)
+
+    with TestClient(app) as client:
+        project_id, job_id = _insert_generation_source(
+            result_json=result,
+            with_release=True,
+        )
+        before_rows = _workshop_row_counts()
+        with get_session_factory()() as session:
+            before_audits = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(AuditEvent)
+                    .where(AuditEvent.entity_type == "workshop_run")
+                )
+                or 0
+            )
+        response = _request(client, project_id, job_id)
+        after_rows = _workshop_row_counts()
+        with get_session_factory()() as session:
+            after_audits = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(AuditEvent)
+                    .where(AuditEvent.entity_type == "workshop_run")
+                )
+                or 0
+            )
+
+    _assert_truthful_blocker(response, "WORKSHOP_EXECUTABLE_PACKAGE_MISSING")
+    assert after_rows == before_rows
+    assert after_audits == before_audits
 
 
 def test_missing_release_cannot_prepare_or_write_workshop_state() -> None:
@@ -402,9 +530,9 @@ def test_rejected_preparation_does_not_append_an_audit_success_event() -> None:
         with get_session_factory()() as session:
             before = int(
                 session.scalar(
-                    select(func.count()).select_from(AuditEvent).where(
-                        AuditEvent.entity_type == "workshop_run"
-                    )
+                    select(func.count())
+                    .select_from(AuditEvent)
+                    .where(AuditEvent.entity_type == "workshop_run")
                 )
                 or 0
             )
@@ -413,9 +541,9 @@ def test_rejected_preparation_does_not_append_an_audit_success_event() -> None:
         with get_session_factory()() as session:
             after = int(
                 session.scalar(
-                    select(func.count()).select_from(AuditEvent).where(
-                        AuditEvent.entity_type == "workshop_run"
-                    )
+                    select(func.count())
+                    .select_from(AuditEvent)
+                    .where(AuditEvent.entity_type == "workshop_run")
                 )
                 or 0
             )

@@ -7,6 +7,7 @@ from typing import Literal
 
 from app.config_guards import (
     BuildIdentityValues,
+    read_production_cam_profile_source,
     validate_production_build_identity,
     validate_production_database_url,
     validate_production_redis_url,
@@ -56,6 +57,9 @@ class WorkerSettings(BaseSettings):
     s3_secret_key: str = "development-only-object-secret"  # noqa: S105
     s3_bucket: str = Field(default="custombuild-artifacts", min_length=1)
     joint_retention_trust_registry_json: str = Field(default="", max_length=262_144)
+    production_cam_profile_path: str = Field(default="", max_length=4096)
+    production_cam_profile_json: str = Field(default="", max_length=1_048_576)
+    production_cam_profile_sha256: str = Field(default="", max_length=64)
     storage_capacity_operator_config_sha256: str = "unverified"
     storage_capacity_volume_identity: str = "development-local-volume"
     storage_capacity_provisioned_bytes: int = Field(
@@ -75,6 +79,17 @@ class WorkerSettings(BaseSettings):
 
     @model_validator(mode="after")
     def production_guards(self) -> WorkerSettings:
+        if (
+            self.production_cam_profile_path
+            or self.production_cam_profile_json
+            or self.production_cam_profile_sha256
+        ):
+            read_production_cam_profile_source(
+                profile_path=self.production_cam_profile_path,
+                profile_json=self.production_cam_profile_json,
+                profile_sha256=self.production_cam_profile_sha256,
+                production=self.app_env == "production",
+            )
         if self.database_lock_timeout_seconds >= self.database_statement_timeout_seconds:
             raise ValueError(
                 "DATABASE_LOCK_TIMEOUT_SECONDS must be shorter than the statement timeout"
@@ -141,6 +156,15 @@ class WorkerSettings(BaseSettings):
             "source_manifest_sha256": self.source_manifest_sha256,
             "dependency_lock_sha256": self.dependency_lock_sha256,
         }
+
+    @property
+    def production_cam_profile_source(self) -> bytes | str:
+        return read_production_cam_profile_source(
+            profile_path=self.production_cam_profile_path,
+            profile_json=self.production_cam_profile_json,
+            profile_sha256=self.production_cam_profile_sha256,
+            production=self.app_env == "production",
+        )
 
 
 @lru_cache(maxsize=1)

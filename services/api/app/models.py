@@ -704,10 +704,32 @@ class StorageObjectTombstone(Base):
     retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+def _portable_lower_hex_sql(expression: str) -> str:
+    """Return SQL using only functions shared by SQLite and PostgreSQL."""
+
+    for character in "0123456789abcdef":
+        expression = f"replace({expression}, '{character}', '')"
+    return f"{expression} = ''"
+
+
 class Approval(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "approvals"
     __table_args__ = (
         UniqueConstraint("design_version_id", "approval_type"),
+        UniqueConstraint(
+            "organization_id",
+            "design_version_id",
+            "generation_job_id",
+            "id",
+            name="uq_approvals_org_version_job_id",
+        ),
+        CheckConstraint(
+            "cam_candidate_bundle_sha256 IS NULL OR ("
+            "length(cam_candidate_bundle_sha256) = 64 "
+            "AND cam_candidate_bundle_sha256 = lower(cam_candidate_bundle_sha256) "
+            f"AND {_portable_lower_hex_sql('cam_candidate_bundle_sha256')})",
+            name="ck_approvals_cam_candidate_bundle_sha256_format",
+        ),
         ForeignKeyConstraint(
             ["organization_id", "design_version_id"],
             ["design_versions.organization_id", "design_versions.id"],
@@ -729,7 +751,31 @@ class Approval(IdMixin, TimestampMixin, TenantMixin, Base):
     generation_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     production_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cam_candidate_bundle_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     overrides_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+
+RELEASE_CAM_APPROVAL_UUID_CHECK_SQL = (
+    "cam_approval_id IS NULL OR (length(cam_approval_id) = 36 "
+    "AND cam_approval_id = lower(cam_approval_id) "
+    "AND substr(cam_approval_id, 9, 1) = '-' "
+    "AND substr(cam_approval_id, 14, 1) = '-' "
+    "AND substr(cam_approval_id, 19, 1) = '-' "
+    "AND substr(cam_approval_id, 24, 1) = '-' "
+    "AND length(replace(cam_approval_id, '-', '')) = 32 "
+    f"AND {_portable_lower_hex_sql("replace(cam_approval_id, '-', '')")} "
+    "AND substr(cam_approval_id, 15, 1) IN ('1', '2', '3', '4', '5') "
+    "AND substr(cam_approval_id, 20, 1) IN ('8', '9', 'a', 'b'))"
+)
+RELEASE_CAM_APPROVAL_RECEIPT_CHECK_SQL = (
+    "(cam_approval_id IS NULL AND cam_approval_binding_sha256 IS NULL "
+    "AND cam_approval_snapshot_json IS NULL) OR "
+    "(cam_approval_id IS NOT NULL AND cam_approval_binding_sha256 IS NOT NULL "
+    "AND length(cam_approval_binding_sha256) = 64 "
+    "AND cam_approval_binding_sha256 = lower(cam_approval_binding_sha256) "
+    f"AND {_portable_lower_hex_sql('cam_approval_binding_sha256')} "
+    "AND cam_approval_snapshot_json IS NOT NULL)"
+)
 
 
 class Release(IdMixin, TimestampMixin, TenantMixin, Base):
@@ -761,10 +807,39 @@ class Release(IdMixin, TimestampMixin, TenantMixin, Base):
             name="fk_releases_org_generation_job",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            [
+                "organization_id",
+                "design_version_id",
+                "generation_job_id",
+                "cam_approval_id",
+            ],
+            [
+                "approvals.organization_id",
+                "approvals.design_version_id",
+                "approvals.generation_job_id",
+                "approvals.id",
+            ],
+            name="fk_releases_org_version_job_cam_approval",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            RELEASE_CAM_APPROVAL_UUID_CHECK_SQL,
+            name="ck_releases_cam_approval_id_format",
+        ),
+        CheckConstraint(
+            RELEASE_CAM_APPROVAL_RECEIPT_CHECK_SQL,
+            name="ck_releases_cam_approval_receipt_complete",
+        ),
     )
 
     design_version_id: Mapped[str] = mapped_column(String(36))
     generation_job_id: Mapped[str] = mapped_column(String(36))
+    cam_approval_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    cam_approval_binding_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cam_approval_snapshot_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     release_number: Mapped[str] = mapped_column(String(80))
     released_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     manifest_sha256: Mapped[str] = mapped_column(String(64))

@@ -194,32 +194,218 @@ const RELEASE_READ_KEYS = [
   "physical_cutting_authorized",
 ] as const;
 
-function strictReleaseRead(value: unknown, expectedReleaseNumber?: string): ReleaseRead {
+const EXECUTABLE_RELEASE_READ_KEYS = [
+  "release_id",
+  "release_number",
+  "status",
+  "release_kind",
+  "machine_use",
+  "design_review_bundle",
+  "executable_cam",
+  "physical_cutting_authorized",
+] as const;
+
+const DESIGN_REVIEW_BUNDLE_RECEIPT_KEYS = ["bundle_sha256", "manifest_sha256"] as const;
+const EXECUTABLE_CAM_RECEIPT_KEYS = [
+  "candidate_bundle_sha256",
+  "candidate_manifest_sha256",
+  "production_profile_document_sha256",
+  "production_profile_payload_sha256",
+  "program_inventory_sha256",
+  "cam_approval",
+  "workshop_acceptance_required",
+] as const;
+const CAM_APPROVAL_RELEASE_BINDING_KEYS = [
+  "schema_version",
+  "approval_id",
+  "organization_id",
+  "design_version_id",
+  "approval_type",
+  "approved_by",
+  "reason",
+  "generation_job_id",
+  "production_context_hash",
+  "manifest_sha256",
+  "candidate_bundle_sha256",
+  "overrides_json",
+  "created_at",
+  "updated_at",
+  "binding_sha256",
+] as const;
+
+function hasExactKeys<const Key extends string>(
+  value: JsonRecord,
+  keys: readonly Key[],
+): boolean {
+  return Object.keys(value).length === keys.length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = asRecord(value);
+  if (record) {
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(",")}}`;
+  }
+  throw new ApiError("Servern returnerade ett icke-kanoniskt frisläppningsbevis.");
+}
+
+async function canonicalSha256(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalJson(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function strictReleaseRead(
+  value: unknown,
+  expectedReleaseNumber?: string,
+): Promise<ReleaseRead> {
   const payload = asRecord(value);
-  if (
-    !payload
-    || Object.keys(payload).length !== RELEASE_READ_KEYS.length
-    || RELEASE_READ_KEYS.some((key) => !Object.prototype.hasOwnProperty.call(payload, key))
+  const commonInvalid = !payload
     || typeof payload.release_id !== "string"
     || !CANONICAL_UUID_PATTERN.test(payload.release_id)
     || typeof payload.release_number !== "string"
     || !/^[A-Z0-9][A-Z0-9._-]{0,39}$/.test(payload.release_number)
     || (expectedReleaseNumber !== undefined && payload.release_number !== expectedReleaseNumber)
     || payload.status !== "released"
+    || payload.physical_cutting_authorized !== false;
+  if (commonInvalid || !payload) {
+    throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
+  }
+  if (payload.release_kind === "executable_cam") {
+    const designReview = asRecord(payload.design_review_bundle);
+    const executable = asRecord(payload.executable_cam);
+    const approval = executable ? asRecord(executable.cam_approval) : undefined;
+    const shaFields = executable
+      ? [
+          executable.candidate_bundle_sha256,
+          executable.candidate_manifest_sha256,
+          executable.production_profile_document_sha256,
+          executable.production_profile_payload_sha256,
+          executable.program_inventory_sha256,
+        ]
+      : [];
+    if (
+      !hasExactKeys(payload, EXECUTABLE_RELEASE_READ_KEYS)
+      || payload.machine_use !== "executable_cam_candidate"
+      || !designReview
+      || !hasExactKeys(designReview, DESIGN_REVIEW_BUNDLE_RECEIPT_KEYS)
+      || typeof designReview.bundle_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(designReview.bundle_sha256)
+      || typeof designReview.manifest_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(designReview.manifest_sha256)
+      || !executable
+      || !hasExactKeys(executable, EXECUTABLE_CAM_RECEIPT_KEYS)
+      || shaFields.some((digest) => typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest))
+      || executable.workshop_acceptance_required !== true
+      || !approval
+      || !hasExactKeys(approval, CAM_APPROVAL_RELEASE_BINDING_KEYS)
+      || approval.schema_version !== "custombuild.cam-approval-release-binding.v1"
+      || typeof approval.approval_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.approval_id)
+      || typeof approval.organization_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.organization_id)
+      || typeof approval.design_version_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.design_version_id)
+      || approval.approval_type !== "cam"
+      || typeof approval.approved_by !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.approved_by)
+      || typeof approval.reason !== "string"
+      || approval.reason.length < 5
+      || approval.reason.length > 2_000
+      || typeof approval.generation_job_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.generation_job_id)
+      || typeof approval.production_context_hash !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.production_context_hash)
+      || typeof approval.manifest_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.manifest_sha256)
+      || typeof approval.candidate_bundle_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.candidate_bundle_sha256)
+      || typeof approval.binding_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.binding_sha256)
+      || !Array.isArray(approval.overrides_json)
+      || approval.overrides_json.length !== 0
+      || typeof approval.created_at !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(approval.created_at)
+      || !Number.isFinite(Date.parse(approval.created_at))
+      || typeof approval.updated_at !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(approval.updated_at)
+      || !Number.isFinite(Date.parse(approval.updated_at))
+      || approval.manifest_sha256 !== designReview.manifest_sha256
+      || approval.candidate_bundle_sha256 !== executable.candidate_bundle_sha256
+    ) {
+      throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
+    }
+    const unsignedApproval = Object.fromEntries(
+      Object.entries(approval).filter(([key]) => key !== "binding_sha256"),
+    );
+    if (await canonicalSha256(unsignedApproval) !== approval.binding_sha256) {
+      throw new ApiError("Serverns CAM-godkännandebindning har fel SHA-256-identitet.");
+    }
+    return {
+      release_id: payload.release_id as string,
+      release_number: payload.release_number as string,
+      status: "released",
+      release_kind: "executable_cam",
+      machine_use: "executable_cam_candidate",
+      design_review_bundle: {
+        bundle_sha256: designReview.bundle_sha256 as string,
+        manifest_sha256: designReview.manifest_sha256 as string,
+      },
+      executable_cam: {
+        candidate_bundle_sha256: executable.candidate_bundle_sha256 as string,
+        candidate_manifest_sha256: executable.candidate_manifest_sha256 as string,
+        production_profile_document_sha256: (
+          executable.production_profile_document_sha256 as string
+        ),
+        production_profile_payload_sha256: (
+          executable.production_profile_payload_sha256 as string
+        ),
+        program_inventory_sha256: executable.program_inventory_sha256 as string,
+        cam_approval: {
+          schema_version: "custombuild.cam-approval-release-binding.v1",
+          approval_id: approval.approval_id as string,
+          organization_id: approval.organization_id as string,
+          design_version_id: approval.design_version_id as string,
+          approval_type: "cam",
+          approved_by: approval.approved_by as string,
+          reason: approval.reason as string,
+          generation_job_id: approval.generation_job_id as string,
+          production_context_hash: approval.production_context_hash as string,
+          manifest_sha256: approval.manifest_sha256 as string,
+          candidate_bundle_sha256: approval.candidate_bundle_sha256 as string,
+          overrides_json: approval.overrides_json as JsonRecord[],
+          created_at: approval.created_at as string,
+          updated_at: approval.updated_at as string,
+          binding_sha256: approval.binding_sha256 as string,
+        },
+        workshop_acceptance_required: true,
+      },
+      physical_cutting_authorized: false,
+    };
+  }
+  if (
+    !hasExactKeys(payload, RELEASE_READ_KEYS)
     || typeof payload.bundle_sha256 !== "string"
     || !/^[a-f0-9]{64}$/.test(payload.bundle_sha256)
     || typeof payload.manifest_sha256 !== "string"
     || !/^[a-f0-9]{64}$/.test(payload.manifest_sha256)
     || payload.machine_use !== "validation_only"
     || payload.release_kind !== "design_review"
-    || payload.physical_cutting_authorized !== false
   ) {
     throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
   }
   return {
-    release_id: payload.release_id,
-    release_number: payload.release_number,
-    status: payload.status,
+    release_id: payload.release_id as string,
+    release_number: payload.release_number as string,
+    status: "released",
     bundle_sha256: payload.bundle_sha256,
     manifest_sha256: payload.manifest_sha256,
     release_kind: payload.release_kind,
@@ -1649,7 +1835,7 @@ export class CustombuildApiClient {
     if (state.release !== null) {
       return {
         ...(payload as ProductionStateRead),
-        release: strictReleaseRead(state.release),
+        release: await strictReleaseRead(state.release),
       };
     }
     return payload as ProductionStateRead;

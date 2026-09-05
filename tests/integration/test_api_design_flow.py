@@ -92,7 +92,21 @@ from custombuild_manufacturing import (
     read_and_verify_package,
     stock_profile_missing_issue,
 )
+from custombuild_manufacturing.cam_candidate_package import (
+    read_and_verify_cam_candidate_package,
+    read_operations_document_from_design_review_bundle,
+)
+from custombuild_manufacturing.cam_software_provenance import (
+    producer_build_identity_from_engine_context,
+    validate_cam_software_provenance,
+)
 from custombuild_manufacturing.package import PRODUCTION_MANIFEST_SCHEMA_VERSION
+from custombuild_manufacturing.production_machine_profile import (
+    SERVER_OWNED_PRODUCTION_PROFILE,
+    WORKSHOP_ACCEPTED_STATUS,
+    load_production_machine_profile,
+    production_machine_profile_job_binding,
+)
 from custombuild_manufacturing.readiness import (
     LEGACY_WORKSHOP_READINESS_SCHEMA_VERSION,
     build_workshop_readiness_report,
@@ -108,11 +122,18 @@ from sqlalchemy.orm.attributes import flag_modified
 from starlette.requests import ClientDisconnect
 from starlette.types import Message, Scope
 
+from tests.integration.test_shelving_cam_candidate import _test_only_profile
+
 HEADERS = {"Authorization": "Bearer demo-nordic-owner"}
 FOUR_EYES_REVIEWER_HEADERS = {"Authorization": "Bearer demo-nordic-four-eyes-reviewer"}
 FOUR_EYES_REVIEWER_ID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 _REAL_DADO_RETENTION_GATE = api_module._require_resolved_dado_retention
 _REAL_DADO_RETENTION_PROJECTION = api_module._frozen_dado_retention_is_unresolved
+_REAL_CAM_PROMOTION_GATE = api_module._require_promotable_cam_candidate_profile
+_REAL_CAM_CANDIDATE_DIGEST = api_module._cam_candidate_bundle_sha256
+_LEGACY_VALIDATION_ONLY_CAM_DIGEST = hashlib.sha256(
+    b"TEST_FIXTURE_LEGACY_VALIDATION_ONLY_CAM_APPROVAL"
+).hexdigest()
 
 
 class _SimulatedVerifiedDownload:
@@ -203,6 +224,67 @@ def _avoid_external_object_storage(monkeypatch: pytest.MonkeyPatch) -> None:
         api_module,
         "_frozen_dado_retention_is_unresolved",
         lambda _version: False,
+    )
+
+    def is_canonical_legacy_validation_result(result: dict[str, Any]) -> bool:
+        readiness = result.get("workshop_readiness")
+        explicit_validation_claim = (
+            result.get("machine_program_mode") == "VALIDATION_DRY_RUN"
+            and result.get("production_machine_program") is False
+        )
+        historical_v1_claim = (
+            "machine_program_mode" not in result
+            and "production_machine_program" not in result
+            and isinstance(readiness, dict)
+            and readiness.get("schema_version") == LEGACY_WORKSHOP_READINESS_SCHEMA_VERSION
+        )
+        return result.get("cam_candidate") is None and (
+            explicit_validation_claim or historical_v1_claim
+        )
+
+    def allow_canonical_legacy_validation_fixture(job: GenerationJob) -> None:
+        request = job.request_json if isinstance(job.request_json, dict) else {}
+        result = job.result_json if isinstance(job.result_json, dict) else {}
+        if request.get("include_cutting_candidate", False) is False and (
+            is_canonical_legacy_validation_result(result)
+        ):
+            return
+        _REAL_CAM_PROMOTION_GATE(job)
+
+    def legacy_validation_candidate_digest(result: dict[str, Any]) -> str:
+        if is_canonical_legacy_validation_result(result):
+            return _LEGACY_VALIDATION_ONLY_CAM_DIGEST
+        return _REAL_CAM_CANDIDATE_DIGEST(result)
+
+    # These broad design-review integration fixtures predate executable CAM.
+    # Keep their evidence/race assertions focused, while dedicated promotion
+    # tests below restore the real fail-closed candidate gates explicitly.
+    monkeypatch.setattr(
+        api_module,
+        "_require_promotable_cam_candidate_profile",
+        allow_canonical_legacy_validation_fixture,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "_cam_candidate_bundle_sha256",
+        legacy_validation_candidate_digest,
+    )
+
+
+@pytest.fixture
+def _restore_real_cam_promotion_gates(
+    monkeypatch: pytest.MonkeyPatch,
+    _avoid_external_object_storage: None,
+) -> None:
+    monkeypatch.setattr(
+        api_module,
+        "_require_promotable_cam_candidate_profile",
+        _REAL_CAM_PROMOTION_GATE,
+    )
+    monkeypatch.setattr(
+        api_module,
+        "_cam_candidate_bundle_sha256",
+        _REAL_CAM_CANDIDATE_DIGEST,
     )
 
 
@@ -303,6 +385,62 @@ def structured_workshop_context() -> dict[str, object]:
             }
         ],
     }
+
+
+def _accepted_production_profile_for_review_bundle(review_bundle: bytes) -> bytes:
+    """Turn the exact review operations into a non-placeholder accepted profile."""
+
+    def accepted_string(value: str) -> str:
+        replacements = (
+            ("EXTERNAL", "EOFFSET"),
+            ("external", "eoffset"),
+            ("TEST_ONLY", "CI_ACCEPTED"),
+            ("test-only", "ci-accepted"),
+            ("test_", "ci_"),
+            ("test-", "ci-"),
+            ("test:", "ci:"),
+            ("TEST_", "CI_"),
+            ("TEST-", "CI-"),
+            ("TEST:", "CI:"),
+        )
+        for source, replacement in replacements:
+            value = value.replace(source, replacement)
+        return value
+
+    def accepted_value(value: Any) -> Any:
+        if isinstance(value, str):
+            return accepted_string(value)
+        if isinstance(value, list):
+            return [accepted_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: accepted_value(item) for key, item in value.items()}
+        return value
+
+    operations = read_operations_document_from_design_review_bundle(review_bundle)
+    test_document = json.loads(_test_only_profile(operations))
+    payload = accepted_value(test_document["payload"])
+    assert isinstance(payload, dict)
+    payload["profile_class"] = SERVER_OWNED_PRODUCTION_PROFILE
+    payload["acceptance"] = {
+        "evidence_id": "ci-accepted-workshop-profile",
+        "evidence_sha256": hashlib.sha256(b"ci accepted workshop profile evidence").hexdigest(),
+        "evidence_version": "ci-v1",
+        "status": WORKSHOP_ACCEPTED_STATUS,
+    }
+    machine = payload["machine"]
+    assert isinstance(machine, dict)
+    machine["postprocessor_profile_sha256"] = hashlib.sha256(
+        canonical_json_bytes(payload["postprocessor_profile"])
+    ).hexdigest()
+    profile = canonical_json_bytes(
+        {
+            "payload": payload,
+            "payload_sha256": hashlib.sha256(canonical_json_bytes(payload)).hexdigest(),
+            "schema_version": "custombuild.production-machine-profile.v1",
+        }
+    )
+    load_production_machine_profile(profile)
+    return profile
 
 
 def valid_workspace_intent(**overrides: object) -> dict[str, object]:
@@ -593,8 +731,9 @@ def test_external_evidence_is_server_hashed_and_bound_to_exact_design(
 
 @pytest.mark.integration
 @pytest.mark.cad
-def test_signed_retention_preview_create_generation_download_and_revocation_are_bound_end_to_end(
+def test_signed_retention_executable_cam_release_and_historical_download_are_bound_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
 ) -> None:
     object_storage = _MultiObjectImmutableStorage()
     monkeypatch.setattr(worker_tasks, "SessionFactory", get_session_factory())
@@ -669,9 +808,21 @@ def test_signed_retention_preview_create_generation_download_and_revocation_are_
     production_context = structured_workshop_context()
     profiles = production_context["stock_profiles"]
     assert isinstance(profiles, list)
+    for profile in profiles:
+        assert isinstance(profile, dict)
+        profile["trim_margin_um"] = 25_000
+        profile["kerf_um"] = 8_000
     back_profile = profiles[1]
     assert isinstance(back_profile, dict)
     back_profile["thickness_um"] = 5_800
+    registrations = production_context["two_sided_registrations"]
+    assert isinstance(registrations, list)
+    registration = registrations[0]
+    assert isinstance(registration, dict)
+    registration["pins"] = [
+        {"x_um": 5_000, "y_um": 5_000},
+        {"x_um": 2_435_000, "y_um": 5_000},
+    ]
 
     with TestClient(app) as client:
         project = client.post(
@@ -1004,6 +1155,138 @@ def test_signed_retention_preview_create_generation_download_and_revocation_are_
             assert frozen_spec["spec"]["parameters"]["edge_band_thickness_um"] == 1_200
             assert archive.read(JOINT_RETENTION_SIGNED_EVIDENCE_PATH) == evidence_bytes
 
+        production_profile_bytes = _accepted_production_profile_for_review_bundle(
+            downloaded["production_bundle"]
+        )
+        loaded_production_profile = load_production_machine_profile(production_profile_bytes)
+        production_profile_sha256 = hashlib.sha256(production_profile_bytes).hexdigest()
+        producer_build = {
+            "app_version": "1.0.0",
+            "vcs_ref": "1" * 40,
+            "source_manifest_sha256": hashlib.sha256(
+                b"api-worker-cam-e2e-source-manifest"
+            ).hexdigest(),
+            "dependency_lock_sha256": hashlib.sha256(
+                b"api-worker-cam-e2e-dependency-lock"
+            ).hexdigest(),
+        }
+        api_settings = get_settings()
+        monkeypatch.setattr(api_settings, "production_cam_profile_path", "")
+        monkeypatch.setattr(
+            api_settings,
+            "production_cam_profile_json",
+            production_profile_bytes.decode("utf-8"),
+        )
+        monkeypatch.setattr(
+            api_settings,
+            "production_cam_profile_sha256",
+            production_profile_sha256,
+        )
+        for field, value in producer_build.items():
+            monkeypatch.setattr(api_settings, field, value)
+        monkeypatch.setattr(
+            worker_tasks,
+            "WORKER_SETTINGS",
+            worker_tasks.WORKER_SETTINGS.model_copy(
+                update={
+                    **producer_build,
+                    "app_env": "test",
+                    "joint_retention_trust_registry_json": registry_json,
+                    "production_cam_profile_path": "",
+                    "production_cam_profile_json": production_profile_bytes.decode("utf-8"),
+                    "production_cam_profile_sha256": production_profile_sha256,
+                }
+            ),
+        )
+
+        candidate_queued = client.post(
+            f"{base}/generate",
+            headers=HEADERS,
+            json={**production_context, "include_cutting_candidate": True},
+        )
+        assert candidate_queued.status_code == 202, candidate_queued.text
+        candidate_result = worker_tasks.generate_package.run(
+            job_id=candidate_queued.json()["id"],
+            organization_id=DEV_ORG_NORDIC,
+        )
+        candidate_receipt = candidate_result["cam_candidate"]
+        assert candidate_result["machine_program_mode"] == "EXECUTABLE_CAM_CANDIDATE"
+        assert candidate_result["production_machine_program"] is True
+        assert candidate_receipt["schema_version"] == "custombuild.cam-candidate-result.v2"
+        assert candidate_receipt["physical_cutting_authorized"] is False
+        assert candidate_receipt["workshop_acceptance_required"] is True
+        assert candidate_receipt["production_profile_job_binding"] == (
+            production_machine_profile_job_binding(loaded_production_profile)
+        )
+
+        candidate_listing = client.get(
+            f"/v1/jobs/{candidate_queued.json()['id']}/artifacts",
+            headers=HEADERS,
+        )
+        assert candidate_listing.status_code == 200, candidate_listing.text
+        candidate_artifacts = {item["kind"]: item for item in candidate_listing.json()}
+        assert {
+            "production_bundle",
+            "operations",
+            "cam_candidate_bundle",
+            "cutting_toolpaths",
+            "machine_program_index",
+            "cutting_program_validation_report",
+            "cutting_backplot",
+            "production_machine_profile",
+            "machine_program_001",
+        } <= set(candidate_artifacts)
+
+        downloaded = {}
+        with get_session_factory()() as session:
+            persisted_candidate_job = session.get(
+                GenerationJob,
+                candidate_queued.json()["id"],
+            )
+            assert persisted_candidate_job is not None
+            assert persisted_candidate_job.status is JobStatus.succeeded
+            assert (
+                persisted_candidate_job.request_json["production_machine_profile"]
+                == (candidate_receipt["production_profile_job_binding"])
+            )
+            expected_producer_build = producer_build_identity_from_engine_context(
+                persisted_candidate_job.production_engine_context_json
+            )
+            for kind in (
+                "production_bundle",
+                "operations",
+                "cam_candidate_bundle",
+                "machine_program_001",
+            ):
+                row = session.get(Artifact, candidate_artifacts[kind]["id"])
+                assert row is not None
+                stored_payload = object_storage.objects[row.object_key][0]
+                assert len(stored_payload) == row.size_bytes
+                assert hashlib.sha256(stored_payload).hexdigest() == row.sha256
+                downloaded[kind] = stored_payload
+
+        candidate_zip = downloaded["cam_candidate_bundle"]
+        assert hashlib.sha256(candidate_zip).hexdigest() == candidate_receipt["bundle_sha256"]
+        assert len(candidate_zip) == candidate_receipt["bundle_size_bytes"]
+        candidate_manifest = read_and_verify_cam_candidate_package(
+            candidate_zip,
+            base_design_review_bundle=downloaded["production_bundle"],
+            expected_producer_source_manifest_sha256=(
+                expected_producer_build.source_manifest_sha256
+            ),
+        )
+        assert candidate_manifest["software_provenance"] == candidate_receipt["software_provenance"]
+        assert (
+            validate_cam_software_provenance(
+                candidate_receipt["software_provenance"],
+                expected_producer_build=expected_producer_build,
+            )
+            == expected_producer_build
+        )
+        queued = candidate_queued
+        result = candidate_result
+        artifacts = candidate_artifacts
+
         cam_approved = client.post(
             f"{base}/approve",
             headers=HEADERS,
@@ -1014,13 +1297,90 @@ def test_signed_retention_preview_create_generation_download_and_revocation_are_
             },
         )
         assert cam_approved.status_code == 200, cam_approved.text
+        with get_session_factory()() as session:
+            persisted_cam_approval = session.scalar(
+                select(Approval).where(
+                    Approval.design_version_id == version.json()["id"],
+                    Approval.approval_type == "cam",
+                )
+            )
+            assert persisted_cam_approval is not None
+            cam_approval_id = persisted_cam_approval.id
+            cam_production_context_hash = persisted_cam_approval.production_context_hash
+            expected_cam_approval_snapshot = api_module._cam_approval_release_snapshot(
+                persisted_cam_approval
+            )
+            assert persisted_cam_approval.generation_job_id == queued.json()["id"]
+            assert (
+                persisted_cam_approval.cam_candidate_bundle_sha256
+                == (candidate_receipt["bundle_sha256"])
+            )
         released = client.post(
             f"{base}/release",
             headers=HEADERS,
             json={"release_number": "SIGNED-RETENTION-R1", "confirmation": "RELEASE"},
         )
         assert released.status_code == 200, released.text
-        release_id = released.json()["release_id"]
+        release_receipt = released.json()
+        release_id = release_receipt["release_id"]
+        assert release_receipt["release_kind"] == "executable_cam"
+        assert release_receipt["machine_use"] == "executable_cam_candidate"
+        assert release_receipt["physical_cutting_authorized"] is False
+        assert release_receipt["design_review_bundle"] == {
+            "bundle_sha256": candidate_receipt["base_design_review_bundle_sha256"],
+            "manifest_sha256": result["manifest_sha256"],
+        }
+        executable_receipt = release_receipt["executable_cam"]
+        assert executable_receipt == {
+            "candidate_bundle_sha256": candidate_receipt["bundle_sha256"],
+            "candidate_manifest_sha256": candidate_receipt["manifest_sha256"],
+            "production_profile_document_sha256": candidate_receipt[
+                "production_machine_profile_sha256"
+            ],
+            "production_profile_payload_sha256": candidate_receipt[
+                "production_profile_payload_sha256"
+            ],
+            "program_inventory_sha256": artifacts["machine_program_index"]["sha256"],
+            "cam_approval": executable_receipt["cam_approval"],
+            "workshop_acceptance_required": True,
+        }
+        approval_receipt = executable_receipt["cam_approval"]
+        assert approval_receipt == expected_cam_approval_snapshot
+        assert approval_receipt["production_context_hash"] == cam_production_context_hash
+        with get_session_factory()() as session:
+            persisted_release = session.get(Release, release_id)
+            assert persisted_release is not None
+            assert persisted_release.generation_job_id == queued.json()["id"]
+            assert persisted_release.cam_approval_id == cam_approval_id
+            assert (
+                persisted_release.cam_approval_binding_sha256
+                == expected_cam_approval_snapshot["binding_sha256"]
+            )
+            assert persisted_release.cam_approval_snapshot_json == (expected_cam_approval_snapshot)
+            assert (
+                persisted_release.generation_result_json["cam_candidate"]["bundle_sha256"]
+                == candidate_receipt["bundle_sha256"]
+            )
+            frozen_candidate = next(
+                item
+                for item in persisted_release.artifact_inventory_json
+                if item["kind"] == "cam_candidate_bundle"
+            )
+            assert frozen_candidate["sha256"] == candidate_receipt["bundle_sha256"]
+
+        with get_session_factory().begin() as session:
+            live_approval = session.get(Approval, cam_approval_id)
+            assert live_approval is not None
+            live_approval.reason = "Mutated live reason must not rewrite historical receipt"
+        restored_after_live_mutation = client.get(
+            f"/v1/projects/{project['id']}/production-state",
+            headers=HEADERS,
+        )
+        assert restored_after_live_mutation.status_code == 200
+        assert (
+            restored_after_live_mutation.json()["release"]["executable_cam"]["cam_approval"]
+            == expected_cam_approval_snapshot
+        )
 
         changed_spec = spec | {"width_mm": 710}
         second = client.post(
@@ -1041,13 +1401,27 @@ def test_signed_retention_preview_create_generation_download_and_revocation_are_
             headers=HEADERS,
         )
         assert historical_listing.status_code == 200, historical_listing.text
-        historical_bundle = next(
-            item for item in historical_listing.json() if item["kind"] == "production_bundle"
+        historical_artifacts = {item["kind"]: item for item in historical_listing.json()}
+        historical_bundle = historical_artifacts["production_bundle"]
+        historical_operations = historical_artifacts["operations"]
+        historical_candidate = historical_artifacts["cam_candidate_bundle"]
+        historical_program = historical_artifacts["machine_program_001"]
+        assert historical_candidate["sha256"] == candidate_receipt["bundle_sha256"]
+        assert historical_candidate["size_bytes"] == len(candidate_zip)
+        assert (
+            historical_program["sha256"]
+            == hashlib.sha256(downloaded["machine_program_001"]).hexdigest()
         )
-        historical_operations = next(
-            item for item in historical_listing.json() if item["kind"] == "operations"
-        )
+        assert historical_program["size_bytes"] == len(downloaded["machine_program_001"])
         for denied_headers in (designer_headers, viewer_headers):
+            restricted_listing = client.get(
+                f"/v1/releases/{release_id}/artifacts",
+                headers=denied_headers,
+            )
+            assert restricted_listing.status_code == 200, restricted_listing.text
+            restricted_kinds = {item["kind"] for item in restricted_listing.json()}
+            assert "cam_candidate_bundle" not in restricted_kinds
+            assert "machine_program_001" not in restricted_kinds
             denied_historical_bundle = client.get(
                 historical_bundle["download_path"],
                 headers=denied_headers,
@@ -1056,12 +1430,56 @@ def test_signed_retention_preview_create_generation_download_and_revocation_are_
             assert denied_historical_bundle.json()["detail"] == (
                 "Capability joint_retention_evidence_download required"
             )
+            for executable in (historical_candidate, historical_program):
+                denied_executable = client.get(
+                    executable["download_path"],
+                    headers=denied_headers,
+                )
+                assert denied_executable.status_code == 403
+                assert denied_executable.json()["detail"] == (
+                    "Capability executable_cam_download required"
+                )
+        operator_historical_listing = client.get(
+            f"/v1/releases/{release_id}/artifacts",
+            headers=operator_headers,
+        )
+        assert operator_historical_listing.status_code == 200
+        assert {
+            "cam_candidate_bundle",
+            "machine_program_001",
+        } <= {item["kind"] for item in operator_historical_listing.json()}
         operator_historical_bundle = client.get(
             historical_bundle["download_path"],
             headers=operator_headers,
         )
         assert operator_historical_bundle.status_code == 200
         assert operator_historical_bundle.content == downloaded["production_bundle"]
+        operator_historical_candidate = client.get(
+            historical_candidate["download_path"],
+            headers=operator_headers,
+        )
+        assert operator_historical_candidate.status_code == 200
+        assert operator_historical_candidate.content == candidate_zip
+        assert (
+            hashlib.sha256(operator_historical_candidate.content).hexdigest()
+            == (candidate_receipt["bundle_sha256"])
+        )
+        assert (
+            read_and_verify_cam_candidate_package(
+                operator_historical_candidate.content,
+                base_design_review_bundle=downloaded["production_bundle"],
+                expected_producer_source_manifest_sha256=(
+                    expected_producer_build.source_manifest_sha256
+                ),
+            )["software_provenance"]
+            == candidate_manifest["software_provenance"]
+        )
+        operator_historical_program = client.get(
+            historical_program["download_path"],
+            headers=operator_headers,
+        )
+        assert operator_historical_program.status_code == 200
+        assert operator_historical_program.content == downloaded["machine_program_001"]
         designer_historical_operations = client.get(
             historical_operations["download_path"],
             headers=designer_headers,
@@ -3479,6 +3897,121 @@ def test_generation_requires_explicit_design_approval_for_reviewed_design() -> N
         assert queued.json()["status"] == "queued"
 
 
+def test_cutting_candidate_opt_in_requires_server_profile_and_freezes_only_its_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[object, bool]] = []
+
+    def unavailable_profile(source: object, *, allow_test_only: bool = False) -> object:
+        calls.append((source, allow_test_only))
+        raise api_module.ProductionMachineProfileError("not configured")
+
+    monkeypatch.setattr(api_module, "load_production_machine_profile", unavailable_profile)
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects", headers=HEADERS, json={"name": "CAM profile binding fixture"}
+        ).json()
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"]),
+        ).json()
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+
+        unavailable = client.post(
+            f"{base}/generate",
+            headers=HEADERS,
+            json={"include_cutting_candidate": True},
+        )
+        assert unavailable.status_code == 409
+        assert unavailable.json()["detail"].startswith("PRODUCTION_CAM_PROFILE_UNAVAILABLE")
+
+        resolved = api_module.resolve_production_components(
+            machine_profile_id="custombuild-router-1325-linuxcnc",
+            postprocessor_id="linuxcnc-validation-1.1.0",
+            **get_settings().build_identity,
+        )
+        source_context = SimpleNamespace(
+            source_machine_profile_id=resolved.machine.profile_id,
+            source_machine_profile_version=resolved.machine.version,
+            source_machine_profile_fingerprint=hashlib.sha256(
+                canonical_json_bytes(resolved.machine)
+            ).hexdigest(),
+        )
+        loaded = SimpleNamespace(execution_context=source_context)
+        receipt = {
+            "schema_version": "custombuild.production-machine-profile.v1",
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "document_sha256": "e" * 64,
+            "payload_sha256": "a" * 64,
+            "execution_context_sha256": "b" * 64,
+            "acceptance": {
+                "status": "WORKSHOP_ACCEPTED",
+                "evidence_id": "shop-profile-acceptance",
+                "evidence_version": "1.0.0",
+                "evidence_sha256": "c" * 64,
+            },
+            "postprocessor_profile": {
+                "profile_id": "shop-router-linuxcnc",
+                "version": "1.0.0",
+                "config_sha256": "d" * 64,
+            },
+        }
+
+        def exact_profile(source: object, *, allow_test_only: bool = False) -> object:
+            calls.append((source, allow_test_only))
+            return loaded
+
+        monkeypatch.setattr(api_module, "load_production_machine_profile", exact_profile)
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda value: receipt if value is loaded else None,
+        )
+        queued = client.post(
+            f"{base}/generate",
+            headers=HEADERS,
+            json={"include_cutting_candidate": True},
+        )
+
+    assert queued.status_code == 202, queued.text
+    with get_session_factory()() as session:
+        job = session.get(GenerationJob, queued.json()["id"])
+        assert job is not None
+        assert job.request_json["include_cutting_candidate"] is True
+        assert job.request_json["include_validation_program"] is True
+        assert job.request_json["production_machine_profile"] == receipt
+        assert "canonical_document_json" not in job.request_json
+    assert calls == [("", True), ("", True)]
+
+
+def test_client_cannot_supply_a_production_machine_profile_in_generation_request() -> None:
+    with TestClient(app) as client:
+        project = client.post(
+            "/v1/projects", headers=HEADERS, json={"name": "Client profile injection fixture"}
+        ).json()
+        version = client.post(
+            f"/v1/projects/{project['id']}/versions",
+            headers=HEADERS,
+            json=version_payload(project["id"]),
+        ).json()
+        base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
+        assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
+        approve_design(client, base)
+        response = client.post(
+            f"{base}/generate",
+            headers=HEADERS,
+            json={
+                "include_cutting_candidate": True,
+                "production_machine_profile": {"attacker": "override"},
+            },
+        )
+
+    assert response.status_code == 422
+
+
 def test_generation_rejects_stock_or_machine_choices_not_frozen_on_revision() -> None:
     frozen = valid_production_context(
         stock_width_mm=5000,
@@ -4367,6 +4900,106 @@ def test_release_bundle_identity_requires_matching_frozen_zip_inventory() -> Non
         api_module._release_bundle_sha256(release)
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail == "Released package failed immutable integrity verification"
+
+
+def test_executable_release_receipt_binds_candidate_profile_programs_and_cam_approval() -> None:
+    approval_id = "11111111-1111-4111-8111-111111111111"
+    job_id = "22222222-2222-4222-8222-222222222222"
+    review_bundle_sha = "1" * 64
+    review_manifest_sha = "2" * 64
+    candidate_bundle_sha = "3" * 64
+    candidate_manifest_sha = "4" * 64
+    profile_document_sha = "5" * 64
+    profile_payload_sha = "6" * 64
+    program_inventory_sha = "7" * 64
+    context_hash = "8" * 64
+    organization_id = "44444444-4444-4444-8444-444444444444"
+    design_version_id = "55555555-5555-4555-8555-555555555555"
+    approval = SimpleNamespace(
+        id=approval_id,
+        organization_id=organization_id,
+        design_version_id=design_version_id,
+        approval_type="cam",
+        approved_by="66666666-6666-4666-8666-666666666666",
+        reason="Exact executable candidate reviewed",
+        generation_job_id=job_id,
+        production_context_hash=context_hash,
+        manifest_sha256=review_manifest_sha,
+        cam_candidate_bundle_sha256=candidate_bundle_sha,
+        overrides_json=[],
+        created_at=datetime(2026, 9, 1, 10, 30, tzinfo=UTC),
+        updated_at=datetime(2026, 9, 1, 10, 30, tzinfo=UTC),
+    )
+    approval_snapshot = api_module._cam_approval_release_snapshot(approval)
+    release = SimpleNamespace(
+        id="33333333-3333-4333-8333-333333333333",
+        organization_id=organization_id,
+        design_version_id=design_version_id,
+        release_number="R1",
+        generation_job_id=job_id,
+        cam_approval_id=approval_id,
+        cam_approval_binding_sha256=approval_snapshot["binding_sha256"],
+        cam_approval_snapshot_json=approval_snapshot,
+        manifest_sha256=review_manifest_sha,
+        production_context_hash=context_hash,
+        generation_result_json={
+            "bundle_sha256": review_bundle_sha,
+            "cam_candidate": {
+                "base_design_review_bundle_sha256": review_bundle_sha,
+                "bundle_sha256": candidate_bundle_sha,
+                "manifest_sha256": candidate_manifest_sha,
+                "production_machine_profile_sha256": profile_document_sha,
+                "production_profile_payload_sha256": profile_payload_sha,
+                "workshop_acceptance_required": True,
+                "physical_cutting_authorized": False,
+            },
+        },
+        artifact_inventory_json=[
+            {
+                "kind": "production_bundle",
+                "sha256": review_bundle_sha,
+                "content_type": "application/zip",
+            },
+            {
+                "kind": "cam_candidate_bundle",
+                "sha256": candidate_bundle_sha,
+                "content_type": "application/zip",
+            },
+            {
+                "kind": "production_machine_profile",
+                "sha256": profile_document_sha,
+                "content_type": "application/json",
+            },
+            {
+                "kind": "machine_program_index",
+                "sha256": program_inventory_sha,
+                "content_type": "application/json",
+            },
+        ],
+    )
+    receipt = api_module._release_read_payload(release)
+
+    assert receipt["release_kind"] == "executable_cam"
+    assert receipt["design_review_bundle"] == {
+        "bundle_sha256": review_bundle_sha,
+        "manifest_sha256": review_manifest_sha,
+    }
+    assert receipt["executable_cam"]["program_inventory_sha256"] == program_inventory_sha
+    assert receipt["executable_cam"]["production_profile_document_sha256"] == (profile_document_sha)
+    assert receipt["executable_cam"]["production_profile_payload_sha256"] == profile_payload_sha
+    assert receipt["executable_cam"]["cam_approval"]["approval_id"] == approval_id
+    assert receipt["executable_cam"]["cam_approval"]["approved_by"] == approval.approved_by
+    assert receipt["executable_cam"]["cam_approval"]["reason"] == approval.reason
+    assert receipt["physical_cutting_authorized"] is False
+
+    approval.reason = "Tampered live approval that must not alter the frozen receipt"
+    assert api_module._release_read_payload(release) == receipt
+
+    release.cam_approval_snapshot_json = deepcopy(approval_snapshot)
+    release.cam_approval_snapshot_json["reason"] = "Tampered frozen receipt"
+    with pytest.raises(HTTPException) as exc_info:
+        api_module._release_read_payload(release)
+    assert exc_info.value.status_code == 409
 
 
 def _manifest_document_for_job(
@@ -12072,3 +12705,956 @@ def test_public_custom_shelving_reaches_verified_supplier_review_package(
         assert rejected_cam.json()["detail"]["code"] == (
             DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
         )
+
+
+def test_current_executable_cam_artifacts_are_reviewer_only_before_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A same-tenant signed URL must not bypass review-versus-workshop separation."""
+
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name=f"Executable CAM capability boundary {uuid4()}",
+        )
+        candidate_payload = b"verified-executable-cam-candidate"
+        candidate_digest = hashlib.sha256(candidate_payload).hexdigest()
+        with get_session_factory().begin() as session:
+            ordinary = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == generated["id"],
+                    Artifact.kind == "manifest",
+                )
+            )
+            assert ordinary is not None
+            candidate = Artifact(
+                organization_id=DEV_ORG_NORDIC,
+                generation_job_id=generated["id"],
+                kind="cam_candidate_bundle",
+                object_key=ordinary.object_key,
+                sha256=candidate_digest,
+                size_bytes=len(candidate_payload),
+                content_type="application/zip",
+            )
+            session.add(candidate)
+            session.flush()
+            candidate_id = candidate.id
+
+        monkeypatch.setattr(api_module, "_require_review_evidence", lambda *_args, **_kw: None)
+
+        def prepared(
+            _session: Session,
+            _organization_id: str,
+            _job: GenerationJob,
+            _version: DesignVersion,
+            kind: str,
+        ) -> _SimulatedVerifiedDownload:
+            with get_session_factory()() as lookup:
+                artifact = lookup.scalar(
+                    select(Artifact).where(
+                        Artifact.generation_job_id == generated["id"],
+                        Artifact.kind == kind,
+                    )
+                )
+                assert artifact is not None
+                expectation = storage_module.StoredObjectExpectation(
+                    object_key=artifact.object_key,
+                    sha256=artifact.sha256,
+                    size_bytes=artifact.size_bytes,
+                    content_type=artifact.content_type,
+                )
+            payload = (
+                candidate_payload
+                if kind == "cam_candidate_bundle"
+                else b"x" * expectation.size_bytes
+            )
+            return _SimulatedVerifiedDownload(expectation, payload)
+
+        monkeypatch.setattr(api_module, "_prepare_review_artifact_download", prepared)
+        monkeypatch.setattr(
+            api_module,
+            "_require_promotable_cam_candidate_profile",
+            lambda *_args: None,
+        )
+        viewer_headers = _provision_download_role(monkeypatch, Role.viewer)
+        designer_headers = _provision_download_role(monkeypatch, Role.designer)
+        operator_headers = _provision_download_role(monkeypatch, Role.operator)
+        production_headers = _provision_download_role(monkeypatch, Role.production)
+        reviewer_headers = _provision_download_role(monkeypatch, Role.reviewer)
+
+        owner_listing = client.get(
+            f"/v1/jobs/{generated['id']}/artifacts",
+            headers=HEADERS,
+        )
+        assert owner_listing.status_code == 200
+        owner_artifacts = {item["kind"]: item for item in owner_listing.json()}
+        assert "cam_candidate_bundle" in owner_artifacts
+
+        for restricted_headers in (viewer_headers, designer_headers):
+            restricted_listing = client.get(
+                f"/v1/jobs/{generated['id']}/artifacts",
+                headers=restricted_headers,
+            )
+            assert restricted_listing.status_code == 200
+            restricted_artifacts = {item["kind"]: item for item in restricted_listing.json()}
+            assert "manifest" in restricted_artifacts
+            assert "cam_candidate_bundle" not in restricted_artifacts
+
+            stolen_url = owner_artifacts["cam_candidate_bundle"]["download_path"]
+            denied = client.get(stolen_url, headers=restricted_headers)
+            assert denied.status_code == 403
+            assert denied.json()["detail"] == ("Capability executable_cam_download required")
+
+        for workshop_headers in (operator_headers, production_headers):
+            workshop_listing = client.get(
+                f"/v1/jobs/{generated['id']}/artifacts",
+                headers=workshop_headers,
+            )
+            assert workshop_listing.status_code == 200
+            assert "cam_candidate_bundle" not in {item["kind"] for item in workshop_listing.json()}
+            stolen_url = owner_artifacts["cam_candidate_bundle"]["download_path"]
+            denied = client.get(stolen_url, headers=workshop_headers)
+            assert denied.status_code == 403
+            assert denied.json()["detail"] == (
+                "Capability review required for current executable CAM review artifacts"
+            )
+
+        reviewer_listing = client.get(
+            f"/v1/jobs/{generated['id']}/artifacts",
+            headers=reviewer_headers,
+        )
+        reviewer_artifacts = {item["kind"]: item for item in reviewer_listing.json()}
+        assert "cam_candidate_bundle" in reviewer_artifacts
+        reviewer_download = client.get(
+            owner_artifacts["cam_candidate_bundle"]["download_path"],
+            headers=reviewer_headers,
+        )
+        assert reviewer_download.status_code == 200
+        assert reviewer_download.content == candidate_payload
+        assert candidate_id == owner_artifacts["cam_candidate_bundle"]["id"]
+
+
+def test_current_cam_listing_rechecks_profile_after_evidence_io(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name=f"Current CAM listing profile rotation {uuid4()}",
+        )
+        profile_a = {
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "acceptance": {"status": "WORKSHOP_ACCEPTED"},
+            "document_sha256": "a" * 64,
+        }
+        profile_b = deepcopy(profile_a)
+        profile_b["document_sha256"] = "b" * 64
+        candidate_payload = b"current-listing-profile-bound-candidate"
+        candidate_digest = hashlib.sha256(candidate_payload).hexdigest()
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            ordinary = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == generated["id"],
+                    Artifact.kind == "manifest",
+                )
+            )
+            assert ordinary is not None
+            ordinary_key = ordinary.object_key
+            request_json = deepcopy(job.request_json)
+            request_json["include_cutting_candidate"] = True
+            request_json["production_machine_profile"] = deepcopy(profile_a)
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": candidate_digest,
+                "production_profile_job_binding": deepcopy(profile_a),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+            session.add(
+                Artifact(
+                    organization_id=DEV_ORG_NORDIC,
+                    generation_job_id=generated["id"],
+                    kind="cam_candidate_bundle",
+                    object_key=ordinary_key,
+                    sha256=candidate_digest,
+                    size_bytes=len(candidate_payload),
+                    content_type="application/zip",
+                )
+            )
+
+        active_profile = {"binding": profile_a}
+        monkeypatch.setattr(api_module, "_require_current_generation_context", lambda *_args: None)
+        monkeypatch.setattr(
+            api_module,
+            "load_production_machine_profile",
+            lambda source, *, allow_test_only: object(),
+        )
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda profile: deepcopy(active_profile["binding"]),
+        )
+
+        def rotate_profile_during_evidence_io(*_args: Any, **_kwargs: Any) -> None:
+            active_profile["binding"] = profile_b
+
+        monkeypatch.setattr(
+            api_module,
+            "_require_review_evidence",
+            rotate_profile_during_evidence_io,
+        )
+        rejected = client.get(
+            f"/v1/jobs/{generated['id']}/artifacts",
+            headers=HEADERS,
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == (
+            "CAM candidate uses a stale production machine profile; "
+            "generate and review a new cutting candidate"
+        )
+
+
+def test_current_cam_download_rechecks_profile_after_object_store_io(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        _version, generated, _base = _create_strict_review_job(
+            client,
+            name=f"Current CAM download profile rotation {uuid4()}",
+        )
+        profile_a = {
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "acceptance": {"status": "WORKSHOP_ACCEPTED"},
+            "document_sha256": "a" * 64,
+        }
+        profile_b = deepcopy(profile_a)
+        profile_b["document_sha256"] = "b" * 64
+        candidate_payload = b"current-download-profile-bound-candidate"
+        candidate_digest = hashlib.sha256(candidate_payload).hexdigest()
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            ordinary = session.scalar(
+                select(Artifact).where(
+                    Artifact.generation_job_id == generated["id"],
+                    Artifact.kind == "manifest",
+                )
+            )
+            assert ordinary is not None
+            ordinary_key = ordinary.object_key
+            request_json = deepcopy(job.request_json)
+            request_json["include_cutting_candidate"] = True
+            request_json["production_machine_profile"] = deepcopy(profile_a)
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": candidate_digest,
+                "production_profile_job_binding": deepcopy(profile_a),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+            candidate = Artifact(
+                organization_id=DEV_ORG_NORDIC,
+                generation_job_id=generated["id"],
+                kind="cam_candidate_bundle",
+                object_key=ordinary_key,
+                sha256=candidate_digest,
+                size_bytes=len(candidate_payload),
+                content_type="application/zip",
+            )
+            session.add(candidate)
+            session.flush()
+            candidate_id = candidate.id
+
+        active_profile = {"binding": profile_a}
+        monkeypatch.setattr(api_module, "_require_current_generation_context", lambda *_args: None)
+        monkeypatch.setattr(
+            api_module,
+            "load_production_machine_profile",
+            lambda source, *, allow_test_only: object(),
+        )
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda profile: deepcopy(active_profile["binding"]),
+        )
+        expectation = storage_module.StoredObjectExpectation(
+            object_key=ordinary_key,
+            sha256=candidate_digest,
+            size_bytes=len(candidate_payload),
+            content_type="application/zip",
+        )
+        verified = _SimulatedVerifiedDownload(expectation, candidate_payload)
+
+        def rotate_profile_during_object_store_io(*_args: Any, **_kwargs: Any) -> Any:
+            active_profile["binding"] = profile_b
+            return verified
+
+        monkeypatch.setattr(
+            api_module,
+            "_prepare_review_artifact_download",
+            rotate_profile_during_object_store_io,
+        )
+        expires = int(datetime.now(UTC).timestamp()) + 60
+        signature = api_module.sign_artifact_access(
+            candidate_id,
+            DEV_ORG_NORDIC,
+            expires,
+        )
+        rejected = client.get(
+            f"/v1/artifacts/{candidate_id}/download?expires={expires}&signature={signature}",
+            headers=HEADERS,
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == (
+            "CAM candidate uses a stale production machine profile; "
+            "generate and review a new cutting candidate"
+        )
+        assert verified.closed is True
+        assert verified.close_calls == 1
+
+
+def test_historical_executable_cam_paths_apply_the_same_capability_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release_id = str(uuid4())
+    design_artifact = SimpleNamespace(
+        id=str(uuid4()),
+        kind="manifest",
+        sha256="a" * 64,
+        size_bytes=8,
+        content_type="application/json",
+        object_key="release/design-manifest",
+    )
+    candidate_payload = b"historical-candidate"
+    candidate_artifact = SimpleNamespace(
+        id=str(uuid4()),
+        kind="machine_program_001",
+        sha256=hashlib.sha256(candidate_payload).hexdigest(),
+        size_bytes=len(candidate_payload),
+        content_type="text/x-gcode",
+        object_key="release/program-001",
+    )
+    archive = SimpleNamespace(
+        release=SimpleNamespace(
+            id=release_id,
+            release_number="CAM-R1",
+        ),
+        version=SimpleNamespace(
+            revision=1,
+            project_id=str(uuid4()),
+            spec_json={},
+        ),
+        artifacts=(design_artifact, candidate_artifact),
+    )
+    monkeypatch.setattr(api_module, "_resolve_release_archive", lambda *_args: archive)
+    monkeypatch.setattr(api_module, "_verify_release_archive_owned", lambda *_args: archive)
+
+    def prepared(
+        _session: Session,
+        _organization_id: str,
+        observed_archive: Any,
+        artifact: Any,
+    ) -> tuple[Any, _SimulatedVerifiedDownload]:
+        expectation = storage_module.StoredObjectExpectation(
+            object_key=artifact.object_key,
+            sha256=artifact.sha256,
+            size_bytes=artifact.size_bytes,
+            content_type=artifact.content_type,
+        )
+        payload = candidate_payload if artifact.kind == "machine_program_001" else b"{}      "
+        return observed_archive, _SimulatedVerifiedDownload(expectation, payload)
+
+    monkeypatch.setattr(api_module, "_prepare_release_artifact_download", prepared)
+    with TestClient(app) as client:
+        viewer_headers = _provision_download_role(monkeypatch, Role.viewer)
+        operator_headers = _provision_download_role(monkeypatch, Role.operator)
+        owner_listing = client.get(
+            f"/v1/releases/{release_id}/artifacts",
+            headers=HEADERS,
+        )
+        assert owner_listing.status_code == 200
+        owner_artifacts = {item["kind"]: item for item in owner_listing.json()}
+        candidate_url = owner_artifacts["machine_program_001"]["download_path"]
+
+        viewer_listing = client.get(
+            f"/v1/releases/{release_id}/artifacts",
+            headers=viewer_headers,
+        )
+        assert {item["kind"] for item in viewer_listing.json()} == {"manifest"}
+        denied = client.get(candidate_url, headers=viewer_headers)
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == ("Capability executable_cam_download required")
+
+        operator_listing = client.get(
+            f"/v1/releases/{release_id}/artifacts",
+            headers=operator_headers,
+        )
+        assert {item["kind"] for item in operator_listing.json()} == {
+            "manifest",
+            "machine_program_001",
+        }
+        allowed = client.get(candidate_url, headers=operator_headers)
+        assert allowed.status_code == 200
+        assert allowed.content == candidate_payload
+
+
+def test_cam_approval_persists_and_rechecks_the_exact_candidate_bundle_digest(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"CAM approval candidate digest {uuid4()}",
+        )
+        profile_binding = {
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "acceptance": {"status": "WORKSHOP_ACCEPTED"},
+        }
+        approved_digest = "c" * 64
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            request_json = deepcopy(job.request_json)
+            request_json["production_machine_profile"] = deepcopy(profile_binding)
+            request_json["include_cutting_candidate"] = True
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": approved_digest,
+                "production_profile_job_binding": deepcopy(profile_binding),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+
+        monkeypatch.setattr(api_module, "_require_current_generation_context", lambda *_args: None)
+        monkeypatch.setattr(api_module, "_require_review_evidence", lambda *_args, **_kw: None)
+        current_profile = object()
+        monkeypatch.setattr(
+            api_module,
+            "load_production_machine_profile",
+            lambda source, *, allow_test_only: current_profile,
+        )
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda profile: deepcopy(profile_binding),
+        )
+        approved = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Exact executable CAM candidate reviewed",
+                "generation_job_id": generated["id"],
+            },
+        )
+        assert approved.status_code == 200, approved.text
+
+        with get_session_factory()() as session:
+            approval = session.scalar(
+                select(Approval).where(
+                    Approval.design_version_id == version["id"],
+                    Approval.approval_type == "cam",
+                )
+            )
+            audit_event = session.scalar(
+                select(AuditEvent)
+                .where(
+                    AuditEvent.entity_id == version["id"],
+                    AuditEvent.action == "design_version.approved",
+                )
+                .order_by(AuditEvent.occurred_at.desc(), AuditEvent.id.desc())
+            )
+            assert approval is not None
+            assert approval.cam_candidate_bundle_sha256 == approved_digest
+            assert audit_event is not None
+            assert audit_event.payload_json["cam_candidate_bundle_sha256"] == approved_digest
+
+        state = client.get(
+            f"/v1/projects/{version['project_id']}/production-state",
+            headers=HEADERS,
+        )
+        assert state.status_code == 200
+        cam_state = next(
+            item for item in state.json()["approvals"] if item["approval_type"] == "cam"
+        )
+        assert cam_state["cam_candidate_bundle_sha256"] == approved_digest
+
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"]["bundle_sha256"] = "d" * 64
+            job.result_json = result_json
+            flag_modified(job, "result_json")
+
+        release = client.post(
+            f"{base}/release",
+            headers=HEADERS,
+            json={"release_number": "CAM-DIGEST-R1", "confirmation": "RELEASE"},
+        )
+        assert release.status_code == 409
+        assert release.json()["detail"] == (
+            "CAM approval does not match the selected production context, manifest "
+            "and cutting candidate"
+        )
+
+
+def test_validation_only_job_cannot_receive_cam_approval_or_reach_release(
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"Executable CAM required for promotion {uuid4()}",
+        )
+        rejected_approval = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Validation-only output is not executable CAM",
+                "generation_job_id": generated["id"],
+            },
+        )
+
+        assert rejected_approval.status_code == 409
+        assert rejected_approval.json()["detail"] == (
+            "CAM promotion requires a verified executable cutting candidate; "
+            "generate a new job with include_cutting_candidate enabled"
+        )
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            persisted_version = session.get(DesignVersion, version["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            assert persisted_version is not None
+            assert (
+                session.scalar(
+                    select(Approval).where(
+                        Approval.design_version_id == version["id"],
+                        Approval.approval_type == "cam",
+                    )
+                )
+                is None
+            )
+            session.add(
+                Approval(
+                    organization_id=DEV_ORG_NORDIC,
+                    design_version_id=version["id"],
+                    approval_type="cam",
+                    approved_by=DEV_USER_NORDIC,
+                    reason="Pre-hardening validation-only approval fixture",
+                    generation_job_id=job.id,
+                    production_context_hash=job.production_context_hash,
+                    manifest_sha256=job.result_json["manifest_sha256"],
+                    cam_candidate_bundle_sha256=None,
+                    overrides_json=[],
+                )
+            )
+            persisted_version.status = DesignStatus.approved
+
+        rejected_release = client.post(
+            f"{base}/release",
+            headers=HEADERS,
+            json={"release_number": "NO-EXECUTABLE-CAM", "confirmation": "RELEASE"},
+        )
+
+        assert rejected_release.status_code == 409
+        assert rejected_release.json()["detail"] == rejected_approval.json()["detail"]
+        with get_session_factory()() as session:
+            assert (
+                session.scalar(select(Release).where(Release.design_version_id == version["id"]))
+                is None
+            )
+
+
+def test_cam_approval_rejects_a_candidate_after_production_profile_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"CAM approval profile rotation {uuid4()}",
+        )
+        profile_a = {
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "acceptance": {"status": "WORKSHOP_ACCEPTED"},
+            "document_sha256": "a" * 64,
+        }
+        profile_b = deepcopy(profile_a)
+        profile_b["document_sha256"] = "b" * 64
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            request_json = deepcopy(job.request_json)
+            request_json["production_machine_profile"] = deepcopy(profile_a)
+            request_json["include_cutting_candidate"] = True
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": "c" * 64,
+                "production_profile_job_binding": deepcopy(profile_a),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+
+        current_profile = object()
+        monkeypatch.setattr(
+            api_module,
+            "load_production_machine_profile",
+            lambda source, *, allow_test_only: current_profile,
+        )
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda profile: deepcopy(profile_b),
+        )
+        review_called = False
+
+        def must_not_review(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal review_called
+            review_called = True
+            raise AssertionError("stale profile reached production evidence review")
+
+        monkeypatch.setattr(api_module, "_require_review_evidence", must_not_review)
+        rejected = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Attempted approval after profile rotation",
+                "generation_job_id": generated["id"],
+            },
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == (
+            "CAM candidate uses a stale production machine profile; "
+            "generate and review a new cutting candidate"
+        )
+        assert review_called is False
+        with get_session_factory()() as session:
+            assert (
+                session.scalar(
+                    select(Approval).where(
+                        Approval.design_version_id == version["id"],
+                        Approval.approval_type == "cam",
+                    )
+                )
+                is None
+            )
+
+
+def test_release_rejects_an_approved_candidate_after_production_profile_rotation(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"CAM release profile rotation {uuid4()}",
+        )
+        profile_a = {
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "acceptance": {"status": "WORKSHOP_ACCEPTED"},
+            "document_sha256": "a" * 64,
+        }
+        profile_b = deepcopy(profile_a)
+        profile_b["document_sha256"] = "b" * 64
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            request_json = deepcopy(job.request_json)
+            request_json["production_machine_profile"] = deepcopy(profile_a)
+            request_json["include_cutting_candidate"] = True
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": "c" * 64,
+                "production_profile_job_binding": deepcopy(profile_a),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+
+        active_profile = {"binding": profile_a}
+        current_profile = object()
+        monkeypatch.setattr(
+            api_module,
+            "load_production_machine_profile",
+            lambda source, *, allow_test_only: current_profile,
+        )
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda profile: deepcopy(active_profile["binding"]),
+        )
+        monkeypatch.setattr(api_module, "_require_current_generation_context", lambda *_args: None)
+        monkeypatch.setattr(api_module, "_require_review_evidence", lambda *_args, **_kw: None)
+        approved = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Candidate reviewed before profile rotation",
+                "generation_job_id": generated["id"],
+            },
+        )
+        assert approved.status_code == 200, approved.text
+
+        active_profile["binding"] = profile_b
+        rejected = client.post(
+            f"{base}/release",
+            headers=HEADERS,
+            json={"release_number": "STALE-PROFILE-R1", "confirmation": "RELEASE"},
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == (
+            "CAM candidate uses a stale production machine profile; "
+            "generate and review a new cutting candidate"
+        )
+        with get_session_factory()() as session:
+            assert (
+                session.scalar(select(Release).where(Release.design_version_id == version["id"]))
+                is None
+            )
+
+
+def test_cam_approval_rechecks_profile_after_evidence_io(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"CAM approval profile I/O rotation {uuid4()}",
+        )
+        profile_a = {
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "acceptance": {"status": "WORKSHOP_ACCEPTED"},
+            "document_sha256": "a" * 64,
+        }
+        profile_b = deepcopy(profile_a)
+        profile_b["document_sha256"] = "b" * 64
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            request_json = deepcopy(job.request_json)
+            request_json["production_machine_profile"] = deepcopy(profile_a)
+            request_json["include_cutting_candidate"] = True
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": "c" * 64,
+                "production_profile_job_binding": deepcopy(profile_a),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+
+        active_profile = {"binding": profile_a}
+        monkeypatch.setattr(
+            api_module,
+            "load_production_machine_profile",
+            lambda source, *, allow_test_only: object(),
+        )
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda profile: deepcopy(active_profile["binding"]),
+        )
+        monkeypatch.setattr(api_module, "_require_current_generation_context", lambda *_args: None)
+
+        def rotate_profile_during_evidence_io(*_args: Any, **_kwargs: Any) -> None:
+            active_profile["binding"] = profile_b
+
+        monkeypatch.setattr(
+            api_module,
+            "_require_review_evidence",
+            rotate_profile_during_evidence_io,
+        )
+        rejected = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Profile rotated while evidence was read",
+                "generation_job_id": generated["id"],
+            },
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == (
+            "CAM candidate uses a stale production machine profile; "
+            "generate and review a new cutting candidate"
+        )
+        with get_session_factory()() as session:
+            assert (
+                session.scalar(
+                    select(Approval).where(
+                        Approval.design_version_id == version["id"],
+                        Approval.approval_type == "cam",
+                    )
+                )
+                is None
+            )
+
+
+def test_release_rechecks_profile_after_evidence_io(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"CAM release profile I/O rotation {uuid4()}",
+        )
+        profile_a = {
+            "profile_class": "SERVER_OWNED_PRODUCTION",
+            "acceptance": {"status": "WORKSHOP_ACCEPTED"},
+            "document_sha256": "a" * 64,
+        }
+        profile_b = deepcopy(profile_a)
+        profile_b["document_sha256"] = "b" * 64
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            request_json = deepcopy(job.request_json)
+            request_json["production_machine_profile"] = deepcopy(profile_a)
+            request_json["include_cutting_candidate"] = True
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": "c" * 64,
+                "production_profile_job_binding": deepcopy(profile_a),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+
+        active_profile = {"binding": profile_a}
+        monkeypatch.setattr(
+            api_module,
+            "load_production_machine_profile",
+            lambda source, *, allow_test_only: object(),
+        )
+        monkeypatch.setattr(
+            api_module,
+            "production_machine_profile_job_binding",
+            lambda profile: deepcopy(active_profile["binding"]),
+        )
+        monkeypatch.setattr(api_module, "_require_current_generation_context", lambda *_args: None)
+        monkeypatch.setattr(api_module, "_require_review_evidence", lambda *_args, **_kw: None)
+        approved = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Candidate reviewed before concurrent rotation",
+                "generation_job_id": generated["id"],
+            },
+        )
+        assert approved.status_code == 200, approved.text
+
+        def rotate_profile_during_evidence_io(*_args: Any, **_kwargs: Any) -> None:
+            active_profile["binding"] = profile_b
+
+        monkeypatch.setattr(
+            api_module,
+            "_require_review_evidence",
+            rotate_profile_during_evidence_io,
+        )
+        rejected = client.post(
+            f"{base}/release",
+            headers=HEADERS,
+            json={"release_number": "PROFILE-IO-R1", "confirmation": "RELEASE"},
+        )
+
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == (
+            "CAM candidate uses a stale production machine profile; "
+            "generate and review a new cutting candidate"
+        )
+        with get_session_factory()() as session:
+            assert (
+                session.scalar(select(Release).where(Release.design_version_id == version["id"]))
+                is None
+            )
+
+
+def test_cam_approval_route_never_promotes_a_test_only_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    _restore_real_cam_promotion_gates: None,
+) -> None:
+    with TestClient(app) as client:
+        version, generated, base = _create_strict_review_job(
+            client,
+            name=f"TEST_ONLY CAM promotion guard {uuid4()}",
+        )
+        test_binding = {
+            "profile_class": "TEST_ONLY",
+            "acceptance": {"status": "TEST_ONLY"},
+        }
+        with get_session_factory().begin() as session:
+            job = session.get(GenerationJob, generated["id"])
+            assert job is not None and isinstance(job.result_json, dict)
+            request_json = deepcopy(job.request_json)
+            request_json["production_machine_profile"] = deepcopy(test_binding)
+            request_json["include_cutting_candidate"] = True
+            result_json = deepcopy(job.result_json)
+            result_json["cam_candidate"] = {
+                "bundle_sha256": "e" * 64,
+                "production_profile_job_binding": deepcopy(test_binding),
+            }
+            job.request_json = request_json
+            job.result_json = result_json
+            flag_modified(job, "request_json")
+            flag_modified(job, "result_json")
+
+        review_called = False
+
+        def must_not_review(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal review_called
+            review_called = True
+            raise AssertionError("TEST_ONLY candidate reached production evidence review")
+
+        monkeypatch.setattr(api_module, "_require_review_evidence", must_not_review)
+        rejected = client.post(
+            f"{base}/approve",
+            headers=HEADERS,
+            json={
+                "approval_type": "cam",
+                "reason": "Attempted test-only candidate promotion",
+                "generation_job_id": generated["id"],
+            },
+        )
+        assert rejected.status_code == 409
+        assert rejected.json()["detail"] == (
+            "CAM promotion requires a workshop-accepted production profile"
+        )
+        assert review_called is False
+        with get_session_factory()() as session:
+            assert (
+                session.scalar(
+                    select(Approval).where(
+                        Approval.design_version_id == version["id"],
+                        Approval.approval_type == "cam",
+                    )
+                )
+                is None
+            )

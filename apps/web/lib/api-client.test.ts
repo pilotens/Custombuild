@@ -107,6 +107,21 @@ async function sha256Hex(content: Uint8Array): Promise<string> {
     .join("");
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`,
+    ).join(",")}}`;
+  }
+  throw new TypeError("non-canonical test value");
+}
+
 function sha256Base64(sha256: string): string {
   const bytes = Array.from({ length: 32 }, (_, index) => (
     Number.parseInt(sha256.slice(index * 2, index * 2 + 2), 16)
@@ -1651,6 +1666,123 @@ describe("production API contract", () => {
         /ofullständigt frisläppningsbevis/i,
       );
     }
+  });
+
+  it("accepts only a fully cross-bound executable CAM release receipt", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const candidateBundle = "c".repeat(64);
+    const designManifest = "d".repeat(64);
+    const unsignedApproval = {
+      schema_version: "custombuild.cam-approval-release-binding.v1",
+      approval_id: "33333333-3333-4333-8333-333333333333",
+      organization_id: "11111111-1111-4111-8111-111111111111",
+      design_version_id: "55555555-5555-4555-8555-555555555555",
+      approval_type: "cam",
+      approved_by: "66666666-6666-4666-8666-666666666666",
+      reason: "Verifierad CAM-kandidat för frisläppning",
+      generation_job_id: "44444444-4444-4444-8444-444444444444",
+      production_context_hash: "3".repeat(64),
+      manifest_sha256: designManifest,
+      candidate_bundle_sha256: candidateBundle,
+      overrides_json: [],
+      created_at: "2026-09-01T10:30:00.000000Z",
+      updated_at: "2026-09-01T10:30:00.000000Z",
+    } as const;
+    const bindingSha256 = await sha256Hex(
+      new TextEncoder().encode(canonicalJson(unsignedApproval)),
+    );
+    const release = {
+      release_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      release_number: "R8",
+      status: "released",
+      release_kind: "executable_cam",
+      machine_use: "executable_cam_candidate",
+      design_review_bundle: {
+        bundle_sha256: "b".repeat(64),
+        manifest_sha256: designManifest,
+      },
+      executable_cam: {
+        candidate_bundle_sha256: candidateBundle,
+        candidate_manifest_sha256: "e".repeat(64),
+        production_profile_document_sha256: "f".repeat(64),
+        production_profile_payload_sha256: "1".repeat(64),
+        program_inventory_sha256: "2".repeat(64),
+        cam_approval: {
+          ...unsignedApproval,
+          binding_sha256: bindingSha256,
+        },
+        workshop_acceptance_required: true,
+      },
+      physical_cutting_authorized: false,
+    } as const;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify(release),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.releaseVersion(projectId, 3, "R8")).resolves.toEqual(release);
+
+    for (const invalid of (
+      [
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            program_inventory_sha256: "X".repeat(64),
+          },
+        },
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            cam_approval: {
+              ...release.executable_cam.cam_approval,
+              candidate_bundle_sha256: "9".repeat(64),
+            },
+          },
+        },
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            workshop_acceptance_required: false,
+          },
+        },
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            cam_approval: {
+              ...release.executable_cam.cam_approval,
+              overrides_json: [{ rule_id: "not-valid-for-cam" }],
+            },
+          },
+        },
+        { ...release, physical_cutting_authorized: true },
+      ] as const
+    )) {
+      fetchMock.mockResolvedValueOnce(new Response(
+        JSON.stringify(invalid),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+      await expect(api.releaseVersion(projectId, 3, "R8")).rejects.toThrow(
+        /ofullständigt frisläppningsbevis/i,
+      );
+    }
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      ...release,
+      executable_cam: {
+        ...release.executable_cam,
+        cam_approval: {
+          ...release.executable_cam.cam_approval,
+          reason: "Manipulerad men fortfarande välformaterad motivering",
+        },
+      },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(api.releaseVersion(projectId, 3, "R8")).rejects.toThrow(
+      /fel SHA-256-identitet/i,
+    );
   });
 
   it("strictly validates restored release evidence in production state", async () => {

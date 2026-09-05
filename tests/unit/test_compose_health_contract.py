@@ -209,6 +209,43 @@ def test_external_overlay_preserves_the_database_restart_fence() -> None:
         assert services[writer]["depends_on"]["storage-capacity-attestor"]["restart"] is True
 
 
+def test_generation_services_share_one_read_only_production_cam_profile() -> None:
+    base = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))["services"]
+    external = yaml.safe_load(
+        Path("compose.external-production.yml").read_text(encoding="utf-8")
+    )["services"]
+
+    for service_name in ("api", "worker"):
+        assert "PRODUCTION_CAM_PROFILE_PATH" in base[service_name]["environment"]
+        assert "PRODUCTION_CAM_PROFILE_JSON" in base[service_name]["environment"]
+        assert "PRODUCTION_CAM_PROFILE_SHA256" in base[service_name]["environment"]
+    assert (
+        base["api"]["environment"]["PRODUCTION_CAM_PROFILE_SHA256"]
+        == base["worker"]["environment"]["PRODUCTION_CAM_PROFILE_SHA256"]
+    )
+
+    container_path = "/run/custombuild-config/production-cam-profile.json"
+    expected_mount = {
+        "type": "bind",
+        "source": (
+            "${PRODUCTION_CAM_PROFILE_HOST_PATH:"
+            "?Set the protected production CAM profile path}"
+        ),
+        "target": container_path,
+        "read_only": True,
+        "bind": {"create_host_path": False},
+    }
+    for service_name in ("api", "worker"):
+        service = external[service_name]
+        assert service["environment"]["PRODUCTION_CAM_PROFILE_PATH"] == container_path
+        assert service["environment"]["PRODUCTION_CAM_PROFILE_JSON"] == ""
+        assert service["environment"]["PRODUCTION_CAM_PROFILE_SHA256"] == (
+            "${PRODUCTION_CAM_PROFILE_SHA256:"
+            "?Set the exact production CAM profile file SHA-256}"
+        )
+        assert service["volumes"] == [expected_mount]
+
+
 def test_prod_runtime_probes_execute_as_each_nonroot_container_user() -> None:
     workflow = Path(".github/workflows/prod-ci.yml").read_text(encoding="utf-8")
 

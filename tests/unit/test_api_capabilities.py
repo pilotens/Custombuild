@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import get_args, get_type_hints
 
 import app.api as api_module
 import pytest
@@ -12,7 +13,7 @@ from app.auth import (
     require_capability,
 )
 from app.models import Role
-from fastapi import HTTPException
+from fastapi import HTTPException, params
 
 
 def _principal(role: Role) -> Principal:
@@ -31,6 +32,7 @@ EXPECTED_NON_ADMIN_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.operator: frozenset(
         {
             Capability.READ,
+            Capability.EXECUTABLE_CAM_DOWNLOAD,
             Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
             Capability.WORKSHOP_CHALLENGE,
             Capability.WORKSHOP_EVIDENCE,
@@ -47,6 +49,7 @@ EXPECTED_NON_ADMIN_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.production: frozenset(
         {
             Capability.READ,
+            Capability.EXECUTABLE_CAM_DOWNLOAD,
             Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
             Capability.PRODUCTION_RELEASE,
             Capability.WORKSHOP_PREPARE,
@@ -58,6 +61,7 @@ EXPECTED_NON_ADMIN_CAPABILITIES: dict[Role, frozenset[Capability]] = {
     Role.reviewer: frozenset(
         {
             Capability.READ,
+            Capability.EXECUTABLE_CAM_DOWNLOAD,
             Capability.REVIEW,
             Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
             Capability.WORKSHOP_VERIFY,
@@ -92,6 +96,31 @@ def test_non_design_roles_cannot_design_or_generate(
 def test_only_review_roles_can_review(role: Role) -> None:
     with pytest.raises(HTTPException, match="Capability review required"):
         require_capability(Capability.REVIEW)(_principal(role))
+
+
+def test_release_endpoint_uses_the_exact_production_release_capability() -> None:
+    annotation = get_type_hints(
+        api_module.release_version,
+        include_extras=True,
+    )["principal"]
+    dependencies = [item for item in get_args(annotation) if isinstance(item, params.Depends)]
+    assert len(dependencies) == 1
+    dependency = dependencies[0].dependency
+    assert dependency is not None
+
+    for role in (Role.production, Role.admin, Role.owner):
+        principal = _principal(role)
+        # The capability dependency returns the authenticated principal unchanged,
+        # preserving the exact actor used by release and audit persistence.
+        assert dependency(principal) is principal
+
+    for role in (Role.viewer, Role.designer, Role.operator, Role.reviewer):
+        with pytest.raises(
+            HTTPException,
+            match="Capability production_release required",
+        ) as caught:
+            dependency(_principal(role))
+        assert caught.value.status_code == 403
 
 
 @pytest.mark.parametrize(
@@ -156,6 +185,96 @@ def test_joint_retention_evidence_download_has_an_explicit_closed_role_set(
             match="Capability joint_retention_evidence_download required",
         ):
             dependency(_principal(role))
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    (
+        (Role.viewer, False),
+        (Role.designer, False),
+        (Role.operator, True),
+        (Role.reviewer, True),
+        (Role.production, True),
+        (Role.admin, True),
+        (Role.owner, True),
+    ),
+)
+def test_cutting_cam_artifact_read_has_an_explicit_closed_role_set(
+    role: Role,
+    allowed: bool,
+) -> None:
+    dependency = require_capability(Capability.EXECUTABLE_CAM_DOWNLOAD)
+    if allowed:
+        assert dependency(_principal(role)) is not None
+    else:
+        with pytest.raises(
+            HTTPException,
+            match="Capability executable_cam_download required",
+        ):
+            dependency(_principal(role))
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        "cam_candidate_bundle",
+        "cutting_toolpaths",
+        "machine_program_index",
+        "cutting_program_validation_report",
+        "cutting_backplot",
+        "production_machine_profile",
+        "machine_program_001",
+        "machine_program_999",
+    ),
+)
+def test_every_executable_cam_artifact_kind_uses_the_capability_guard(kind: str) -> None:
+    assert api_module._is_cam_candidate_artifact_kind(kind) is True
+    with pytest.raises(
+        HTTPException,
+        match="Capability executable_cam_download required",
+    ):
+        api_module._require_cam_candidate_artifact_read(
+            _principal(Role.viewer),
+            kind,
+        )
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    (
+        (Role.viewer, False),
+        (Role.designer, False),
+        (Role.operator, False),
+        (Role.reviewer, True),
+        (Role.production, False),
+        (Role.admin, True),
+        (Role.owner, True),
+    ),
+)
+def test_current_job_cam_review_surface_has_a_closed_role_set(
+    role: Role,
+    allowed: bool,
+) -> None:
+    principal = _principal(role)
+    assert api_module._can_read_current_cam_review_artifacts(principal) is allowed
+    if allowed:
+        api_module._require_current_cam_review_artifact_read(
+            principal,
+            "machine_program_001",
+        )
+    else:
+        with pytest.raises(HTTPException):
+            api_module._require_current_cam_review_artifact_read(
+                principal,
+                "machine_program_001",
+            )
+
+
+def test_design_artifacts_remain_outside_the_executable_cam_capability() -> None:
+    viewer = _principal(Role.viewer)
+    for kind in ("manifest", "production_bundle", "operations", "setup_sheet_001"):
+        assert api_module._is_cam_candidate_artifact_kind(kind) is False
+        api_module._require_cam_candidate_artifact_read(viewer, kind)
 
 
 @pytest.mark.parametrize(
