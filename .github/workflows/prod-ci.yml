@@ -136,6 +136,9 @@ jobs:
       image: debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
     env:
       DEBIAN_FRONTEND: noninteractive
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
     steps:
       - name: Install pinned LinuxCNC interpreter
         run: |

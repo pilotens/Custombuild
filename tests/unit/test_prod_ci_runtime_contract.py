@@ -29,7 +29,12 @@ def test_release_workflows_use_identical_sha_bound_linuxcnc_oracle() -> None:
         "abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f"
     )
     assert oracle["timeout-minutes"] == 20
-    assert oracle["env"] == {"DEBIAN_FRONTEND": "noninteractive"}
+    assert oracle["env"] == {
+        "DEBIAN_FRONTEND": "noninteractive",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "${{ github.workspace }}",
+    }
     assert len(oracle["steps"]) == 4
     install = oracle["steps"][0]["run"]
     snapshot = "20260824T000000Z"
