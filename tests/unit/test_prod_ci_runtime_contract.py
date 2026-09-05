@@ -71,6 +71,26 @@ def test_release_workflows_use_identical_sha_bound_linuxcnc_oracle() -> None:
     ]
 
 
+def test_ci_external_overlay_render_binds_its_profile_file_and_digest() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["compose-acceptance"]["steps"]
+    step = next(
+        item
+        for item in steps
+        if item.get("name") == "Validate fail-closed external production overlay"
+    )
+
+    assert step["env"]["PRODUCTION_CAM_PROFILE_HOST_PATH"] == (
+        "/tmp/custombuild-production-cam-profile.json"  # noqa: S108 - fixed CI fixture path
+    )
+    assert step["env"]["PRODUCTION_CAM_PROFILE_SHA256"] == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert 'touch "$PRODUCTION_CAM_PROFILE_HOST_PATH"' in step["run"]
+    assert 'sha256sum "$PRODUCTION_CAM_PROFILE_HOST_PATH"' in step["run"]
+    assert '"$PRODUCTION_CAM_PROFILE_SHA256"' in step["run"]
+
+
 def test_release_browser_evidence_uses_direct_playwright_cli() -> None:
     release_workflows = (
         Path(".github/workflows/cd.yml"),

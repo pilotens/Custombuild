@@ -385,9 +385,13 @@ jobs:
           STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
           DEPLOY_DESCRIPTOR_PATH: /tmp/custombuild-deploy-descriptor.json
           STORAGE_CAPACITY_EVIDENCE_DIRECTORY: /tmp/custombuild-capacity-evidence
+          PRODUCTION_CAM_PROFILE_HOST_PATH: /tmp/custombuild-production-cam-profile.json
+          PRODUCTION_CAM_PROFILE_SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
         run: |
           touch /tmp/custombuild-storage-capacity-operator.json
           touch /tmp/custombuild-deploy-descriptor.json
+          touch "$PRODUCTION_CAM_PROFILE_HOST_PATH"
+          test "$(sha256sum "$PRODUCTION_CAM_PROFILE_HOST_PATH" | awk '{print $1}')" = "$PRODUCTION_CAM_PROFILE_SHA256"
           mkdir -p /tmp/custombuild-capacity-evidence
           python3 scripts/check_external_production.py --repo .
       - name: Verify source freeze before Compose build
