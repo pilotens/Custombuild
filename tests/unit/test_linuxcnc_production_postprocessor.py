@@ -40,6 +40,8 @@ from custombuild_postprocessors import (
     validate_production_program,
 )
 
+from tests.runtime_contract_fixture import runtime_contract_fixture
+
 
 def production_machine_profile() -> LinuxCNCProductionMachineProfile:
     return LinuxCNCProductionMachineProfile(
@@ -49,6 +51,7 @@ def production_machine_profile() -> LinuxCNCProductionMachineProfile:
         machine_profile_version="1.0.0",
         controller_id="LinuxCNC",
         controller_version="2.9.4",
+        runtime_contract=runtime_contract_fixture(),
         supported_wcs=("G54", "G55"),
         wcs_offsets=(
             LinuxCNCWCSOffset("G54", 0, 0, -60_000, 0),
@@ -381,7 +384,7 @@ def test_production_postprocessor_emits_bound_candidate_and_round_trips_moves() 
     assert machine_program.physical_cutting_authorized is False
     assert machine_program.workshop_acceptance_required is True
     assert machine_program.postprocessor_id == "linuxcnc-3axis-production"
-    assert machine_program.postprocessor_version == "1.1.0"
+    assert machine_program.postprocessor_version == "1.2.0"
     assert machine_program.source_toolpaths_sha256 == document.fingerprint
     assert (
         machine_program.production_machine_profile_sha256
@@ -786,10 +789,25 @@ def test_validator_rejects_tampered_external_offset_or_continuous_spindle_bindin
 
 def test_postprocessor_rejects_production_machine_profile_context_drift() -> None:
     document = production_document()
-    drifted_profile = replace(production_machine_profile(), controller_version="2.9.5")
+    drifted_profile = replace(production_machine_profile(), machine_profile_version="2.0.0")
 
     with pytest.raises(GCodeSafetyError, match="does not exactly match"):
         LinuxCNCProductionPostprocessor(drifted_profile).generate(document)
+
+
+@pytest.mark.parametrize("separator", ["\v", "\f", "\x1c", "\x1d", "\x1e"])
+def test_production_validator_rejects_non_lf_physical_line_bypass(separator: str) -> None:
+    document = production_document()
+    profile = production_machine_profile()
+    program = LinuxCNCProductionPostprocessor(profile).generate(document)[0]
+    payload = program.content.decode("ascii").replace("\n", separator) + "\n"
+    with pytest.raises(GCodeSafetyError, match="printable ASCII"):
+        validate_production_program(
+            payload,
+            document=document,
+            program=document.programs[0],
+            machine_profile=profile,
+        )
 
 
 def test_postprocessor_rejects_machine_axis_bound_drift() -> None:

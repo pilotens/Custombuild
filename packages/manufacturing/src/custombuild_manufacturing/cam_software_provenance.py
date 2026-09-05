@@ -32,10 +32,10 @@ from .model import canonical_json_bytes, sha256_hex
 PRODUCER_BUILD_IDENTITY_SCHEMA_VERSION = "custombuild.producer-build-identity.v1"
 CAM_SOFTWARE_PROVENANCE_SCHEMA_VERSION = "custombuild.cam-software-provenance.v1"
 CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION = "custombuild.cam-candidate-manifest.v2"
-CAM_CANDIDATE_PACKAGE_BUILDER_VERSION = "deterministic-cam-candidate-package-1.1.0"
+CAM_CANDIDATE_PACKAGE_BUILDER_VERSION = "deterministic-cam-candidate-package-1.2.0"
 SOURCE_MANIFEST_CODE_ROOT_KIND = "SOURCE_MANIFEST_SHA256"
-CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID = "custombuild.cam-implementation-stack.v1"
-CAM_CANDIDATE_VERIFICATION_DISPATCH_V1 = "custombuild.cam-candidate-verifier.v1"
+CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID = "custombuild.cam-implementation-stack.v2"
+CAM_CANDIDATE_VERIFICATION_DISPATCH_V2 = "custombuild.cam-candidate-verifier.v2"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _PRODUCTION_VCS_REF_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
@@ -149,17 +149,17 @@ _SUPPORTED_CAM_IMPLEMENTATION_IDENTITIES: Mapping[str, CAMImplementationIdentity
         {
             CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID: CAMImplementationIdentity(
                 support_id=CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID,
-                verification_dispatch=CAM_CANDIDATE_VERIFICATION_DISPATCH_V1,
+                verification_dispatch=CAM_CANDIDATE_VERIFICATION_DISPATCH_V2,
                 toolpath_schema_version="custombuild.toolpaths.v1",
                 toolpath_engine_version="production-toolpaths-1.1.0",
                 cutting_verifier_version="cutting-program-verifier-1.1.0",
                 cutting_backplot_version="cutting-backplot-1.1.0",
                 postprocessor_id="linuxcnc-3axis-production",
-                postprocessor_version="1.1.0",
-                gcode_parser_version="linuxcnc-production-parser-1.3.0",
-                gcode_safety_validator_version="linuxcnc-production-safety-1.3.0",
+                postprocessor_version="1.2.0",
+                gcode_parser_version="linuxcnc-production-parser-1.3.1",
+                gcode_safety_validator_version="linuxcnc-production-safety-1.3.1",
                 candidate_manifest_schema_version="custombuild.cam-candidate-manifest.v2",
-                candidate_package_builder_version="deterministic-cam-candidate-package-1.1.0",
+                candidate_package_builder_version="deterministic-cam-candidate-package-1.2.0",
             )
         }
     )
@@ -423,7 +423,7 @@ def _required_sha256(value: object, label: str) -> str:
 __all__ = [
     "CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION",
     "CAM_CANDIDATE_PACKAGE_BUILDER_VERSION",
-    "CAM_CANDIDATE_VERIFICATION_DISPATCH_V1",
+    "CAM_CANDIDATE_VERIFICATION_DISPATCH_V2",
     "CAM_SOFTWARE_PROVENANCE_SCHEMA_VERSION",
     "CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID",
     "PRODUCER_BUILD_IDENTITY_SCHEMA_VERSION",

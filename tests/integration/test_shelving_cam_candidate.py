@@ -74,6 +74,7 @@ from tests.integration.test_custom_shelving_export_chain import (
     _stock_and_registration,
     _test_only_retention_contract,
 )
+from tests.runtime_contract_fixture import runtime_contract_fixture
 
 _TEST_RETENTION_EVIDENCE = canonical_json_bytes(
     {
@@ -100,23 +101,21 @@ def _tamper_first_program(payload: bytes) -> bytes:
     with zipfile.ZipFile(
         output,
         mode="w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=9,
+        compression=zipfile.ZIP_STORED,
         strict_timestamps=True,
     ) as archive:
         for name, data in files:
             if name == target:
                 data += b"(TRANSFER_TAMPER)\n"
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3
             info.external_attr = 0o100644 << 16
             info.flag_bits = 0x800
             archive.writestr(
                 info,
                 data,
-                compress_type=zipfile.ZIP_DEFLATED,
-                compresslevel=9,
+                compress_type=zipfile.ZIP_STORED,
             )
     return output.getvalue()
 
@@ -194,6 +193,7 @@ def _test_only_profile(source: OperationsDocument) -> bytes:
     supported_wcs = sorted({setup.wcs for setup in source.setups})
 
     postprocessor_profile = {
+        "runtime_contract": runtime_contract_fixture().as_dict(),
         "controller_id": controller_id,
         "controller_version": controller_version,
         "g4_p_seconds_dwell_verified": True,

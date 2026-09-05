@@ -14,6 +14,58 @@ invented machine facts. A named workshop must own, measure and accept the exact
 controller, travel, WCS offsets, fixture, spoilboard, tool assembly and material
 recipes in its profile.
 
+## Open the complete candidate first
+
+Start with `START-HERE.md` at the root of the candidate ZIP. Verify the complete
+archive with the trusted recipient verifier and the matching design-review
+package. Read `machine-production/setup-instructions.v1.json` before the program
+index or any `.production.ngc`. The setup instructions are also published as the
+separately verified `production_setup_instructions` artifact. Keep the programs,
+setup instructions, profile and evidence together after download.
+
+Candidate ZIP members use ZIP_STORED: the exact archive does not depend on the
+producer's Python/zlib compression version. Existing size and inventory limits
+still apply.
+
+## Qualified runtime and external evidence
+
+The nested `postprocessor_profile.runtime_contract` binds the supported
+LinuxCNC 2.9.4 Debian package `1:2.9.4-2+deb13u1` and the exact CI oracle build.
+It records effective settings after includes and startup overrides: one spindle
+with command/feedback/interlocks on spindle 0; built-in T/S/F semantics; no NGC
+input filter; the standard milltask/tpmod/motmod/homemod/io stack; three linear
+joints using effective millimetres; no ON_ABORT_COMMAND; no axis motion anywhere
+inside M6; disabled automatic tool-change positions/quill/G30 movement; and a
+file tool-table backend without DB_PROGRAM. The forward RPM clamp must equal the
+accepted machine limits, with interlocks comparing against exact programmed S.
+
+The workshop retains byte-hashed component files and an inventory of expanded
+INI, expanded HAL, HAL topology and tool-table inputs. `expanded_ini` and
+`expanded_hal` records must include resolved paths, ordered includes, remaps,
+Python/subroutine/user-M dependencies, actual startup arguments and search paths;
+the topology record excludes volatile positions and RPM samples. Each recorded
+digest binds the exact retained record. Evidence must verify the official
+components against the installed package and prove all observations on the actual
+machine. A changed file, include, plugin, path or startup argument invalidates
+that acceptance and requires a new profile and generated candidate.
+
+The authoring tool leaves the whole runtime contract unresolved. It validates
+its closed structure and cross-bindings; it cannot measure remote equipment or
+establish the truth of workshop evidence. The CI oracle executes standalone
+`rs274` only. It does not qualify milltask, motion modules, HAL or a physical
+machine, and its success never sets `workshop_runtime_verified` automatically.
+
+Setting names and semantics follow the official
+[LinuxCNC 2.9 INI contract](https://linuxcnc.org/docs/2.9/html/config/ini-config.html)
+and [startup options](https://linuxcnc.org/docs/2.9/html/man/man1/linuxcnc.1.html).
+For example, the trajectory module setting is `[TRAJ]TPMOD`; the homing module
+setting is `[EMCMOT]HOMEMOD`. Record their effective loaded defaults as well as
+any explicit settings.
+
+The runtime contract and stored ZIP envelope select implementation stack v2.
+Earlier pre-release v1 CAM candidates must be regenerated and reviewed again;
+they are rejected rather than silently interpreted with the new contract.
+
 ## Author the production profile
 
 The complete closed syntax contract is

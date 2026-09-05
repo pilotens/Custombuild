@@ -7,8 +7,8 @@ from decimal import Decimal, InvalidOperation
 
 from .model import GCodeWord, ParsedLine, ParsedProgram
 
-GCODE_PARSER_VERSION = "linuxcnc-gcode-parser-1.2.0"
-GCODE_SAFETY_VALIDATOR_VERSION = "validation-program-safety-1.2.0"
+GCODE_PARSER_VERSION = "linuxcnc-gcode-parser-1.2.1"
+GCODE_SAFETY_VALIDATOR_VERSION = "validation-program-safety-1.2.1"
 EXECUTION_POLICY_MARKER = (
     "(CUSTOMBUILD_EXECUTION_POLICY="
     "PROHIBITED_UNTIL_EXACT_WCS_AND_CONTROLLER_STATE_ATTESTED)"
@@ -63,15 +63,18 @@ _CANONICAL_MODAL_PREAMBLE = (
 def parse_gcode(payload: bytes | str) -> ParsedProgram:
     try:
         text = payload.decode("ascii") if isinstance(payload, bytes) else payload
-    except UnicodeDecodeError as exc:
+        text.encode("ascii")
+    except (UnicodeDecodeError, UnicodeEncodeError) as exc:
         raise GCodeParseError("machine program must be ASCII") from exc
+    if any(character != "\n" and not " " <= character <= "~" for character in text):
+        raise GCodeParseError("machine program requires printable ASCII and LF separators")
 
     lines: list[ParsedLine] = []
     units = "UNKNOWN"
     absolute = False
     spindle_start_seen = False
     minimum_z: Decimal | None = None
-    for line_number, raw in enumerate(text.splitlines(), start=1):
+    for line_number, raw in enumerate(text.split("\n"), start=1):
         code = _strip_comments(raw, line_number).strip()
         if not code or code == "%":
             continue

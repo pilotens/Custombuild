@@ -52,6 +52,9 @@ def test_cutting_candidate_filenames_are_explicit_and_machine_programs_are_order
         "cutting_toolpaths", 7, PROJECT_ID, "application/json"
     ) == f"{prefix}cutting-toolpaths-rev-7.json"
     assert _artifact_filename(
+        "production_setup_instructions", 7, PROJECT_ID, "application/json"
+    ) == f"{prefix}production-setup-instructions-rev-7.json"
+    assert _artifact_filename(
         "machine_program_003", 7, PROJECT_ID, "text/x-gcode"
     ) == f"{prefix}machine-program-003-rev-7.ngc"
     with pytest.raises(ValueError, match="content type"):

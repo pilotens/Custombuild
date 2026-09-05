@@ -31,8 +31,8 @@ from .production_model import (
     LinuxCNCProductionMachineProfile,
 )
 
-PRODUCTION_GCODE_PARSER_VERSION = "linuxcnc-production-parser-1.3.0"
-PRODUCTION_GCODE_SAFETY_VALIDATOR_VERSION = "linuxcnc-production-safety-1.3.0"
+PRODUCTION_GCODE_PARSER_VERSION = "linuxcnc-production-parser-1.3.1"
+PRODUCTION_GCODE_SAFETY_VALIDATOR_VERSION = "linuxcnc-production-safety-1.3.1"
 # LinuxCNC's file reader uses ``fgets(buffer, LINELEN=255)`` and treats a
 # 254-byte read as an overlong command.  Because our canonical files always
 # use one LF byte, at most 252 ASCII bytes may precede it without entering
@@ -113,7 +113,7 @@ _STATIC_COMMENTS = frozenset(
 _DYNAMIC_COMMENT = re.compile(
     r"\((?:DESIGN_HASH|TOOLPATH_DOCUMENT_SHA256|MACHINE_PROFILE|"
     r"MACHINE_PROFILE_SHA256|LINUXCNC_PRODUCTION_PROFILE|"
-    r"LINUXCNC_PRODUCTION_PROFILE_SHA256|POSTPROCESSOR|PRODUCTION_PARSER|"
+    r"LINUXCNC_RUNTIME_CONTRACT_SHA256|LINUXCNC_PRODUCTION_PROFILE_SHA256|POSTPROCESSOR|PRODUCTION_PARSER|"
     r"PRODUCTION_SAFETY_VALIDATOR|PROGRAM_ID|RUN_ORDER|SETUP_ID|STOCK_ID|"
     r"SHEET_INDEX|SETUP_SIDE|SOURCE_MATERIAL_ID|SOURCE_MATERIAL_VERSION|"
     r"ACTUAL_MATERIAL_ID|ACTUAL_MATERIAL_VERSION|MATERIAL_EVIDENCE_ID|"
@@ -218,6 +218,11 @@ def validate_production_program(
         machine_z_min_um=context.machine_z_min_um,
         machine_z_max_um=context.machine_z_max_um,
     )
+    if (
+        machine_profile.runtime_contract.min_forward_velocity_rpm != context.min_spindle_rpm
+        or machine_profile.runtime_contract.max_forward_velocity_rpm != context.max_spindle_rpm
+    ):
+        raise GCodeSafetyError("runtime spindle clamps differ from bound machine limits")
     setup_matches = tuple(item for item in context.setups if item.setup_id == program.setup_id)
     tool_matches = tuple(item for item in context.tool_bindings if item.tool_id == program.tool_id)
     if len(setup_matches) != 1 or len(tool_matches) != 1:
@@ -298,6 +303,7 @@ def validate_production_program(
             raise GCodeSafetyError("planned feed is absent from the bound cutting recipes")
 
     text = _ascii_text(payload)
+    lines = parse_production_program(text)
     _require_identity_header(
         text,
         document=document,
@@ -307,7 +313,6 @@ def validate_production_program(
         tool=tool,
     )
     _require_operation_comment_sequence(text, program)
-    lines = parse_production_program(text)
     signatures = tuple(_signature(line) for line in lines)
     wcs_number = Decimal(setup.wcs.removeprefix("G"))
     safe_z_mm = _um_as_mm(setup.safe_z_um)
@@ -831,6 +836,7 @@ def _require_identity_header(
         f"(MACHINE_PROFILE_SHA256={document.machine_profile_fingerprint})",
         f"(LINUXCNC_PRODUCTION_PROFILE={machine_profile.profile_id}@{machine_profile.version})",
         f"(LINUXCNC_PRODUCTION_PROFILE_SHA256={machine_profile.config_sha256})",
+        f"(LINUXCNC_RUNTIME_CONTRACT_SHA256={machine_profile.runtime_contract.sha256})",
         f"(POSTPROCESSOR={LINUXCNC_PRODUCTION_POSTPROCESSOR_ID}@"
         f"{LINUXCNC_PRODUCTION_POSTPROCESSOR_VERSION})",
         f"(PRODUCTION_PARSER={PRODUCTION_GCODE_PARSER_VERSION})",
@@ -937,7 +943,9 @@ def _require_percent_envelope(text: str) -> None:
 def _require_canonical_lexical_form(text: str) -> None:
     if "\r" in text or not text.endswith("\n"):
         raise GCodeSafetyError("production program must use LF lines and one terminal newline")
-    lines = text.splitlines()
+    if any(character != "\n" and not " " <= character <= "~" for character in text):
+        raise GCodeSafetyError("production program requires printable ASCII and LF separators")
+    lines = text[:-1].split("\n")
     if not lines or any(not line or line != line.strip() for line in lines):
         raise GCodeSafetyError("production program contains blank or padded lines")
     for line_number, line in enumerate(lines, start=1):

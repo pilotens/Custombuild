@@ -18,6 +18,8 @@ from custombuild_manufacturing.production_machine_profile import (
     production_machine_profile_job_binding_json,
 )
 
+from tests.runtime_contract_fixture import runtime_contract_fixture
+
 _HASH_A = "a" * 64
 _HASH_B = "b" * 64
 _HASH_C = "c" * 64
@@ -29,6 +31,7 @@ def _postprocessor_profile() -> dict[str, Any]:
     return {
         "controller_id": "linuxcnc",
         "controller_version": "2.9.4",
+        "runtime_contract": runtime_contract_fixture().as_dict(),
         "g4_p_seconds_dwell_verified": True,
         "g43_h_length_offset_verified": True,
         "g52_g92_offset_reset_evidence_id": "offset-reset-report-2026-09",
@@ -980,7 +983,7 @@ def test_profile_enum_setup_and_postprocessor_cross_bindings_fail_closed() -> No
         load_production_machine_profile(_document(payload), allow_test_only=True)
 
     payload = _payload()
-    payload["postprocessor_profile"]["controller_version"] = "other-controller-version"
+    payload["machine"]["controller_version"] = "other-controller-version"
     _resign_postprocessor(payload)
     with pytest.raises(ProductionMachineProfileError, match="bound to another controller"):
         load_production_machine_profile(_document(payload), allow_test_only=True)

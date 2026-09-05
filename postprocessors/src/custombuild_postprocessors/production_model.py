@@ -16,13 +16,15 @@ from typing import Any, Never
 from custombuild_cam.production_model import EXECUTABLE_CAM_CANDIDATE_MODE
 from custombuild_manufacturing.model import canonical_json_bytes, sha256_hex
 
+from .runtime_contract import LINUXCNC_ORACLE_CONTROLLER_VERSION, LinuxCNCRuntimeContract
+
 _HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")
 LINUXCNC_PRODUCTION_MACHINE_PROFILE_SCHEMA_VERSION = (
     "custombuild.linuxcnc-production-machine-profile.v1"
 )
 LINUXCNC_PRODUCTION_POSTPROCESSOR_ID = "linuxcnc-3axis-production"
-LINUXCNC_PRODUCTION_POSTPROCESSOR_VERSION = "1.1.0"
+LINUXCNC_PRODUCTION_POSTPROCESSOR_VERSION = "1.2.0"
 G53_TOOL_CHANGE_PATH_COMPLETE = "G53_Z_TOOLCHANGE_XY_M6_G53_Z_THEN_ENTRY_XY_AT_GLOBAL_CLEARANCE"
 G52_G92_OFFSET_RESET_POLICY = "G92.1_CLEAR_AND_DO_NOT_RESTORE"
 FEED_SPINDLE_OVERRIDE_POLICY = "PROGRAM_DISABLES_FEED_AND_SPINDLE_OVERRIDES_WITH_M49"
@@ -114,6 +116,7 @@ class LinuxCNCProductionMachineProfile:
     machine_profile_version: str
     controller_id: str
     controller_version: str
+    runtime_contract: LinuxCNCRuntimeContract
     supported_wcs: tuple[str, ...]
     wcs_offsets: tuple[LinuxCNCWCSOffset, ...]
     machine_x_min_um: int
@@ -298,6 +301,10 @@ class LinuxCNCProductionMachineProfile:
             raise ValueError("unsupported LinuxCNC production machine-profile schema")
         if self.controller_id.casefold() != "linuxcnc":
             raise ValueError("production machine profile must bind LinuxCNC")
+        if self.controller_version != LINUXCNC_ORACLE_CONTROLLER_VERSION:
+            raise ValueError("production profile requires the oracle-qualified LinuxCNC version")
+        if not isinstance(self.runtime_contract, LinuxCNCRuntimeContract):
+            raise ValueError("production profile requires a verified runtime contract")
         if (
             not self.supported_wcs
             or len(set(self.supported_wcs)) != len(self.supported_wcs)
@@ -513,6 +520,7 @@ class LinuxCNCProductionMachineProfile:
             "machine_profile_version",
             "controller_id",
             "controller_version",
+            "runtime_contract",
             "supported_wcs",
             "wcs_offsets",
             "machine_x_min_um",
@@ -629,6 +637,7 @@ class LinuxCNCProductionMachineProfile:
             machine_profile_version=_json_string(parsed, "machine_profile_version"),
             controller_id=_json_string(parsed, "controller_id"),
             controller_version=_json_string(parsed, "controller_version"),
+            runtime_contract=LinuxCNCRuntimeContract.from_mapping(parsed["runtime_contract"]),
             supported_wcs=tuple(supported_wcs),
             wcs_offsets=wcs_offsets,
             machine_x_min_um=_json_int(parsed, "machine_x_min_um"),

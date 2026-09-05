@@ -96,6 +96,7 @@ CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH = "source/validation-machine-profile.v
 CAM_CANDIDATE_BACKPLOT_PATH = "cam/cutting-backplot.svg"
 CAM_CANDIDATE_PROGRAM_INDEX_PATH = "machine-production/program-index.v1.json"
 CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH = "machine-production/setup-instructions.v1.json"
+CAM_CANDIDATE_START_HERE_PATH = "START-HERE.md"
 CAM_CANDIDATE_REPORT_PATH = "validation/cutting-program-report.json"
 CAM_CANDIDATE_PROGRAM_ROOT = "machine-production/linuxcnc/"
 CAM_CANDIDATE_MACHINE_PROFILE_PATH = "machine-production/production-machine-profile.v1.json"
@@ -265,6 +266,12 @@ def build_cam_candidate_bundle(
         source_operations,
     )
     artifacts: list[ArtifactFile] = [
+        ArtifactFile(
+            CAM_CANDIDATE_START_HERE_PATH,
+            _build_start_here(toolpaths, program_values, production_machine_profile),
+            "text/markdown",
+            "PRODUCTION_WORKSHOP_START_HERE",
+        ),
         ArtifactFile(
             CAM_CANDIDATE_SOURCE_OPERATIONS_PATH,
             base.operations_bytes,
@@ -441,7 +448,7 @@ def read_and_verify_cam_candidate_package(
         )
 
 
-def _verify_cam_candidate_v1(
+def _verify_cam_candidate_v2(
     request: _CAMCandidateVerificationRequest,
 ) -> dict[str, Any]:
     """Verify one package with the frozen v1 parser/verifier implementation."""
@@ -503,6 +510,7 @@ def _verify_cam_candidate_v1(
         data_by_path=data_by_path,
     )
     expected_paths = {
+        CAM_CANDIDATE_START_HERE_PATH,
         CAM_CANDIDATE_TOOLPATH_PATH,
         CAM_CANDIDATE_SOURCE_OPERATIONS_PATH,
         CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH,
@@ -531,6 +539,10 @@ def _verify_cam_candidate_v1(
         production_profile,
         production_machine_profile,
     )
+    if data_by_path[CAM_CANDIDATE_START_HERE_PATH] != _build_start_here(
+        document, programs, production_machine_profile
+    ):
+        raise ArtifactError("workshop start instructions differ from the bound program inventory")
     if (
         canonical_json_bytes(expected_instructions)
         != data_by_path[CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH]
@@ -579,27 +591,27 @@ def _dispatch_entry(
     )
 
 
-_V1_IMPLEMENTATION_IDENTITY = parse_supported_cam_implementation_identity(
+_V2_IMPLEMENTATION_IDENTITY = parse_supported_cam_implementation_identity(
     {
         "toolpath_schema_version": "custombuild.toolpaths.v1",
         "toolpath_engine_version": "production-toolpaths-1.1.0",
         "cutting_verifier_version": "cutting-program-verifier-1.1.0",
         "cutting_backplot_version": "cutting-backplot-1.1.0",
         "postprocessor_id": "linuxcnc-3axis-production",
-        "postprocessor_version": "1.1.0",
-        "gcode_parser_version": "linuxcnc-production-parser-1.3.0",
-        "gcode_safety_validator_version": "linuxcnc-production-safety-1.3.0",
+        "postprocessor_version": "1.2.0",
+        "gcode_parser_version": "linuxcnc-production-parser-1.3.1",
+        "gcode_safety_validator_version": "linuxcnc-production-safety-1.3.1",
         "candidate_manifest_schema_version": "custombuild.cam-candidate-manifest.v2",
-        "candidate_package_builder_version": "deterministic-cam-candidate-package-1.1.0",
+        "candidate_package_builder_version": "deterministic-cam-candidate-package-1.2.0",
     }
 )
-_V1_VERIFICATION_DISPATCH = _dispatch_entry(
-    _V1_IMPLEMENTATION_IDENTITY,
-    _verify_cam_candidate_v1,
+_V2_VERIFICATION_DISPATCH = _dispatch_entry(
+    _V2_IMPLEMENTATION_IDENTITY,
+    _verify_cam_candidate_v2,
 )
 _CAM_CANDIDATE_VERIFICATION_DISPATCHES: Mapping[
     tuple[str, str, str], _CAMCandidateVerificationDispatch
-] = MappingProxyType({_V1_VERIFICATION_DISPATCH.key: _V1_VERIFICATION_DISPATCH})
+] = MappingProxyType({_V2_VERIFICATION_DISPATCH.key: _V2_VERIFICATION_DISPATCH})
 
 
 def _resolve_cam_candidate_verification_dispatch(
@@ -855,6 +867,7 @@ def _production_machine_profile_identity(
             "version": profile.controller_version,
         },
         "runtime_safety": {
+            "runtime_contract": profile.runtime_contract.as_dict(),
             "metric_xyz_identity_kinematics": {
                 "policy": profile.metric_xyz_identity_kinematics_policy,
                 "evidence": {
@@ -1511,6 +1524,7 @@ def _build_setup_instructions(
         },
         "materials": _physical_sheet_material_bindings(context),
         "expected_live_controller_state": {
+            "runtime_contract": production_machine_profile.runtime_contract.as_dict(),
             "observations_embedded": False,
             "observation_timing": "IMMEDIATELY_BEFORE_EACH_PROGRAM_START",
             "metric_xyz_identity_kinematics": {
@@ -1996,13 +2010,55 @@ def _artifact_entry(artifact: ArtifactFile) -> dict[str, Any]:
     }
 
 
+def _build_start_here(
+    document: ProductionToolpathDocument,
+    programs: tuple[ProductionMachineProgram, ...],
+    profile: LinuxCNCProductionMachineProfile,
+) -> bytes:
+    lines = [
+        "# Custombuild – verkstadens CAM-paket",
+        "",
+        "Paketet innehåller skärande LinuxCNC-program. Läs och behåll hela paketet tillsammans.",
+        "Fysisk körning kräver verkstadens separata acceptans; physical_cutting_authorized=false.",
+        "",
+        f"Design: `{document.design_hash}`",
+        f"Maskin: `{profile.machine_profile_id}@{profile.machine_profile_version}`",
+        f"Runtime-kontrakt SHA-256: `{profile.runtime_contract.sha256}`",
+        "",
+        "## Före körning",
+        "",
+        "1. Verifiera hela ZIP-filen med den betrodda mottagarverifieraren och rätt designpaket.",
+        "2. Läs `machine-production/setup-instructions.v1.json`. Kontrollera maskin, runtime,",
+        "   material, verktyg, WCS, fixtur, frigång och samtliga preflightkrav på plats.",
+        "3. Granska `machine-production/program-index.v1.json` och den oberoende CAM-kontrollen.",
+        "4. Följ verkstadens simulation, luftkörning och godkännande av första provdetaljen.",
+        "5. Kör från programmets början i angiven ordning. Efter avbrott krävs full omstart",
+        "   och nya kontroller. Byt uppspänning och verktyg enligt setupinstruktionerna.",
+        "",
+        "Ändrad maskinkonfiguration, fil eller uppspänning kräver ny verifiering.",
+        "CI-testerna täcker RS274-tolkningen.",
+        "Verkstadens runtime och fysiska maskin verifieras separat.",
+        "",
+        "## Programordning",
+        "",
+        "| Ordning | Setup | Program |",
+        "| --- | --- | --- |",
+        *[
+            f"| {program.run_order} | `{program.setup_id}` | `{program.filename}` |"
+            for program in programs
+        ],
+        "",
+    ]
+    return "\n".join(lines).encode("utf-8")
+
+
 def _build_deterministic_zip(manifest: bytes, artifacts: tuple[ArtifactFile, ...]) -> bytes:
+    # Stored members have canonical bytes across Python/zlib versions.
     buffer = io.BytesIO()
     with zipfile.ZipFile(
         buffer,
         mode="w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=9,
+        compression=zipfile.ZIP_STORED,
         strict_timestamps=True,
     ) as archive:
         for path, data in (
@@ -2010,11 +2066,11 @@ def _build_deterministic_zip(manifest: bytes, artifacts: tuple[ArtifactFile, ...
             *((artifact.path, artifact.data) for artifact in artifacts),
         ):
             info = zipfile.ZipInfo(path, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3
             info.external_attr = 0o100644 << 16
             info.flag_bits = 0x800
-            archive.writestr(info, data, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            archive.writestr(info, data, compress_type=zipfile.ZIP_STORED)
     output = buffer.getvalue()
     if len(output) > MAX_CAM_CANDIDATE_PACKAGE_BYTES:
         raise ArtifactError("CAM candidate ZIP exceeds its canonical size limit")
@@ -2037,7 +2093,7 @@ def _validate_zip_envelope(archive: zipfile.ZipFile, infos: list[zipfile.ZipInfo
             or info.create_system != 3
             or info.external_attr != 0o100644 << 16
             or info.date_time != (1980, 1, 1, 0, 0, 0)
-            or info.compress_type != zipfile.ZIP_DEFLATED
+            or info.compress_type != zipfile.ZIP_STORED
             or info.extra
             or info.comment
         ):
@@ -2136,6 +2192,7 @@ def _validate_artifact_entries(value: object) -> tuple[dict[str, Any], ...]:
         raise ArtifactError("CAM candidate manifest contains duplicate path aliases")
     required = {
         CAM_CANDIDATE_TOOLPATH_PATH,
+        CAM_CANDIDATE_START_HERE_PATH,
         CAM_CANDIDATE_SOURCE_OPERATIONS_PATH,
         CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH,
         CAM_CANDIDATE_MACHINE_PROFILE_PATH,
@@ -2154,6 +2211,7 @@ def _validate_artifact_identity(entry: Mapping[str, Any]) -> None:
     path = str(entry["path"])
     expected = {
         CAM_CANDIDATE_TOOLPATH_PATH: ("application/json", "PRODUCTION_TOOLPATH_DOCUMENT"),
+        CAM_CANDIDATE_START_HERE_PATH: ("text/markdown", "PRODUCTION_WORKSHOP_START_HERE"),
         CAM_CANDIDATE_PROGRAM_INDEX_PATH: ("application/json", "PRODUCTION_PROGRAM_INDEX"),
         CAM_CANDIDATE_REPORT_PATH: (
             "application/json",

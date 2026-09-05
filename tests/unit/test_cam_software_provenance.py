@@ -10,7 +10,7 @@ from custombuild_manufacturing import cam_software_provenance as provenance_modu
 from custombuild_manufacturing.cam_software_provenance import (
     CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION,
     CAM_CANDIDATE_PACKAGE_BUILDER_VERSION,
-    CAM_CANDIDATE_VERIFICATION_DISPATCH_V1,
+    CAM_CANDIDATE_VERIFICATION_DISPATCH_V2,
     CAM_SOFTWARE_PROVENANCE_SCHEMA_VERSION,
     CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID,
     PRODUCER_BUILD_IDENTITY_SCHEMA_VERSION,
@@ -83,12 +83,12 @@ def test_supported_implementation_identity_has_an_explicit_verification_dispatch
 
     assert identity == current_cam_implementation_identity()
     assert identity.support_id == CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID
-    assert identity.verification_dispatch == CAM_CANDIDATE_VERIFICATION_DISPATCH_V1
+    assert identity.verification_dispatch == CAM_CANDIDATE_VERIFICATION_DISPATCH_V2
     assert identity.as_dict() == versions
     assert supported_cam_implementation_identities() == (identity,)
     support_id, verification_dispatch, implementation_digest = identity.dispatch_key
     assert support_id == CURRENT_CAM_IMPLEMENTATION_SUPPORT_ID
-    assert verification_dispatch == CAM_CANDIDATE_VERIFICATION_DISPATCH_V1
+    assert verification_dispatch == CAM_CANDIDATE_VERIFICATION_DISPATCH_V2
     assert implementation_digest == sha256_hex(
         canonical_json_bytes(
             {
@@ -100,8 +100,8 @@ def test_supported_implementation_identity_has_an_explicit_verification_dispatch
     )
 
 
-def test_v1_golden_implementation_corpus_resolves_to_the_real_dispatch_key() -> None:
-    corpus_path = Path(__file__).parents[1] / "fixtures/cam/cam-implementation-v1.json"
+def test_v2_golden_implementation_corpus_resolves_to_the_real_dispatch_key() -> None:
+    corpus_path = Path(__file__).parents[1] / "fixtures/cam/cam-implementation-v2.json"
     corpus = json.loads(corpus_path.read_bytes())
 
     identity = parse_supported_cam_implementation_identity(corpus["implementations"])
@@ -112,6 +112,13 @@ def test_v1_golden_implementation_corpus_resolves_to_the_real_dispatch_key() -> 
         corpus["implementation_digest"],
     )
     assert identity == current_cam_implementation_identity()
+
+
+def test_pre_release_v1_stack_requires_regeneration_for_the_runtime_contract() -> None:
+    corpus_path = Path(__file__).parents[1] / "fixtures/cam/cam-implementation-v1.json"
+    corpus = json.loads(corpus_path.read_bytes())
+    with pytest.raises(CAMSoftwareProvenanceError, match="unsupported"):
+        parse_supported_cam_implementation_identity(corpus["implementations"])
 
 
 @pytest.mark.parametrize(

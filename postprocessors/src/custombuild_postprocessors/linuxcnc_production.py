@@ -74,12 +74,16 @@ class LinuxCNCProductionPostprocessor:
             profile.machine_profile_version,
             profile.controller_id,
             profile.controller_version,
+            profile.runtime_contract.min_forward_velocity_rpm,
+            profile.runtime_contract.max_forward_velocity_rpm,
         )
         context_binding = (
             context.machine_profile_id,
             context.machine_profile_version,
             context.controller_id,
             context.controller_version,
+            context.min_spindle_rpm,
+            context.max_spindle_rpm,
         )
         profile_bounds = (
             profile.machine_x_min_um,
@@ -235,6 +239,7 @@ class LinuxCNCProductionPostprocessor:
             f"(LINUXCNC_PRODUCTION_PROFILE={self.machine_profile.profile_id}@"
             f"{self.machine_profile.version})",
             f"(LINUXCNC_PRODUCTION_PROFILE_SHA256={self.machine_profile.config_sha256})",
+            f"(LINUXCNC_RUNTIME_CONTRACT_SHA256={self.machine_profile.runtime_contract.sha256})",
             f"(POSTPROCESSOR={self.postprocessor_id}@{self.version})",
             f"(PRODUCTION_PARSER={PRODUCTION_GCODE_PARSER_VERSION})",
             f"(PRODUCTION_SAFETY_VALIDATOR={PRODUCTION_GCODE_SAFETY_VALIDATOR_VERSION})",

@@ -74,6 +74,13 @@ def _fixture() -> tuple[SimpleNamespace, dict[str, Any], dict[str, bytes], dict[
             "sha256": "7" * 64,
         },
         {
+            "path": "machine-production/setup-instructions.v1.json",
+            "media_type": "application/json",
+            "role": "PRODUCTION_SETUP_INSTRUCTIONS",
+            "size_bytes": 16,
+            "sha256": "b" * 64,
+        },
+        {
             "path": "machine-production/program-index.v1.json",
             "media_type": "application/json",
             "role": "PRODUCTION_PROGRAM_INDEX",
@@ -146,6 +153,7 @@ def _fixture() -> tuple[SimpleNamespace, dict[str, Any], dict[str, bytes], dict[
         "cam/cutting-backplot.svg": "cutting_backplot",
         "machine-production/production-machine-profile.v1.json": ("production_machine_profile"),
         "machine-production/program-index.v1.json": "machine_program_index",
+        "machine-production/setup-instructions.v1.json": "production_setup_instructions",
         "machine-production/linuxcnc/001.setup.tool.production.ngc": ("machine_program_001"),
         "validation/cutting-program-report.json": "cutting_program_validation_report",
     }

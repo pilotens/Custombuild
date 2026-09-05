@@ -632,6 +632,13 @@ function cuttingCandidateFixture(): {
       content_type: "application/json",
     },
     {
+      kind: "production_setup_instructions",
+      object_key: "tenant/candidate/setup-instructions.json",
+      sha256: "b".repeat(64),
+      size_bytes: 3000,
+      content_type: "application/json",
+    },
+    {
       kind: "machine_program_index",
       object_key: "tenant/candidate/program-index.json",
       sha256: "6".repeat(64),
@@ -715,11 +722,11 @@ function cuttingCandidateFixture(): {
           cutting_verifier_version: "cutting-program-verifier-1.1.0",
           cutting_backplot_version: "cutting-backplot-1.1.0",
           postprocessor_id: "linuxcnc-3axis-production",
-          postprocessor_version: "1.1.0",
-          gcode_parser_version: "linuxcnc-production-parser-1.3.0",
-          gcode_safety_validator_version: "linuxcnc-production-safety-1.3.0",
+          postprocessor_version: "1.2.0",
+          gcode_parser_version: "linuxcnc-production-parser-1.3.1",
+          gcode_safety_validator_version: "linuxcnc-production-safety-1.3.1",
           candidate_manifest_schema_version: "custombuild.cam-candidate-manifest.v2",
-          candidate_package_builder_version: "deterministic-cam-candidate-package-1.1.0",
+          candidate_package_builder_version: "deterministic-cam-candidate-package-1.2.0",
         },
       },
       software_provenance_sha256: "d".repeat(64),
@@ -749,7 +756,7 @@ function cuttingCandidateFixture(): {
       program_count: 2,
       postprocessor: {
         id: "linuxcnc-3axis-production",
-        version: "1.1.0",
+        version: "1.2.0",
       },
     },
   };

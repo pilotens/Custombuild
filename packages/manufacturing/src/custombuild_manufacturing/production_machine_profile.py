@@ -463,6 +463,11 @@ def _cross_check_postprocessor_profile(
         or profile.controller_version != context.controller_version
     ):
         raise ProductionMachineProfileError("postprocessor profile is bound to another controller")
+    if (
+        profile.runtime_contract.min_forward_velocity_rpm != context.min_spindle_rpm
+        or profile.runtime_contract.max_forward_velocity_rpm != context.max_spindle_rpm
+    ):
+        raise ProductionMachineProfileError("runtime spindle clamps differ from machine RPM limits")
     unsupported_wcs = sorted({setup.wcs for setup in context.setups} - set(profile.supported_wcs))
     if unsupported_wcs:
         raise ProductionMachineProfileError(

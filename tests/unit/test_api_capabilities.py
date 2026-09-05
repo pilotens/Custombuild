@@ -220,6 +220,7 @@ def test_cutting_cam_artifact_read_has_an_explicit_closed_role_set(
         "cam_candidate_bundle",
         "cutting_toolpaths",
         "machine_program_index",
+        "production_setup_instructions",
         "cutting_program_validation_report",
         "cutting_backplot",
         "production_machine_profile",

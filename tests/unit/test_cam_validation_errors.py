@@ -39,6 +39,12 @@ from custombuild_postprocessors import (
 from custombuild_postprocessors.model import MachineProgram
 
 
+@pytest.mark.parametrize("control", [chr(i) for i in range(32) if i != 10] + [chr(127)])
+def test_parser_rejects_ascii_controls_that_linuxcnc_does_not_read_as_lf(control: str) -> None:
+    with pytest.raises(GCodeParseError, match="printable ASCII"):
+        parse_gcode(f"G21{control}G90\n")
+
+
 def valid_document() -> OperationsDocument:
     feature = ManufacturingFeature(
         "hole",

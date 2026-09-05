@@ -915,6 +915,12 @@ def test_worker_persists_complete_opt_in_cam_candidate_with_stable_public_kinds(
             "PRODUCTION_PROGRAM_INDEX",
         ),
         ArtifactFile(
+            "machine-production/setup-instructions.v1.json",
+            b'{"setup":true}',
+            "application/json",
+            "PRODUCTION_SETUP_INSTRUCTIONS",
+        ),
+        ArtifactFile(
             "validation/cutting-program-report.json",
             b'{"result":"PASS"}',
             "application/json",
@@ -949,6 +955,7 @@ def test_worker_persists_complete_opt_in_cam_candidate_with_stable_public_kinds(
         "cam_candidate_bundle",
         "cutting_toolpaths",
         "machine_program_index",
+        "production_setup_instructions",
         "cutting_program_validation_report",
         "cutting_backplot",
         "production_machine_profile",

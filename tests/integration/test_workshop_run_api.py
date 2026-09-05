@@ -348,6 +348,12 @@ def test_executable_cam_candidate_reports_unconnected_trust_path_without_writes(
                 "content_type": "application/json",
             },
             {
+                "kind": "production_setup_instructions",
+                "sha256": "9" * 64,
+                "size_bytes": 512,
+                "content_type": "application/json",
+            },
+            {
                 "kind": "cutting_program_validation_report",
                 "sha256": "6" * 64,
                 "size_bytes": 512,

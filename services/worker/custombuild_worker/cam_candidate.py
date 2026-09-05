@@ -34,6 +34,7 @@ from custombuild_manufacturing.cam_candidate_package import (
     CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH,
     CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH,
     CAM_CANDIDATE_SOURCE_OPERATIONS_PATH,
+    CAM_CANDIDATE_START_HERE_PATH,
     CAM_CANDIDATE_STATUS,
     CAM_CANDIDATE_TOOLPATH_PATH,
     CAMCandidateBundle,
@@ -191,6 +192,7 @@ def _public_evidence(candidate: CAMCandidateBundle) -> tuple[CandidateEvidenceAr
     required_singletons = {
         CAM_CANDIDATE_TOOLPATH_PATH: "cutting_toolpaths",
         CAM_CANDIDATE_PROGRAM_INDEX_PATH: "machine_program_index",
+        CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH: "production_setup_instructions",
         CAM_CANDIDATE_REPORT_PATH: "cutting_program_validation_report",
         CAM_CANDIDATE_BACKPLOT_PATH: "cutting_backplot",
         CAM_CANDIDATE_MACHINE_PROFILE_PATH: "production_machine_profile",
@@ -246,6 +248,7 @@ def _public_evidence(candidate: CAMCandidateBundle) -> tuple[CandidateEvidenceAr
         values.append(CandidateEvidenceArtifact(f"machine_program_{expected_order:03d}", artifact))
 
     allowed_paths = {
+        CAM_CANDIDATE_START_HERE_PATH,
         CAM_CANDIDATE_SOURCE_OPERATIONS_PATH,
         CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH,
         CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH,

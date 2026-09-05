@@ -79,6 +79,7 @@ from custombuild_manufacturing.cam_candidate_package import (
     CAM_CANDIDATE_PROGRAM_INDEX_PATH,
     CAM_CANDIDATE_PROGRAM_ROOT,
     CAM_CANDIDATE_REPORT_PATH,
+    CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH,
     CAM_CANDIDATE_TOOLPATH_PATH,
     read_and_verify_cam_candidate_package,
 )
@@ -1759,6 +1760,7 @@ _ARTIFACT_DOWNLOAD_IDENTITIES: Mapping[str, tuple[str, str]] = {
     "assembly_readiness": ("assembly-readiness", "application/json"),
     "cutting_toolpaths": ("cutting-toolpaths", "application/json"),
     "machine_program_index": ("machine-program-index", "application/json"),
+    "production_setup_instructions": ("production-setup-instructions", "application/json"),
     "cutting_program_validation_report": (
         "cutting-program-validation-report",
         "application/json",
@@ -1781,6 +1783,7 @@ _CAM_CANDIDATE_ARTIFACT_KINDS = frozenset(
         "cam_candidate_bundle",
         "cutting_toolpaths",
         "machine_program_index",
+        "production_setup_instructions",
         "cutting_program_validation_report",
         "cutting_backplot",
         "production_machine_profile",
@@ -3444,6 +3447,7 @@ def _cutting_candidate_result_is_valid(
         "cam_candidate_bundle": "application/zip",
         "cutting_toolpaths": "application/json",
         "machine_program_index": "application/json",
+        "production_setup_instructions": "application/json",
         "cutting_program_validation_report": "application/json",
         "cutting_backplot": "image/svg+xml",
         "production_machine_profile": "application/json",
@@ -3588,6 +3592,7 @@ def _cam_candidate_job_binding_is_valid(
             "cam_candidate_bundle",
             "cutting_toolpaths",
             "machine_program_index",
+            "production_setup_instructions",
             "cutting_program_validation_report",
             "cutting_backplot",
             "production_machine_profile",
@@ -3737,6 +3742,7 @@ def _cam_candidate_package_binding_is_valid(
         public_paths = {
             CAM_CANDIDATE_TOOLPATH_PATH: "cutting_toolpaths",
             CAM_CANDIDATE_PROGRAM_INDEX_PATH: "machine_program_index",
+            CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH: "production_setup_instructions",
             CAM_CANDIDATE_REPORT_PATH: "cutting_program_validation_report",
             CAM_CANDIDATE_BACKPLOT_PATH: "cutting_backplot",
             CAM_CANDIDATE_MACHINE_PROFILE_PATH: "production_machine_profile",

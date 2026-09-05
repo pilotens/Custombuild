@@ -637,11 +637,11 @@ interface CAMSoftwareProvenance {
     cutting_verifier_version: "cutting-program-verifier-1.1.0";
     cutting_backplot_version: "cutting-backplot-1.1.0";
     postprocessor_id: "linuxcnc-3axis-production";
-    postprocessor_version: "1.1.0";
-    gcode_parser_version: "linuxcnc-production-parser-1.3.0";
-    gcode_safety_validator_version: "linuxcnc-production-safety-1.3.0";
+    postprocessor_version: "1.2.0";
+    gcode_parser_version: "linuxcnc-production-parser-1.3.1";
+    gcode_safety_validator_version: "linuxcnc-production-safety-1.3.1";
     candidate_manifest_schema_version: "custombuild.cam-candidate-manifest.v2";
-    candidate_package_builder_version: "deterministic-cam-candidate-package-1.1.0";
+    candidate_package_builder_version: "deterministic-cam-candidate-package-1.2.0";
   };
 }
 
@@ -988,6 +988,7 @@ const CAM_CANDIDATE_SINGLETON_CONTENT_TYPES = Object.freeze({
   cam_candidate_bundle: "application/zip",
   cutting_toolpaths: "application/json",
   machine_program_index: "application/json",
+  production_setup_instructions: "application/json",
   cutting_program_validation_report: "application/json",
   cutting_backplot: "image/svg+xml",
   production_machine_profile: "application/json",
@@ -1134,13 +1135,13 @@ function parseCAMSoftwareProvenance(value: unknown): CAMSoftwareProvenance | und
     || implementations.cutting_verifier_version !== "cutting-program-verifier-1.1.0"
     || implementations.cutting_backplot_version !== "cutting-backplot-1.1.0"
     || implementations.postprocessor_id !== "linuxcnc-3axis-production"
-    || implementations.postprocessor_version !== "1.1.0"
-    || implementations.gcode_parser_version !== "linuxcnc-production-parser-1.3.0"
-    || implementations.gcode_safety_validator_version !== "linuxcnc-production-safety-1.3.0"
+    || implementations.postprocessor_version !== "1.2.0"
+    || implementations.gcode_parser_version !== "linuxcnc-production-parser-1.3.1"
+    || implementations.gcode_safety_validator_version !== "linuxcnc-production-safety-1.3.1"
     || implementations.candidate_manifest_schema_version
       !== "custombuild.cam-candidate-manifest.v2"
     || implementations.candidate_package_builder_version
-      !== "deterministic-cam-candidate-package-1.1.0"
+      !== "deterministic-cam-candidate-package-1.2.0"
   ) return undefined;
   return {
     schema_version: "custombuild.cam-software-provenance.v1",
@@ -1161,11 +1162,11 @@ function parseCAMSoftwareProvenance(value: unknown): CAMSoftwareProvenance | und
       cutting_verifier_version: "cutting-program-verifier-1.1.0",
       cutting_backplot_version: "cutting-backplot-1.1.0",
       postprocessor_id: "linuxcnc-3axis-production",
-      postprocessor_version: "1.1.0",
-      gcode_parser_version: "linuxcnc-production-parser-1.3.0",
-      gcode_safety_validator_version: "linuxcnc-production-safety-1.3.0",
+      postprocessor_version: "1.2.0",
+      gcode_parser_version: "linuxcnc-production-parser-1.3.1",
+      gcode_safety_validator_version: "linuxcnc-production-safety-1.3.1",
       candidate_manifest_schema_version: "custombuild.cam-candidate-manifest.v2",
-      candidate_package_builder_version: "deterministic-cam-candidate-package-1.1.0",
+      candidate_package_builder_version: "deterministic-cam-candidate-package-1.2.0",
     },
   };
 }
@@ -1230,7 +1231,7 @@ export function camCandidateFromJob(job?: JobRead): CAMCandidateResult | undefin
     || !isRecord(postprocessor)
     || !hasExactKeys(postprocessor, CAM_CANDIDATE_POSTPROCESSOR_KEYS)
     || postprocessor.id !== "linuxcnc-3axis-production"
-    || postprocessor.version !== "1.1.0"
+    || postprocessor.version !== "1.2.0"
     || hashFields.some((field) => !isSha256(value[field]))
     || value.base_design_review_bundle_sha256 !== result.bundle_sha256
     || value.production_profile_payload_sha256 !== binding.payload_sha256
@@ -1883,6 +1884,7 @@ export function artifactRoleLabel(kind: string): string {
   if (kind === "supplier_handoff") return "Leverantörsöverlämning";
   if (kind === "manufacturing_intent") return "Maskinneutralt bearbetningsunderlag";
   if (kind === "cutting_toolpaths") return "Skärande verktygsbanor";
+  if (kind === "production_setup_instructions") return "Setupinstruktioner för verkstaden";
   if (kind === "machine_program_index") return "Körordning för maskinprogram";
   if (kind === "cutting_program_validation_report") return "Oberoende CAM-kontrollrapport";
   if (kind === "cutting_backplot") return "Backplot för skärande rörelser";
@@ -1923,6 +1925,9 @@ export function artifactReviewUseLabel(kind: string): string {
   }
   if (kind === "cutting_toolpaths") {
     return "Exakta skärande verktygsbanor – inte arbetsorder eller maskinstart";
+  }
+  if (kind === "production_setup_instructions") {
+    return "Kontrollera uppspänning, verktyg, WCS och maskin före varje program. Behåll med CAM-paketet.";
   }
   if (kind === "machine_program_index") {
     return "Checksummebunden körordning – kräver operatörens acceptans";
@@ -1986,6 +1991,7 @@ export function artifactDownloadFileName(
     assembly_readiness: ["assembly-readiness", "application/json", "json"],
     cutting_toolpaths: ["cutting-toolpaths", "application/json", "json"],
     machine_program_index: ["machine-program-index", "application/json", "json"],
+    production_setup_instructions: ["production-setup-instructions", "application/json", "json"],
     cutting_program_validation_report: [
       "cutting-program-validation-report",
       "application/json",
@@ -4044,7 +4050,9 @@ export function ProductionWorkflow({
                       <p>
                         Kandidaten innehåller {camCandidate.program_count} checksummebundna,
                         skärande LinuxCNC-program samt verktygsbanor, körordning, maskinprofil,
-                        oberoende kontrollrapport och backplot.
+                        setupinstruktioner, oberoende kontrollrapport och backplot.
+                        Börja med START-HERE.md i ZIP-filen och läs setupinstruktionerna före
+                        programmen. Behåll hela paketet tillsammans.
                       </p>
                     </header>
                     <p className="production-warning">

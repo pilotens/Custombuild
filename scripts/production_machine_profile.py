@@ -86,6 +86,15 @@ from custombuild_postprocessors import (
     LinuxCNCProductionMachineProfile,
     LinuxCNCProductionPostprocessor,
 )
+from custombuild_postprocessors.runtime_contract import (
+    LINUXCNC_ORACLE_BUILD_SHA256,
+    LINUXCNC_ORACLE_CONTROLLER_VERSION,
+    LINUXCNC_ORACLE_PACKAGE_VERSION,
+    REQUIRED_RUNTIME_SETTINGS,
+    RUNTIME_COMPONENTS,
+    RUNTIME_CONTRACT_SCHEMA_VERSION,
+    RUNTIME_INPUTS,
+)
 
 DRAFT_SCHEMA_VERSION = "custombuild.production-machine-profile-draft.v1"
 MAX_DRAFT_BYTES = 4 * MAX_PRODUCTION_MACHINE_PROFILE_BYTES
@@ -294,6 +303,43 @@ def _closed_schema(
     }
 
 
+def _runtime_contract_schema() -> dict[str, object]:
+    def inventory(names: frozenset[str]) -> dict[str, object]:
+        return {
+            "type": "array",
+            "minItems": len(names),
+            "maxItems": len(names),
+            "prefixItems": [
+                _closed_schema(
+                    {"name": {"const": name}, "sha256": {"$ref": "#/$defs/sha256"}},
+                    required=frozenset({"name", "sha256"}),
+                )
+                for name in sorted(names)
+            ],
+        }
+
+    properties: dict[str, object] = {
+        "schema_version": {"const": RUNTIME_CONTRACT_SCHEMA_VERSION},
+        "oracle_build_sha256": {"const": LINUXCNC_ORACLE_BUILD_SHA256},
+        "installed_package_version": {"const": LINUXCNC_ORACLE_PACKAGE_VERSION},
+        "effective_settings": {
+            "const": [
+                {"name": name, "value": value}
+                for name, value in sorted(REQUIRED_RUNTIME_SETTINGS.items())
+            ]
+        },
+        "components": inventory(RUNTIME_COMPONENTS),
+        "configuration_inputs": inventory(RUNTIME_INPUTS),
+        "min_forward_velocity_rpm": {"$ref": "#/$defs/positiveInteger"},
+        "max_forward_velocity_rpm": {"$ref": "#/$defs/positiveInteger"},
+        "evidence_id": {"$ref": "#/$defs/canonicalId"},
+        "evidence_version": {"$ref": "#/$defs/canonicalId"},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "workshop_runtime_verified": {"const": True},
+    }
+    return _closed_schema(properties, required=frozenset(properties))
+
+
 def production_profile_json_schema() -> dict[str, object]:
     """Return the static Draft 2020-12 syntax contract for finalized profiles.
 
@@ -330,6 +376,8 @@ def production_profile_json_schema() -> dict[str, object]:
     for name in sorted(_MACHINE_FIELDS):
         if name == "controller_id":
             machine_properties[name] = {"const": "linuxcnc"}
+        elif name == "controller_version":
+            machine_properties[name] = {"const": LINUXCNC_ORACLE_CONTROLLER_VERSION}
         elif name in positive_machine_integers:
             machine_properties[name] = ref("positiveInteger")
         elif name in machine_integers:
@@ -370,7 +418,11 @@ def production_profile_json_schema() -> dict[str, object]:
         "full_restart_after_abort_required",
     }
     for name in sorted(_POSTPROCESSOR_FIELDS):
-        if name in policy_constants:
+        if name == "runtime_contract":
+            postprocessor_properties[name] = _runtime_contract_schema()
+        elif name == "controller_version":
+            postprocessor_properties[name] = {"const": LINUXCNC_ORACLE_CONTROLLER_VERSION}
+        elif name in policy_constants:
             postprocessor_properties[name] = {"const": policy_constants[name]}
         elif name == "controller_id":
             postprocessor_properties[name] = {"const": "linuxcnc"}

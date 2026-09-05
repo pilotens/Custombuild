@@ -7,11 +7,15 @@ customer can enter exact outer dimensions, bays and shelf levels, then one froze
 drawings, assembly data and a checksummed package for an external CNC shop. CAM
 validation is generated only when every structured CAM prerequisite is present.
 
-> Machine output is validation-only. It is not safe for physical cutting until
-> the exact machine, tooling, material batch, calibration, postprocessor and
-> complete prototype have been verified by an experienced furniture constructor
-> and CNC operator. Custombuild never starts a machine and does not represent its
-> screening calculations as certification.
+The supported Hyllsystem/Shelving lane also generates a separate executable
+2.5D LinuxCNC CAM candidate from an accepted workshop profile: cutting programs,
+toolpaths, setup instructions, program order and independent verification.
+
+> The design-review package retains validation-only output. The separate CAM
+> candidate contains real cutting moves and requires workshop acceptance of the
+> exact machine, runtime, tooling, material, fixtures and first article.
+> `physical_cutting_authorized=false`: Custombuild does not start a machine or
+> certify construction. See [workshop handoff](docs/CAM_CANDIDATE_WORKSHOP_HANDOFF.md).
 
 ## Implemented vertical
 
@@ -271,7 +275,7 @@ and intent listed above.
 - `packages/template-sdk` — documented versioned template contract
 - `cad` — authoritative CadQuery/OpenCascade geometry plus optional FreeCAD interchange
 - `cam` — semantic operations, setup validation and backplot
-- `postprocessors` — validation-only LinuxCNC reference postprocessor
+- `postprocessors` — LinuxCNC validation adapter and separate executable 2.5D CAM adapter
 - `docs` — architecture, security, operations, safety and licence gates
 
 Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md),

@@ -226,6 +226,7 @@ _CAM_CANDIDATE_EVIDENCE_CONTRACTS: Mapping[str, tuple[str, str]] = {
     "cam_candidate_bundle": ("application/zip", "EXECUTABLE_CAM_CANDIDATE_BUNDLE"),
     "cutting_toolpaths": ("application/json", "PRODUCTION_TOOLPATH_DOCUMENT"),
     "machine_program_index": ("application/json", "PRODUCTION_PROGRAM_INDEX"),
+    "production_setup_instructions": ("application/json", "PRODUCTION_SETUP_INSTRUCTIONS"),
     "cutting_program_validation_report": (
         "application/json",
         "CUTTING_PROGRAM_VALIDATION_REPORT",

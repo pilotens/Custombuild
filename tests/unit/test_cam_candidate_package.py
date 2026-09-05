@@ -83,6 +83,8 @@ from custombuild_postprocessors import (
     ProductionMachineProgram,
 )
 
+from tests.runtime_contract_fixture import runtime_contract_fixture
+
 _TEST_PRODUCER_SOURCE_MANIFEST_SHA256 = sha256_hex(b"TEST_ONLY_UNATTESTED_SOURCE_MANIFEST")
 
 
@@ -354,6 +356,7 @@ def _production_profile() -> LinuxCNCProductionMachineProfile:
         machine_profile_version="1.0.0",
         controller_id="linuxcnc",
         controller_version="2.9.4",
+        runtime_contract=runtime_contract_fixture(),
         supported_wcs=("G54",),
         wcs_offsets=(LinuxCNCWCSOffset("G54", 0, 0, 0, 0),),
         machine_x_min_um=0,
@@ -646,14 +649,14 @@ def _fixture(
 
 def _rewrite_zip(payload: bytes, files: dict[str, bytes]) -> bytes:
     output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_STORED) as archive:
         for name in files:
             info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
-            info.compress_type = zipfile.ZIP_DEFLATED
+            info.compress_type = zipfile.ZIP_STORED
             info.create_system = 3
             info.external_attr = 0o100644 << 16
             info.flag_bits = 0x800
-            archive.writestr(info, files[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+            archive.writestr(info, files[name], compress_type=zipfile.ZIP_STORED)
     return output.getvalue()
 
 
@@ -1027,7 +1030,7 @@ def test_historical_reader_uses_the_frozen_supported_implementation_identity(
         frozen_identity
     )
     assert frozen_dispatch.key == frozen_identity.dispatch_key
-    assert frozen_dispatch.verify is candidate_package._verify_cam_candidate_v1
+    assert frozen_dispatch.verify is candidate_package._verify_cam_candidate_v2
     monkeypatch.setattr(
         provenance_module,
         "PRODUCTION_TOOLPATH_ENGINE_VERSION",
@@ -1092,8 +1095,8 @@ def test_historical_reader_dispatches_full_second_identity_before_v1_parsing(
         candidate_package,
         "_CAM_CANDIDATE_VERIFICATION_DISPATCHES",
         {
-            candidate_package._V1_VERIFICATION_DISPATCH.key: (
-                candidate_package._V1_VERIFICATION_DISPATCH
+            candidate_package._V2_VERIFICATION_DISPATCH.key: (
+                candidate_package._V2_VERIFICATION_DISPATCH
             ),
             second_dispatch.key: second_dispatch,
         },
@@ -1153,7 +1156,7 @@ def test_historical_reader_fails_closed_without_an_exact_verifier_callable(
     monkeypatch.setattr(
         candidate_package,
         "_CAM_CANDIDATE_VERIFICATION_DISPATCHES",
-        {second.dispatch_key: candidate_package._V1_VERIFICATION_DISPATCH},
+        {second.dispatch_key: candidate_package._V2_VERIFICATION_DISPATCH},
     )
     with pytest.raises(ArtifactError, match="software provenance is invalid"):
         read_and_verify_cam_candidate_package(
@@ -1203,6 +1206,31 @@ def test_runtime_safety_contract_is_bound_across_manifest_index_setup_and_header
     )
     with zipfile.ZipFile(io.BytesIO(result.zip_bytes)) as archive:
         original_files = {name: archive.read(name) for name in archive.namelist()}
+
+    runtime = profile.postprocessor_profile.runtime_contract
+    assert result.manifest["production_machine_profile"]["runtime_safety"]["runtime_contract"] == (
+        runtime.as_dict()
+    )
+    setup = json.loads(original_files[CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH])
+    assert setup["expected_live_controller_state"]["runtime_contract"] == runtime.as_dict()
+    assert f"(LINUXCNC_RUNTIME_CONTRACT_SHA256={runtime.sha256})".encode() in programs[0].content
+    for path in ("START-HERE.md", CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH):
+        changed = dict(original_files)
+        if path == "START-HERE.md":
+            changed[path] = changed[path].replace(b"physical_cutting_authorized=false", b"READY")
+        else:
+            altered_setup = json.loads(changed[path])
+            altered_setup["expected_live_controller_state"]["runtime_contract"][
+                "workshop_runtime_verified"
+            ] = False
+            changed[path] = canonical_json_bytes(altered_setup)
+        _rehash_artifact_and_manifest(changed, path)
+        with pytest.raises(ArtifactError, match="start instructions|setup instructions"):
+            read_and_verify_cam_candidate_package(
+                _rewrite_zip(result.zip_bytes, changed),
+                base_design_review_bundle=b"verified-review-bundle",
+                allow_test_only=True,
+            )
 
     manifest_files = dict(original_files)
     manifest = json.loads(manifest_files["manifest.json"])
@@ -1882,7 +1910,7 @@ def test_zip_envelope_rejects_empty_comments_noncanonical_entries_and_resource_a
         candidate_package._validate_zip_envelope(archive, archive.infolist())
 
     comment_buffer = io.BytesIO()
-    with zipfile.ZipFile(comment_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+    with zipfile.ZipFile(comment_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.comment = b"comment"
         archive.writestr("one.json", b"{}")
     with (
@@ -1892,11 +1920,11 @@ def test_zip_envelope_rejects_empty_comments_noncanonical_entries_and_resource_a
         candidate_package._validate_zip_envelope(archive, archive.infolist())
 
     stored_buffer = io.BytesIO()
-    with zipfile.ZipFile(stored_buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+    with zipfile.ZipFile(stored_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         info = zipfile.ZipInfo("one.json", date_time=(1980, 1, 1, 0, 0, 0))
         info.create_system = 3
         info.external_attr = 0o100644 << 16
-        archive.writestr(info, b"{}")
+        archive.writestr(info, b"{}", compress_type=zipfile.ZIP_DEFLATED)
     with (
         zipfile.ZipFile(io.BytesIO(stored_buffer.getvalue())) as archive,
         pytest.raises(ArtifactError, match="non-canonical entry"),
