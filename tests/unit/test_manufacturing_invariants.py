@@ -113,8 +113,59 @@ def base_part(*features: ManufacturingFeature) -> PartSpec:
         ),
         lambda: ToolSpec("t", "T", 0, 1, (OperationKind.DRILL,), 1, 1, 1),
         lambda: ToolSpec("t", "T", 1, 1, (OperationKind.DRILL,), 1, 0, 1),
+        lambda: ToolSpec("t", "T", 1, 1, (), 1, 1, 1),
+        lambda: ToolSpec(
+            "t",
+            "T",
+            10,
+            10,
+            (OperationKind.DRILL,),
+            1,
+            1,
+            1,
+            measured_diameter_um=-1,
+        ),
+        lambda: ToolSpec(
+            "t", "T", 10, 10, (OperationKind.DRILL,), 1, 1, 1, runout_um=-1
+        ),
+        lambda: ToolSpec(
+            "t", "T", 10, 10, (OperationKind.DRILL,), 1, 1, 1, runout_um=5
+        ),
         lambda: MachineProfile("m", "M", "1", "c", 0, 1, 1, 1, 1, (), ()),
         lambda: MachineProfile("m", "M", "1", "c", 1, 1, 1, 2, 1, (), ()),
+        lambda: MachineProfile(
+            "m", "M", "1", "c", 1, 1, 1, 1, 1, (), (), accuracy_um=0
+        ),
+        lambda: MachineProfile(
+            "m",
+            "M",
+            "1",
+            "c",
+            1,
+            1,
+            1,
+            1,
+            1,
+            (),
+            (),
+            wcs_codes=("G54", "G54"),
+        ),
+        lambda: MachineProfile(
+            "m",
+            "M",
+            "1",
+            "c",
+            1,
+            1,
+            1,
+            1,
+            1,
+            (),
+            (
+                ToolSpec("duplicate", "T1", 1, 1, (OperationKind.DRILL,), 1, 1, 1),
+                ToolSpec("duplicate", "T2", 1, 1, (OperationKind.DRILL,), 1, 1, 1),
+            ),
+        ),
         lambda: StockSheet("s", "m", "v", 1, 1, 1, quantity=0),
         lambda: StockSheet("s", "m", "v", 100, 100, 1, margin_um=50),
         lambda: OperationsDocument("v", "h", "m", "1", (), (), "PRODUCTION"),
@@ -139,6 +190,7 @@ def test_canonical_units_status_and_instance_coercion() -> None:
         b'{"set":["a","b"],"status":"WARNING"}'
     )
     assert DFMReport(()).status == Severity.PASS
+    assert DFMReport(()).engine_version == "dfm-1.3.0"
     warning = DFMIssue("W", Severity.WARNING, "warning")
     blocking = DFMIssue("B", Severity.BLOCK, "blocking")
     assert DFMReport((warning,)).status == Severity.WARNING
@@ -591,16 +643,6 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
             pitch_um=32_000,
         ),
         ManufacturingFeature(
-            "counter",
-            "panel",
-            FeatureKind.COUNTERSINK,
-            Side.A,
-            80_000,
-            20_000,
-            5_000,
-            diameter_um=8_000,
-        ),
-        ManufacturingFeature(
             "pocket",
             "panel",
             FeatureKind.POCKET,
@@ -640,11 +682,11 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
             "panel",
             FeatureKind.OUTER_CONTOUR,
             Side.A,
-            140_000,
-            60_000,
+            0,
+            0,
             18_000,
-            width_um=20_000,
-            length_um=20_000,
+            width_um=300_000,
+            length_um=200_000,
             through=True,
         ),
         ManufacturingFeature(
@@ -657,6 +699,17 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
             1_000,
             width_um=10_000,
             length_um=5_000,
+        ),
+        ManufacturingFeature(
+            "engrave",
+            "panel",
+            FeatureKind.ENGRAVE,
+            Side.A,
+            220_000,
+            60_000,
+            1_000,
+            width_um=30_000,
+            length_um=10_000,
         ),
     )
     edge_band_details = tuple(
@@ -676,11 +729,29 @@ def test_exporters_cover_all_semantic_layers_edges_and_nesting_zones() -> None:
     dxf = dxf_for_part(part, Side.A).decode("utf-8")
     svg = svg_for_part(part, Side.A).decode("utf-8")
 
-    assert all(layer in dxf for layer in ("DRILL", "POCKET", "GROOVE", "EDGE_BAND", "LABEL"))
+    assert all(
+        layer in dxf
+        for layer in (
+            "DRILL",
+            "POCKET",
+            "GROOVE",
+            "RABBET",
+            "INNER_CONTOUR",
+            "ENGRAVE",
+            "EDGE_BAND",
+            "LABEL",
+        )
+    )
     assert 'data-feature-id="pattern"' in svg
     dxf_document = ezdxf.read(io.StringIO(dxf))
-    assert len(dxf_document.modelspace().query('CIRCLE[layer=="GROOVE"]')) == 4
+    modelspace = dxf_document.modelspace()
+    assert len(modelspace.query('CIRCLE[layer=="RABBET"]')) == 4
+    assert len(modelspace.query('LWPOLYLINE[layer=="POCKET"]')) == 1
+    assert len(modelspace.query('LWPOLYLINE[layer=="INNER_CONTOUR"]')) == 1
+    assert len(modelspace.query('LWPOLYLINE[layer=="ENGRAVE"]')) == 1
     assert 'data-corner-strategy="dogbone-v1"' in svg
+    assert 'class="inner-contour" data-feature-id="inner"' in svg
+    assert 'class="engrave" data-feature-id="engrave"' in svg
     assert b"finished_width_mm" in bom_csv((part,))
     assert b"instance_id" in cut_list_csv((part,))
     with pytest.raises(ValueError):

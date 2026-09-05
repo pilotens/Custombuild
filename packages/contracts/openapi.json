@@ -61,6 +61,18 @@
             "title": "Approved By",
             "type": "string"
           },
+          "cam_candidate_bundle_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cam Candidate Bundle Sha256"
+          },
           "created_at": {
             "format": "date-time",
             "title": "Created At",
@@ -219,7 +231,8 @@
             "enum": [
               "wall_anchor",
               "hardware",
-              "material_grain"
+              "material_grain",
+              "joint_retention"
             ],
             "title": "Evidence Type",
             "type": "string"
@@ -333,7 +346,7 @@
             "type": "integer"
           },
           "edge_band_mm": {
-            "default": 1,
+            "default": 0,
             "maximum": 5.0,
             "minimum": 0.0,
             "title": "Edge Band Mm",
@@ -377,6 +390,14 @@
             ],
             "title": "Material Id",
             "type": "string"
+          },
+          "measured_back_thickness_mm": {
+            "default": 6,
+            "description": "Actual measured back-panel batch thickness. The design service accepts whole micrometres only and does not round finer measurements.",
+            "maximum": 6.5,
+            "minimum": 5.5,
+            "title": "Measured Back Thickness Mm",
+            "type": "number"
           },
           "measured_thickness_mm": {
             "default": 18,
@@ -466,6 +487,188 @@
         "title": "BookcasePreviewInput",
         "type": "object"
       },
+      "CAMApprovalReleaseBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "approval_type": {
+            "const": "cam",
+            "title": "Approval Type",
+            "type": "string"
+          },
+          "approved_by": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Approved By",
+            "type": "string"
+          },
+          "binding_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Binding Sha256",
+            "type": "string"
+          },
+          "candidate_bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Bundle Sha256",
+            "type": "string"
+          },
+          "created_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+            "title": "Created At",
+            "type": "string"
+          },
+          "design_version_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Design Version Id",
+            "type": "string"
+          },
+          "generation_job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Generation Job Id",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "organization_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Organization Id",
+            "type": "string"
+          },
+          "overrides_json": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 0,
+            "title": "Overrides Json",
+            "type": "array"
+          },
+          "production_context_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Production Context Hash",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 2000,
+            "minLength": 5,
+            "title": "Reason",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "custombuild.cam-approval-release-binding.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "updated_at": {
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "approval_id",
+          "generation_job_id",
+          "organization_id",
+          "design_version_id",
+          "approval_type",
+          "approved_by",
+          "reason",
+          "production_context_hash",
+          "manifest_sha256",
+          "candidate_bundle_sha256",
+          "overrides_json",
+          "created_at",
+          "updated_at",
+          "binding_sha256"
+        ],
+        "title": "CAMApprovalReleaseBinding",
+        "type": "object"
+      },
+      "DesignReviewBundleReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Bundle Sha256",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "bundle_sha256",
+          "manifest_sha256"
+        ],
+        "title": "DesignReviewBundleReceipt",
+        "type": "object"
+      },
+      "DesignReviewReleaseRead": {
+        "additionalProperties": false,
+        "properties": {
+          "bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Bundle Sha256",
+            "type": "string"
+          },
+          "machine_use": {
+            "const": "validation_only",
+            "title": "Machine Use",
+            "type": "string"
+          },
+          "manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Manifest Sha256",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "release_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "release_kind": {
+            "const": "design_review",
+            "title": "Release Kind",
+            "type": "string"
+          },
+          "release_number": {
+            "pattern": "^[A-Z0-9][A-Z0-9._-]{0,39}$",
+            "title": "Release Number",
+            "type": "string"
+          },
+          "status": {
+            "const": "released",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "release_id",
+          "release_number",
+          "status",
+          "bundle_sha256",
+          "manifest_sha256",
+          "release_kind",
+          "machine_use",
+          "physical_cutting_authorized"
+        ],
+        "title": "DesignReviewReleaseRead",
+        "type": "object"
+      },
       "DesignStatus": {
         "enum": [
           "concept",
@@ -492,6 +695,19 @@
             "pattern": "^[a-f0-9]{64}$",
             "title": "Expected Design Hash",
             "type": "string"
+          },
+          "joint_retention_evidence_id": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional immutable signed retention statement. The server verifies and injects the resulting contract; clients never submit contract fields.",
+            "title": "Joint Retention Evidence Id"
           },
           "production_context": {
             "$ref": "#/components/schemas/RevisionProductionContext"
@@ -630,6 +846,108 @@
         "title": "DesignVersionRead",
         "type": "object"
       },
+      "ExecutableCAMReceipt": {
+        "additionalProperties": false,
+        "properties": {
+          "cam_approval": {
+            "$ref": "#/components/schemas/CAMApprovalReleaseBinding"
+          },
+          "candidate_bundle_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Bundle Sha256",
+            "type": "string"
+          },
+          "candidate_manifest_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Candidate Manifest Sha256",
+            "type": "string"
+          },
+          "production_profile_document_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Production Profile Document Sha256",
+            "type": "string"
+          },
+          "production_profile_payload_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Production Profile Payload Sha256",
+            "type": "string"
+          },
+          "program_inventory_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Program Inventory Sha256",
+            "type": "string"
+          },
+          "workshop_acceptance_required": {
+            "const": true,
+            "title": "Workshop Acceptance Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "candidate_bundle_sha256",
+          "candidate_manifest_sha256",
+          "production_profile_document_sha256",
+          "production_profile_payload_sha256",
+          "program_inventory_sha256",
+          "cam_approval",
+          "workshop_acceptance_required"
+        ],
+        "title": "ExecutableCAMReceipt",
+        "type": "object"
+      },
+      "ExecutableCAMReleaseRead": {
+        "additionalProperties": false,
+        "properties": {
+          "design_review_bundle": {
+            "$ref": "#/components/schemas/DesignReviewBundleReceipt"
+          },
+          "executable_cam": {
+            "$ref": "#/components/schemas/ExecutableCAMReceipt"
+          },
+          "machine_use": {
+            "const": "executable_cam_candidate",
+            "title": "Machine Use",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "release_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "release_kind": {
+            "const": "executable_cam",
+            "title": "Release Kind",
+            "type": "string"
+          },
+          "release_number": {
+            "pattern": "^[A-Z0-9][A-Z0-9._-]{0,39}$",
+            "title": "Release Number",
+            "type": "string"
+          },
+          "status": {
+            "const": "released",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "release_id",
+          "release_number",
+          "status",
+          "release_kind",
+          "machine_use",
+          "design_review_bundle",
+          "executable_cam",
+          "physical_cutting_authorized"
+        ],
+        "title": "ExecutableCAMReleaseRead",
+        "type": "object"
+      },
       "ExternalEvidenceRead": {
         "properties": {
           "catalog_id": {
@@ -662,7 +980,8 @@
             "enum": [
               "wall_anchor",
               "hardware",
-              "material_grain"
+              "material_grain",
+              "joint_retention"
             ],
             "title": "Evidence Type",
             "type": "string"
@@ -723,6 +1042,7 @@
         "type": "object"
       },
       "GenerationRequest": {
+        "additionalProperties": false,
         "properties": {
           "back_stock_count": {
             "default": 2,
@@ -753,6 +1073,11 @@
             "title": "External Evidence Ids",
             "type": "array"
           },
+          "include_cutting_candidate": {
+            "default": false,
+            "title": "Include Cutting Candidate",
+            "type": "boolean"
+          },
           "include_freecad_project": {
             "default": false,
             "title": "Include Freecad Project",
@@ -770,11 +1095,16 @@
           },
           "machine_profile_id": {
             "default": "custombuild-router-1325-linuxcnc",
+            "enum": [
+              "custombuild-router-1325-linuxcnc",
+              "custombuild-router-5125-linuxcnc"
+            ],
             "title": "Machine Profile Id",
             "type": "string"
           },
           "postprocessor_id": {
-            "default": "linuxcnc-validation-1.0.0",
+            "const": "linuxcnc-validation-1.1.0",
+            "default": "linuxcnc-validation-1.1.0",
             "title": "Postprocessor Id",
             "type": "string"
           },
@@ -792,12 +1122,42 @@
             "title": "Stock Height Mm",
             "type": "number"
           },
+          "stock_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopStockProfile"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Profiles"
+          },
           "stock_width_mm": {
             "default": 2440,
             "exclusiveMinimum": 0.0,
             "maximum": 10000.0,
             "title": "Stock Width Mm",
             "type": "number"
+          },
+          "two_sided_registrations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopTwoSidedRegistration"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Two Sided Registrations"
           }
         },
         "title": "GenerationRequest",
@@ -961,6 +1321,18 @@
             ],
             "title": "Lease Expires At"
           },
+          "next_attempt_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Attempt At"
+          },
           "production_context_hash": {
             "title": "Production Context Hash",
             "type": "string"
@@ -1015,6 +1387,7 @@
           "started_at",
           "lease_expires_at",
           "deadline_at",
+          "next_attempt_at",
           "finished_at",
           "created_at",
           "updated_at"
@@ -1500,46 +1873,23 @@
         "type": "object"
       },
       "ReleaseRead": {
-        "properties": {
-          "machine_use": {
-            "const": "validation_only",
-            "title": "Machine Use",
-            "type": "string"
+        "description": "One immutable release receipt, discriminated by its actual release scope.",
+        "discriminator": {
+          "mapping": {
+            "design_review": "#/components/schemas/DesignReviewReleaseRead",
+            "executable_cam": "#/components/schemas/ExecutableCAMReleaseRead"
           },
-          "manifest_sha256": {
-            "pattern": "^[a-f0-9]{64}$",
-            "title": "Manifest Sha256",
-            "type": "string"
-          },
-          "release_id": {
-            "title": "Release Id",
-            "type": "string"
-          },
-          "release_kind": {
-            "const": "design_review",
-            "title": "Release Kind",
-            "type": "string"
-          },
-          "release_number": {
-            "title": "Release Number",
-            "type": "string"
-          },
-          "status": {
-            "const": "released",
-            "title": "Status",
-            "type": "string"
-          }
+          "propertyName": "release_kind"
         },
-        "required": [
-          "release_id",
-          "release_number",
-          "status",
-          "manifest_sha256",
-          "release_kind",
-          "machine_use"
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/DesignReviewReleaseRead"
+          },
+          {
+            "$ref": "#/components/schemas/ExecutableCAMReleaseRead"
+          }
         ],
-        "title": "ReleaseRead",
-        "type": "object"
+        "title": "ReleaseRead"
       },
       "RevisionProductionContext": {
         "additionalProperties": false,
@@ -1564,8 +1914,10 @@
             "type": "number"
           },
           "machine_profile_id": {
-            "maxLength": 160,
-            "minLength": 1,
+            "enum": [
+              "custombuild-router-1325-linuxcnc",
+              "custombuild-router-5125-linuxcnc"
+            ],
             "title": "Machine Profile Id",
             "type": "string"
           },
@@ -1581,11 +1933,41 @@
             "title": "Stock Height Mm",
             "type": "number"
           },
+          "stock_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopStockProfile"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Profiles"
+          },
           "stock_width_mm": {
             "exclusiveMinimum": 0.0,
             "maximum": 10000.0,
             "title": "Stock Width Mm",
             "type": "number"
+          },
+          "two_sided_registrations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopTwoSidedRegistration"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Two Sided Registrations"
           }
         },
         "required": [
@@ -1667,6 +2049,381 @@
           "reason"
         ],
         "title": "WarningOverrideCreate",
+        "type": "object"
+      },
+      "WorkshopRegistrationPin": {
+        "additionalProperties": false,
+        "properties": {
+          "x_um": {
+            "maximum": 10000000.0,
+            "minimum": 0.0,
+            "title": "X Um",
+            "type": "integer"
+          },
+          "y_um": {
+            "maximum": 5000000.0,
+            "minimum": 0.0,
+            "title": "Y Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x_um",
+          "y_um"
+        ],
+        "title": "WorkshopRegistrationPin",
+        "type": "object"
+      },
+      "WorkshopRunBlockedResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "$ref": "#/components/schemas/WorkshopRunBlockerDetail"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "WorkshopRunBlockedResponse",
+        "type": "object"
+      },
+      "WorkshopRunBlockerDetail": {
+        "additionalProperties": false,
+        "description": "Truthful current-state result for the blocker-only workshop endpoint.",
+        "properties": {
+          "code": {
+            "enum": [
+              "EXECUTABLE_MACHINE_PROGRAM_MISSING",
+              "WORKSHOP_EXECUTABLE_PACKAGE_MISSING",
+              "WORKSHOP_GENERATION_JOB_NOT_READY"
+            ],
+            "title": "Code",
+            "type": "string"
+          },
+          "cutting_blocker_codes": {
+            "maxItems": 1,
+            "minItems": 1,
+            "prefixItems": [
+              {
+                "enum": [
+                  "EXECUTABLE_MACHINE_PROGRAM_MISSING",
+                  "WORKSHOP_EXECUTABLE_PACKAGE_MISSING",
+                  "WORKSHOP_GENERATION_JOB_NOT_READY"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Cutting Blocker Codes",
+            "type": "array"
+          },
+          "message": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "release_review_eligible": {
+            "const": false,
+            "title": "Release Review Eligible",
+            "type": "boolean"
+          },
+          "solution": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Solution",
+            "type": "string"
+          },
+          "workshop_status": {
+            "const": "BLOCKED",
+            "title": "Workshop Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "solution",
+          "workshop_status",
+          "release_review_eligible",
+          "cutting_blocker_codes",
+          "physical_cutting_authorized"
+        ],
+        "title": "WorkshopRunBlockerDetail",
+        "type": "object"
+      },
+      "WorkshopRunPrepare": {
+        "additionalProperties": false,
+        "description": "Non-authoritative request to prepare one server-derived workshop run.",
+        "properties": {
+          "confirmation": {
+            "const": "PREPARE_WORKSHOP_RUN",
+            "title": "Confirmation",
+            "type": "string"
+          },
+          "generation_job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Generation Job Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "generation_job_id",
+          "confirmation"
+        ],
+        "title": "WorkshopRunPrepare",
+        "type": "object"
+      },
+      "WorkshopStockProfile": {
+        "additionalProperties": false,
+        "description": "Exact supplier/raw-sheet declaration; no dimensions are inferred by the server.",
+        "properties": {
+          "allow_rotation": {
+            "title": "Allow Rotation",
+            "type": "boolean"
+          },
+          "declaration_authority": {
+            "const": "CLIENT_DECLARED",
+            "title": "Declaration Authority",
+            "type": "string"
+          },
+          "defect_zones": {
+            "items": {
+              "$ref": "#/components/schemas/WorkshopStockZone"
+            },
+            "maxItems": 100,
+            "title": "Defect Zones",
+            "type": "array"
+          },
+          "fixture_keep_out_zones": {
+            "items": {
+              "$ref": "#/components/schemas/WorkshopStockZone"
+            },
+            "maxItems": 100,
+            "title": "Fixture Keep Out Zones",
+            "type": "array"
+          },
+          "grain_direction": {
+            "enum": [
+              "X",
+              "Y",
+              "NONE"
+            ],
+            "title": "Grain Direction",
+            "type": "string"
+          },
+          "kerf_um": {
+            "maximum": 100000.0,
+            "minimum": 6000.0,
+            "title": "Kerf Um",
+            "type": "integer"
+          },
+          "material_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Material Version",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "carcass",
+              "back"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "sheet_count": {
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Sheet Count",
+            "type": "integer"
+          },
+          "sheet_height_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000000.0,
+            "title": "Sheet Height Um",
+            "type": "integer"
+          },
+          "sheet_width_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Sheet Width Um",
+            "type": "integer"
+          },
+          "supplier_profile_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Supplier Profile Id",
+            "type": "string"
+          },
+          "supplier_profile_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Supplier Profile Version",
+            "type": "string"
+          },
+          "thickness_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 100000.0,
+            "title": "Thickness Um",
+            "type": "integer"
+          },
+          "trim_margin_um": {
+            "maximum": 500000.0,
+            "minimum": 0.0,
+            "title": "Trim Margin Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "role",
+          "declaration_authority",
+          "supplier_profile_id",
+          "supplier_profile_version",
+          "material_id",
+          "material_version",
+          "sheet_width_um",
+          "sheet_height_um",
+          "thickness_um",
+          "sheet_count",
+          "trim_margin_um",
+          "kerf_um",
+          "grain_direction",
+          "allow_rotation",
+          "defect_zones",
+          "fixture_keep_out_zones"
+        ],
+        "title": "WorkshopStockProfile",
+        "type": "object"
+      },
+      "WorkshopStockZone": {
+        "additionalProperties": false,
+        "description": "One caller-declared unusable rectangle in the raw-sheet coordinate frame.",
+        "properties": {
+          "height_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 5000000.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "width_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Width Um",
+            "type": "integer"
+          },
+          "x_um": {
+            "maximum": 10000000.0,
+            "minimum": 0.0,
+            "title": "X Um",
+            "type": "integer"
+          },
+          "y_um": {
+            "maximum": 5000000.0,
+            "minimum": 0.0,
+            "title": "Y Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "x_um",
+          "y_um",
+          "width_um",
+          "height_um"
+        ],
+        "title": "WorkshopStockZone",
+        "type": "object"
+      },
+      "WorkshopTwoSidedRegistration": {
+        "additionalProperties": false,
+        "description": "Externally specified flip registration for one physical raw sheet.",
+        "properties": {
+          "declaration_authority": {
+            "const": "CLIENT_DECLARED",
+            "title": "Declaration Authority",
+            "type": "string"
+          },
+          "fixture_method_id": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Fixture Method Id",
+            "type": "string"
+          },
+          "fixture_method_version": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+            "title": "Fixture Method Version",
+            "type": "string"
+          },
+          "flip_axis": {
+            "const": "X",
+            "title": "Flip Axis",
+            "type": "string"
+          },
+          "pin_diameter_um": {
+            "maximum": 50000.0,
+            "minimum": 1000.0,
+            "title": "Pin Diameter Um",
+            "type": "integer"
+          },
+          "pins": {
+            "items": {
+              "$ref": "#/components/schemas/WorkshopRegistrationPin"
+            },
+            "maxItems": 16,
+            "minItems": 2,
+            "title": "Pins",
+            "type": "array"
+          },
+          "position_tolerance_um": {
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Position Tolerance Um",
+            "type": "integer"
+          },
+          "sheet_index": {
+            "maximum": 99.0,
+            "minimum": 0.0,
+            "title": "Sheet Index",
+            "type": "integer"
+          },
+          "stock_role": {
+            "enum": [
+              "carcass",
+              "back"
+            ],
+            "title": "Stock Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "stock_role",
+          "sheet_index",
+          "flip_axis",
+          "declaration_authority",
+          "fixture_method_id",
+          "fixture_method_version",
+          "pin_diameter_um",
+          "position_tolerance_um",
+          "pins"
+        ],
+        "title": "WorkshopTwoSidedRegistration",
         "type": "object"
       },
       "WorkspaceIntentV1": {
@@ -1826,11 +2583,41 @@
             "title": "Stock Height Mm",
             "type": "number"
           },
+          "stock_profiles": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopStockProfile"
+                },
+                "maxItems": 2,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Profiles"
+          },
           "stock_width_mm": {
             "exclusiveMinimum": 0.0,
             "maximum": 10000.0,
             "title": "Stock Width Mm",
             "type": "number"
+          },
+          "two_sided_registrations": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/WorkshopTwoSidedRegistration"
+                },
+                "maxItems": 200,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Two Sided Registrations"
           }
         },
         "required": [
@@ -2294,6 +3081,22 @@
                 }
               ],
               "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "joint_retention_evidence_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Joint Retention Evidence Id"
             }
           }
         ],
@@ -2764,6 +3567,111 @@
           }
         ],
         "summary": "Upload External Evidence"
+      }
+    },
+    "/v1/projects/{project_id}/evidence/{evidence_id}/download": {
+      "get": {
+        "description": "Stream only the exact currently valid signed JSON held by this tenant/project.",
+        "operationId": "download_joint_retention_evidence_v1_projects__project_id__evidence__evidence_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "evidence_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+              "title": "Evidence Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Exact certifier-signed joint-retention JSON bytes after current-revision, Ed25519, activated-registry/high-water, tenant, ledger, revocation, expiry and SHA-256 verification",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Disposition": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Content-Length": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Digest": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Pragma": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Content-Type-Options": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The active role may not download signed retention evidence."
+          },
+          "404": {
+            "description": "The tenant-scoped project or signed evidence was not found."
+          },
+          "409": {
+            "description": "The evidence is stale, revoked, expired or unverifiable."
+          },
+          "422": {
+            "description": "A path identifier is not a canonical UUID."
+          },
+          "429": {
+            "description": "The bounded download channel is at capacity."
+          },
+          "503": {
+            "description": "The evidence ledger or immutable object is unavailable."
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Joint Retention Evidence"
       }
     },
     "/v1/projects/{project_id}/imports/inspect": {
@@ -3258,6 +4166,81 @@
           }
         ],
         "summary": "Validate Version"
+      }
+    },
+    "/v1/projects/{project_id}/versions/{revision}/workshop-runs": {
+      "post": {
+        "description": "Prepare no physical state until a real executable package exists.\n\nClients can name only a generation job plus an explicit confirmation. The\ntenant revision, job result and release binding are resolved by the server;\nhashes, policies, machine identity and evidence cannot be supplied here.",
+        "operationId": "prepare_workshop_run_v1_projects__project_id__versions__revision__workshop_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "revision",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Revision",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkshopRunPrepare"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "401": {
+            "description": "Authentication required."
+          },
+          "403": {
+            "description": "The active role lacks workshop preparation capability."
+          },
+          "404": {
+            "description": "The tenant-scoped project or revision was not found."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkshopRunBlockedResponse"
+                }
+              }
+            },
+            "description": "The server-owned generation/release is not an immutable executable workshop package."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Prepare Workshop Run"
       }
     },
     "/v1/releases/{release_id}/artifacts": {

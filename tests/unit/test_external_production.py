@@ -200,6 +200,14 @@ def valid_config() -> dict:
             },
             "worker": {
                 "build": common_build,
+                "command": [
+                    "python",
+                    "-m",
+                    "custombuild_worker.generation_startup",
+                    "--loglevel=INFO",
+                    "--concurrency=2",
+                    "--queues=generation",
+                ],
                 "environment": {
                     **capacity_environment,
                     "APP_ENV": "production",
@@ -212,6 +220,65 @@ def valid_config() -> dict:
                     "S3_ENDPOINT": "http://object-storage:8333",
                     "S3_ACCESS_KEY": "production-s3-access",
                     "S3_BUCKET": "production-artifacts",
+                    "CELERY_EXPECTED_QUEUE": "generation",
+                },
+                "depends_on": {
+                    "storage-capacity-attestor": {
+                        "condition": "service_healthy",
+                        "restart": True,
+                    }
+                },
+            },
+            "maintenance-worker": {
+                "build": common_build,
+                "command": [
+                    "celery",
+                    "worker",
+                    "--concurrency=1",
+                    "--queues=maintenance",
+                ],
+                "environment": {
+                    **capacity_environment,
+                    "APP_ENV": "production",
+                    "PRODUCTION_FOUR_EYES_REQUIRED": "true",
+                    "DATABASE_URL": (
+                        "postgresql://custombuild_worker:strong-worker-database-secret@postgres/db"
+                    ),
+                    "REDIS_URL": "redis://:strong-production-redis-secret@redis:6379/0",
+                    "S3_SECRET_KEY": "strong-production-s3-secret",
+                    "S3_ENDPOINT": "http://object-storage:8333",
+                    "S3_ACCESS_KEY": "production-s3-access",
+                    "S3_BUCKET": "production-artifacts",
+                    "CELERY_EXPECTED_QUEUE": "maintenance",
+                },
+                "depends_on": {
+                    "storage-capacity-attestor": {
+                        "condition": "service_healthy",
+                        "restart": True,
+                    }
+                },
+            },
+            "storage-reaper-worker": {
+                "build": common_build,
+                "command": [
+                    "celery",
+                    "worker",
+                    "--concurrency=1",
+                    "--queues=storage-reaper",
+                ],
+                "environment": {
+                    **capacity_environment,
+                    "APP_ENV": "production",
+                    "PRODUCTION_FOUR_EYES_REQUIRED": "true",
+                    "DATABASE_URL": (
+                        "postgresql://custombuild_worker:strong-worker-database-secret@postgres/db"
+                    ),
+                    "REDIS_URL": "redis://:strong-production-redis-secret@redis:6379/0",
+                    "S3_SECRET_KEY": "strong-production-s3-secret",
+                    "S3_ENDPOINT": "http://object-storage:8333",
+                    "S3_ACCESS_KEY": "production-s3-access",
+                    "S3_BUCKET": "production-artifacts",
+                    "CELERY_EXPECTED_QUEUE": "storage-reaper",
                 },
                 "depends_on": {
                     "storage-capacity-attestor": {
@@ -222,6 +289,7 @@ def valid_config() -> dict:
             },
             "scheduler": {
                 "build": common_build,
+                "command": ["celery", "beat", "--loglevel=WARNING"],
                 "environment": {
                     **capacity_environment,
                     "APP_ENV": "production",
@@ -278,6 +346,44 @@ def test_accepts_fail_closed_external_production_contract() -> None:
         )
         == []
     )
+
+
+def test_rejects_generation_worker_that_bypasses_registry_startup_gate() -> None:
+    config = valid_config()
+    config["services"]["worker"]["command"] = [
+        "celery",
+        "worker",
+        "--loglevel=INFO",
+        "--concurrency=2",
+        "--queues=generation",
+    ]
+
+    assert (
+        "worker does not consume only the generation queue"
+        in external_production_issues(config)
+    )
+
+
+def test_rejects_missing_cross_routed_or_unbound_maintenance_worker() -> None:
+    missing = valid_config()
+    del missing["services"]["maintenance-worker"]
+    assert external_production_issues(missing) == [
+        "required services are missing: maintenance-worker"
+    ]
+
+    cross_routed = valid_config()
+    maintenance = cross_routed["services"]["maintenance-worker"]
+    maintenance["command"] = [
+        "celery",
+        "worker",
+        "--concurrency=2",
+        "--queues=generation",
+    ]
+    maintenance["environment"]["CELERY_EXPECTED_QUEUE"] = "generation"
+    issues = external_production_issues(cross_routed)
+    assert "maintenance-worker is not the singleton maintenance consumer" in issues
+    assert "maintenance-worker consumes the generation queue" in issues
+    assert "maintenance-worker health is not bound to its exact Celery queue" in issues
 
 
 def test_external_attestor_inherits_one_no_new_privileges_option() -> None:

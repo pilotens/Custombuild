@@ -28,6 +28,22 @@ describe("furniture planning", () => {
     expect(result.patch.base_cabinet_depth_mm).toBe(390);
   });
 
+  it("preserves exact dimensions at the server's whole-micrometre resolution", () => {
+    const result = templateWithPlanningBrief(furnitureTemplate("shelving"), {
+      ...DEFAULT_PLANNING_BRIEF,
+      width_mm: 1_234.567,
+      height_mm: 2_345.678,
+      depth_mm: 397.125,
+      dimensionsConfirmed: true,
+    });
+
+    expect(result.patch).toMatchObject({
+      width_mm: 1_234.567,
+      height_mm: 2_345.678,
+      depth_mm: 397.125,
+    });
+  });
+
   it("does not overwrite inherited construction values with undefined", () => {
     const result = templateWithPlanningBrief(furnitureTemplate("shelving"), DEFAULT_PLANNING_BRIEF);
 

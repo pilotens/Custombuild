@@ -4,9 +4,12 @@ import type { DesignSpec, ResolvedDesign } from "@/lib/design-types";
 
 const apiMock = vi.hoisted(() => ({
   previewDesign: vi.fn(),
+  autofixDesign: vi.fn(),
   previewResult: undefined as ResolvedDesign | undefined,
   previewTransportFailures: 0,
   draft: undefined as Record<string, unknown> | undefined,
+  principalRole: "owner",
+  retentionEvidenceId: undefined as string | undefined,
 }));
 
 vi.mock("next/dynamic", () => ({
@@ -19,11 +22,24 @@ vi.mock("./production-drawer", () => ({
   ProductionDrawer(props: {
     design: ResolvedDesign;
     onRequestServerPreviewRetry?: () => void;
+    projectId?: string;
+    apiClient?: { setJointRetentionEvidence(projectId: string, evidenceId?: string): void };
   }) {
     return (
       <div data-testid="production-drawer" data-design-source={props.design.source}>
         <button type="button" onClick={props.onRequestServerPreviewRetry}>
           Hämta om serverpreview
+        </button>
+        <button type="button" onClick={() => {
+          if (props.projectId) {
+            props.apiClient?.setJointRetentionEvidence(
+              props.projectId,
+              "22222222-2222-4222-8222-222222222222",
+            );
+          }
+          props.onRequestServerPreviewRetry?.();
+        }}>
+          Bind retention och hämta om
         </button>
       </div>
     );
@@ -41,7 +57,7 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
       return {
         user_id: "user-1",
         organization_id: "org-1",
-        role: "owner",
+        role: apiMock.principalRole,
         name: "Anders Nilsson",
         email: "anders@example.test",
       };
@@ -62,7 +78,7 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
     }
 
     async previewDesign(spec: DesignSpec, signal?: AbortSignal, projectId?: string) {
-      apiMock.previewDesign(spec, signal, projectId);
+      apiMock.previewDesign(spec, signal, projectId, apiMock.retentionEvidenceId);
       if (apiMock.previewTransportFailures > 0) {
         apiMock.previewTransportFailures -= 1;
         throw new actual.ApiError(
@@ -78,7 +94,12 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
     }
 
     async autofixDesign(spec: DesignSpec, signal?: AbortSignal, projectId?: string) {
+      apiMock.autofixDesign(spec, signal, projectId);
       return this.previewDesign(spec, signal, projectId);
+    }
+
+    setJointRetentionEvidence(_projectId: string, evidenceId?: string) {
+      apiMock.retentionEvidenceId = evidenceId;
     }
   }
   return { ...actual, CustombuildApiClient: MockCustombuildApiClient };
@@ -104,7 +125,10 @@ describe("workspace production preview recovery", () => {
 
   beforeEach(() => {
     apiMock.previewDesign.mockReset();
+    apiMock.autofixDesign.mockReset();
     apiMock.previewTransportFailures = 0;
+    apiMock.principalRole = "owner";
+    apiMock.retentionEvidenceId = undefined;
     apiMock.previewResult = { ...resolveDesign(sourceSpec), source: "server-preview" };
     apiMock.draft = {
       project_id: "project-retry",
@@ -183,5 +207,46 @@ describe("workspace production preview recovery", () => {
       "data-design-source",
       "server-preview",
     );
+  });
+
+  it("uses read-only preview for an auto-mode reviewer and its retention-bound retry", async () => {
+    vi.useFakeTimers();
+    apiMock.principalRole = "reviewer";
+    const reviewerSpec: DesignSpec = { ...sourceSpec, reinforcement_mode: "auto" };
+    apiMock.previewResult = { ...resolveDesign(reviewerSpec), source: "server-preview" };
+    apiMock.draft = {
+      project_id: "project-retry",
+      draft_revision: 1,
+      template_id: "shelving",
+      design_hash: apiMock.previewResult.design_hash,
+      spec_json: toPreviewRequest(reviewerSpec),
+      workspace_spec_json: workspaceIntentEnvelopeFromSpec(reviewerSpec),
+      result_json: {},
+      updated_at: "2026-08-15T00:00:00Z",
+    };
+    render(<CustombuildWorkspace />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const retentionRetry = screen.getByRole("button", {
+      name: "Bind retention och hämta om",
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(apiMock.previewDesign).toHaveBeenCalledTimes(1);
+    expect(apiMock.autofixDesign).not.toHaveBeenCalled();
+
+    fireEvent.click(retentionRetry);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    expect(apiMock.previewDesign).toHaveBeenCalledTimes(2);
+    expect(apiMock.previewDesign.mock.calls[1]?.[3]).toBe(
+      "22222222-2222-4222-8222-222222222222",
+    );
+    expect(apiMock.autofixDesign).not.toHaveBeenCalled();
   });
 });

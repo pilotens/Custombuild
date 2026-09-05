@@ -318,7 +318,7 @@ function normalizedGeometryPatch(spec: DesignSpec): Partial<DesignSpec> {
       minimumWidthForBases,
     ),
   );
-  const plinthHeightMm = spec.plinth ? 80 : 0;
+  const plinthHeightMm = spec.plinth ? spec.plinth_height_mm : 0;
   const minimumShelfZoneHeightMm = shelfCount === 0
     ? DESIGN_CONSTRAINTS.minimumShelfOpeningMm
     : shelfCount === 1

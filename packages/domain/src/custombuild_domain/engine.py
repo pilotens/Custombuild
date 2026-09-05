@@ -13,6 +13,7 @@ from .enums import (
     PartRole,
     ShelfMount,
 )
+from .geometry import allocate_bay_widths_um, allocate_shelf_positions_um
 from .identity import content_hash, stable_id
 from .models import (
     AssemblyEdge,
@@ -26,6 +27,7 @@ from .models import (
     FeatureDimensions,
     Joint,
     JointMember,
+    JointRetentionApplicationClass,
     ManufacturingFeature,
     PartInstance,
     Placement,
@@ -37,10 +39,30 @@ DADO_FIT_CLEARANCE_UM = mm("0.5")
 DADO_FEATURE_TOLERANCE_UM = mm("0.05")
 DADO_MAX_DEPTH_UM = mm(12)
 DADO_CORNER_RELIEF_RADIUS_UM = mm(3)
-# The inset back starts 12 mm from the rear edge. Four millimetres between
-# shelf/divider ends and that line keeps the 3 mm dogbone envelope separated
-# even after the versioned 0.05 mm machining tolerance is applied.
-INSET_BACK_RELIEF_CLEARANCE_UM = mm(4)
+DADO_MIN_ADJACENT_RELIEF_SPACING_UM = (
+    2 * DADO_CORNER_RELIEF_RADIUS_UM + 2 * DADO_FEATURE_TOLERANCE_UM
+)
+# Four millimetres between a shelf/divider end and the nearest rear cut or
+# stock boundary keeps the 3 mm dogbone envelope clear even after the versioned
+# 0.05 mm machining tolerance is applied.  For a surface back this clearance
+# starts at the RABBET's inner edge; the previous 2 mm reveal both broke through
+# the side panel and overlapped an unrelated back-panel application.
+DADO_REAR_RELIEF_CLEARANCE_UM = mm(4)
+
+_ROLE_BROAD_FACES: dict[PartRole, tuple[FaceName, FaceName]] = {
+    PartRole.LEFT_SIDE: (FaceName.LEFT, FaceName.RIGHT),
+    PartRole.RIGHT_SIDE: (FaceName.LEFT, FaceName.RIGHT),
+    PartRole.DIVIDER: (FaceName.LEFT, FaceName.RIGHT),
+    PartRole.BASE_SIDE: (FaceName.LEFT, FaceName.RIGHT),
+    PartRole.TOP: (FaceName.BOTTOM, FaceName.TOP),
+    PartRole.BOTTOM: (FaceName.BOTTOM, FaceName.TOP),
+    PartRole.SHELF: (FaceName.BOTTOM, FaceName.TOP),
+    PartRole.BASE_BOTTOM: (FaceName.BOTTOM, FaceName.TOP),
+    PartRole.BASE_TOP: (FaceName.BOTTOM, FaceName.TOP),
+    PartRole.BACK: (FaceName.FRONT, FaceName.BACK),
+    PartRole.PLINTH: (FaceName.FRONT, FaceName.BACK),
+    PartRole.CABINET_FRONT: (FaceName.FRONT, FaceName.BACK),
+}
 
 
 class BookcaseEngine:
@@ -87,6 +109,11 @@ class BookcaseEngine:
         bottom_z = shelf_zone_bottom - t
         inner_height = p.height_um - shelf_zone_bottom - t
         dado_depth = self._dado_depth(t)
+        inset_back_divider_capture = (
+            self._inset_back_side_capture_depth(t)
+            if p.back_panel == BackPanelType.INSET_GROOVE and p.vertical_divider_count
+            else dado_depth
+        )
         carcass_side_inset = dado_depth if p.joint_system == JointType.DADO else 0
         fixed_shelf_inset = (
             dado_depth
@@ -94,9 +121,13 @@ class BookcaseEngine:
             else 0
         )
         shelf_depth = (
-            p.depth_um - mm(12) - p.back_thickness_um - INSET_BACK_RELIEF_CLEARANCE_UM
+            p.depth_um - mm(12) - p.back_thickness_um - DADO_REAR_RELIEF_CLEARANCE_UM
             if p.back_panel == BackPanelType.INSET_GROOVE
-            else case_depth - mm(2)
+            else (
+                case_depth - p.back_thickness_um - DADO_REAR_RELIEF_CLEARANCE_UM
+                if p.back_panel == BackPanelType.SURFACE_MOUNTED
+                else case_depth - DADO_REAR_RELIEF_CLEARANCE_UM
+            )
         )
         divider_depth = (
             p.depth_um - mm(12) if p.back_panel == BackPanelType.INSET_GROOVE else shelf_depth
@@ -134,6 +165,12 @@ class BookcaseEngine:
             allowance = part_material.machining_allowance_um
             part_thickness = p.back_thickness_um if role == PartRole.BACK else t
             raw = self._raw_size(size, part_thickness, allowance)
+            try:
+                a_side, b_side = _ROLE_BROAD_FACES[role]
+            except KeyError as exc:
+                raise ValueError(
+                    f"no physical broad-face mapping for part role {role.value}"
+                ) from exc
             bands = (
                 (EdgeBand(edge=FaceName.FRONT, thickness_um=p.edge_band_thickness_um),)
                 if band_front and p.edge_band_thickness_um
@@ -153,6 +190,8 @@ class BookcaseEngine:
                     material_version=part_material.version,
                     actual_thickness_um=t if role != PartRole.BACK else p.back_thickness_um,
                     grain_direction=effective_grain,
+                    a_side=a_side,
+                    b_side=b_side,
                     visible_faces=visible,
                     edge_bands=bands,
                     weight_g=self._weight_g(size, part_material.density_kg_m3),
@@ -391,17 +430,23 @@ class BookcaseEngine:
             for bay_index, (bay_start, bay_width) in enumerate(
                 zip(bay_starts, bay_widths, strict=True)
             ):
+                left_capture = dado_depth if bay_index == 0 else inset_back_divider_capture
+                right_capture = (
+                    dado_depth
+                    if bay_index == len(bay_widths) - 1
+                    else inset_back_divider_capture
+                )
                 add(
                     "back" if len(bay_widths) == 1 else f"back-b{bay_index}",
                     PartRole.BACK,
                     bay_index,
                     Dimensions3D(
-                        width_um=bay_width + 2 * dado_depth,
+                        width_um=bay_width + left_capture + right_capture,
                         depth_um=p.back_thickness_um,
                         height_um=inner_height + 2 * dado_depth,
                     ),
                     Placement(
-                        x_um=bay_start - dado_depth,
+                        x_um=bay_start - left_capture,
                         y_um=p.depth_um - mm(12) - p.back_thickness_um,
                         z_um=shelf_zone_bottom - dado_depth,
                     ),
@@ -439,6 +484,28 @@ class BookcaseEngine:
         return max(mm(1), min(DADO_MAX_DEPTH_UM, thickness_um // 3))
 
     @staticmethod
+    def _inset_back_side_capture_depth(thickness_um: int) -> int:
+        """Keep adjacent inset-back reliefs apart with the existing 6 mm cutter.
+
+        Only lateral back-field engagement is capped. Structural carcass dados
+        and the back's top/bottom engagement retain the canonical one-third
+        depth. Opposing groove endpoints are separated by one R3 cutter
+        diameter plus both features' declared machining tolerances. That leaves
+        0.1 mm nominal clearance between relief envelopes and zero at the two
+        worst-case tolerance limits, without relying on a collision waiver.
+        Machine accuracy, runout and required physical residual web remain
+        supplier acceptance inputs outside this domain compiler.
+        """
+
+        maximum_capture = (thickness_um - DADO_MIN_ADJACENT_RELIEF_SPACING_UM) // 2
+        if maximum_capture < mm(1):
+            raise ValueError(
+                "stock is too thin for multi-bay inset-back side capture with "
+                "the versioned dogbone cutter envelope"
+            )
+        return min(BookcaseEngine._dado_depth(thickness_um), maximum_capture)
+
+    @staticmethod
     def _raw_size(size: Dimensions3D, thickness_um: int, allowance_um: int) -> Dimensions3D:
         if not allowance_um:
             return size
@@ -465,21 +532,12 @@ class BookcaseEngine:
         divider_count: int,
         ratios_ppm: tuple[int, ...] = (),
     ) -> tuple[int, ...]:
-        bay_count = divider_count + 1
-        available = inner_width_um - divider_count * thickness_um
-        if ratios_ppm and len(ratios_ppm) == bay_count:
-            total = sum(ratios_ppm)
-            widths = [(available * ratio) // total for ratio in ratios_ppm]
-            remainder = available - sum(widths)
-            order = sorted(
-                range(bay_count),
-                key=lambda index: (-(available * ratios_ppm[index] % total), index),
-            )
-            for index in order[:remainder]:
-                widths[index] += 1
-            return tuple(widths)
-        base, remainder = divmod(available, bay_count)
-        return tuple(base + (1 if index < remainder else 0) for index in range(bay_count))
+        return allocate_bay_widths_um(
+            inner_width_um,
+            thickness_um,
+            divider_count,
+            ratios_ppm,
+        )
 
     @staticmethod
     def _shelf_positions(
@@ -489,24 +547,13 @@ class BookcaseEngine:
         shelf_count: int,
         ratios_ppm: tuple[int, ...] = (),
     ) -> tuple[int, ...]:
-        if shelf_count == 0:
-            return ()
-        if ratios_ppm and len(ratios_ppm) == shelf_count:
-            return tuple(
-                bottom_surface_z_um
-                + (inner_height_um * ratio + 500_000) // 1_000_000
-                - thickness_um // 2
-                for ratio in ratios_ppm
-            )
-        clear_total = inner_height_um - shelf_count * thickness_um
-        opening, remainder = divmod(clear_total, shelf_count + 1)
-        cursor = bottom_surface_z_um
-        positions: list[int] = []
-        for row in range(shelf_count):
-            cursor += opening + (1 if row < remainder else 0)
-            positions.append(cursor)
-            cursor += thickness_um
-        return tuple(positions)
+        return allocate_shelf_positions_um(
+            bottom_surface_z_um,
+            inner_height_um,
+            thickness_um,
+            shelf_count,
+            ratios_ppm,
+        )
 
     def _build_joints(
         self,
@@ -535,10 +582,16 @@ class BookcaseEngine:
             direction: AssemblyDirection,
             mating: Point3D,
             *,
+            retention_application_class: JointRetentionApplicationClass | None = None,
             first_feature_face: FaceName | None = None,
             second_feature_face: FaceName | None = None,
             first_feature_dimensions: FeatureDimensions | None = None,
+            dado_depth_um: int | None = None,
         ) -> None:
+            if kind == JointType.DADO and retention_application_class is None:
+                raise ValueError("every DADO call site must declare its retention application")
+            if kind != JointType.DADO and retention_application_class is not None:
+                raise ValueError("only DADO joints may declare a retention application")
             first, second = by_key[first_key], by_key[second_key]
             joint_id = stable_id("joint", spec.design_id, key)
             first_feature, second_feature = self._feature_pair(
@@ -551,12 +604,18 @@ class BookcaseEngine:
                 p.actual_thickness_um,
                 mating,
                 first_feature_dimensions,
+                dado_depth_um,
             )
             feature_map[first.part_id].append(first_feature)
             if second_feature is not None:
                 feature_map[second.part_id].append(second_feature)
             hardware_sku, hardware_count = self._hardware(kind)
-            retention = spec.joint_retention if kind == JointType.DADO else None
+            retention = (
+                spec.joint_retention
+                if retention_application_class
+                == JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                else None
+            )
             if retention is not None:
                 hardware_sku = retention.hardware_sku
                 hardware_count = retention.hardware_count_per_joint
@@ -581,6 +640,7 @@ class BookcaseEngine:
                     hardware_sku=hardware_sku,
                     hardware_count=hardware_count,
                     tolerance_um=(DADO_FIT_CLEARANCE_UM if kind == JointType.DADO else mm("0.2")),
+                    retention_application_class=retention_application_class,
                     retention=retention,
                 )
             )
@@ -596,6 +656,11 @@ class BookcaseEngine:
             FaceName.LEFT,
             AssemblyDirection.POS_X,
             Point3D(x_um=p.actual_thickness_um, z_um=bottom.placement.z_um),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
+            ),
         )
         join(
             "bottom-right",
@@ -606,6 +671,11 @@ class BookcaseEngine:
             FaceName.RIGHT,
             AssemblyDirection.NEG_X,
             Point3D(x_um=p.width_um - p.actual_thickness_um, z_um=bottom.placement.z_um),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
+            ),
         )
         join(
             "top-left",
@@ -616,6 +686,11 @@ class BookcaseEngine:
             FaceName.LEFT,
             AssemblyDirection.POS_X,
             Point3D(x_um=p.actual_thickness_um, z_um=p.height_um - p.actual_thickness_um),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
+            ),
         )
         join(
             "top-right",
@@ -627,6 +702,11 @@ class BookcaseEngine:
             AssemblyDirection.NEG_X,
             Point3D(
                 x_um=p.width_um - p.actual_thickness_um, z_um=p.height_um - p.actual_thickness_um
+            ),
+            retention_application_class=(
+                JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                if p.joint_system == JointType.DADO
+                else None
             ),
         )
 
@@ -647,6 +727,9 @@ class BookcaseEngine:
                     x_um=divider.placement.x_um,
                     z_um=bottom.placement.z_um + bottom.finished_size.height_um,
                 ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                ),
             )
             join(
                 f"divider-{divider.instance_index}-top",
@@ -657,6 +740,9 @@ class BookcaseEngine:
                 FaceName.TOP,
                 AssemblyDirection.NEG_Z,
                 Point3D(x_um=divider.placement.x_um, z_um=top.placement.z_um),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                ),
             )
 
         supports: list[PartInstance] = [left, *dividers, right]
@@ -685,6 +771,11 @@ class BookcaseEngine:
                     x_um=shelf.placement.x_um + shelf_inset,
                     z_um=shelf.placement.z_um,
                 ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    if shelf_joint_type == JointType.DADO
+                    else None
+                ),
             )
             join(
                 f"shelf-r{row}-b{bay}-right",
@@ -697,6 +788,11 @@ class BookcaseEngine:
                 Point3D(
                     x_um=(shelf.placement.x_um + shelf.finished_size.width_um - shelf_inset),
                     z_um=shelf.placement.z_um,
+                ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    if shelf_joint_type == JointType.DADO
+                    else None
                 ),
             )
 
@@ -726,6 +822,9 @@ class BookcaseEngine:
                         x_um=left_support.placement.x_um + left_support.finished_size.width_um,
                         z_um=base_bottom.placement.z_um,
                     ),
+                    retention_application_class=(
+                        JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    ),
                 )
                 join(
                     f"base-bottom-{cabinet_index}-right-support",
@@ -738,6 +837,9 @@ class BookcaseEngine:
                     Point3D(
                         x_um=right_support.placement.x_um,
                         z_um=base_bottom.placement.z_um,
+                    ),
+                    retention_application_class=(
+                        JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
                     ),
                 )
 
@@ -757,6 +859,9 @@ class BookcaseEngine:
                         x_um=base_side.placement.x_um,
                         z_um=bottom.placement.z_um,
                     ),
+                    retention_application_class=(
+                        JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    ),
                 )
 
         backs = tuple(
@@ -768,6 +873,11 @@ class BookcaseEngine:
         if p.back_panel == BackPanelType.INSET_GROOVE:
             if len(backs) != len(supports) - 1:
                 raise ValueError("inset back fields must match the carcass bay count")
+            inset_back_divider_capture = (
+                self._inset_back_side_capture_depth(p.actual_thickness_um)
+                if p.vertical_divider_count
+                else self._dado_depth(p.actual_thickness_um)
+            )
             for bay_index, back in enumerate(backs):
                 left_support = supports[bay_index]
                 right_support = supports[bay_index + 1]
@@ -829,7 +939,16 @@ class BookcaseEngine:
                         back_face,
                         AssemblyDirection.NEG_Y,
                         origin,
+                        retention_application_class=(
+                            JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
+                        ),
                         first_feature_face=support_face,
+                        dado_depth_um=(
+                            inset_back_divider_capture
+                            if boundary in {"left-side", "right-side"}
+                            and support.role == PartRole.DIVIDER
+                            else None
+                        ),
                     )
         elif p.back_panel == BackPanelType.SURFACE_MOUNTED:
             if len(backs) != 1 or backs[0].semantic_key != "back":
@@ -914,6 +1033,9 @@ class BookcaseEngine:
                     y_um=0,
                     z_um=p.plinth_height_um,
                 ),
+                retention_application_class=(
+                    JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                ),
                 first_feature_face=FaceName.A,
             )
 
@@ -935,8 +1057,15 @@ class BookcaseEngine:
         thickness_um: int,
         mating: Point3D,
         first_dimensions_override: FeatureDimensions | None = None,
+        dado_depth_override_um: int | None = None,
     ) -> tuple[ManufacturingFeature, ManufacturingFeature | None]:
         depth = max(mm(1), min(mm(12), thickness_um // 3))
+        if dado_depth_override_um is not None:
+            if kind != JointType.DADO:
+                raise ValueError("a dado depth override may only be used for a DADO joint")
+            if not 0 < dado_depth_override_um <= DADO_MAX_DEPTH_UM:
+                raise ValueError("a dado depth override must be within the versioned depth range")
+            depth = dado_depth_override_um
         feature_kind: dict[JointType, tuple[FeatureKind, FeatureKind | None]] = {
             JointType.DOWEL: (FeatureKind.DRILL, FeatureKind.DRILL),
             JointType.CONFIRMAT: (FeatureKind.COUNTERSINK, FeatureKind.DRILL),
@@ -1031,7 +1160,7 @@ class BookcaseEngine:
                 pitch_um=first_pitch,
                 tolerance_um=(DADO_FEATURE_TOLERANCE_UM if kind == JointType.DADO else mm("0.15")),
                 fit_clearance_um=(DADO_FIT_CLEARANCE_UM if kind == JointType.DADO else 0),
-                corner_strategy="dogbone-v1" if kind == JointType.DADO else None,
+                corner_strategy="dogbone-v2" if kind == JointType.DADO else None,
                 requires_square_corners=kind == JointType.DADO,
                 open_end_reliefs=first_open_end_reliefs,
             ),

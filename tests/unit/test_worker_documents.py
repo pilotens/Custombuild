@@ -117,7 +117,9 @@ def test_hardware_list_is_derived_from_joint_graph() -> None:
     assert first.startswith(
         b"hardware_sku,quantity,source_joint_ids,affected_part_ids,"
         b"catalog_system_id,catalog_system_version,catalog_entry_sha256,"
-        b"catalog_authenticity_status,evidence_id,evidence_sha256,"
+        b"catalog_authenticity_status,storage_evidence_id,storage_evidence_sha256,"
+        b"trust_registry_sha256,certifier_issuer_id,certifier_key_id,"
+        b"signed_evidence_expires_at,retention_contract_sha256,evidence_id,evidence_sha256,"
         b"installation_instruction_id,"
         b"installation_instruction_version,installation_instruction_sha256,"
         b"applicable_materials,joint_geometry_sha256,"

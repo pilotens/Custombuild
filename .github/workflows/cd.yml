@@ -204,9 +204,9 @@ jobs:
           set -euo pipefail
           image="custombuild-${{ matrix.component }}:${GITHUB_SHA}"
           if [ "${{ matrix.component }}" = "seaweedfs" ]; then
-            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "4.41"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "4.45"
             test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "https://github.com/seaweedfs/seaweedfs"
-            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.upstream-source.sha256" }}')" = "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
+            test "$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.upstream-source.sha256" }}')" = "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
           else
             test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$GITHUB_SHA"
             test "$(docker image inspect "$image" --format '{{ index .Config.Labels "org.opencontainers.image.source" }}')" = "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
@@ -267,8 +267,54 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  linuxcnc-interpreter-oracle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    container:
+      image: debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
+    steps:
+      - name: Install pinned LinuxCNC interpreter
+        run: |
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: http://snapshot.debian.org/archive/debian/20260824T000000Z' \
+            'Suites: trixie trixie-updates' \
+            'Components: main' \
+            'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+            '' \
+            'Types: deb' \
+            'URIs: http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
+            'Suites: trixie-security' \
+            'Components: main' \
+            'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+            > /etc/apt/sources.list.d/debian.sources
+          printf 'Acquire::Check-Valid-Until "false";\n' \
+            > /etc/apt/apt.conf.d/99snapshot
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            git \
+            linuxcnc-uspace=1:2.9.4-2+deb13u1 \
+            python3
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
+      - name: Verify G43 machine-coordinate semantics with rs274
+        run: python3 scripts/verify_linuxcnc_interpreter_oracle.py
+
   test-release-bundle:
-    needs: [quality-evidence, build-images]
+    needs: [quality-evidence, build-images, linuxcnc-interpreter-oracle]
     if: >-
       github.repository == 'pilotens/Custombuild' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
@@ -547,6 +593,12 @@ jobs:
           for executable in ("pip", "pip3", "pip3.13", "uv", "uvx", "FreeCAD", "FreeCADCmd", "freecad", "freecadcmd"):
               assert shutil.which(executable) is None, executable
           PY
+          docker compose --file compose.yml exec -T maintenance-worker \
+            /opt/custombuild-venv/bin/python -c \
+            "import os; assert os.getuid() == 65532; assert os.environ['CELERY_EXPECTED_QUEUE'] == 'maintenance'"
+          docker compose --file compose.yml exec -T storage-reaper-worker \
+            /opt/custombuild-venv/bin/python -c \
+            "import os; assert os.getuid() == 65532; assert os.environ['CELERY_EXPECTED_QUEUE'] == 'storage-reaper'"
       - name: Same-SHA live design-review and blocked CAM/release acceptance
         shell: bash
         run: |
@@ -674,6 +726,8 @@ jobs:
           test "$api_id" = "$(runtime_id storage-recovery)"
           test "$api_id" = "$(runtime_id storage-capacity-attestor)"
           test "$worker_id" = "$(runtime_id worker)"
+          test "$worker_id" = "$(runtime_id maintenance-worker)"
+          test "$worker_id" = "$(runtime_id storage-reaper-worker)"
           test "$worker_id" = "$(runtime_id scheduler)"
           test "$web_id" = "$(runtime_id web)"
           test "$seaweedfs_id" = "$(runtime_id object-storage)"

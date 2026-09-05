@@ -633,6 +633,28 @@ describe("deterministic bookcase preview", () => {
     expect(stockRule?.summary).toContain("kan inte placeras inom");
   });
 
+  it("screens the live review fixture with its declared sheet capacity", () => {
+    const result = resolveDesign({
+      ...DEFAULT_DESIGN_SPEC,
+      width_mm: 1_800,
+      height_mm: 2_100,
+      depth_mm: 320,
+      divider_count: 2,
+      stock_width_mm: 2_440,
+      stock_height_mm: 2_200,
+      stock_count: 5,
+      back_stock_width_mm: 2_440,
+      back_stock_height_mm: 2_200,
+      back_stock_count: 2,
+      machine_profile_id: "custombuild-router-5125-linuxcnc",
+    });
+
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "DFM-STOCK-001"))
+      .toMatchObject({ status: "PASS", affected_part_ids: [] });
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "DFM-MACHINE-001"))
+      .toMatchObject({ status: "PASS", affected_part_ids: [] });
+  });
+
   it("nests 6 mm backs only on the selected back stock profile", () => {
     const blocked = resolveDesign({
       ...DEFAULT_DESIGN_SPEC,
@@ -1309,6 +1331,7 @@ describe("deterministic bookcase preview", () => {
       base_cabinet_count: 5,
       base_cabinet_height_mm: 720,
       base_cabinet_depth_mm: 320,
+      plinth_height_mm: 125,
       reinforcement_mode: "manual" as const,
     };
     const result = resolveDesign(spec);
@@ -1431,7 +1454,7 @@ describe("deterministic bookcase preview", () => {
 
     expect(edited.supported).toBe(true);
     expect(after.width_mm).toBeCloseTo(requestedPanelHeight, 3);
-    expect(after.position_mm.z - after.width_mm / 2).toBeCloseTo(spec.plinth ? 80 : 0, 3);
+    expect(after.position_mm.z - after.width_mm / 2).toBeCloseTo(spec.plinth_height_mm, 3);
   });
 
   it("treats an edited base-side depth as the furniture outer depth", () => {
@@ -1450,6 +1473,60 @@ describe("deterministic bookcase preview", () => {
     expect(edited.spec.depth_mm).toBe(410);
     expect(edited.spec.base_cabinet_depth_mm).toBe(410);
     expect(edited.notice).toMatch(/yttermått/);
+  });
+
+  it("keeps an exact micrometre material measurement in parametric part edits", () => {
+    const edited = editPartParametrically(
+      DEFAULT_DESIGN_SPEC,
+      "side-left",
+      { thickness_mm: 17.625 },
+    );
+
+    expect(edited.supported).toBe(true);
+    expect(edited.spec.measured_thickness_mm).toBe(17.625);
+    expect(resolveDesign(edited.spec).parts.find((candidate) => candidate.part_id === "side-left")?.thickness_mm)
+      .toBe(17.625);
+  });
+
+  it("propagates exact measured back thickness through local geometry and hash", () => {
+    const edited = editPartParametrically(
+      DEFAULT_DESIGN_SPEC,
+      "back-panel",
+      { thickness_mm: 5.8 },
+    );
+    const result = resolveDesign(edited.spec);
+    const back = result.parts.find((candidate) => candidate.kind === "back");
+
+    expect(edited.supported).toBe(true);
+    expect(edited.spec.measured_back_thickness_mm).toBe(5.8);
+    expect(back?.thickness_mm).toBe(5.8);
+    expect(back?.position_mm.y).toBe(DEFAULT_DESIGN_SPEC.depth_mm - 12 - 2.9);
+    expect(localDesignHash(edited.spec)).not.toBe(localDesignHash(DEFAULT_DESIGN_SPEC));
+
+    const lossy = editPartParametrically(
+      DEFAULT_DESIGN_SPEC,
+      "back-panel",
+      { thickness_mm: 5.8005 },
+    );
+    expect(lossy.supported).toBe(false);
+    expect(lossy.spec).toBe(DEFAULT_DESIGN_SPEC);
+  });
+
+  it.each([0, 1, 1.2])("binds exact %.3f mm edge-band intent into the local design hash", (edgeBandMm) => {
+    const spec = { ...DEFAULT_DESIGN_SPEC, edge_band_mm: edgeBandMm };
+
+    expect(resolveDesign(spec).spec.edge_band_mm).toBe(edgeBandMm);
+    if (edgeBandMm !== DEFAULT_DESIGN_SPEC.edge_band_mm) {
+      expect(localDesignHash(spec)).not.toBe(localDesignHash(DEFAULT_DESIGN_SPEC));
+    }
+  });
+
+  it("defaults to no edge band while preserving an explicit one millimetre choice", () => {
+    expect(DEFAULT_DESIGN_SPEC.edge_band_mm).toBe(0);
+
+    const explicit = { ...DEFAULT_DESIGN_SPEC, edge_band_mm: 1 };
+    expect(resolveDesign(explicit).spec.edge_band_mm).toBe(1);
+    expect(localDesignHash(explicit)).not.toBe(localDesignHash(DEFAULT_DESIGN_SPEC));
   });
 
   it("clamps parametric outer and base edits to the published envelope", () => {

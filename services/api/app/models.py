@@ -16,11 +16,15 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     SmallInteger,
     String,
     Text,
     UniqueConstraint,
+    func,
+    text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .db import Base
@@ -96,8 +100,17 @@ class Organization(IdMixin, TimestampMixin, Base):
 
 class User(IdMixin, TimestampMixin, Base):
     __tablename__ = "users"
+    __table_args__ = (
+        CheckConstraint(
+            "oidc_issuer_sha256 IS NULL OR length(oidc_issuer_sha256) = 64",
+            name="ck_users_oidc_issuer_sha256_format",
+        ),
+    )
 
+    # Production auth binds the opaque issuer/subject key to this issuer hash.
+    # NULL denotes an explicit legacy/development row and is rejected in OIDC mode.
     oidc_sub: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    oidc_issuer_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     name: Mapped[str] = mapped_column(String(160))
 
@@ -142,6 +155,12 @@ class DesignVersion(IdMixin, TimestampMixin, TenantMixin, Base):
     __table_args__ = (
         UniqueConstraint("project_id", "revision"),
         UniqueConstraint("organization_id", "id", name="uq_design_versions_org_id"),
+        UniqueConstraint(
+            "organization_id",
+            "project_id",
+            "id",
+            name="uq_design_versions_org_project_id",
+        ),
         ForeignKeyConstraint(
             ["organization_id", "project_id"],
             ["projects.organization_id", "projects.id"],
@@ -217,6 +236,12 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
     __table_args__ = (
         UniqueConstraint("organization_id", "idempotency_key"),
         UniqueConstraint("organization_id", "id", name="uq_generation_jobs_org_id"),
+        UniqueConstraint(
+            "organization_id",
+            "design_version_id",
+            "id",
+            name="uq_generation_jobs_org_version_id",
+        ),
         ForeignKeyConstraint(
             ["organization_id", "design_version_id"],
             ["design_versions.organization_id", "design_versions.id"],
@@ -224,6 +249,7 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
             ondelete="CASCADE",
         ),
         Index("ix_generation_jobs_status_lease_expires_at", "status", "lease_expires_at"),
+        Index("ix_generation_jobs_status_next_attempt_at", "status", "next_attempt_at"),
     )
 
     design_version_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -241,6 +267,11 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+        server_default=func.current_timestamp(),
+    )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -248,11 +279,26 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
 
 class OutboxEvent(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "outbox_events"
-    __table_args__ = (UniqueConstraint("event_key"),)
+    __table_args__ = (
+        UniqueConstraint("event_key"),
+        Index(
+            "ix_outbox_events_pending_available",
+            "organization_id",
+            "available_at",
+            "created_at",
+            "id",
+            postgresql_where=text("dispatched_at IS NULL AND dead_lettered_at IS NULL"),
+        ),
+    )
 
     event_key: Mapped[str] = mapped_column(String(100))
     topic: Mapped[str] = mapped_column(String(100))
     payload_json: Mapped[dict[str, Any]] = mapped_column(JSON)
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        server_default=func.current_timestamp(),
+    )
     dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     dead_lettered_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
@@ -320,6 +366,60 @@ class ExternalEvidence(IdMixin, TimestampMixin, TenantMixin, Base):
     created_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class JointRetentionRegistryState(Base):
+    """Global monotonic high-water mark for the production trust registry."""
+
+    __tablename__ = "joint_retention_registry_state"
+    __table_args__ = (
+        CheckConstraint("id = 1", name="ck_joint_retention_registry_state_singleton"),
+        CheckConstraint(
+            "transition_epoch >= 0",
+            name="ck_joint_retention_registry_state_epoch",
+        ),
+        CheckConstraint(
+            "(transition_epoch = 0 AND registry_sha256 IS NULL "
+            "AND registry_canonical_json IS NULL "
+            "AND normalized_registry_json IS NULL "
+            "AND operator_reference_sha256 IS NULL) OR "
+            "(transition_epoch > 0 AND registry_sha256 IS NOT NULL "
+            "AND registry_canonical_json IS NOT NULL "
+            "AND normalized_registry_json IS NOT NULL "
+            "AND operator_reference_sha256 IS NOT NULL)",
+            name="ck_joint_retention_registry_state_activation",
+        ),
+        CheckConstraint(
+            "registry_sha256 IS NULL OR (length(registry_sha256) = 64 "
+            "AND registry_sha256 = lower(registry_sha256))",
+            name="ck_joint_retention_registry_state_registry_sha256",
+        ),
+        CheckConstraint(
+            "operator_reference_sha256 IS NULL OR "
+            "(length(operator_reference_sha256) = 64 "
+            "AND operator_reference_sha256 = lower(operator_reference_sha256))",
+            name="ck_joint_retention_registry_state_operator_sha256",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(
+        SmallInteger,
+        primary_key=True,
+        autoincrement=False,
+    )
+    transition_epoch: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    registry_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    registry_canonical_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    normalized_registry_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql"),
+        nullable=True,
+    )
+    operator_reference_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utcnow,
+        onupdate=utcnow,
+    )
 
 
 class StorageGlobalQuota(TimestampMixin, Base):
@@ -604,10 +704,32 @@ class StorageObjectTombstone(Base):
     retired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+def _portable_lower_hex_sql(expression: str) -> str:
+    """Return SQL using only functions shared by SQLite and PostgreSQL."""
+
+    for character in "0123456789abcdef":
+        expression = f"replace({expression}, '{character}', '')"
+    return f"{expression} = ''"
+
+
 class Approval(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "approvals"
     __table_args__ = (
         UniqueConstraint("design_version_id", "approval_type"),
+        UniqueConstraint(
+            "organization_id",
+            "design_version_id",
+            "generation_job_id",
+            "id",
+            name="uq_approvals_org_version_job_id",
+        ),
+        CheckConstraint(
+            "cam_candidate_bundle_sha256 IS NULL OR ("
+            "length(cam_candidate_bundle_sha256) = 64 "
+            "AND cam_candidate_bundle_sha256 = lower(cam_candidate_bundle_sha256) "
+            f"AND {_portable_lower_hex_sql('cam_candidate_bundle_sha256')})",
+            name="ck_approvals_cam_candidate_bundle_sha256_format",
+        ),
         ForeignKeyConstraint(
             ["organization_id", "design_version_id"],
             ["design_versions.organization_id", "design_versions.id"],
@@ -629,17 +751,49 @@ class Approval(IdMixin, TimestampMixin, TenantMixin, Base):
     generation_job_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     production_context_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cam_candidate_bundle_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     overrides_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+
+
+RELEASE_CAM_APPROVAL_UUID_CHECK_SQL = (
+    "cam_approval_id IS NULL OR (length(cam_approval_id) = 36 "
+    "AND cam_approval_id = lower(cam_approval_id) "
+    "AND substr(cam_approval_id, 9, 1) = '-' "
+    "AND substr(cam_approval_id, 14, 1) = '-' "
+    "AND substr(cam_approval_id, 19, 1) = '-' "
+    "AND substr(cam_approval_id, 24, 1) = '-' "
+    "AND length(replace(cam_approval_id, '-', '')) = 32 "
+    f"AND {_portable_lower_hex_sql("replace(cam_approval_id, '-', '')")} "
+    "AND substr(cam_approval_id, 15, 1) IN ('1', '2', '3', '4', '5') "
+    "AND substr(cam_approval_id, 20, 1) IN ('8', '9', 'a', 'b'))"
+)
+RELEASE_CAM_APPROVAL_RECEIPT_CHECK_SQL = (
+    "(cam_approval_id IS NULL AND cam_approval_binding_sha256 IS NULL "
+    "AND cam_approval_snapshot_json IS NULL) OR "
+    "(cam_approval_id IS NOT NULL AND cam_approval_binding_sha256 IS NOT NULL "
+    "AND length(cam_approval_binding_sha256) = 64 "
+    "AND cam_approval_binding_sha256 = lower(cam_approval_binding_sha256) "
+    f"AND {_portable_lower_hex_sql('cam_approval_binding_sha256')} "
+    "AND cam_approval_snapshot_json IS NOT NULL)"
+)
 
 
 class Release(IdMixin, TimestampMixin, TenantMixin, Base):
     __tablename__ = "releases"
     __table_args__ = (
         UniqueConstraint("design_version_id"),
+        UniqueConstraint("organization_id", "id", name="uq_releases_org_id"),
         UniqueConstraint(
             "organization_id",
             "generation_job_id",
             name="uq_releases_org_generation_job",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "design_version_id",
+            "generation_job_id",
+            "id",
+            name="uq_releases_org_version_job_id",
         ),
         ForeignKeyConstraint(
             ["organization_id", "design_version_id"],
@@ -653,10 +807,39 @@ class Release(IdMixin, TimestampMixin, TenantMixin, Base):
             name="fk_releases_org_generation_job",
             ondelete="RESTRICT",
         ),
+        ForeignKeyConstraint(
+            [
+                "organization_id",
+                "design_version_id",
+                "generation_job_id",
+                "cam_approval_id",
+            ],
+            [
+                "approvals.organization_id",
+                "approvals.design_version_id",
+                "approvals.generation_job_id",
+                "approvals.id",
+            ],
+            name="fk_releases_org_version_job_cam_approval",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            RELEASE_CAM_APPROVAL_UUID_CHECK_SQL,
+            name="ck_releases_cam_approval_id_format",
+        ),
+        CheckConstraint(
+            RELEASE_CAM_APPROVAL_RECEIPT_CHECK_SQL,
+            name="ck_releases_cam_approval_receipt_complete",
+        ),
     )
 
     design_version_id: Mapped[str] = mapped_column(String(36))
     generation_job_id: Mapped[str] = mapped_column(String(36))
+    cam_approval_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    cam_approval_binding_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    cam_approval_snapshot_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON(none_as_null=True), nullable=True
+    )
     release_number: Mapped[str] = mapped_column(String(80))
     released_by: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"))
     manifest_sha256: Mapped[str] = mapped_column(String(64))
@@ -934,3 +1117,844 @@ class Toolpath(ProductionRecord, Base):
             ondelete="CASCADE",
         ),
     )
+
+
+class WorkshopTrustState(Base):
+    """Per-tenant serialization boundary for workshop trust mutations."""
+
+    __tablename__ = "workshop_trust_states"
+    __table_args__ = (
+        CheckConstraint("trust_epoch >= 0", name="ck_workshop_trust_states_epoch"),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    trust_epoch: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class WorkshopActor(IdMixin, TenantMixin, Base):
+    """Canonical person identity used for workshop separation of duties."""
+
+    __tablename__ = "workshop_actors"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_workshop_actors_org_id"),
+        UniqueConstraint(
+            "organization_id",
+            "user_id",
+            name="uq_workshop_actors_org_user",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "external_authority",
+            "external_subject_sha256",
+            name="uq_workshop_actors_org_external_subject",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "user_id"],
+            ["memberships.organization_id", "memberships.user_id"],
+            name="fk_workshop_actors_org_membership",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "(actor_type = 'WORKFORCE_USER' AND user_id IS NOT NULL "
+            "AND external_authority IS NULL AND external_subject_sha256 IS NULL) OR "
+            "(actor_type = 'EXTERNAL_CERTIFIED_PERSON' AND user_id IS NULL "
+            "AND external_authority IS NOT NULL AND length(external_authority) > 0 "
+            "AND external_subject_sha256 IS NOT NULL "
+            "AND length(external_subject_sha256) = 64 "
+            "AND external_subject_sha256 = lower(external_subject_sha256))",
+            name="ck_workshop_actors_identity_shape",
+        ),
+    )
+
+    actor_type: Mapped[str] = mapped_column(String(32))
+    user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    external_authority: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    external_subject_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopSignerPrincipal(IdMixin, TenantMixin, Base):
+    """Immutable signer alias bound one-to-one to a canonical person."""
+
+    __tablename__ = "workshop_signer_principals"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            name="uq_workshop_signer_principals_org_id",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "principal_id",
+            name="uq_workshop_signer_principals_org_principal",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "actor_id",
+            name="uq_workshop_signer_principals_org_actor",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            "actor_id",
+            name="uq_workshop_signer_principals_org_id_actor",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "actor_id"],
+            ["workshop_actors.organization_id", "workshop_actors.id"],
+            name="fk_workshop_signer_principals_org_actor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "signer_role IN "
+            "('workshop_maker', 'workshop_checker', 'workshop_supervisor')",
+            name="ck_workshop_signer_principals_role",
+        ),
+        CheckConstraint(
+            "length(principal_id) > 0",
+            name="ck_workshop_signer_principals_identity",
+        ),
+    )
+
+    actor_id: Mapped[str] = mapped_column(String(36))
+    principal_id: Mapped[str] = mapped_column(String(160))
+    signer_role: Mapped[str] = mapped_column(String(24))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopIssuerKey(IdMixin, TenantMixin, Base):
+    """Immutable Ed25519 trust anchor; revocation is append-only elsewhere."""
+
+    __tablename__ = "workshop_issuer_keys"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_workshop_issuer_keys_org_id"),
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            "actor_id",
+            name="uq_workshop_issuer_keys_org_id_actor",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "signer_principal_id",
+            "key_id",
+            name="uq_workshop_issuer_keys_org_principal_key",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "public_key_sha256",
+            name="uq_workshop_issuer_keys_org_public_key",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "signer_principal_id", "actor_id"],
+            [
+                "workshop_signer_principals.organization_id",
+                "workshop_signer_principals.id",
+                "workshop_signer_principals.actor_id",
+            ],
+            name="fk_workshop_issuer_keys_org_principal_actor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(key_id) > 0 AND length(public_key_base64) = 44",
+            name="ck_workshop_issuer_keys_identity",
+        ),
+        CheckConstraint(
+            "length(public_key_sha256) = 64 "
+            "AND public_key_sha256 = lower(public_key_sha256)",
+            name="ck_workshop_issuer_keys_sha256",
+        ),
+        CheckConstraint(
+            "not_before < not_after",
+            name="ck_workshop_issuer_keys_validity",
+        ),
+        CheckConstraint(
+            "qualified_pre_cut OR qualified_reference_part "
+            "OR qualified_final_workshop OR qualified_air_cut_supervisor",
+            name="ck_workshop_issuer_keys_qualification",
+        ),
+    )
+
+    signer_principal_id: Mapped[str] = mapped_column(String(36))
+    actor_id: Mapped[str] = mapped_column(String(36))
+    key_id: Mapped[str] = mapped_column(String(160))
+    public_key_base64: Mapped[str] = mapped_column(String(44))
+    public_key_sha256: Mapped[str] = mapped_column(String(64))
+    qualified_pre_cut: Mapped[bool] = mapped_column(Boolean, default=False)
+    qualified_reference_part: Mapped[bool] = mapped_column(Boolean, default=False)
+    qualified_final_workshop: Mapped[bool] = mapped_column(Boolean, default=False)
+    qualified_air_cut_supervisor: Mapped[bool] = mapped_column(Boolean, default=False)
+    not_before: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    not_after: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopPolicyRecord(IdMixin, TenantMixin, Base):
+    """Immutable canonical server-owned workshop verification policy."""
+
+    __tablename__ = "workshop_policies"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_workshop_policies_org_id"),
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            "policy_sha256",
+            name="uq_workshop_policies_org_id_sha",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "policy_id",
+            "policy_version",
+            name="uq_workshop_policies_org_identity",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "policy_sha256",
+            name="uq_workshop_policies_org_sha",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "created_by_actor_id"],
+            ["workshop_actors.organization_id", "workshop_actors.id"],
+            name="fk_workshop_policies_org_creator",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(policy_id) > 0 AND length(policy_version) > 0 "
+            "AND length(schema_version) > 0",
+            name="ck_workshop_policies_identity",
+        ),
+        CheckConstraint(
+            "length(policy_sha256) = 64 AND policy_sha256 = lower(policy_sha256)",
+            name="ck_workshop_policies_sha256",
+        ),
+        CheckConstraint(
+            "size_bytes > 0 AND size_bytes <= 4194304 "
+            "AND length(canonical_json_bytes) = size_bytes",
+            name="ck_workshop_policies_bytes",
+        ),
+    )
+
+    policy_id: Mapped[str] = mapped_column(String(160))
+    policy_version: Mapped[str] = mapped_column(String(160))
+    schema_version: Mapped[str] = mapped_column(String(160))
+    policy_sha256: Mapped[str] = mapped_column(String(64))
+    canonical_json_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    size_bytes: Mapped[int] = mapped_column(Integer)
+    created_by_actor_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopRunRecord(IdMixin, TenantMixin, Base):
+    """Exact server-derived identity for one executable workshop run."""
+
+    __tablename__ = "workshop_runs"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_workshop_runs_org_id"),
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            "run_sha256",
+            "workshop_policy_sha256",
+            name="uq_workshop_runs_org_id_run_policy",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "run_sha256",
+            name="uq_workshop_runs_org_sha",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "project_id", "design_version_id"],
+            [
+                "design_versions.organization_id",
+                "design_versions.project_id",
+                "design_versions.id",
+            ],
+            name="fk_workshop_runs_org_project_version",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "design_version_id", "generation_job_id"],
+            [
+                "generation_jobs.organization_id",
+                "generation_jobs.design_version_id",
+                "generation_jobs.id",
+            ],
+            name="fk_workshop_runs_org_version_job",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "organization_id",
+                "design_version_id",
+                "generation_job_id",
+                "design_review_release_id",
+            ],
+            [
+                "releases.organization_id",
+                "releases.design_version_id",
+                "releases.generation_job_id",
+                "releases.id",
+            ],
+            name="fk_workshop_runs_org_release_graph",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "policy_record_id", "workshop_policy_sha256"],
+            [
+                "workshop_policies.organization_id",
+                "workshop_policies.id",
+                "workshop_policies.policy_sha256",
+            ],
+            name="fk_workshop_runs_org_policy",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "created_by_actor_id"],
+            ["workshop_actors.organization_id", "workshop_actors.id"],
+            name="fk_workshop_runs_org_creator",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "machine_program_kind = 'EXECUTABLE'",
+            name="ck_workshop_runs_executable_only",
+        ),
+        CheckConstraint(
+            "length(schema_version) > 0 AND length(postprocessor_id) > 0 "
+            "AND length(postprocessor_version) > 0",
+            name="ck_workshop_runs_identity",
+        ),
+        CheckConstraint(
+            "length(run_sha256) = 64 AND run_sha256 = lower(run_sha256) "
+            "AND length(design_hash) = 64 AND design_hash = lower(design_hash) "
+            "AND length(production_context_hash) = 64 "
+            "AND production_context_hash = lower(production_context_hash) "
+            "AND length(manifest_sha256) = 64 AND manifest_sha256 = lower(manifest_sha256) "
+            "AND length(bundle_sha256) = 64 AND bundle_sha256 = lower(bundle_sha256) "
+            "AND length(operations_sha256) = 64 AND operations_sha256 = lower(operations_sha256) "
+            "AND length(generation_plan_sha256) = 64 "
+            "AND generation_plan_sha256 = lower(generation_plan_sha256) "
+            "AND length(workshop_policy_sha256) = 64 "
+            "AND workshop_policy_sha256 = lower(workshop_policy_sha256) "
+            "AND length(machine_program_set_sha256) = 64 "
+            "AND machine_program_set_sha256 = lower(machine_program_set_sha256) "
+            "AND length(postprocessor_binary_sha256) = 64 "
+            "AND postprocessor_binary_sha256 = lower(postprocessor_binary_sha256) "
+            "AND length(postprocessor_config_sha256) = 64 "
+            "AND postprocessor_config_sha256 = lower(postprocessor_config_sha256)",
+            name="ck_workshop_runs_hashes",
+        ),
+    )
+
+    schema_version: Mapped[str] = mapped_column(String(160))
+    project_id: Mapped[str] = mapped_column(String(36), index=True)
+    design_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    design_review_release_id: Mapped[str] = mapped_column(String(36), index=True)
+    generation_job_id: Mapped[str] = mapped_column(String(36), index=True)
+    generation_finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    design_hash: Mapped[str] = mapped_column(String(64))
+    production_context_hash: Mapped[str] = mapped_column(String(64))
+    manifest_sha256: Mapped[str] = mapped_column(String(64))
+    bundle_sha256: Mapped[str] = mapped_column(String(64))
+    operations_sha256: Mapped[str] = mapped_column(String(64))
+    generation_plan_sha256: Mapped[str] = mapped_column(String(64))
+    policy_record_id: Mapped[str] = mapped_column(String(36))
+    workshop_policy_sha256: Mapped[str] = mapped_column(String(64))
+    machine_program_kind: Mapped[str] = mapped_column(String(16))
+    machine_program_set_sha256: Mapped[str] = mapped_column(String(64))
+    postprocessor_id: Mapped[str] = mapped_column(String(160))
+    postprocessor_version: Mapped[str] = mapped_column(String(160))
+    postprocessor_binary_sha256: Mapped[str] = mapped_column(String(64))
+    postprocessor_config_sha256: Mapped[str] = mapped_column(String(64))
+    run_sha256: Mapped[str] = mapped_column(String(64))
+    created_by_actor_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopRunProgram(IdMixin, TenantMixin, Base):
+    __tablename__ = "workshop_run_programs"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "id", name="uq_workshop_run_programs_org_id"
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workshop_run_id",
+            "ordinal",
+            name="uq_workshop_run_programs_org_run_ordinal",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workshop_run_id",
+            "program_id",
+            name="uq_workshop_run_programs_org_run_program_id",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workshop_run_id",
+            "relative_path",
+            name="uq_workshop_run_programs_org_run_path",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workshop_run_id",
+            "identity_sha256",
+            name="uq_workshop_run_programs_org_run_identity",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workshop_run_id"],
+            ["workshop_runs.organization_id", "workshop_runs.id"],
+            name="fk_workshop_run_programs_org_run",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("ordinal >= 0", name="ck_workshop_run_programs_ordinal"),
+        CheckConstraint(
+            "length(program_id) > 0 AND length(purpose) > 0 "
+            "AND length(relative_path) > 0 AND length(setup_id) > 0 "
+            "AND length(wcs_id) > 0 AND length(stock_id) > 0 "
+            "AND length(media_type) > 0",
+            name="ck_workshop_run_programs_identity",
+        ),
+        CheckConstraint(
+            "length(operation_set_sha256) = 64 "
+            "AND operation_set_sha256 = lower(operation_set_sha256) "
+            "AND length(program_sha256) = 64 "
+            "AND program_sha256 = lower(program_sha256) "
+            "AND length(identity_sha256) = 64 "
+            "AND identity_sha256 = lower(identity_sha256)",
+            name="ck_workshop_run_programs_hashes",
+        ),
+        CheckConstraint(
+            "program_size_bytes > 0 AND identity_size_bytes > 0 "
+            "AND identity_size_bytes <= 1048576 "
+            "AND length(canonical_identity_json_bytes) = identity_size_bytes",
+            name="ck_workshop_run_programs_bytes",
+        ),
+        Index(
+            "uq_workshop_run_programs_reference_part",
+            "organization_id",
+            "workshop_run_id",
+            unique=True,
+            postgresql_where=text("purpose = 'REFERENCE_PART'"),
+            sqlite_where=text("purpose = 'REFERENCE_PART'"),
+        ),
+    )
+
+    workshop_run_id: Mapped[str] = mapped_column(String(36))
+    ordinal: Mapped[int] = mapped_column(Integer)
+    program_id: Mapped[str] = mapped_column(String(160))
+    purpose: Mapped[str] = mapped_column(String(24))
+    relative_path: Mapped[str] = mapped_column(String(512))
+    setup_id: Mapped[str] = mapped_column(String(160))
+    wcs_id: Mapped[str] = mapped_column(String(160))
+    stock_id: Mapped[str] = mapped_column(String(160))
+    operation_set_sha256: Mapped[str] = mapped_column(String(64))
+    program_sha256: Mapped[str] = mapped_column(String(64))
+    program_size_bytes: Mapped[int] = mapped_column(BigInteger)
+    media_type: Mapped[str] = mapped_column(String(160))
+    identity_sha256: Mapped[str] = mapped_column(String(64))
+    canonical_identity_json_bytes: Mapped[bytes] = mapped_column(LargeBinary)
+    identity_size_bytes: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopNonceSet(IdMixin, TenantMixin, Base):
+    __tablename__ = "workshop_nonce_sets"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_workshop_nonce_sets_org_id"),
+        UniqueConstraint(
+            "organization_id",
+            "id",
+            "workshop_run_id",
+            "run_sha256",
+            "workshop_policy_sha256",
+            "generation",
+            name="uq_workshop_nonce_sets_org_binding",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workshop_run_id",
+            "generation",
+            name="uq_workshop_nonce_sets_org_run_generation",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_workshop_nonce_sets_org_idempotency",
+        ),
+        ForeignKeyConstraint(
+            [
+                "organization_id",
+                "workshop_run_id",
+                "run_sha256",
+                "workshop_policy_sha256",
+            ],
+            [
+                "workshop_runs.organization_id",
+                "workshop_runs.id",
+                "workshop_runs.run_sha256",
+                "workshop_runs.workshop_policy_sha256",
+            ],
+            name="fk_workshop_nonce_sets_org_run",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "issued_by_actor_id"],
+            ["workshop_actors.organization_id", "workshop_actors.id"],
+            name="fk_workshop_nonce_sets_org_issuer",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("generation > 0", name="ck_workshop_nonce_sets_generation"),
+        CheckConstraint(
+            "issued_at < expires_at",
+            name="ck_workshop_nonce_sets_validity",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) > 0 AND length(nonce_key_version) > 0 "
+            "AND length(nonce_derivation_context) = 32 "
+            "AND nonce_derivation_scheme = 'CUSTOMBUILD-HMAC-SHA256-V1'",
+            name="ck_workshop_nonce_sets_identity",
+        ),
+        CheckConstraint(
+            "length(run_sha256) = 64 AND run_sha256 = lower(run_sha256) "
+            "AND length(workshop_policy_sha256) = 64 "
+            "AND workshop_policy_sha256 = lower(workshop_policy_sha256)",
+            name="ck_workshop_nonce_sets_hashes",
+        ),
+        CheckConstraint(
+            "(consumed_at IS NULL AND consumed_chain_sha256 IS NULL) OR "
+            "(consumed_at IS NOT NULL AND consumed_at >= issued_at "
+            "AND consumed_at <= expires_at "
+            "AND consumed_chain_sha256 IS NOT NULL "
+            "AND length(consumed_chain_sha256) = 64 "
+            "AND consumed_chain_sha256 = lower(consumed_chain_sha256))",
+            name="ck_workshop_nonce_sets_consumption",
+        ),
+        CheckConstraint(
+            "invalidated_at IS NULL OR "
+            "(invalidated_at >= issued_at AND consumed_at IS NULL)",
+            name="ck_workshop_nonce_sets_invalidation",
+        ),
+        Index(
+            "uq_workshop_nonce_sets_active_run",
+            "organization_id",
+            "workshop_run_id",
+            unique=True,
+            postgresql_where=text("invalidated_at IS NULL AND consumed_at IS NULL"),
+            sqlite_where=text("invalidated_at IS NULL AND consumed_at IS NULL"),
+        ),
+    )
+
+    workshop_run_id: Mapped[str] = mapped_column(String(36))
+    run_sha256: Mapped[str] = mapped_column(String(64))
+    workshop_policy_sha256: Mapped[str] = mapped_column(String(64))
+    generation: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    nonce_derivation_scheme: Mapped[str] = mapped_column(String(40))
+    nonce_key_version: Mapped[str] = mapped_column(String(160))
+    nonce_derivation_context: Mapped[bytes] = mapped_column(LargeBinary(32))
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    invalidated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_chain_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    issued_by_actor_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopNonce(Base):
+    """One burned, digest-only server challenge for an exact run stage."""
+
+    __tablename__ = "workshop_nonces"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id",
+            "nonce_digest_sha256",
+            name="uq_workshop_nonces_org_digest",
+        ),
+        ForeignKeyConstraint(
+            [
+                "organization_id",
+                "nonce_set_id",
+                "workshop_run_id",
+                "run_sha256",
+                "workshop_policy_sha256",
+                "set_generation",
+            ],
+            [
+                "workshop_nonce_sets.organization_id",
+                "workshop_nonce_sets.id",
+                "workshop_nonce_sets.workshop_run_id",
+                "workshop_nonce_sets.run_sha256",
+                "workshop_nonce_sets.workshop_policy_sha256",
+                "workshop_nonce_sets.generation",
+            ],
+            name="fk_workshop_nonces_org_set_binding",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "stage IN ('PRE_CUT', 'REFERENCE_PART', 'FINAL_WORKSHOP')",
+            name="ck_workshop_nonces_stage",
+        ),
+        CheckConstraint(
+            "length(nonce_digest_sha256) = 64 "
+            "AND nonce_digest_sha256 = lower(nonce_digest_sha256)",
+            name="ck_workshop_nonces_digest",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    nonce_set_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(24), primary_key=True)
+    workshop_run_id: Mapped[str] = mapped_column(String(36))
+    run_sha256: Mapped[str] = mapped_column(String(64))
+    workshop_policy_sha256: Mapped[str] = mapped_column(String(64))
+    set_generation: Mapped[int] = mapped_column(Integer)
+    nonce_digest_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopChainAcceptance(IdMixin, TenantMixin, Base):
+    """Immutable initial acceptance; current validity is always re-derived."""
+
+    __tablename__ = "workshop_chain_acceptances"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "id", name="uq_workshop_chain_acceptances_org_id"
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "nonce_set_id",
+            name="uq_workshop_chain_acceptances_org_nonce_set",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workshop_run_id",
+            "chain_sha256",
+            name="uq_workshop_chain_acceptances_org_run_chain",
+        ),
+        ForeignKeyConstraint(
+            [
+                "organization_id",
+                "workshop_run_id",
+                "run_sha256",
+                "workshop_policy_sha256",
+            ],
+            [
+                "workshop_runs.organization_id",
+                "workshop_runs.id",
+                "workshop_runs.run_sha256",
+                "workshop_runs.workshop_policy_sha256",
+            ],
+            name="fk_workshop_chain_acceptances_org_run",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "organization_id",
+                "nonce_set_id",
+                "workshop_run_id",
+                "run_sha256",
+                "workshop_policy_sha256",
+                "nonce_set_generation",
+            ],
+            [
+                "workshop_nonce_sets.organization_id",
+                "workshop_nonce_sets.id",
+                "workshop_nonce_sets.workshop_run_id",
+                "workshop_nonce_sets.run_sha256",
+                "workshop_nonce_sets.workshop_policy_sha256",
+                "workshop_nonce_sets.generation",
+            ],
+            name="fk_workshop_chain_acceptances_org_nonce_set",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "verified_by_actor_id"],
+            ["workshop_actors.organization_id", "workshop_actors.id"],
+            name="fk_workshop_chain_acceptances_org_verifier",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "eligibility = 'VERIFIED_FOR_RELEASE_REVIEW'",
+            name="ck_workshop_chain_acceptances_eligibility",
+        ),
+        CheckConstraint(
+            "trust_epoch >= 0 AND nonce_set_generation > 0 "
+            "AND verified_at < valid_until",
+            name="ck_workshop_chain_acceptances_validity",
+        ),
+        CheckConstraint(
+            "length(final_attestation_id) > 0 AND length(verifier_version) > 0",
+            name="ck_workshop_chain_acceptances_identity",
+        ),
+        CheckConstraint(
+            "length(chain_sha256) = 64 AND chain_sha256 = lower(chain_sha256) "
+            "AND length(run_sha256) = 64 AND run_sha256 = lower(run_sha256) "
+            "AND length(workshop_policy_sha256) = 64 "
+            "AND workshop_policy_sha256 = lower(workshop_policy_sha256) "
+            "AND length(registry_snapshot_sha256) = 64 "
+            "AND registry_snapshot_sha256 = lower(registry_snapshot_sha256) "
+            "AND length(verifier_source_sha256) = 64 "
+            "AND verifier_source_sha256 = lower(verifier_source_sha256) "
+            "AND length(pre_cut_attestation_sha256) = 64 "
+            "AND pre_cut_attestation_sha256 = lower(pre_cut_attestation_sha256) "
+            "AND length(reference_part_attestation_sha256) = 64 "
+            "AND reference_part_attestation_sha256 = lower(reference_part_attestation_sha256) "
+            "AND length(final_workshop_attestation_sha256) = 64 "
+            "AND final_workshop_attestation_sha256 = lower(final_workshop_attestation_sha256) "
+            "AND length(pre_cut_statement_sha256) = 64 "
+            "AND pre_cut_statement_sha256 = lower(pre_cut_statement_sha256) "
+            "AND length(reference_part_statement_sha256) = 64 "
+            "AND reference_part_statement_sha256 = lower(reference_part_statement_sha256) "
+            "AND length(final_workshop_statement_sha256) = 64 "
+            "AND final_workshop_statement_sha256 = lower(final_workshop_statement_sha256)",
+            name="ck_workshop_chain_acceptances_hashes",
+        ),
+        Index(
+            "ix_workshop_chain_acceptances_current",
+            "organization_id",
+            "workshop_run_id",
+            "trust_epoch",
+            "valid_until",
+        ),
+    )
+
+    workshop_run_id: Mapped[str] = mapped_column(String(36))
+    run_sha256: Mapped[str] = mapped_column(String(64))
+    workshop_policy_sha256: Mapped[str] = mapped_column(String(64))
+    nonce_set_id: Mapped[str] = mapped_column(String(36))
+    nonce_set_generation: Mapped[int] = mapped_column(Integer)
+    chain_sha256: Mapped[str] = mapped_column(String(64))
+    pre_cut_attestation_sha256: Mapped[str] = mapped_column(String(64))
+    reference_part_attestation_sha256: Mapped[str] = mapped_column(String(64))
+    final_workshop_attestation_sha256: Mapped[str] = mapped_column(String(64))
+    pre_cut_statement_sha256: Mapped[str] = mapped_column(String(64))
+    reference_part_statement_sha256: Mapped[str] = mapped_column(String(64))
+    final_workshop_statement_sha256: Mapped[str] = mapped_column(String(64))
+    final_attestation_id: Mapped[str] = mapped_column(String(160))
+    trust_epoch: Mapped[int] = mapped_column(BigInteger)
+    registry_snapshot_sha256: Mapped[str] = mapped_column(String(64))
+    eligibility: Mapped[str] = mapped_column(String(40))
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    valid_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    verifier_version: Mapped[str] = mapped_column(String(160))
+    verifier_source_sha256: Mapped[str] = mapped_column(String(64))
+    verified_by_actor_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopAcceptanceSigner(Base):
+    """Exact canonical people and keys behind every accepted stage."""
+
+    __tablename__ = "workshop_acceptance_signers"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "acceptance_id"],
+            [
+                "workshop_chain_acceptances.organization_id",
+                "workshop_chain_acceptances.id",
+            ],
+            name="fk_workshop_acceptance_signers_org_acceptance",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "issuer_key_id", "actor_id"],
+            [
+                "workshop_issuer_keys.organization_id",
+                "workshop_issuer_keys.id",
+                "workshop_issuer_keys.actor_id",
+            ],
+            name="fk_workshop_acceptance_signers_org_key_actor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "stage IN ('PRE_CUT', 'REFERENCE_PART', 'FINAL_WORKSHOP')",
+            name="ck_workshop_acceptance_signers_stage",
+        ),
+        CheckConstraint(
+            "signer_role IN "
+            "('workshop_maker', 'workshop_checker', 'workshop_supervisor') "
+            "AND (signer_role <> 'workshop_supervisor' OR stage = 'PRE_CUT')",
+            name="ck_workshop_acceptance_signers_role",
+        ),
+    )
+
+    organization_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("organizations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    acceptance_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    stage: Mapped[str] = mapped_column(String(24), primary_key=True)
+    signer_role: Mapped[str] = mapped_column(String(24), primary_key=True)
+    issuer_key_id: Mapped[str] = mapped_column(String(36))
+    actor_id: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WorkshopRevocation(IdMixin, TenantMixin, Base):
+    """Append-only trust revocation; aliases are blocked by digest identity."""
+
+    __tablename__ = "workshop_revocations"
+    __table_args__ = (
+        UniqueConstraint(
+            "organization_id", "id", name="uq_workshop_revocations_org_id"
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "target_kind",
+            "target_sha256",
+            name="uq_workshop_revocations_org_target",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "revocation_epoch",
+            name="uq_workshop_revocations_org_epoch",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "idempotency_key",
+            name="uq_workshop_revocations_org_idempotency",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "revoked_by_actor_id"],
+            ["workshop_actors.organization_id", "workshop_actors.id"],
+            name="fk_workshop_revocations_org_actor",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "target_kind IN ('ISSUER_KEY', 'RUN', 'STATEMENT', "
+            "'EVIDENCE_OBJECT', 'EVIDENCE_ATTACHMENT', 'EVIDENCE_CLAIM')",
+            name="ck_workshop_revocations_target_kind",
+        ),
+        CheckConstraint(
+            "length(target_sha256) = 64 AND target_sha256 = lower(target_sha256)",
+            name="ck_workshop_revocations_target_sha256",
+        ),
+        CheckConstraint(
+            "revocation_epoch > 0 AND length(reason) > 0 "
+            "AND length(idempotency_key) > 0",
+            name="ck_workshop_revocations_identity",
+        ),
+    )
+
+    target_kind: Mapped[str] = mapped_column(String(24))
+    target_sha256: Mapped[str] = mapped_column(String(64))
+    revocation_epoch: Mapped[int] = mapped_column(BigInteger)
+    reason: Mapped[str] = mapped_column(String(500))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    revoked_by_actor_id: Mapped[str] = mapped_column(String(36))
+    revoked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

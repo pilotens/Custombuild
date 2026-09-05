@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import stat
 from datetime import datetime
 from ipaddress import ip_address
 from pathlib import Path
@@ -16,9 +18,11 @@ INSECURE_SECRET_VALUES = frozenset({"custombuild", "minioadmin", "password", "po
 INSECURE_S3_ACCESS_KEYS = frozenset({"custombuild", "minioadmin"})
 INSECURE_BUILD_IDENTITY_MARKERS = ("dirty", "local", "unknown", "uncommitted")
 MIN_PRODUCTION_SECRET_LENGTH = 24
+MAX_PRODUCTION_CAM_PROFILE_BYTES = 1024 * 1024
 RAW_CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]")
 S3_ACCESS_KEY_PATTERN = re.compile(r"[A-Za-z0-9._-]{1,128}")
 S3_BUCKET_PATTERN = re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]")
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class BuildIdentityValues(TypedDict):
@@ -28,6 +32,103 @@ class BuildIdentityValues(TypedDict):
     source_url: str
     source_manifest_sha256: str
     dependency_lock_sha256: str
+
+
+def read_production_cam_profile_source(
+    *,
+    profile_path: str,
+    profile_json: str,
+    profile_sha256: str,
+    production: bool,
+) -> bytes | str:
+    """Read one bounded server-owned CAM profile without following a leaf symlink.
+
+    Inline JSON remains useful for isolated development tests, but production
+    must use an immutable read-only file mount.  API and worker call this same
+    helper so their input and failure semantics cannot silently diverge.
+    """
+
+    if profile_path and profile_json:
+        raise ValueError(
+            "PRODUCTION_CAM_PROFILE_PATH and PRODUCTION_CAM_PROFILE_JSON are mutually exclusive"
+        )
+    if production and profile_json:
+        raise ValueError("production CAM profile must use PRODUCTION_CAM_PROFILE_PATH")
+    if profile_sha256 and SHA256_PATTERN.fullmatch(profile_sha256) is None:
+        raise ValueError("PRODUCTION_CAM_PROFILE_SHA256 must be lowercase 64-character hex")
+    if production and profile_path and not profile_sha256:
+        raise ValueError(
+            "production CAM profile path requires PRODUCTION_CAM_PROFILE_SHA256"
+        )
+    if not profile_path:
+        if profile_sha256:
+            if not profile_json:
+                raise ValueError(
+                    "PRODUCTION_CAM_PROFILE_SHA256 requires a configured CAM profile"
+                )
+            if hashlib.sha256(profile_json.encode("utf-8")).hexdigest() != profile_sha256:
+                raise ValueError("production CAM profile SHA-256 does not match configured bytes")
+        return profile_json
+    if (
+        profile_path != profile_path.strip()
+        or RAW_CONTROL_PATTERN.search(profile_path) is not None
+        or not Path(profile_path).is_absolute()
+        or str(Path(profile_path)) != profile_path
+    ):
+        raise ValueError("PRODUCTION_CAM_PROFILE_PATH must be a canonical absolute path")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(profile_path, flags)
+    except OSError as exc:
+        raise ValueError("production CAM profile file is unavailable") from exc
+    try:
+        status_before = os.fstat(descriptor)
+        if not stat.S_ISREG(status_before.st_mode):
+            raise ValueError("production CAM profile path must identify a regular file")
+        if production and status_before.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            raise ValueError(
+                "production CAM profile file must not be group- or world-writable"
+            )
+        if not 0 < status_before.st_size <= MAX_PRODUCTION_CAM_PROFILE_BYTES:
+            raise ValueError("production CAM profile file size is invalid")
+        chunks: list[bytes] = []
+        remaining = MAX_PRODUCTION_CAM_PROFILE_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(65_536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        status_after = os.fstat(descriptor)
+        identity_before = (
+            status_before.st_dev,
+            status_before.st_ino,
+            status_before.st_mode,
+            status_before.st_size,
+            status_before.st_mtime_ns,
+            status_before.st_ctime_ns,
+        )
+        identity_after = (
+            status_after.st_dev,
+            status_after.st_ino,
+            status_after.st_mode,
+            status_after.st_size,
+            status_after.st_mtime_ns,
+            status_after.st_ctime_ns,
+        )
+        if (
+            identity_after != identity_before
+            or len(payload) != status_before.st_size
+            or len(payload) > MAX_PRODUCTION_CAM_PROFILE_BYTES
+        ):
+            raise ValueError("production CAM profile file changed while it was read")
+        if profile_sha256 and hashlib.sha256(payload).hexdigest() != profile_sha256:
+            raise ValueError("production CAM profile SHA-256 does not match configured bytes")
+        return payload
+    finally:
+        os.close(descriptor)
 
 
 def _normalise_secret(value: str) -> str:

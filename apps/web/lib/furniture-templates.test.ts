@@ -4,6 +4,7 @@ import screenedTemplateDefaults from "../../../packages/contracts/screened-templ
 import { adaptStructuralSupports, balanceDesignSymmetry, resolveDesign } from "./design-engine";
 import { DEFAULT_DESIGN_SPEC, type DesignSpec, type ResolvedPart } from "./design-types";
 import {
+  compatibleFurnitureTemplateId,
   FURNITURE_TEMPLATES,
   isReferenceImageDesign,
   templatePreviewGeometry,
@@ -13,7 +14,7 @@ import { referenceVerificationFingerprint } from "./reference-image";
 import { DEFAULT_PLANNING_BRIEF, templateWithPlanningBrief } from "./furniture-planning";
 import { parseLocalDesignSpec } from "./workspace-design-envelope";
 
-const SCREENED_TEMPLATE_DEFAULTS_V1_2_SHA256 = "b3dcd99962958819964846c5836db418394b8024ce21910677272e2b86071c9a";
+const SCREENED_TEMPLATE_DEFAULTS_V1_4_SHA256 = "638d8091c7afb2d4bb54b8ccc67876595371b51f878076819a8b2cf46fc65057";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -105,9 +106,17 @@ function isModeledCapture(left: ResolvedPart, right: ResolvedPart): boolean {
 }
 
 describe("furniture template visual contracts", () => {
+  it("keeps the selected template compatible when a semantic edit changes furniture family", () => {
+    expect(compatibleFurnitureTemplateId("shelving", "bookcase")).toBe("shelving");
+    expect(compatibleFurnitureTemplateId("room-divider", "bookcase")).toBe("room-divider");
+    expect(compatibleFurnitureTemplateId("shelving", "wall_library")).toBe("wall-library");
+    expect(compatibleFurnitureTemplateId("sideboard", "wall_library")).toBe("sideboard");
+    expect(compatibleFurnitureTemplateId("cupboard", "bookcase")).toBe("shelving");
+  });
+
   it("binds current screened UI defaults to the versioned non-release contract", () => {
     expect(screenedTemplateDefaults.schema_version).toBe("custombuild.screened-template-defaults.v1");
-    expect(screenedTemplateDefaults.contract_version).toBe("1.2.0");
+    expect(screenedTemplateDefaults.contract_version).toBe("1.4.0");
     expect(screenedTemplateDefaults.identity_policy).toEqual({
       design_id: "preserve_current_project",
       revision: "preserve_current_project",
@@ -120,9 +129,9 @@ describe("furniture template visual contracts", () => {
     expect(fingerprint).toEqual({
       algorithm: "sha256",
       canonicalization: "UTF-8 JSON with recursively sorted object keys, compact separators, ensure_ascii=false, and the top-level fingerprint member omitted",
-      value: SCREENED_TEMPLATE_DEFAULTS_V1_2_SHA256,
+      value: SCREENED_TEMPLATE_DEFAULTS_V1_4_SHA256,
     });
-    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_2_SHA256);
+    expect(digest).toBe(SCREENED_TEMPLATE_DEFAULTS_V1_4_SHA256);
 
     expect(screenedTemplateDefaults.templates.map((entry) => entry.template_id)).toEqual(["shelving"]);
     for (const entry of screenedTemplateDefaults.templates) {

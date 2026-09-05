@@ -1,6 +1,9 @@
 """Deterministic manufacturing engine for Custombuild."""
 
-from typing import Any
+# ruff: noqa: F401 -- this package intentionally declares lazy, type-only exports.
+
+from importlib import import_module
+from typing import TYPE_CHECKING, Any
 
 from .artifact_limits import (
     MAX_API_TRANSIENT_BYTES,
@@ -16,6 +19,9 @@ from .artifact_limits import (
     valid_artifact_size,
 )
 from .dfm import (
+    ADJACENT_RELIEF_CLEARANCE_WARNING_CODE,
+    ADJACENT_RELIEF_CLEARANCE_WARNING_MESSAGE,
+    ADJACENT_RELIEF_CLEARANCE_WARNING_REQUIRED_ACTION,
     DFM_ENGINE_VERSION,
     STOCK_PROFILE_MISSING_CODE,
     STOCK_PROFILE_MISSING_MESSAGE,
@@ -68,31 +74,82 @@ from .model import (
     um_to_mm,
 )
 from .nesting import DeterministicNester, validate_layout
-from .operations import TwoSidedRegistration, generate_operations_document
-from .package import (
-    GENERATION_PLAN_ARTIFACT_PATH,
-    GENERATION_PLAN_ARTIFACT_ROLE,
-    GENERATION_PLAN_SCHEMA_VERSION,
-    MANIFEST_CONTEXT_HASH_FIELDS,
-    STOCK_SELECTION_SCHEMA_VERSION,
-    ArtifactFile,
-    ManifestContext,
-    blocked_cam_artifact_violation,
-    build_deterministic_zip,
-    build_manifest,
-    default_artifacts,
-    design_review_artifacts,
-    generation_plan_artifact,
-    machine_profile_fingerprint,
-    normalize_design_review_dfm_report,
-    read_and_verify_package,
-    stock_profiles_fingerprint,
-    stock_selection_artifact,
-    validate_design_review_status_dfm_report,
-    validate_design_review_status_inventory_entries,
-    validate_manifest_artifact_entries,
-    validate_manifest_context_contract,
+from .operations import (
+    CLIENT_DECLARED_AUTHORITY,
+    MAX_REGISTRATION_PIN_DIAMETER_UM,
+    MAX_REGISTRATION_POSITION_TOLERANCE_UM,
+    MIN_REGISTRATION_PIN_DIAMETER_UM,
+    MIN_REGISTRATION_POSITION_TOLERANCE_UM,
+    MIN_REGISTRATION_USABLE_BASELINE_UM,
+    MIN_VALIDATION_CONTOUR_KERF_UM,
+    TwoSidedRegistration,
+    generate_operations_document,
+    registration_pin_keep_out_radius_um,
+    registration_pin_keep_out_rectangles,
 )
+from .production_machine_profile import (
+    MAX_PRODUCTION_MACHINE_PROFILE_BYTES,
+    PRODUCTION_MACHINE_PROFILE_SCHEMA_VERSION,
+    SERVER_OWNED_PRODUCTION_PROFILE,
+    TEST_ONLY_PROFILE,
+    TEST_ONLY_STATUS,
+    WORKSHOP_ACCEPTED_STATUS,
+    LoadedProductionMachineProfile,
+    ProductionMachineProfileError,
+    WorkshopAcceptanceEvidence,
+    load_production_execution_context,
+    load_production_machine_profile,
+    production_machine_profile_job_binding,
+    production_machine_profile_job_binding_json,
+)
+
+if TYPE_CHECKING:
+    from .cam_candidate_package import (
+        CAM_CANDIDATE_BACKPLOT_PATH,
+        CAM_CANDIDATE_MACHINE_PROFILE_PATH,
+        CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION,
+        CAM_CANDIDATE_PACKAGE_BUILDER_VERSION,
+        CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH,
+        CAM_CANDIDATE_PROGRAM_INDEX_PATH,
+        CAM_CANDIDATE_PROGRAM_INDEX_SCHEMA_VERSION,
+        CAM_CANDIDATE_PROGRAM_ROOT,
+        CAM_CANDIDATE_REPORT_PATH,
+        CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH,
+        CAM_CANDIDATE_SETUP_INSTRUCTIONS_SCHEMA_VERSION,
+        CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH,
+        CAM_CANDIDATE_SOURCE_OPERATIONS_PATH,
+        CAM_CANDIDATE_STATUS,
+        CAM_CANDIDATE_TOOLPATH_PATH,
+        CAM_CANDIDATE_VALIDATION_REPORT_SCHEMA_VERSION,
+        CAMCandidateBundle,
+        build_cam_candidate_bundle,
+        read_and_verify_cam_candidate_package,
+        read_operations_document_from_design_review_bundle,
+    )
+    from .package import (
+        GENERATION_PLAN_ARTIFACT_PATH,
+        GENERATION_PLAN_ARTIFACT_ROLE,
+        GENERATION_PLAN_SCHEMA_VERSION,
+        MANIFEST_CONTEXT_HASH_FIELDS,
+        STOCK_SELECTION_SCHEMA_VERSION,
+        ArtifactFile,
+        ManifestContext,
+        blocked_cam_artifact_violation,
+        build_deterministic_zip,
+        build_manifest,
+        default_artifacts,
+        design_review_artifacts,
+        generation_plan_artifact,
+        machine_profile_fingerprint,
+        normalize_design_review_dfm_report,
+        read_and_verify_package,
+        stock_profiles_fingerprint,
+        stock_selection_artifact,
+        validate_design_review_status_dfm_report,
+        validate_design_review_status_inventory_entries,
+        validate_manifest_artifact_entries,
+        validate_manifest_context_contract,
+    )
 from .procurement import (
     GROUPED_BOM_SCHEMA_VERSION,
     STOCK_PURCHASE_SCHEMA_VERSION,
@@ -101,10 +158,21 @@ from .procurement import (
 )
 from .profiles import linuxcnc_reference_router_1325, linuxcnc_reference_router_5125
 from .quality import (
+    JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+    JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
     LABEL_INDEX_SCHEMA_VERSION,
+    MANUFACTURING_INTENT_PATH,
+    MANUFACTURING_INTENT_ROLE,
+    MANUFACTURING_INTENT_SCHEMA_VERSION,
     QUALITY_MEASUREMENT_PLAN_SCHEMA_VERSION,
+    SUPPLIER_HANDOFF_PATH,
+    SUPPLIER_HANDOFF_ROLE,
+    SUPPLIER_HANDOFF_SCHEMA_VERSION,
     label_index_csv,
+    manufacturing_intent_json,
     quality_measurement_plan_json,
+    supplier_handoff_json,
 )
 from .readiness import (
     WORKSHOP_READINESS_SCHEMA_VERSION,
@@ -115,17 +183,21 @@ from .readiness import (
     validate_workshop_evidence_binding,
 )
 from .review_status import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
     DESIGN_REVIEW_PACKAGE_STATUS_SCHEMA_VERSION,
+    TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,
     CAMStageStatus,
     DesignReviewPackageStatus,
+    back_panel_retention_evidence_missing,
     blocked_design_review_package_status,
     dado_retention_evidence_missing,
     generated_design_review_package_status,
     joint_retention_contract_is_structurally_complete,
     normalize_design_review_package_status,
+    retention_evidence_blocker_code,
     validate_design_review_status_retention_binding,
 )
 
@@ -138,9 +210,92 @@ def build_production_bundle(*args: Any, **kwargs: Any) -> Any:
     return build(*args, **kwargs)
 
 
+_PACKAGE_EXPORTS = frozenset(
+    {
+        "GENERATION_PLAN_ARTIFACT_PATH",
+        "GENERATION_PLAN_ARTIFACT_ROLE",
+        "GENERATION_PLAN_SCHEMA_VERSION",
+        "MANIFEST_CONTEXT_HASH_FIELDS",
+        "STOCK_SELECTION_SCHEMA_VERSION",
+        "ArtifactFile",
+        "ManifestContext",
+        "blocked_cam_artifact_violation",
+        "build_deterministic_zip",
+        "build_manifest",
+        "default_artifacts",
+        "design_review_artifacts",
+        "generation_plan_artifact",
+        "machine_profile_fingerprint",
+        "normalize_design_review_dfm_report",
+        "read_and_verify_package",
+        "stock_profiles_fingerprint",
+        "stock_selection_artifact",
+        "validate_design_review_status_dfm_report",
+        "validate_design_review_status_inventory_entries",
+        "validate_manifest_artifact_entries",
+        "validate_manifest_context_contract",
+    }
+)
+
+_CAM_CANDIDATE_EXPORTS = frozenset(
+    {
+        "CAM_CANDIDATE_BACKPLOT_PATH",
+        "CAM_CANDIDATE_MACHINE_PROFILE_PATH",
+        "CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION",
+        "CAM_CANDIDATE_PACKAGE_BUILDER_VERSION",
+        "CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH",
+        "CAM_CANDIDATE_PROGRAM_INDEX_PATH",
+        "CAM_CANDIDATE_PROGRAM_INDEX_SCHEMA_VERSION",
+        "CAM_CANDIDATE_PROGRAM_ROOT",
+        "CAM_CANDIDATE_REPORT_PATH",
+        "CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH",
+        "CAM_CANDIDATE_SETUP_INSTRUCTIONS_SCHEMA_VERSION",
+        "CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH",
+        "CAM_CANDIDATE_SOURCE_OPERATIONS_PATH",
+        "CAM_CANDIDATE_STATUS",
+        "CAM_CANDIDATE_TOOLPATH_PATH",
+        "CAM_CANDIDATE_VALIDATION_REPORT_SCHEMA_VERSION",
+        "CAMCandidateBundle",
+        "build_cam_candidate_bundle",
+        "read_operations_document_from_design_review_bundle",
+        "read_and_verify_cam_candidate_package",
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Lazily expose cross-package artifact helpers without import cycles.
+
+    ``package`` depends on CAM and postprocessors.  Importing it while the
+    lightweight manufacturing models are still initialising makes a clean
+    ``import custombuild_cam`` or ``import custombuild_postprocessors`` depend
+    on whichever package happened to be imported first.
+    """
+
+    if name in _CAM_CANDIDATE_EXPORTS:
+        module = import_module(".cam_candidate_package", __name__)
+        value = getattr(module, name)
+        globals()[name] = value
+        return value
+    if name not in _PACKAGE_EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    package_module = import_module(".package", __name__)
+    value = getattr(package_module, name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | _PACKAGE_EXPORTS | _CAM_CANDIDATE_EXPORTS)
+
+
 __all__ = [
+    "ADJACENT_RELIEF_CLEARANCE_WARNING_CODE",
+    "ADJACENT_RELIEF_CLEARANCE_WARNING_MESSAGE",
+    "ADJACENT_RELIEF_CLEARANCE_WARNING_REQUIRED_ACTION",
     "ArtifactError",
     "ArtifactFile",
+    "BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
     "MAX_ARTIFACT_BYTES",
     "MAX_API_TRANSIENT_BYTES",
     "MAX_CATALOG_SOURCE_BYTES",
@@ -148,9 +303,28 @@ __all__ = [
     "MAX_EVIDENCE_ARTIFACTS",
     "MAX_EVIDENCE_TOTAL_BYTES",
     "MAX_PRODUCTION_BUNDLE_BYTES",
+    "MAX_PRODUCTION_MACHINE_PROFILE_BYTES",
     "MAX_READINESS_STATUS_BYTES",
     "MAX_HTTP_REQUEST_BYTES",
     "CAMOperation",
+    "CAMCandidateBundle",
+    "CAM_CANDIDATE_BACKPLOT_PATH",
+    "CAM_CANDIDATE_MACHINE_PROFILE_PATH",
+    "CAM_CANDIDATE_MANIFEST_SCHEMA_VERSION",
+    "CAM_CANDIDATE_PACKAGE_BUILDER_VERSION",
+    "CAM_CANDIDATE_POSTPROCESSOR_PROFILE_PATH",
+    "CAM_CANDIDATE_PROGRAM_INDEX_PATH",
+    "CAM_CANDIDATE_PROGRAM_INDEX_SCHEMA_VERSION",
+    "CAM_CANDIDATE_PROGRAM_ROOT",
+    "CAM_CANDIDATE_REPORT_PATH",
+    "CAM_CANDIDATE_SETUP_INSTRUCTIONS_PATH",
+    "CAM_CANDIDATE_SETUP_INSTRUCTIONS_SCHEMA_VERSION",
+    "CAM_CANDIDATE_SOURCE_MACHINE_PROFILE_PATH",
+    "CAM_CANDIDATE_SOURCE_OPERATIONS_PATH",
+    "CAM_CANDIDATE_STATUS",
+    "CAM_CANDIDATE_TOOLPATH_PATH",
+    "CAM_CANDIDATE_VALIDATION_REPORT_SCHEMA_VERSION",
+    "CLIENT_DECLARED_AUTHORITY",
     "CAMStageStatus",
     "DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE",
     "DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH",
@@ -178,11 +352,23 @@ __all__ = [
     "GROUPED_BOM_SCHEMA_VERSION",
     "GrainRuleDefinition",
     "MachineProfile",
+    "MAX_REGISTRATION_PIN_DIAMETER_UM",
+    "MAX_REGISTRATION_POSITION_TOLERANCE_UM",
     "LABEL_INDEX_SCHEMA_VERSION",
+    "JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE",
+    "JOINT_RETENTION_SIGNED_EVIDENCE_PATH",
+    "JOINT_RETENTION_SIGNED_EVIDENCE_ROLE",
+    "MANUFACTURING_INTENT_PATH",
+    "MANUFACTURING_INTENT_ROLE",
+    "MANUFACTURING_INTENT_SCHEMA_VERSION",
     "ManifestContext",
     "MANIFEST_CONTEXT_HASH_FIELDS",
     "ManufacturingError",
     "ManufacturingFeature",
+    "MIN_REGISTRATION_PIN_DIAMETER_UM",
+    "MIN_REGISTRATION_POSITION_TOLERANCE_UM",
+    "MIN_REGISTRATION_USABLE_BASELINE_UM",
+    "MIN_VALIDATION_CONTOUR_KERF_UM",
     "NestingError",
     "NestingLayout",
     "OperationKind",
@@ -192,10 +378,17 @@ __all__ = [
     "PartSpec",
     "Placement",
     "Point2D",
+    "PRODUCTION_MACHINE_PROFILE_SCHEMA_VERSION",
     "ProductionBlockedError",
+    "ProductionMachineProfileError",
+    "LoadedProductionMachineProfile",
     "QUALITY_MEASUREMENT_PLAN_SCHEMA_VERSION",
+    "SUPPLIER_HANDOFF_PATH",
+    "SUPPLIER_HANDOFF_ROLE",
+    "SUPPLIER_HANDOFF_SCHEMA_VERSION",
     "Rect",
     "Severity",
+    "SERVER_OWNED_PRODUCTION_PROFILE",
     "Setup",
     "Side",
     "StockSheet",
@@ -205,17 +398,24 @@ __all__ = [
     "STOCK_PROFILE_MISSING_REQUIRED_ACTION",
     "STOCK_SELECTION_SCHEMA_VERSION",
     "ToolSpec",
+    "TEST_ONLY_PROFILE",
+    "TEST_ONLY_STATUS",
     "TwoSidedRegistration",
+    "TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE",
     "WORKSHOP_READINESS_SCHEMA_VERSION",
     "ReadinessRequirement",
     "ReadinessStatus",
     "WorkshopReadinessReport",
+    "WorkshopAcceptanceEvidence",
+    "WORKSHOP_ACCEPTED_STATUS",
     "build_deterministic_zip",
+    "build_cam_candidate_bundle",
     "blocked_cam_artifact_violation",
     "build_manifest",
     "build_production_bundle",
     "artifact_size_limit",
     "build_workshop_readiness_report",
+    "back_panel_retention_evidence_missing",
     "blocked_design_review_package_status",
     "dado_retention_evidence_missing",
     "canonical_json_bytes",
@@ -223,6 +423,8 @@ __all__ = [
     "design_review_artifacts",
     "expand_part_instances",
     "generate_operations_document",
+    "registration_pin_keep_out_radius_um",
+    "registration_pin_keep_out_rectangles",
     "generated_design_review_package_status",
     "joint_retention_contract_is_structurally_complete",
     "generation_plan_artifact",
@@ -230,12 +432,21 @@ __all__ = [
     "grouped_bom_json",
     "linuxcnc_reference_router_1325",
     "linuxcnc_reference_router_5125",
+    "load_production_execution_context",
+    "load_production_machine_profile",
     "machine_profile_fingerprint",
     "normalize_design_review_package_status",
+    "retention_evidence_blocker_code",
     "normalize_design_review_dfm_report",
     "label_index_csv",
+    "manufacturing_intent_json",
     "quality_measurement_plan_json",
+    "production_machine_profile_job_binding",
+    "production_machine_profile_job_binding_json",
+    "supplier_handoff_json",
     "read_and_verify_package",
+    "read_and_verify_cam_candidate_package",
+    "read_operations_document_from_design_review_bundle",
     "sha256_hex",
     "stock_purchase_csv",
     "stock_profile_missing_issue",

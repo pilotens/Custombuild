@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import yaml
+
 PROD_CI = Path(".github/workflows/prod-ci.yml")
 REVIEWED_GRYPE_SCAN_ACTION = "anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
 REVIEWED_GRYPE_VERSION = "v0.110.0"
@@ -7,6 +9,91 @@ REVIEWED_GRYPE_VERSION = "v0.110.0"
 
 def _workflow() -> str:
     return PROD_CI.read_text(encoding="utf-8")
+
+
+def test_release_workflows_use_identical_sha_bound_linuxcnc_oracle() -> None:
+    paths = (
+        Path(".github/workflows/ci.yml"),
+        Path(".github/workflows/cd.yml"),
+        PROD_CI,
+    )
+    jobs = {
+        path: yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"] for path in paths
+    }
+    oracle_jobs = [jobs[path]["linuxcnc-interpreter-oracle"] for path in paths]
+
+    assert all(job == oracle_jobs[0] for job in oracle_jobs[1:])
+    oracle = oracle_jobs[0]
+    assert oracle["container"]["image"] == (
+        "debian:trixie-slim@sha256:"
+        "abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f"
+    )
+    assert oracle["timeout-minutes"] == 20
+    assert oracle["env"] == {
+        "DEBIAN_FRONTEND": "noninteractive",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "safe.directory",
+        "GIT_CONFIG_VALUE_0": "${{ github.workspace }}",
+    }
+    assert len(oracle["steps"]) == 4
+    install = oracle["steps"][0]["run"]
+    snapshot = "20260824T000000Z"
+    assert install.count(snapshot) == 2
+    assert f"snapshot.debian.org/archive/debian/{snapshot}" in install
+    assert f"snapshot.debian.org/archive/debian-security/{snapshot}" in install
+    assert 'Acquire::Check-Valid-Until "false";' in install
+    assert "linuxcnc-uspace=1:2.9.4-2+deb13u1" in install
+    assert oracle["steps"][1]["with"] == {
+        "ref": "${{ github.sha }}",
+        "persist-credentials": False,
+    }
+    assert oracle["steps"][-1]["run"] == (
+        "python3 scripts/verify_linuxcnc_interpreter_oracle.py"
+    )
+    assert oracle["steps"][2] == {
+        "name": "Verify immutable repository content root",
+        "run": "python3 scripts/source_manifest.py --repo . --check-production-semantic-root",
+    }
+    ci_python = jobs[paths[0]]["python"]
+    assert ci_python["needs"] == "linuxcnc-interpreter-oracle"
+    assert ci_python["if"] == "${{ always() }}"
+    assert ci_python["steps"][0] == {
+        "name": "Require LinuxCNC interpreter oracle",
+        "if": "${{ needs.linuxcnc-interpreter-oracle.result != 'success' }}",
+        "run": (
+            'echo "LinuxCNC interpreter oracle did not pass for this exact commit"\n'
+            "exit 1\n"
+        ),
+    }
+    assert jobs[paths[1]]["test-release-bundle"]["needs"] == [
+        "quality-evidence",
+        "build-images",
+        "linuxcnc-interpreter-oracle",
+    ]
+    assert jobs[PROD_CI]["prod-compose-acceptance"]["needs"] == [
+        "prod-quality",
+        "linuxcnc-interpreter-oracle",
+    ]
+
+
+def test_ci_external_overlay_render_binds_its_profile_file_and_digest() -> None:
+    workflow = yaml.safe_load(Path(".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["compose-acceptance"]["steps"]
+    step = next(
+        item
+        for item in steps
+        if item.get("name") == "Validate fail-closed external production overlay"
+    )
+
+    assert step["env"]["PRODUCTION_CAM_PROFILE_HOST_PATH"] == (
+        "/tmp/custombuild-production-cam-profile.json"  # noqa: S108 - fixed CI fixture path
+    )
+    assert step["env"]["PRODUCTION_CAM_PROFILE_SHA256"] == (
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    )
+    assert 'touch "$PRODUCTION_CAM_PROFILE_HOST_PATH"' in step["run"]
+    assert 'sha256sum "$PRODUCTION_CAM_PROFILE_HOST_PATH"' in step["run"]
+    assert '"$PRODUCTION_CAM_PROFILE_SHA256"' in step["run"]
 
 
 def test_release_browser_evidence_uses_direct_playwright_cli() -> None:

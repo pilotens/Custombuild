@@ -8,6 +8,7 @@ import type {
   ChangeDiff,
   DesignSpec,
   ManufacturingFeature,
+  RetentionCertificationRequest,
   ResolvedDesign,
   ResolvedPart,
   RuleEvaluation,
@@ -18,6 +19,11 @@ import {
   parseLocalDesignSpec,
   workspaceIntentEnvelopeFromSpec,
 } from "./workspace-design-envelope";
+import {
+  productionContextFromDesignSpec,
+  productionContextsEqual,
+  type RevisionProductionContextSnapshot as WorkshopRevisionProductionContextSnapshot,
+} from "./workshop-production-context";
 
 type JsonRecord = Record<string, unknown>;
 type PreviewRequestBody = paths["/v1/designs/preview"]["post"]["requestBody"]["content"]["application/json"];
@@ -64,26 +70,10 @@ export interface ProjectDraftRead {
   updated_at: string;
 }
 
-export interface RevisionProductionContextSnapshot {
-  stock_width_mm: number;
-  stock_height_mm: number;
-  stock_count: number;
-  back_stock_width_mm: number;
-  back_stock_height_mm: number;
-  back_stock_count: number;
-  machine_profile_id: string;
-}
+export type RevisionProductionContextSnapshot = WorkshopRevisionProductionContextSnapshot;
 
 export function productionContextFromSpec(spec: DesignSpec): RevisionProductionContextSnapshot {
-  return {
-    stock_width_mm: spec.stock_width_mm,
-    stock_height_mm: spec.stock_height_mm,
-    stock_count: spec.stock_count,
-    back_stock_width_mm: spec.back_stock_width_mm,
-    back_stock_height_mm: spec.back_stock_height_mm,
-    back_stock_count: spec.back_stock_count,
-    machine_profile_id: spec.machine_profile_id,
-  };
+  return productionContextFromDesignSpec(spec);
 }
 
 export function versionProductionContextMatches(
@@ -91,18 +81,7 @@ export function versionProductionContextMatches(
   spec: DesignSpec,
 ): boolean {
   const result = asRecord(version.result_json);
-  const frozen = asRecord(result?.production_context);
-  if (!frozen) return false;
-  const current = productionContextFromSpec(spec);
-  const expectedKeys = Object.keys(current).sort();
-  const frozenKeys = Object.keys(frozen).sort();
-  if (
-    frozenKeys.length !== expectedKeys.length
-    || frozenKeys.some((key, index) => key !== expectedKeys[index])
-  ) return false;
-  return Object.entries(current).every(([key, value]) => (
-    typeof frozen[key] === typeof value && frozen[key] === value
-  ));
+  return productionContextsEqual(result?.production_context, spec);
 }
 
 export function toPreviewRequest(spec: DesignSpec): PreviewRequestBody {
@@ -120,11 +99,13 @@ export function toPreviewRequest(spec: DesignSpec): PreviewRequestBody {
     ...(spec.back_panel ? { back_material_id: spec.back_material_id } : {}),
     nominal_thickness_mm: spec.nominal_thickness_mm,
     measured_thickness_mm: spec.measured_thickness_mm,
+    measured_back_thickness_mm: spec.measured_back_thickness_mm,
     shelf_count: spec.shelf_count,
     shelf_mount: spec.fixed_shelves ? "fixed" : "adjustable",
     load_per_shelf_kg: spec.load_per_shelf_kg,
     back_panel: spec.back_panel ? spec.back_panel_type : false,
     plinth: spec.plinth,
+    plinth_height_mm: spec.plinth_height_mm,
     divider_count: spec.divider_count,
     bay_width_ratios: spec.bay_width_ratios,
     shelf_height_ratios: spec.shelf_height_ratios,
@@ -134,7 +115,7 @@ export function toPreviewRequest(spec: DesignSpec): PreviewRequestBody {
     edge_band_mm: spec.edge_band_mm,
     joint_system: spec.joint_system,
     reinforcement_mode: spec.reinforcement_mode,
-    wall_anchor_required: false,
+    wall_anchor_required: spec.wall_anchor_required,
     wall_anchor_verified: false,
   };
 }
@@ -189,6 +170,8 @@ const MAX_RULE_ACTIONS = 16;
 const MAX_RULE_ACTION_CHANGES = 32;
 const MAX_RESPONSE_STRING = 2_000;
 const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
+const MAX_SIGNED_EVIDENCE_BYTES = 20 * 1024 * 1024;
+const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 // The API derives a displayed centre from integer-micrometre placement and
 // floors half of an odd-sized part. Reconstructing an AABB from that centre can
 // therefore appear half a micrometre outside the exact integer envelope.
@@ -198,6 +181,237 @@ function asRecord(value: unknown): JsonRecord | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
     : undefined;
+}
+
+const RELEASE_READ_KEYS = [
+  "release_id",
+  "release_number",
+  "status",
+  "bundle_sha256",
+  "manifest_sha256",
+  "release_kind",
+  "machine_use",
+  "physical_cutting_authorized",
+] as const;
+
+const EXECUTABLE_RELEASE_READ_KEYS = [
+  "release_id",
+  "release_number",
+  "status",
+  "release_kind",
+  "machine_use",
+  "design_review_bundle",
+  "executable_cam",
+  "physical_cutting_authorized",
+] as const;
+
+const DESIGN_REVIEW_BUNDLE_RECEIPT_KEYS = ["bundle_sha256", "manifest_sha256"] as const;
+const EXECUTABLE_CAM_RECEIPT_KEYS = [
+  "candidate_bundle_sha256",
+  "candidate_manifest_sha256",
+  "production_profile_document_sha256",
+  "production_profile_payload_sha256",
+  "program_inventory_sha256",
+  "cam_approval",
+  "workshop_acceptance_required",
+] as const;
+const CAM_APPROVAL_RELEASE_BINDING_KEYS = [
+  "schema_version",
+  "approval_id",
+  "organization_id",
+  "design_version_id",
+  "approval_type",
+  "approved_by",
+  "reason",
+  "generation_job_id",
+  "production_context_hash",
+  "manifest_sha256",
+  "candidate_bundle_sha256",
+  "overrides_json",
+  "created_at",
+  "updated_at",
+  "binding_sha256",
+] as const;
+
+function hasExactKeys<const Key extends string>(
+  value: JsonRecord,
+  keys: readonly Key[],
+): boolean {
+  return Object.keys(value).length === keys.length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key));
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = asRecord(value);
+  if (record) {
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+      .join(",")}}`;
+  }
+  throw new ApiError("Servern returnerade ett icke-kanoniskt frisläppningsbevis.");
+}
+
+async function canonicalSha256(value: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(canonicalJson(value));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function strictReleaseRead(
+  value: unknown,
+  expectedReleaseNumber?: string,
+): Promise<ReleaseRead> {
+  const payload = asRecord(value);
+  const commonInvalid = !payload
+    || typeof payload.release_id !== "string"
+    || !CANONICAL_UUID_PATTERN.test(payload.release_id)
+    || typeof payload.release_number !== "string"
+    || !/^[A-Z0-9][A-Z0-9._-]{0,39}$/.test(payload.release_number)
+    || (expectedReleaseNumber !== undefined && payload.release_number !== expectedReleaseNumber)
+    || payload.status !== "released"
+    || payload.physical_cutting_authorized !== false;
+  if (commonInvalid || !payload) {
+    throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
+  }
+  if (payload.release_kind === "executable_cam") {
+    const designReview = asRecord(payload.design_review_bundle);
+    const executable = asRecord(payload.executable_cam);
+    const approval = executable ? asRecord(executable.cam_approval) : undefined;
+    const shaFields = executable
+      ? [
+          executable.candidate_bundle_sha256,
+          executable.candidate_manifest_sha256,
+          executable.production_profile_document_sha256,
+          executable.production_profile_payload_sha256,
+          executable.program_inventory_sha256,
+        ]
+      : [];
+    if (
+      !hasExactKeys(payload, EXECUTABLE_RELEASE_READ_KEYS)
+      || payload.machine_use !== "executable_cam_candidate"
+      || !designReview
+      || !hasExactKeys(designReview, DESIGN_REVIEW_BUNDLE_RECEIPT_KEYS)
+      || typeof designReview.bundle_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(designReview.bundle_sha256)
+      || typeof designReview.manifest_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(designReview.manifest_sha256)
+      || !executable
+      || !hasExactKeys(executable, EXECUTABLE_CAM_RECEIPT_KEYS)
+      || shaFields.some((digest) => typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest))
+      || executable.workshop_acceptance_required !== true
+      || !approval
+      || !hasExactKeys(approval, CAM_APPROVAL_RELEASE_BINDING_KEYS)
+      || approval.schema_version !== "custombuild.cam-approval-release-binding.v1"
+      || typeof approval.approval_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.approval_id)
+      || typeof approval.organization_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.organization_id)
+      || typeof approval.design_version_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.design_version_id)
+      || approval.approval_type !== "cam"
+      || typeof approval.approved_by !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.approved_by)
+      || typeof approval.reason !== "string"
+      || approval.reason.length < 5
+      || approval.reason.length > 2_000
+      || typeof approval.generation_job_id !== "string"
+      || !CANONICAL_UUID_PATTERN.test(approval.generation_job_id)
+      || typeof approval.production_context_hash !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.production_context_hash)
+      || typeof approval.manifest_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.manifest_sha256)
+      || typeof approval.candidate_bundle_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.candidate_bundle_sha256)
+      || typeof approval.binding_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(approval.binding_sha256)
+      || !Array.isArray(approval.overrides_json)
+      || approval.overrides_json.length !== 0
+      || typeof approval.created_at !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(approval.created_at)
+      || !Number.isFinite(Date.parse(approval.created_at))
+      || typeof approval.updated_at !== "string"
+      || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(approval.updated_at)
+      || !Number.isFinite(Date.parse(approval.updated_at))
+      || approval.manifest_sha256 !== designReview.manifest_sha256
+      || approval.candidate_bundle_sha256 !== executable.candidate_bundle_sha256
+    ) {
+      throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
+    }
+    const unsignedApproval = Object.fromEntries(
+      Object.entries(approval).filter(([key]) => key !== "binding_sha256"),
+    );
+    if (await canonicalSha256(unsignedApproval) !== approval.binding_sha256) {
+      throw new ApiError("Serverns CAM-godkännandebindning har fel SHA-256-identitet.");
+    }
+    return {
+      release_id: payload.release_id as string,
+      release_number: payload.release_number as string,
+      status: "released",
+      release_kind: "executable_cam",
+      machine_use: "executable_cam_candidate",
+      design_review_bundle: {
+        bundle_sha256: designReview.bundle_sha256 as string,
+        manifest_sha256: designReview.manifest_sha256 as string,
+      },
+      executable_cam: {
+        candidate_bundle_sha256: executable.candidate_bundle_sha256 as string,
+        candidate_manifest_sha256: executable.candidate_manifest_sha256 as string,
+        production_profile_document_sha256: (
+          executable.production_profile_document_sha256 as string
+        ),
+        production_profile_payload_sha256: (
+          executable.production_profile_payload_sha256 as string
+        ),
+        program_inventory_sha256: executable.program_inventory_sha256 as string,
+        cam_approval: {
+          schema_version: "custombuild.cam-approval-release-binding.v1",
+          approval_id: approval.approval_id as string,
+          organization_id: approval.organization_id as string,
+          design_version_id: approval.design_version_id as string,
+          approval_type: "cam",
+          approved_by: approval.approved_by as string,
+          reason: approval.reason as string,
+          generation_job_id: approval.generation_job_id as string,
+          production_context_hash: approval.production_context_hash as string,
+          manifest_sha256: approval.manifest_sha256 as string,
+          candidate_bundle_sha256: approval.candidate_bundle_sha256 as string,
+          overrides_json: approval.overrides_json as JsonRecord[],
+          created_at: approval.created_at as string,
+          updated_at: approval.updated_at as string,
+          binding_sha256: approval.binding_sha256 as string,
+        },
+        workshop_acceptance_required: true,
+      },
+      physical_cutting_authorized: false,
+    };
+  }
+  if (
+    !hasExactKeys(payload, RELEASE_READ_KEYS)
+    || typeof payload.bundle_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(payload.bundle_sha256)
+    || typeof payload.manifest_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(payload.manifest_sha256)
+    || payload.machine_use !== "validation_only"
+    || payload.release_kind !== "design_review"
+  ) {
+    throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
+  }
+  return {
+    release_id: payload.release_id as string,
+    release_number: payload.release_number as string,
+    status: "released",
+    bundle_sha256: payload.bundle_sha256,
+    manifest_sha256: payload.manifest_sha256,
+    release_kind: payload.release_kind,
+    machine_use: payload.machine_use,
+    physical_cutting_authorized: false,
+  };
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -242,6 +456,16 @@ function boundedServerString(value: unknown, path: string, maximum = MAX_RESPONS
     throw new ApiError(`Servern returnerade en ogiltig text för ${path}.`);
   }
   return value;
+}
+
+const STABLE_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+
+function boundedStableKey(value: unknown, path: string, maximum: number): string {
+  const resolved = boundedServerString(value, path, maximum);
+  if (!STABLE_KEY_PATTERN.test(resolved)) {
+    throw new ApiError(`Servern returnerade en ogiltig stabil nyckel för ${path}.`);
+  }
+  return resolved;
 }
 
 function boundedArray(value: unknown, path: string, maximum: number): unknown[] {
@@ -563,6 +787,34 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
     17,
     true,
   );
+  const plinthHeightMm = boundedServerNumber(
+    parameters.plinth_height_um,
+    boundedRequested.plinth_height_mm * 1_000,
+    "spec.parameters.plinth_height_um",
+    0,
+    500_000,
+    true,
+  ) / 1_000;
+  const rawWallAnchor = parameters.wall_anchor;
+  const wallAnchor = rawWallAnchor === undefined ? undefined : asRecord(rawWallAnchor);
+  if (rawWallAnchor !== undefined && !wallAnchor) {
+    throw new ApiError("Serverns väggförankring har ogiltigt format.");
+  }
+  let wallAnchorRequired = boundedRequested.wall_anchor_required;
+  if (wallAnchor) {
+    if (typeof wallAnchor.required !== "boolean") {
+      throw new ApiError("Servern returnerade ett ogiltigt värde för spec.parameters.wall_anchor.required.");
+    }
+    if (typeof wallAnchor.verified !== "boolean") {
+      throw new ApiError("Servern returnerade ett ogiltigt värde för spec.parameters.wall_anchor.verified.");
+    }
+    if (wallAnchor.verified) {
+      throw new ApiError(
+        "Serverns preview försökte återställa väggförankringsbevis i den redigerbara designspecifikationen.",
+      );
+    }
+    wallAnchorRequired = wallAnchor.required;
+  }
   const candidate: DesignSpec = {
     ...boundedRequested,
     furniture_type: baseCabinetCount > 0 ? "wall_library" : "bookcase",
@@ -611,6 +863,14 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
       19_000,
       true,
     ) / 1_000,
+    measured_back_thickness_mm: boundedServerNumber(
+      parameters.back_thickness_um,
+      boundedRequested.measured_back_thickness_mm * 1_000,
+      "spec.parameters.back_thickness_um",
+      5_500,
+      6_500,
+      true,
+    ) / 1_000,
     shelf_count: boundedServerNumber(
       parameters.shelf_count,
       boundedRequested.shelf_count,
@@ -629,14 +889,8 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
     ) / 9.80665,
     back_panel: backPanel !== "none",
     back_panel_type: backPanel === "surface_mounted" ? "surface_mounted" : "inset_groove",
-    plinth: boundedServerNumber(
-      parameters.plinth_height_um,
-      boundedRequested.plinth ? 80_000 : 0,
-      "spec.parameters.plinth_height_um",
-      0,
-      500_000,
-      true,
-    ) > 0,
+    plinth: plinthHeightMm > 0,
+    plinth_height_mm: plinthHeightMm,
     divider_count: boundedServerNumber(
       parameters.vertical_divider_count,
       boundedRequested.divider_count,
@@ -684,6 +938,7 @@ export function designSpecFromServer(value: unknown, requested: DesignSpec): Des
       5_000,
       true,
     ) / 1_000,
+    wall_anchor_required: wallAnchorRequired,
     wall_anchor_verified: false,
   };
   return parseLocalDesignSpec(candidate);
@@ -997,6 +1252,238 @@ function assertExactServerPartSet(value: unknown, localParts: ResolvedPart[], sp
   }
 }
 
+function assertExactObjectKeys(
+  value: JsonRecord,
+  expected: readonly string[],
+  path: string,
+): void {
+  const actual = Object.keys(value).sort((left, right) => left.localeCompare(right));
+  const canonical = [...expected].sort((left, right) => left.localeCompare(right));
+  if (
+    actual.length !== canonical.length
+    || actual.some((key, index) => key !== canonical[index])
+  ) {
+    throw new ApiError(`Servern returnerade ett ogiltigt fältset för ${path}.`);
+  }
+}
+
+function normalizeRetentionCertificationRequest(
+  value: unknown,
+  designHash: string,
+  retentionTrustValue: unknown,
+): RetentionCertificationRequest | undefined {
+  if (value === undefined) return undefined;
+  const root = asRecord(value);
+  if (!root) {
+    throw new ApiError("Serverns retention-certifieringsbegäran har ogiltigt format.");
+  }
+  assertExactObjectKeys(root, [
+    "schema_version",
+    "signed_evidence_schema_version",
+    "application_class",
+    "joint_geometry_fingerprint_schema",
+    "source_design_hash",
+    "joint_geometry_sha256",
+    "engine_version",
+    "template_version",
+    "eligible_for_current_binding",
+    "blocking_issue",
+    "excluded_applications",
+    "required_materials",
+    "required_load_cases",
+    "minimum_safety_factor_permille",
+  ], "retention_certification_request");
+  if (
+    root.schema_version !== "custombuild.joint-retention-certification-request.v2"
+    || root.signed_evidence_schema_version !== "custombuild.joint-retention-signed-evidence.v2"
+    || root.application_class !== "load_bearing_carcass_dado"
+    || root.joint_geometry_fingerprint_schema
+      !== "custombuild.joint-retention-application-geometry.v1"
+  ) {
+    throw new ApiError("Serverns retention-certifieringsbegäran har en okänd kontraktsversion.");
+  }
+  let expectedSourceDesignHash = designHash;
+  let trustedJointGeometrySha256: string | undefined;
+  if (retentionTrustValue !== undefined) {
+    const trust = asRecord(retentionTrustValue);
+    if (!trust) {
+      throw new ApiError("Serverns retentionbindning har ogiltigt format.");
+    }
+    assertExactObjectKeys(trust, [
+      "schema_version",
+      "application_class",
+      "storage_evidence_id",
+      "storage_evidence_sha256",
+      "base_design_hash",
+      "joint_geometry_sha256",
+      "registry_sha256",
+      "issuer_id",
+      "key_id",
+      "signed_evidence_id",
+      "signed_evidence_expires_at",
+      "system_id",
+      "system_version",
+      "contract_sha256",
+    ], "retention_trust");
+    if (
+      trust.schema_version !== "custombuild.joint-retention-binding.v2"
+      || trust.application_class !== "load_bearing_carcass_dado"
+      || typeof trust.storage_evidence_id !== "string"
+      || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(trust.storage_evidence_id)
+      || typeof trust.storage_evidence_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(trust.storage_evidence_sha256)
+      || typeof trust.base_design_hash !== "string"
+      || !/^[a-f0-9]{64}$/.test(trust.base_design_hash)
+      || typeof trust.joint_geometry_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(trust.joint_geometry_sha256)
+      || typeof trust.registry_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(trust.registry_sha256)
+      || typeof trust.contract_sha256 !== "string"
+      || !/^[a-f0-9]{64}$/.test(trust.contract_sha256)
+      || !["issuer_id", "key_id", "signed_evidence_id", "system_id", "system_version"]
+        .every((field) => typeof trust[field] === "string" && String(trust[field]).length > 0)
+      || typeof trust.signed_evidence_expires_at !== "string"
+      || !/T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(trust.signed_evidence_expires_at)
+      || !Number.isFinite(Date.parse(trust.signed_evidence_expires_at))
+    ) {
+      throw new ApiError("Serverns retentionbindning har ogiltigt innehåll.");
+    }
+    expectedSourceDesignHash = trust.base_design_hash;
+    trustedJointGeometrySha256 = trust.joint_geometry_sha256;
+  }
+  if (
+    typeof root.source_design_hash !== "string"
+    || !/^[a-f0-9]{64}$/.test(root.source_design_hash)
+    || root.source_design_hash !== expectedSourceDesignHash
+    || typeof root.joint_geometry_sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(root.joint_geometry_sha256)
+    || (trustedJointGeometrySha256 !== undefined
+      && root.joint_geometry_sha256 !== trustedJointGeometrySha256)
+  ) {
+    throw new ApiError("Serverns retention-certifieringsbegäran matchar inte aktuell designgeometri.");
+  }
+  boundedStableKey(root.engine_version, "retention_certification_request.engine_version", 80);
+  boundedStableKey(root.template_version, "retention_certification_request.template_version", 80);
+  if (typeof root.eligible_for_current_binding !== "boolean") {
+    throw new ApiError("Serverns retention-certifieringsbegäran saknar bindningsstatus.");
+  }
+  if (
+    root.blocking_issue !== null
+    && root.blocking_issue !== "back_panel_capture_not_proven"
+  ) {
+    throw new ApiError("Serverns retention-certifieringsbegäran har ett okänt blockeringsskäl.");
+  }
+  if (
+    (root.eligible_for_current_binding && root.blocking_issue !== null)
+    || (!root.eligible_for_current_binding && root.blocking_issue === null)
+  ) {
+    throw new ApiError("Serverns retention-certifieringsbegäran har motsägande bindningsstatus.");
+  }
+
+  const excludedApplications = boundedArray(
+    root.excluded_applications,
+    "retention_certification_request.excluded_applications",
+    8,
+  );
+  for (const [index, value] of excludedApplications.entries()) {
+    const application = asRecord(value);
+    const path = `retention_certification_request.excluded_applications[${index}]`;
+    if (!application) throw new ApiError(`Servern returnerade ett ogiltigt objekt för ${path}.`);
+    assertExactObjectKeys(application, [
+      "application_class",
+      "joint_count",
+      "retention_basis",
+      "capture_proven",
+    ], path);
+    const captive = application.application_class === "captive_inset_back_groove";
+    const surface = application.application_class === "surface_mounted_back";
+    if (
+      (!captive && !surface)
+      || (captive && application.retention_basis !== "canonical_four_boundary_geometric_capture")
+      || (surface && application.retention_basis !== "independent_authenticated_evidence_required")
+      || typeof application.capture_proven !== "boolean"
+      || (surface && application.capture_proven)
+    ) {
+      throw new ApiError(`Servern returnerade en okänd retentionstillämpning för ${path}.`);
+    }
+    boundedServerNumber(application.joint_count, 0, `${path}.joint_count`, 0, 10_000, true);
+  }
+
+  const requiredMaterials = boundedArray(
+    root.required_materials,
+    "retention_certification_request.required_materials",
+    8,
+  );
+  if (requiredMaterials.length < 1) {
+    throw new ApiError("Serverns retention-certifieringsbegäran saknar materialkrav.");
+  }
+  const materialKeys = new Set<string>();
+  for (const [index, value] of requiredMaterials.entries()) {
+    const material = asRecord(value);
+    const path = `retention_certification_request.required_materials[${index}]`;
+    if (!material) throw new ApiError(`Servern returnerade ett ogiltigt objekt för ${path}.`);
+    assertExactObjectKeys(material, [
+      "material_id",
+      "material_version",
+      "actual_thickness_um",
+    ], path);
+    const materialId = boundedStableKey(material.material_id, `${path}.material_id`, 128);
+    const materialVersion = boundedStableKey(
+      material.material_version,
+      `${path}.material_version`,
+      80,
+    );
+    const materialKey = `${materialId}\u0000${materialVersion}`;
+    if (materialKeys.has(materialKey)) {
+      throw new ApiError("Serverns retention-certifieringsbegäran har duplicerade materialkrav.");
+    }
+    materialKeys.add(materialKey);
+    boundedServerNumber(
+      material.actual_thickness_um,
+      0,
+      `${path}.actual_thickness_um`,
+      1,
+      1_000_000,
+      true,
+    );
+  }
+
+  const requiredLoadCases = boundedArray(
+    root.required_load_cases,
+    "retention_certification_request.required_load_cases",
+    2,
+  );
+  if (requiredLoadCases.length !== 2) {
+    throw new ApiError("Serverns retention-certifieringsbegäran har ogiltiga lastfall.");
+  }
+  for (const [index, value] of requiredLoadCases.entries()) {
+    const loadCase = asRecord(value);
+    const path = `retention_certification_request.required_load_cases[${index}]`;
+    if (!loadCase) throw new ApiError(`Servern returnerade ett ogiltigt objekt för ${path}.`);
+    assertExactObjectKeys(loadCase, ["mode", "rated_design_load_n"], path);
+    if (loadCase.mode !== (["shear", "withdrawal"] as const)[index]) {
+      throw new ApiError("Serverns retention-certifieringsbegäran har ogiltiga lastfall.");
+    }
+    boundedServerNumber(
+      loadCase.rated_design_load_n,
+      0,
+      `${path}.rated_design_load_n`,
+      1,
+      1_000_000,
+      true,
+    );
+  }
+  boundedServerNumber(
+    root.minimum_safety_factor_permille,
+    0,
+    "retention_certification_request.minimum_safety_factor_permille",
+    1_000,
+    5_000,
+    true,
+  );
+  return root as unknown as RetentionCertificationRequest;
+}
+
 export function normalizePreviewResponse(payload: unknown, requestedSpec: DesignSpec): ResolvedDesign {
   const response = asRecord(payload);
   if (!response) throw new ApiError("Servern returnerade ett svar i okänt format.");
@@ -1014,20 +1501,30 @@ export function normalizePreviewResponse(payload: unknown, requestedSpec: Design
     : rules.some((rule) => rule.status === "WARNING")
       ? "WARNING"
       : asStatus(response.status, "PASS");
+  const designHash = asString(response.design_hash, local.design_hash);
+  const retentionCertificationRequest = normalizeRetentionCertificationRequest(
+    response.retention_certification_request,
+    designHash,
+    response.retention_trust,
+  );
   return {
     ...local,
-    design_hash: asString(response.design_hash, local.design_hash),
+    design_hash: designHash,
     parts: normalizeParts(response.parts, local.parts, serverSpec),
     bom: normalizeBom(response.bom, local.bom),
     rule_evaluations: rules,
     status,
     change_diff: normalizeChangeDiff(response.change_diff),
     source: "server-preview",
+    ...(retentionCertificationRequest
+      ? { retention_certification_request: retentionCertificationRequest }
+      : {}),
   };
 }
 
 export class CustombuildApiClient {
   readonly baseUrl: string | undefined;
+  private readonly jointRetentionEvidenceByProject = new Map<string, string>();
 
   constructor(
     baseUrl?: string,
@@ -1043,6 +1540,25 @@ export class CustombuildApiClient {
 
   get authenticated(): boolean {
     return Boolean(this.accessToken());
+  }
+
+  setJointRetentionEvidence(projectId: string, evidenceId?: string): void {
+    const normalizedProjectId = projectId.trim();
+    if (!normalizedProjectId) {
+      throw new ApiError("Projektidentiteten saknas för retentionsevidensen.");
+    }
+    if (evidenceId === undefined) {
+      this.jointRetentionEvidenceByProject.delete(normalizedProjectId);
+      return;
+    }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(evidenceId)) {
+      throw new ApiError("Retentionsevidensen har en ogiltig serveridentitet.");
+    }
+    this.jointRetentionEvidenceByProject.set(normalizedProjectId, evidenceId);
+  }
+
+  private jointRetentionEvidence(projectId?: string): string | undefined {
+    return projectId ? this.jointRetentionEvidenceByProject.get(projectId) : undefined;
   }
 
   private accessToken(): string | undefined {
@@ -1308,10 +1824,21 @@ export class CustombuildApiClient {
   }
 
   async getProductionState(projectId: string): Promise<ProductionStateRead> {
-    return this.request<ProductionStateRead>(
+    const payload = await this.request<unknown>(
       `/v1/projects/${encodeURIComponent(projectId)}/production-state`,
       { method: "GET" },
     );
+    const state = asRecord(payload);
+    if (!state || !Object.prototype.hasOwnProperty.call(state, "release")) {
+      throw new ApiError("Serverns produktionsstatus saknar ett entydigt frisläppningsfält.");
+    }
+    if (state.release !== null) {
+      return {
+        ...(payload as ProductionStateRead),
+        release: await strictReleaseRead(state.release),
+      };
+    }
+    return payload as ProductionStateRead;
   }
 
   async createVersion(
@@ -1320,6 +1847,7 @@ export class CustombuildApiClient {
     expectedDesignHash: string,
     expectedCurrentRevision: number,
     templateId: FurnitureTemplateId,
+    jointRetentionEvidenceId = this.jointRetentionEvidence(projectId),
   ): Promise<DesignVersionRead> {
     const sourceProvenance = toSourceProvenance(spec, expectedDesignHash);
     return this.request<DesignVersionRead>(
@@ -1332,6 +1860,9 @@ export class CustombuildApiClient {
           expected_design_hash: expectedDesignHash,
           expected_current_revision: expectedCurrentRevision,
           template_id: templateId,
+          ...(jointRetentionEvidenceId
+            ? { joint_retention_evidence_id: jointRetentionEvidenceId }
+            : {}),
           ...(sourceProvenance ? { source_provenance: sourceProvenance } : {}),
         }),
       },
@@ -1403,7 +1934,8 @@ export class CustombuildApiClient {
         size_bytes: sizeBytes,
         content_type: contentType,
         // Never expose the untrusted external download_url returned for non-web
-        // clients. Web downloads always use the authenticated, signed API path.
+        // clients. Web downloads always use the authenticated API path with an
+        // expiring access signature.
         download_url: downloadPath,
         download_path: downloadPath,
       };
@@ -1483,7 +2015,9 @@ export class CustombuildApiClient {
       || digest !== expectedDigest
       || etag !== `"${artifact.sha256}"`
     ) {
-      throw new ApiError("Artefaktens svarshuvuden matchar inte den signerade inventeringen.");
+      throw new ApiError(
+        "Artefaktens svarshuvuden matchar inte den serverauktoritativa inventeringen.",
+      );
     }
 
     let body: ArrayBuffer;
@@ -1493,7 +2027,9 @@ export class CustombuildApiClient {
       throw new ApiError("Artefaktens svarskropp kunde inte läsas fullständigt.");
     }
     if (body.byteLength !== artifact.size_bytes) {
-      throw new ApiError("Artefaktens faktiska storlek matchar inte den signerade inventeringen.");
+      throw new ApiError(
+        "Artefaktens faktiska storlek matchar inte den serverauktoritativa inventeringen.",
+      );
     }
     let actualSha256: string;
     try {
@@ -1505,9 +2041,131 @@ export class CustombuildApiClient {
       throw new ApiError("Webbläsaren kunde inte verifiera artefaktens SHA-256.");
     }
     if (actualSha256 !== artifact.sha256) {
-      throw new ApiError("Artefaktens innehåll matchar inte den signerade SHA-256-identiteten.");
+      throw new ApiError("Artefaktens innehåll matchar inte den förväntade SHA-256-identiteten.");
     }
     return new Blob([body], { type: artifact.content_type });
+  }
+
+  async downloadJointRetentionEvidence(
+    projectId: string,
+    evidence: ExternalEvidenceRead,
+    signal?: AbortSignal,
+  ): Promise<Blob> {
+    const token = this.accessToken();
+    if (!token) {
+      throw new ApiError("Logga in för att hämta den signerade retentionsevidensen.", 401);
+    }
+    if (!this.baseUrl) {
+      throw new ApiError("API-adress saknas. Retentionsevidensen kan inte hämtas verifierat.");
+    }
+    if (
+      !CANONICAL_UUID_PATTERN.test(projectId)
+      || !CANONICAL_UUID_PATTERN.test(evidence.id)
+      || evidence.project_id !== projectId
+      || evidence.evidence_type !== "joint_retention"
+      || evidence.rule_id !== "CB-JOINT-001"
+      || evidence.content_type !== "application/json"
+      || !/^[a-f0-9]{64}$/.test(evidence.sha256)
+      || !Number.isSafeInteger(evidence.size_bytes)
+      || evidence.size_bytes <= 0
+      || evidence.size_bytes > MAX_SIGNED_EVIDENCE_BYTES
+    ) {
+      throw new ApiError("Retentionsevidensens servermetadata är ogiltig.");
+    }
+
+    const downloadUrl = new URL(
+      `/v1/projects/${encodeURIComponent(projectId)}/evidence/${encodeURIComponent(evidence.id)}/download`,
+      this.baseUrl,
+    );
+    let response: Response;
+    try {
+      response = await fetch(downloadUrl.href, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal,
+      });
+    } catch {
+      throw new ApiError(
+        "Kunde inte hämta retentionsevidensen via den verifierade API-kanalen.",
+        undefined,
+        "RETENTION_EVIDENCE_DOWNLOAD_TRANSPORT_FAILURE",
+        undefined,
+        true,
+      );
+    }
+
+    let responseUrl: URL;
+    try {
+      responseUrl = new URL(response.url);
+    } catch {
+      throw new ApiError("Servern returnerade ett ogiltigt evidenssvar.");
+    }
+    if (
+      response.status !== 200
+      || response.redirected
+      || responseUrl.origin !== downloadUrl.origin
+      || responseUrl.href !== downloadUrl.href
+    ) {
+      throw new ApiError(
+        response.status === 200
+          ? "Servern försökte flytta evidenshämtningen utanför den verifierade API-kanalen."
+          : `Evidenshämtningen misslyckades (HTTP ${response.status}).`,
+        response.status,
+      );
+    }
+
+    const expectedFilename = `custombuild-joint-retention-${evidence.id}.json`;
+    const expectedDigest = `sha-256=${sha256HexToBase64(evidence.sha256)}`;
+    const contentLength = response.headers.get("Content-Length");
+    if (
+      contentLength === null
+      || !/^[1-9][0-9]*$/.test(contentLength)
+      || !Number.isSafeInteger(Number(contentLength))
+      || Number(contentLength) !== evidence.size_bytes
+      || response.headers.get("Content-Type") !== evidence.content_type
+      || response.headers.get("Content-Disposition") !== `attachment; filename="${expectedFilename}"`
+      || response.headers.get("Digest") !== expectedDigest
+      || response.headers.get("ETag") !== `"${evidence.sha256}"`
+      || response.headers.get("Cache-Control") !== "private, no-store, no-transform, max-age=0"
+      || response.headers.get("Pragma") !== "no-cache"
+      || response.headers.get("X-Content-Type-Options") !== "nosniff"
+    ) {
+      throw new ApiError(
+        "Retentionsevidensens svarshuvuden matchar inte serverregistret.",
+      );
+    }
+
+    let body: ArrayBuffer;
+    try {
+      body = await response.arrayBuffer();
+    } catch {
+      throw new ApiError("Retentionsevidensens svarskropp kunde inte läsas fullständigt.");
+    }
+    if (body.byteLength !== evidence.size_bytes) {
+      throw new ApiError(
+        "Retentionsevidensens faktiska storlek matchar inte serverregistret.",
+      );
+    }
+    let actualSha256: string;
+    try {
+      const digestBytes = await crypto.subtle.digest("SHA-256", body);
+      actualSha256 = [...new Uint8Array(digestBytes)]
+        .map((value) => value.toString(16).padStart(2, "0"))
+        .join("");
+    } catch {
+      throw new ApiError("Webbläsaren kunde inte verifiera retentionsevidensens SHA-256.");
+    }
+    if (actualSha256 !== evidence.sha256) {
+      throw new ApiError(
+        "Retentionsevidensens innehåll matchar inte den registrerade SHA-256-identiteten.",
+      );
+    }
+    return new Blob([body], { type: evidence.content_type });
   }
 
   async releaseVersion(
@@ -1522,24 +2180,7 @@ export class CustombuildApiClient {
         body: JSON.stringify({ release_number: releaseNumber, confirmation: "RELEASE" }),
       },
     );
-    const releaseId = asString(payload.release_id, "");
-    const manifestSha = asString(payload.manifest_sha256, "");
-    if (
-      !releaseId
-      || manifestSha.length !== 64
-      || payload.machine_use !== "validation_only"
-      || payload.release_kind !== "design_review"
-    ) {
-      throw new ApiError("Servern returnerade ett ofullständigt frisläppningsbevis.");
-    }
-    return {
-      release_id: releaseId,
-      release_number: asString(payload.release_number, releaseNumber),
-      status: "released",
-      manifest_sha256: manifestSha,
-      release_kind: "design_review",
-      machine_use: "validation_only",
-    };
+    return strictReleaseRead(payload, releaseNumber);
   }
 
   async previewDesign(
@@ -1548,9 +2189,13 @@ export class CustombuildApiClient {
     projectId?: string,
   ): Promise<ResolvedDesign> {
     const requestBody = toPreviewRequest(spec);
-    const path = projectId
-      ? `/v1/designs/preview?project_id=${encodeURIComponent(projectId)}`
-      : "/v1/designs/preview";
+    const query = new URLSearchParams();
+    if (projectId) query.set("project_id", projectId);
+    const jointRetentionEvidenceId = this.jointRetentionEvidence(projectId);
+    if (jointRetentionEvidenceId) {
+      query.set("joint_retention_evidence_id", jointRetentionEvidenceId);
+    }
+    const path = `/v1/designs/preview${query.size > 0 ? `?${query.toString()}` : ""}`;
     const payload = await this.request<PreviewResponseBody>(path, {
       method: "POST",
       body: JSON.stringify(requestBody),
@@ -1573,6 +2218,13 @@ export class CustombuildApiClient {
       body: JSON.stringify(requestBody),
       signal,
     });
-    return normalizePreviewResponse(payload, spec);
+    const autofixed = normalizePreviewResponse(payload, spec);
+    // Retention has a dedicated, server-verifiable preview boundary. The
+    // autofix endpoint intentionally accepts no retention identity, so replay
+    // the normalized result through preview when a reviewer selected one.
+    if (this.jointRetentionEvidence(projectId)) {
+      return this.previewDesign(autofixed.spec, signal, projectId);
+    }
+    return autofixed;
   }
 }

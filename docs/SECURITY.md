@@ -95,7 +95,7 @@
   when its exact CVE/package/version/type tuple has a current ledger entry with severity,
   owner, rationale, mitigation, HTTPS source and review deadline; mismatch or expiry
   blocks release readiness.
-- Promotion input is canonical, digest-only descriptor v2 JSON. It binds the final
+- Promotion input is canonical, digest-only descriptor v3 JSON. It binds the final
   release-evidence hash, Git/source-manifest identity, workflow run and attempt, four
   application registry manifests, component publication-evidence hashes, three
   reviewed runtime deployment digests, exact Compose service roles and an exact

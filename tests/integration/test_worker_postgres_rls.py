@@ -235,6 +235,11 @@ def test_worker_role_is_rls_scoped_and_schedulers_process_two_tenants(
             ).scalars().all() == [job_a]
 
         monkeypatch.setattr(worker_tasks, "SessionFactory", worker_factory)
+        monkeypatch.setattr(
+            worker_tasks,
+            "_scheduler_start_index",
+            lambda _tenant_count, *, cursor_key, scheduler_name: 0,
+        )
         assert {organization_a, organization_b}.issubset(
             set(worker_tasks._organization_ids())
         )
@@ -266,6 +271,8 @@ def test_worker_role_is_rls_scoped_and_schedulers_process_two_tenants(
             organization_a,
             organization_b,
         }
+        assert all(item["queue"] == worker_tasks.GENERATION_QUEUE for item in published)
+        assert all(item["retry"] is False for item in published)
 
         with privileged_factory() as session:
             jobs = {

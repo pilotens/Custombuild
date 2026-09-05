@@ -125,12 +125,35 @@ function classes(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
+function hasWholeMicrometreResolution(value: string): boolean {
+  const match = /^[+-]?(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(value.trim());
+  if (!match) return false;
+
+  const fraction = match[2] ?? match[3] ?? "";
+  const exponent = Number(match[4] ?? "0");
+  if (!Number.isSafeInteger(exponent)) return false;
+
+  // Check the decimal representation itself. Multiplying the parsed Number by
+  // 1,000 can introduce a binary floating-point remainder (for example,
+  // 256.001 * 1,000) even though the entered value is an exact micrometre.
+  const digits = `${match[1] ?? ""}${fraction}`;
+  const scaledExponent = exponent - fraction.length + 3;
+  if (scaledExponent >= 0) return true;
+
+  const requiredTrailingZeroes = -scaledExponent;
+  if (requiredTrailingZeroes > digits.length) return !/[1-9]/.test(digits);
+  return !/[1-9]/.test(digits.slice(-requiredTrailingZeroes));
+}
+
 function dimensionError(value: string, min: number, max: number): string | undefined {
   if (value.trim() === "") return "Ange ett mått i millimeter.";
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return "Ange endast siffror.";
   if (parsed < min || parsed > max) {
     return `Tillåtet intervall är ${min.toLocaleString("sv-SE")}–${max.toLocaleString("sv-SE")} mm.`;
+  }
+  if (!hasWholeMicrometreResolution(value)) {
+    return "Ange högst tre decimaler (en tusendels millimeter).";
   }
   return undefined;
 }
@@ -403,9 +426,9 @@ function OpenTemplatePicker({
     if (!dimensionsValid) return;
     setPlanningError(undefined);
     const dimensions = {
-      width_mm: Math.round(Number(dimensionDrafts.width_mm)),
-      height_mm: Math.round(Number(dimensionDrafts.height_mm)),
-      depth_mm: Math.round(Number(dimensionDrafts.depth_mm)),
+      width_mm: Number(dimensionDrafts.width_mm),
+      height_mm: Number(dimensionDrafts.height_mm),
+      depth_mm: Number(dimensionDrafts.depth_mm),
     };
     const next = updateBrief({
       ...inferIntent(intent),
@@ -473,7 +496,7 @@ function OpenTemplatePicker({
               </button>
               <button type="button" className={styles.routeCard} onClick={startFromScratch}>
                 <span className={styles.routeIcon}><Sparkles aria-hidden="true" /></span>
-                <span><strong>Börja tomt</strong><small>Öppna en tom stomme och forma den fritt i Studio.</small></span>
+                <span><strong>Börja tomt</strong><small>Öppna en tom, screenad hyllstomme och lägg själv till fack och hyllnivåer.</small></span>
                 <ArrowRight aria-hidden="true" size={20} />
               </button>
             </div>
@@ -535,7 +558,7 @@ function OpenTemplatePicker({
                 <small>Beskrivningen översätts till valen nedan. Den sparade briefen är strukturerad och går att ändra i Studio.</small>
               </label>
               <fieldset className={styles.dimensionGroup}>
-                <legend>Ungefärligt utrymme</legend>
+                <legend>Dina exakta yttermått</legend>
                 {(Object.keys(DIMENSION_LIMITS) as PlanningDimension[]).map((field) => {
                   const limits = DIMENSION_LIMITS[field];
                   const errorId = `explore-${field}-error`;
@@ -545,9 +568,10 @@ function OpenTemplatePicker({
                       <span className={styles.dimensionInput}>
                         <input
                           type="number"
-                          inputMode="numeric"
+                          inputMode="decimal"
                           min={limits.min}
                           max={limits.max}
+                          step={0.001}
                           value={dimensionDrafts[field]}
                           aria-label={`Planerad ${limits.label.toLocaleLowerCase("sv-SE")}`}
                           aria-invalid={Boolean(dimensionErrors[field])}
@@ -563,6 +587,7 @@ function OpenTemplatePicker({
                     </label>
                   );
                 })}
+                <small className={styles.truthNote}>Måtten används i Studio utan avrundning, med högst tre decimaler.</small>
               </fieldset>
               <div className={styles.choiceSections}>
                 <fieldset>

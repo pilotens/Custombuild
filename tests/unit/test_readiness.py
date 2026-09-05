@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -9,6 +11,8 @@ from app import db as db_module
 from app import readiness
 from app.config import Settings
 from sqlalchemy import Engine, create_engine
+
+READINESS_NOW = datetime(2026, 9, 3, 12, 0, tzinfo=UTC)
 
 
 def settings(**overrides: object) -> Settings:
@@ -40,9 +44,7 @@ class FakeConnection:
     ) -> SimpleNamespace | None:
         self.executions.append((str(statement), parameters))
         if "FROM alembic_version" in str(statement):
-            return SimpleNamespace(
-                scalars=lambda: (readiness.REQUIRED_DATABASE_REVISION,)
-            )
+            return SimpleNamespace(scalars=lambda: (readiness.REQUIRED_DATABASE_REVISION,))
         return None
 
 
@@ -52,6 +54,30 @@ class FakeEngine:
 
     def connect(self) -> FakeConnection:
         return self.connection
+
+
+def _retention_registry(
+    *,
+    not_before: datetime | None = None,
+    not_after: datetime | None = None,
+    revoked_at: datetime | None = None,
+) -> dict[str, object]:
+    return {
+        "schema_version": "custombuild.joint-retention-trust-registry.v1",
+        "issuers": [
+            {
+                "issuer_id": "readiness-lab",
+                "key_id": "ed25519-2026-01",
+                "role": "joint_retention_certifier",
+                "public_key_base64": base64.b64encode(bytes(range(32))).decode("ascii"),
+                "not_before": (not_before or READINESS_NOW - timedelta(days=1)).isoformat(),
+                "not_after": (not_after or READINESS_NOW + timedelta(days=1)).isoformat(),
+                "revoked_at": revoked_at.isoformat() if revoked_at is not None else None,
+            }
+        ],
+        "revoked_statement_sha256": [],
+        "revoked_system_versions": [],
+    }
 
 
 def test_postgres_readiness_engine_has_bounded_pool_and_connection(
@@ -129,6 +155,126 @@ def test_database_probe_rejects_an_older_schema_revision(
 
     with pytest.raises(RuntimeError, match="schema revision"):
         readiness.check_database(settings())
+
+
+def test_database_probe_explicitly_rejects_legacy_unscoped_oidc_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection("postgresql")
+
+    def execute(statement: object, parameters: object | None = None) -> SimpleNamespace | None:
+        connection.executions.append((str(statement), parameters))
+        if "FROM alembic_version" in str(statement):
+            return SimpleNamespace(scalars=lambda: (readiness.REQUIRED_DATABASE_REVISION,))
+        if "FROM public.users" in str(statement):
+            return SimpleNamespace(scalar_one=lambda: True)
+        return None
+
+    connection.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+    oidc_settings = SimpleNamespace(
+        readiness_timeout_seconds=3,
+        auth_mode="oidc",
+        oidc_issuer="https://identity.example.test",
+    )
+
+    with pytest.raises(readiness.LegacyUnscopedOIDCIdentityError, match="legacy OIDC"):
+        readiness.check_database(oidc_settings)  # type: ignore[arg-type]
+
+
+def test_database_probe_requires_at_least_one_issuer_bound_production_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection("postgresql")
+
+    def execute(statement: object, parameters: object | None = None) -> SimpleNamespace | None:
+        connection.executions.append((str(statement), parameters))
+        if "FROM alembic_version" in str(statement):
+            return SimpleNamespace(scalars=lambda: (readiness.REQUIRED_DATABASE_REVISION,))
+        if "FROM public.users" in str(statement):
+            return SimpleNamespace(scalar_one=lambda: False)
+        return None
+
+    connection.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+    oidc_settings = SimpleNamespace(
+        readiness_timeout_seconds=3,
+        auth_mode="oidc",
+        oidc_issuer="https://identity.example.test",
+    )
+
+    with pytest.raises(
+        readiness.ProductionIdentityBootstrapRequiredError,
+        match="no issuer-bound",
+    ):
+        readiness.check_database(oidc_settings)  # type: ignore[arg-type]
+
+
+def test_database_probe_rejects_identity_bound_to_another_issuer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection("postgresql")
+
+    def execute(statement: object, parameters: object | None = None) -> SimpleNamespace | None:
+        sql = str(statement)
+        connection.executions.append((sql, parameters))
+        if "FROM alembic_version" in sql:
+            return SimpleNamespace(scalars=lambda: (readiness.REQUIRED_DATABASE_REVISION,))
+        if "oidc_issuer_sha256 IS NULL" in sql:
+            return SimpleNamespace(scalar_one=lambda: False)
+        if "oidc_issuer_sha256 <>" in sql:
+            return SimpleNamespace(scalar_one=lambda: True)
+        return None
+
+    connection.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+    oidc_settings = SimpleNamespace(
+        readiness_timeout_seconds=3,
+        auth_mode="oidc",
+        oidc_issuer="https://identity.example.test",
+    )
+
+    with pytest.raises(readiness.OIDCIssuerBindingMismatchError, match="another OIDC"):
+        readiness.check_database(oidc_settings)  # type: ignore[arg-type]
+
+
+def test_database_probe_accepts_only_the_configured_issuer_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeConnection("postgresql")
+
+    def execute(statement: object, parameters: object | None = None) -> SimpleNamespace | None:
+        sql = str(statement)
+        connection.executions.append((sql, parameters))
+        if "FROM alembic_version" in sql:
+            return SimpleNamespace(scalars=lambda: (readiness.REQUIRED_DATABASE_REVISION,))
+        if "oidc_issuer_sha256 IS NULL" in sql:
+            return SimpleNamespace(scalar_one=lambda: False)
+        if "oidc_issuer_sha256 <>" in sql:
+            return SimpleNamespace(scalar_one=lambda: False)
+        if "oidc_issuer_sha256 =" in sql:
+            return SimpleNamespace(scalar_one=lambda: True)
+        return None
+
+    connection.execute = execute  # type: ignore[method-assign]
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+    oidc_settings = SimpleNamespace(
+        readiness_timeout_seconds=3,
+        auth_mode="oidc",
+        oidc_issuer="https://identity.example.test",
+    )
+
+    readiness.check_database(oidc_settings)  # type: ignore[arg-type]
+
+    issuer_parameters = [
+        parameters
+        for sql, parameters in connection.executions
+        if "oidc_issuer_sha256" in sql and parameters is not None
+    ]
+    assert issuer_parameters == [
+        {"issuer_sha256": readiness.oidc_issuer_sha256(oidc_settings.oidc_issuer)},
+        {"issuer_sha256": readiness.oidc_issuer_sha256(oidc_settings.oidc_issuer)},
+    ]
 
 
 class CapacityResult:
@@ -228,6 +374,149 @@ def test_storage_capacity_probe_requires_exact_fresh_runtime_binding(
     row["capacity_verified_at"] = now - timedelta(seconds=601)
     with pytest.raises(RuntimeError, match="stale"):
         readiness.check_storage_capacity(_capacity_settings())  # type: ignore[arg-type]
+
+
+def test_joint_retention_registry_probe_is_non_production_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        readiness,
+        "get_readiness_engine",
+        lambda: pytest.fail("non-production registry probe opened the database"),
+    )
+
+    readiness.check_joint_retention_registry(settings())
+
+
+def test_joint_retention_registry_probe_asserts_exact_production_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _retention_registry()
+    connection = FakeConnection("postgresql")
+    assertions: list[tuple[object, object, bool]] = []
+    production = SimpleNamespace(
+        app_env="production",
+        readiness_timeout_seconds=3,
+        joint_retention_trust_registry_json=json.dumps(registry),
+    )
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+    monkeypatch.setattr(readiness, "_utc_now", lambda: READINESS_NOW)
+
+    def assert_activated(
+        executor: object,
+        configured_registry: object,
+        *,
+        production: bool,
+    ) -> int:
+        assertions.append((executor, configured_registry, production))
+        return 4
+
+    monkeypatch.setattr(
+        readiness,
+        "assert_joint_retention_registry_activated",
+        assert_activated,
+    )
+
+    readiness.check_joint_retention_registry(production)  # type: ignore[arg-type]
+
+    assert connection.executions == [
+        (
+            "SELECT set_config('statement_timeout', :timeout, true)",
+            {"timeout": "3s"},
+        )
+    ]
+    assert assertions == [(connection, registry, True)]
+
+
+@pytest.mark.parametrize(
+    "registry",
+    (
+        _retention_registry(
+            not_before=READINESS_NOW + timedelta(days=1),
+            not_after=READINESS_NOW + timedelta(days=2),
+        ),
+        _retention_registry(
+            not_before=READINESS_NOW - timedelta(days=2),
+            not_after=READINESS_NOW - timedelta(days=1),
+        ),
+        _retention_registry(revoked_at=READINESS_NOW),
+        {
+            "schema_version": "custombuild.joint-retention-trust-registry.v1",
+            "issuers": [],
+            "revoked_statement_sha256": [],
+            "revoked_system_versions": [],
+        },
+    ),
+)
+def test_joint_retention_registry_probe_requires_a_current_certifier_key(
+    monkeypatch: pytest.MonkeyPatch,
+    registry: dict[str, object],
+) -> None:
+    connection = FakeConnection("postgresql")
+    production = SimpleNamespace(
+        app_env="production",
+        readiness_timeout_seconds=3,
+        joint_retention_trust_registry_json=json.dumps(registry),
+    )
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+    monkeypatch.setattr(readiness, "_utc_now", lambda: READINESS_NOW)
+    monkeypatch.setattr(
+        readiness,
+        "assert_joint_retention_registry_activated",
+        lambda *_args, **_kwargs: pytest.fail("inactive certifier policy reached DB assertion"),
+    )
+
+    with pytest.raises(
+        readiness.NoCurrentJointRetentionCertifierError,
+        match="no currently valid",
+    ):
+        readiness.check_joint_retention_registry(production)  # type: ignore[arg-type]
+
+
+def test_joint_retention_registry_probe_treats_future_revocation_as_not_yet_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = _retention_registry(revoked_at=READINESS_NOW + timedelta(seconds=1))
+    connection = FakeConnection("postgresql")
+    calls: list[bool] = []
+    production = SimpleNamespace(
+        app_env="production",
+        readiness_timeout_seconds=3,
+        joint_retention_trust_registry_json=json.dumps(registry),
+    )
+    monkeypatch.setattr(readiness, "get_readiness_engine", lambda: FakeEngine(connection))
+    monkeypatch.setattr(readiness, "_utc_now", lambda: READINESS_NOW)
+    monkeypatch.setattr(
+        readiness,
+        "assert_joint_retention_registry_activated",
+        lambda *_args, production: calls.append(production) or 1,
+    )
+
+    readiness.check_joint_retention_registry(production)  # type: ignore[arg-type]
+
+    assert calls == [True]
+
+
+def test_joint_retention_registry_probe_rejects_non_postgres_production(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    production = SimpleNamespace(
+        app_env="production",
+        readiness_timeout_seconds=3,
+        joint_retention_trust_registry_json=(
+            '{"schema_version":"custombuild.joint-retention-trust-registry.v1",'
+            '"issuers":[],"revoked_statement_sha256":[],'
+            '"revoked_system_versions":[]}'
+        ),
+    )
+    monkeypatch.setattr(
+        readiness,
+        "get_readiness_engine",
+        lambda: FakeEngine(FakeConnection("sqlite")),
+    )
+
+    with pytest.raises(RuntimeError, match="requires PostgreSQL"):
+        readiness.check_joint_retention_registry(production)  # type: ignore[arg-type]
 
 
 def test_storage_capacity_accepts_trusted_counter_changes_after_attestation(
@@ -346,10 +635,18 @@ def test_dependency_probe_reports_all_failures_and_continues(
     def storage_capacity(_settings: Settings) -> None:
         calls.append("storage_capacity")
 
+    def joint_retention_registry(_settings: Settings) -> None:
+        calls.append("joint_retention_registry")
+
     def rule_engine(_settings: Settings) -> None:
         calls.append("rule_engine")
 
     monkeypatch.setattr(readiness, "check_database", database)
+    monkeypatch.setattr(
+        readiness,
+        "check_joint_retention_registry",
+        joint_retention_registry,
+    )
     monkeypatch.setattr(readiness, "check_redis", redis)
     monkeypatch.setattr(readiness, "check_storage_capacity", storage_capacity)
     monkeypatch.setattr(readiness, "check_object_storage", object_storage)
@@ -359,6 +656,7 @@ def test_dependency_probe_reports_all_failures_and_continues(
 
     assert sorted(calls) == [
         "database",
+        "joint_retention_registry",
         "object_storage",
         "redis",
         "rule_engine",
@@ -366,6 +664,7 @@ def test_dependency_probe_reports_all_failures_and_continues(
     ]
     assert statuses == {
         "database": "ok",
+        "joint_retention_registry": "ok",
         "storage_capacity": "ok",
         "redis": "unavailable",
         "object_storage": "ok",

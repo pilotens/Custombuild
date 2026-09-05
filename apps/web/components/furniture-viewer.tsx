@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type DragEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
@@ -28,7 +29,7 @@ import type {
   LineSegments as ThreeLineSegments,
 } from "three";
 import { DESIGN_CONSTRAINTS } from "@/lib/design-constraints";
-import type { DesignSpec, ResolvedPart } from "@/lib/design-types";
+import type { DesignSpec, ManufacturingFeature, ResolvedPart } from "@/lib/design-types";
 import {
   createSemanticSnapPreview,
   readSemanticDragPayload,
@@ -232,6 +233,275 @@ const DEFAULT_MATERIAL_VISUAL: ViewerMaterialVisual = {
 /** A restrained PBR preview for the material already carried by every resolved part. */
 export function viewerMaterialVisual(materialId: string): ViewerMaterialVisual {
   return MATERIAL_VISUALS[materialId] ?? DEFAULT_MATERIAL_VISUAL;
+}
+
+const VIEWER_FEATURE_KIND_ORDER = [
+  "drill",
+  "groove",
+  "rabbet",
+  "pocket",
+  "outline",
+  "label",
+] as const satisfies readonly ManufacturingFeature["kind"][];
+
+const JOINERY_FEATURE_KINDS = new Set<ManufacturingFeature["kind"]>([
+  "drill",
+  "groove",
+  "rabbet",
+  "pocket",
+]);
+
+const VIEWER_FEATURE_LABELS: Readonly<Record<ManufacturingFeature["kind"], string>> = {
+  outline: "Kontur",
+  drill: "Borrning",
+  groove: "Spår",
+  rabbet: "Fals",
+  pocket: "Ficka",
+  label: "Märkning",
+};
+
+const VIEWER_FEATURE_COLORS: Readonly<Record<ManufacturingFeature["kind"], string>> = {
+  outline: "#6c685f",
+  drill: "#246b94",
+  groove: "#a96824",
+  rabbet: "#8a4e78",
+  pocket: "#8a3d35",
+  label: "#39705a",
+};
+
+export const VIEWER_FEATURE_GEOMETRY_LIMITATION =
+  "Den lokala 3D-modellen innehåller featuretyp, sida, djup och verktygsdiameter men inte "
+  + "featurekoordinater eller utbredning. Exakt geometri ska därför verifieras mot "
+  + "manufacturing/manufacturing-intent.json och de sideseparerade A/B-DXF/SVG-filerna i leverantörspaketet.";
+
+export interface ViewerMachiningKindSummary {
+  kind: ManufacturingFeature["kind"];
+  label: string;
+  count: number;
+}
+
+export interface ViewerMachiningSummary {
+  featureCount: number;
+  joineryFeatureCount: number;
+  partsWithFeatures: number;
+  partsWithJoineryFeatures: number;
+  kinds: ViewerMachiningKindSummary[];
+}
+
+/** Deterministic feature inventory; no geometry is inferred beyond the resolved viewer contract. */
+export function buildViewerMachiningSummary(parts: readonly ResolvedPart[]): ViewerMachiningSummary {
+  const counts = new Map<ManufacturingFeature["kind"], number>();
+  let featureCount = 0;
+  let joineryFeatureCount = 0;
+  let partsWithFeatures = 0;
+  let partsWithJoineryFeatures = 0;
+
+  for (const part of parts) {
+    if (part.features.length > 0) partsWithFeatures += 1;
+    let partHasJoineryFeature = false;
+    for (const feature of part.features) {
+      featureCount += 1;
+      counts.set(feature.kind, (counts.get(feature.kind) ?? 0) + 1);
+      if (JOINERY_FEATURE_KINDS.has(feature.kind)) {
+        joineryFeatureCount += 1;
+        partHasJoineryFeature = true;
+      }
+    }
+    if (partHasJoineryFeature) partsWithJoineryFeatures += 1;
+  }
+
+  return {
+    featureCount,
+    joineryFeatureCount,
+    partsWithFeatures,
+    partsWithJoineryFeatures,
+    kinds: VIEWER_FEATURE_KIND_ORDER.flatMap((kind) => {
+      const count = counts.get(kind) ?? 0;
+      return count > 0 ? [{ kind, label: VIEWER_FEATURE_LABELS[kind], count }] : [];
+    }),
+  };
+}
+
+function formatViewerMillimetres(value: number): string {
+  if (!Number.isFinite(value)) return "ogiltigt värde";
+  return new Intl.NumberFormat("sv-SE", { maximumFractionDigits: 3 }).format(value);
+}
+
+export function viewerFeatureAccessibilityDescription(feature: ManufacturingFeature): string {
+  const tool = feature.tool_diameter_mm === undefined
+    ? "verktygsdiameter saknas i förhandsvisningen"
+    : `verktyg diameter ${formatViewerMillimetres(feature.tool_diameter_mm)} millimeter`;
+  const face = feature.face === "EDGE" ? "kant" : `sida ${feature.face}`;
+  return `${feature.description}. ${VIEWER_FEATURE_LABELS[feature.kind]}, ${face}, `
+    + `djup ${formatViewerMillimetres(feature.depth_mm)} millimeter, ${tool}.`;
+}
+
+const MACHINING_OVERLAY_STYLE: CSSProperties = {
+  position: "absolute",
+  zIndex: 8,
+  // Keep the full 24 px mobile width handle exposed below the overlay.
+  bottom: 64,
+  left: 12,
+  width: "min(430px, calc(100% - 24px))",
+  maxHeight: "min(58%, 390px)",
+  overflow: "auto",
+  color: "#f5faf7",
+  background: "rgba(22, 39, 31, 0.96)",
+  border: "1px solid rgba(145, 212, 178, 0.55)",
+  borderRadius: 10,
+  boxShadow: "0 12px 30px rgba(24, 34, 29, 0.2)",
+  fontSize: 11,
+};
+
+const MACHINING_SUMMARY_STYLE: CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  justifyContent: "space-between",
+  gap: 12,
+  padding: "9px 11px",
+  cursor: "pointer",
+  fontWeight: 720,
+};
+
+const MACHINING_LIST_STYLE: CSSProperties = {
+  display: "grid",
+  maxHeight: 190,
+  gap: 7,
+  margin: "8px 0 0",
+  padding: 0,
+  overflowY: "auto",
+  listStyle: "none",
+};
+
+/**
+ * Exact feature metadata for the selected part. It deliberately refuses to draw
+ * approximate cuts because the lightweight viewer contract carries no feature coordinates.
+ */
+export function ManufacturingFeatureOverlay({
+  parts,
+  selectedPart,
+}: {
+  parts: readonly ResolvedPart[];
+  selectedPart?: ResolvedPart;
+}) {
+  const selectedPartId = selectedPart?.part_id;
+  const [expansion, setExpansion] = useState({
+    partId: selectedPartId,
+    open: Boolean(selectedPartId),
+  });
+  const modelSummary = useMemo(() => buildViewerMachiningSummary(parts), [parts]);
+  const selectedSummary = useMemo(
+    () => buildViewerMachiningSummary(selectedPart ? [selectedPart] : []),
+    [selectedPart],
+  );
+  const activeSummary = selectedPart ? selectedSummary : modelSummary;
+  const summaryText = selectedPart
+    ? `${selectedSummary.featureCount} poster · ${selectedSummary.joineryFeatureCount} fog/hål`
+    : `${modelSummary.joineryFeatureCount} fog/hål · ${modelSummary.partsWithJoineryFeatures} delar`;
+  const expanded = expansion.partId === selectedPartId
+    ? expansion.open
+    : Boolean(selectedPartId);
+
+  return (
+    <aside
+      aria-label="Bearbetningsöversikt"
+      aria-live="polite"
+      data-geometry-source="metadata-only"
+      data-testid="manufacturing-feature-overlay"
+      role="region"
+      style={MACHINING_OVERLAY_STYLE}
+    >
+      <details
+        open={expanded}
+        onToggle={(event) => setExpansion({
+          partId: selectedPartId,
+          open: event.currentTarget.open,
+        })}
+      >
+        <summary style={MACHINING_SUMMARY_STYLE}>
+          <span>Bearbetningsöversikt</span>
+          <small style={{ color: "#a9d8c0", fontVariantNumeric: "tabular-nums" }}>
+            {summaryText}
+          </small>
+        </summary>
+        <div style={{ padding: "0 11px 11px" }}>
+          <p style={{ margin: 0, color: "#d9e9e0", lineHeight: 1.45 }}>
+            {selectedPart
+              ? <><strong>{selectedPart.name}</strong> · <code>{selectedPart.part_id}</code></>
+              : <>Välj en del för exakt feature-ID, sida, djup och verktygsdiameter.</>}
+          </p>
+          {activeSummary.kinds.length > 0 ? (
+            <ul
+              aria-label={selectedPart ? "Featuretyper på vald del" : "Featuretyper i modellen"}
+              style={{ display: "flex", flexWrap: "wrap", gap: 5, margin: "8px 0", padding: 0, listStyle: "none" }}
+            >
+              {activeSummary.kinds.map((entry) => (
+                <li
+                  key={entry.kind}
+                  style={{
+                    padding: "3px 6px",
+                    background: VIEWER_FEATURE_COLORS[entry.kind],
+                    borderRadius: 999,
+                    fontSize: 9,
+                    fontWeight: 720,
+                  }}
+                >
+                  {entry.label} {entry.count}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {selectedPart ? (
+            selectedPart.features.length > 0 ? (
+              <ul aria-label={`Bearbetningsposter för ${selectedPart.name}`} style={MACHINING_LIST_STYLE}>
+                {selectedPart.features.map((feature, index) => (
+                  <li
+                    key={`${feature.id}-${index}`}
+                    aria-label={viewerFeatureAccessibilityDescription(feature)}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "5px minmax(0, 1fr)",
+                      gap: 8,
+                      padding: "6px 7px",
+                      color: "#eef6f1",
+                      background: "rgba(255, 255, 255, 0.07)",
+                      borderRadius: 7,
+                      lineHeight: 1.35,
+                    }}
+                  >
+                    <i
+                      aria-hidden="true"
+                      style={{ background: VIEWER_FEATURE_COLORS[feature.kind], borderRadius: 999 }}
+                    />
+                    <span aria-hidden="true">
+                      <strong>{feature.description}</strong>
+                      <small style={{ display: "block", marginTop: 2, color: "#bfd1c7" }}>
+                        {VIEWER_FEATURE_LABELS[feature.kind]} · {feature.face === "EDGE" ? "kant" : `sida ${feature.face}`} · djup {formatViewerMillimetres(feature.depth_mm)} mm
+                        {feature.tool_diameter_mm === undefined
+                          ? " · verktyg ej angivet"
+                          : ` · verktyg Ø${formatViewerMillimetres(feature.tool_diameter_mm)} mm`}
+                      </small>
+                      <code style={{ display: "block", marginTop: 2, color: "#9fc3b1", fontSize: 8, overflowWrap: "anywhere" }}>
+                        {feature.id}
+                      </code>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p style={{ margin: "8px 0 0" }}>Den valda delen saknar bearbetningsposter.</p>
+            )
+          ) : null}
+          <p
+            data-testid="viewer-feature-geometry-limitation"
+            style={{ margin: "9px 0 0", paddingTop: 8, color: "#bad0c4", borderTop: "1px solid rgba(186, 208, 196, 0.22)", fontSize: 9, lineHeight: 1.45 }}
+          >
+            <strong>Ingen uppskattad skärgeometri:</strong> {VIEWER_FEATURE_GEOMETRY_LIMITATION}
+          </p>
+        </div>
+      </details>
+    </aside>
+  );
 }
 
 /** Mirrors the vertical parametric moves that the design engine can actually perform. */
@@ -2150,6 +2420,10 @@ export function FrontProjectionFallback(props: FurnitureViewerProps) {
         ) : null}
       </svg>
       <p role="status">3D-acceleration saknas. En interaktiv frontvy visas.</p>
+      <ManufacturingFeatureOverlay
+        parts={props.parts}
+        selectedPart={props.parts.find((part) => part.part_id === props.selectedPartId)}
+      />
     </div>
   );
 }
@@ -2288,6 +2562,9 @@ export default function FurnitureViewer(props: FurnitureViewerProps) {
                 ? "↕ Dra uppåt eller nedåt"
                 : "Mått och åtgärder finns i sidopanelen"}</em>
           </div>
+        ) : null}
+        {webGLAvailable ? (
+          <ManufacturingFeatureOverlay parts={props.parts} selectedPart={selectedPart} />
         ) : null}
         {moveFeedback ? <PartMoveFeedbackOverlay feedback={moveFeedback} /> : null}
         {props.comparisonPreview && comparisonClassification ? (

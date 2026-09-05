@@ -243,6 +243,14 @@ services:
       ARTIFACT_SIGNING_SECRET: ${ARTIFACT_SIGNING_SECRET:-change-me-signing-secret-at-least-32-bytes}
       ARTIFACT_URL_TTL_SECONDS: ${ARTIFACT_URL_TTL_SECONDS:-300}
       ARTIFACT_STREAM_TIMEOUT_SECONDS: ${ARTIFACT_STREAM_TIMEOUT_SECONDS:-120}
+      JOINT_RETENTION_TRUST_REGISTRY_JSON: ${JOINT_RETENTION_TRUST_REGISTRY_JSON:-}
+      # Production uses PRODUCTION_CAM_PROFILE_PATH with the same read-only file
+      # mounted into API and generation worker. Inline JSON is a development/test
+      # fallback only; the settings boundary rejects configuring both and requires
+      # the exact PRODUCTION_CAM_PROFILE_SHA256 deployment pin in production.
+      PRODUCTION_CAM_PROFILE_PATH: ${PRODUCTION_CAM_PROFILE_PATH:-}
+      PRODUCTION_CAM_PROFILE_JSON: ${PRODUCTION_CAM_PROFILE_JSON:-}
+      PRODUCTION_CAM_PROFILE_SHA256: ${PRODUCTION_CAM_PROFILE_SHA256:-}
       S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-custombuild}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
@@ -283,6 +291,7 @@ services:
       context: .
       dockerfile: services/worker/Dockerfile
       args: *python-release-build-args
+    command: ["python", "-m", "custombuild_worker.generation_startup", "--loglevel=INFO", "--concurrency=2", "--queues=generation"]
     environment:
       HOME: /tmp/custombuild
       APP_ENV: ${APP_ENV:-development}
@@ -295,6 +304,11 @@ services:
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-custombuild}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
       S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
+      JOINT_RETENTION_TRUST_REGISTRY_JSON: ${JOINT_RETENTION_TRUST_REGISTRY_JSON:-}
+      PRODUCTION_CAM_PROFILE_PATH: ${PRODUCTION_CAM_PROFILE_PATH:-}
+      PRODUCTION_CAM_PROFILE_JSON: ${PRODUCTION_CAM_PROFILE_JSON:-}
+      PRODUCTION_CAM_PROFILE_SHA256: ${PRODUCTION_CAM_PROFILE_SHA256:-}
+      CELERY_EXPECTED_QUEUE: generation
     read_only: true
     tmpfs:
       - /tmp:size=1g,mode=1777
@@ -304,6 +318,102 @@ services:
     pids_limit: 512
     mem_limit: 4g
     cpus: 2.0
+    healthcheck:
+      test: ["CMD", "python", "-m", "custombuild_worker.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-capacity-attestor:
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_healthy
+      object-storage:
+        condition: service_healthy
+    networks: [backend]
+
+  maintenance-worker:
+    image: custombuild-worker:${VCS_REF:-uncommitted}
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+      args: *python-release-build-args
+    command: ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--queues=maintenance"]
+    environment:
+      HOME: /tmp/custombuild
+      APP_ENV: ${APP_ENV:-development}
+      PRODUCTION_FOUR_EYES_REQUIRED: ${PRODUCTION_FOUR_EYES_REQUIRED:-false}
+      DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://custombuild_worker:change-me-worker@postgres:5432/custombuild}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-custombuild}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
+      S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
+      CELERY_EXPECTED_QUEUE: maintenance
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "python", "-m", "custombuild_worker.healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      storage-capacity-attestor:
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_healthy
+      object-storage:
+        condition: service_healthy
+    networks: [backend]
+
+  storage-reaper-worker:
+    image: custombuild-worker:${VCS_REF:-uncommitted}
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+      args: *python-release-build-args
+    command: ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "--queues=storage-reaper"]
+    environment:
+      HOME: /tmp/custombuild
+      APP_ENV: ${APP_ENV:-development}
+      PRODUCTION_FOUR_EYES_REQUIRED: ${PRODUCTION_FOUR_EYES_REQUIRED:-false}
+      DATABASE_URL: ${WORKER_DATABASE_URL:-postgresql+psycopg://custombuild_worker:change-me-worker@postgres:5432/custombuild}
+      DATABASE_STATEMENT_TIMEOUT_SECONDS: ${DATABASE_STATEMENT_TIMEOUT_SECONDS:-60}
+      DATABASE_LOCK_TIMEOUT_SECONDS: ${DATABASE_LOCK_TIMEOUT_SECONDS:-10}
+      REDIS_URL: "redis://:${REDIS_PASSWORD:-change-me-redis}@redis:6379/0"
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://object-storage:8333}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-custombuild}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-change-me-object-storage}
+      S3_BUCKET: ${S3_BUCKET:-custombuild-artifacts}
+      CELERY_EXPECTED_QUEUE: storage-reaper
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: ["ALL"]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
     healthcheck:
       test: ["CMD", "python", "-m", "custombuild_worker.healthcheck"]
       interval: 30s

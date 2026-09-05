@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
@@ -20,6 +21,11 @@ from .enums import (
     PartRole,
     ReinforcementMode,
     ShelfMount,
+)
+from .geometry import (
+    allocate_bay_widths_um,
+    allocate_shelf_positions_um,
+    shelf_opening_heights_um,
 )
 from .identity import content_hash
 from .units import mm
@@ -45,8 +51,8 @@ BaseCabinetHeightUm = Annotated[int, Field(strict=True, ge=0, le=mm(2_000))]
 BaseCabinetDepthUm = Annotated[int, Field(strict=True, ge=0, le=mm(1_200))]
 BaseCabinetCount = Annotated[int, Field(strict=True, ge=0, le=17)]
 
-BOOKCASE_ENGINE_VERSION = "0.7.0"
-BOOKCASE_TEMPLATE_VERSION = "2.0.0"
+BOOKCASE_ENGINE_VERSION = "0.9.0"
+BOOKCASE_TEMPLATE_VERSION = "2.2.0"
 
 
 class FrozenModel(BaseModel):
@@ -128,19 +134,36 @@ class JointRetentionLoadCase(FrozenModel):
     verified_capacity_n: PositiveInt
 
 
+class JointRetentionApplicationClass(StrEnum):
+    """Physical application governed by one retention decision.
+
+    A machining feature name is not an application claim.  In particular, a
+    load-bearing carcass DADO and the shallow groove that captures a 6 mm back
+    panel are both represented by ``JointType.DADO`` but have different
+    retention semantics.
+    """
+
+    LOAD_BEARING_CARCASS_DADO = "load_bearing_carcass_dado"
+    CAPTIVE_INSET_BACK_GROOVE = "captive_inset_back_groove"
+
+
 class JointRetentionContract(FrozenModel):
-    """Foundation for a future authenticated joint-retention selection.
+    """Frozen result of an authenticated joint-retention selection.
 
     Validation proves structural completeness, exact application geometry and
-    conservative capacity arithmetic. It does *not* authenticate the source of
-    the catalogue/evidence bytes. The public preview API intentionally exposes
-    no field for this model; a future server-side trust root must verify those
-    bytes before freezing this payload. It never authorizes physical work.
+    conservative capacity arithmetic. The model itself does *not* authenticate
+    catalogue/evidence bytes: the service trust boundary must verify a signed,
+    server-approved immutable statement before constructing and freezing this
+    payload. Clients can select an evidence ID but cannot submit this contract.
+    It never authorizes physical work on its own.
     """
 
     system_id: StableKey
     system_version: StableKey
     joint_type: JointType = JointType.DADO
+    application_class: JointRetentionApplicationClass = (
+        JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+    )
     method: JointRetentionMethod
     catalog_entry_sha256: Sha256Hex
     evidence_id: StableKey
@@ -161,6 +184,13 @@ class JointRetentionContract(FrozenModel):
 
     @model_validator(mode="after")
     def validate_machining_scope(self) -> JointRetentionContract:
+        if (
+            self.application_class
+            != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+        ):
+            raise ValueError(
+                "the current retention contract only covers load-bearing carcass DADOs"
+            )
         material_keys = tuple(
             (item.material_id, item.material_version) for item in self.applicable_materials
         )
@@ -228,7 +258,7 @@ class BookcaseParameters(FrozenModel):
     back_thickness_um: PositiveUm = mm(6)
     plinth_height_um: NonNegativeUm = mm(80)
     shelf_side_clearance_um: NonNegativeUm = mm(1)
-    edge_band_thickness_um: NonNegativeUm = mm(1)
+    edge_band_thickness_um: NonNegativeUm = 0
     joint_system: JointType = JointType.DADO
     reinforcement_mode: ReinforcementMode = ReinforcementMode.MANUAL
     max_deflection_um: PositiveUm = mm(3)
@@ -260,8 +290,8 @@ class BookcaseParameters(FrozenModel):
             raise ValueError("height leaves no usable internal opening")
         if self.depth_um <= t:
             raise ValueError("depth must exceed material thickness")
-        inner_width = self.width_um - 2 * t - self.vertical_divider_count * t
-        if inner_width <= 0:
+        carcass_inner_width = self.width_um - 2 * t
+        if carcass_inner_width - self.vertical_divider_count * t <= 0:
             raise ValueError("vertical dividers consume all internal width")
         bay_count = self.vertical_divider_count + 1
         if self.bay_width_ratios_ppm:
@@ -282,8 +312,14 @@ class BookcaseParameters(FrozenModel):
                 raise ValueError(
                     "custom shelf centres must be ordered and separated by at least 5 percent"
                 )
+        bay_widths = allocate_bay_widths_um(
+            carcass_inner_width,
+            t,
+            self.vertical_divider_count,
+            self.bay_width_ratios_ppm,
+        )
         minimum_shelf_width = 2 * self.shelf_side_clearance_um + mm(40)
-        if inner_width // bay_count <= minimum_shelf_width:
+        if any(width < minimum_shelf_width for width in bay_widths):
             raise ValueError("divider layout leaves an unmanufacturable shelf width")
         shelf_zone_bottom = (
             self.plinth_height_um + self.base_cabinet_height_um
@@ -291,7 +327,20 @@ class BookcaseParameters(FrozenModel):
             else self.plinth_height_um + t
         )
         shelf_zone_height = self.height_um - t - shelf_zone_bottom
-        if shelf_zone_height - self.shelf_count * t < (self.shelf_count + 1) * mm(40):
+        shelf_positions = allocate_shelf_positions_um(
+            shelf_zone_bottom,
+            shelf_zone_height,
+            t,
+            self.shelf_count,
+            self.shelf_height_ratios_ppm,
+        )
+        shelf_openings = shelf_opening_heights_um(
+            shelf_zone_bottom,
+            shelf_zone_height,
+            t,
+            shelf_positions,
+        )
+        if any(opening < mm(40) for opening in shelf_openings):
             raise ValueError("shelf layout leaves an unmanufacturable opening height")
         if self.base_cabinet_count:
             if self.base_cabinet_height_um < mm(300):
@@ -300,10 +349,16 @@ class BookcaseParameters(FrozenModel):
                 raise ValueError("base cabinet depth must equal the furniture depth")
             if self.base_cabinet_height_um >= self.height_um - t - mm(200):
                 raise ValueError("base cabinet leaves no usable upper shelving zone")
-            base_opening = (
-                self.width_um - (self.base_cabinet_count + 1) * t
-            ) // self.base_cabinet_count
-            if base_opening < mm(200):
+            base_openings = (
+                bay_widths
+                if self.base_cabinet_count == bay_count
+                else allocate_bay_widths_um(
+                    carcass_inner_width,
+                    t,
+                    self.base_cabinet_count - 1,
+                )
+            )
+            if any(opening < mm(200) for opening in base_openings):
                 raise ValueError("base cabinet layout leaves an unmanufacturable module width")
         elif self.base_cabinet_height_um or self.base_cabinet_depth_um:
             raise ValueError("base cabinet dimensions require at least one cabinet module")
@@ -408,6 +463,13 @@ class BookcaseDesignSpec(FrozenModel):
                 "the current bookcase retention contract applies only to DADO joints"
             )
         if (
+            retention.application_class
+            != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+        ):
+            raise ValueError(
+                "the bookcase retention contract must target load-bearing carcass DADOs"
+            )
+        if (
             parameters.joint_system != JointType.DADO
             and parameters.back_panel != BackPanelType.INSET_GROOVE
         ):
@@ -423,13 +485,6 @@ class BookcaseDesignSpec(FrozenModel):
             )
         applicable_thicknesses = [parameters.actual_thickness_um]
         required_materials = {(self.material.material_id, self.material.version)}
-        if parameters.back_panel == BackPanelType.INSET_GROOVE:
-            applicable_thicknesses.append(parameters.back_thickness_um)
-            if self.back_material is None:  # guarded by validate_material; keep fail-closed
-                raise ValueError("inset back retention requires a versioned back material")
-            required_materials.add(
-                (self.back_material.material_id, self.back_material.version)
-            )
         covered_materials = {
             (item.material_id, item.material_version)
             for item in retention.applicable_materials
@@ -531,8 +586,8 @@ class ManufacturingFeature(FrozenModel):
             raise ValueError("a feature pattern with multiple items needs a pitch")
         if len(set(self.open_end_reliefs)) != len(self.open_end_reliefs):
             raise ValueError("open-end relief declarations must be unique")
-        if self.open_end_reliefs and self.corner_strategy != "dogbone-v1":
-            raise ValueError("open-end reliefs require the versioned dogbone-v1 strategy")
+        if self.open_end_reliefs and self.corner_strategy not in {"dogbone-v1", "dogbone-v2"}:
+            raise ValueError("open-end reliefs require a supported versioned dogbone strategy")
         return self
 
 
@@ -598,6 +653,7 @@ class Joint(FrozenModel):
     hardware_sku: StableKey | None = None
     hardware_count: NonNegativeInt = 0
     tolerance_um: NonNegativeUm = mm("0.2")
+    retention_application_class: JointRetentionApplicationClass | None = None
     retention: JointRetentionContract | None = Field(
         default=None,
         exclude_if=lambda value: value is None,
@@ -607,6 +663,11 @@ class Joint(FrozenModel):
     def distinct_members(self) -> Joint:
         if self.members[0].part_id == self.members[1].part_id:
             raise ValueError("a joint must connect two distinct part instances")
+        if self.joint_type == JointType.DADO:
+            if self.retention_application_class is None:
+                raise ValueError("every DADO must declare its retention application class")
+        elif self.retention_application_class is not None:
+            raise ValueError("only DADO joints may declare a retention application class")
         if self.retention is not None:
             if self.retention.joint_type != self.joint_type:
                 raise ValueError("joint retention must match its joint type")
@@ -614,6 +675,8 @@ class Joint(FrozenModel):
                 raise ValueError("joint hardware SKU must match its retention contract")
             if self.hardware_count != self.retention.hardware_count_per_joint:
                 raise ValueError("joint hardware count must match its retention contract")
+            if self.retention_application_class != self.retention.application_class:
+                raise ValueError("joint retention must match its application class")
             referenced_features = {
                 feature_id for member in self.members for feature_id in member.feature_ids
             }
@@ -621,6 +684,14 @@ class Joint(FrozenModel):
                 raise ValueError(
                     "joint retention references manufacturing features outside the joint"
                 )
+        if (
+            self.retention_application_class
+            == JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
+            and (self.retention is not None or self.hardware_sku is not None or self.hardware_count)
+        ):
+            raise ValueError(
+                "a captive inset-back groove cannot inherit carcass retention hardware"
+            )
         return self
 
 
@@ -697,7 +768,13 @@ def dado_joint_geometry_fingerprint(
     parts: tuple[PartInstance, ...],
     joints: tuple[Joint, ...],
 ) -> str:
-    """Hash exact DADO application geometry without retention or hardware fields."""
+    """Hash exact retention-required DADO geometry without retention/hardware fields.
+
+    Captive inset-back grooves are intentionally excluded.  Their complete
+    four-boundary topology and assembly capture are validated independently;
+    including them here would overclaim that carcass evidence covers the back
+    material and its separate physical application.
+    """
 
     part_by_id = {part.part_id: part for part in parts}
     feature_by_id = {
@@ -705,7 +782,13 @@ def dado_joint_geometry_fingerprint(
     }
     payload: list[dict[str, object]] = []
     for joint in sorted(
-        (item for item in joints if item.joint_type == JointType.DADO),
+        (
+            item
+            for item in joints
+            if item.joint_type == JointType.DADO
+            and item.retention_application_class
+            == JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+        ),
         key=lambda item: item.joint_id,
     ):
         members: list[dict[str, object]] = []
@@ -729,6 +812,7 @@ def dado_joint_geometry_fingerprint(
             {
                 "joint_id": joint.joint_id,
                 "joint_type": joint.joint_type,
+                "retention_application_class": joint.retention_application_class,
                 "members": tuple(members),
                 "mating_origin": joint.mating_origin,
                 "assembly_direction": joint.assembly_direction,
@@ -736,6 +820,125 @@ def dado_joint_geometry_fingerprint(
             }
         )
     return content_hash(tuple(payload))
+
+
+def captive_inset_back_topology_is_complete(
+    parts: tuple[PartInstance, ...],
+    joints: tuple[Joint, ...],
+    assembly_graph: AssemblyGraph,
+) -> bool:
+    """Prove that every inset back is mechanically captured on four boundaries.
+
+    This is deliberately narrower than saying that every back panel needs no
+    retention evidence.  It recognizes only the canonical inset construction:
+    four exact DADO applications per back, one on each edge, installed across
+    multiple closing movements so no single reverse insertion path remains.
+    """
+
+    part_by_id = {part.part_id: part for part in parts}
+    feature_by_id = {
+        feature.feature_id: feature for part in parts for feature in part.features
+    }
+    backs = tuple(part for part in parts if part.role == PartRole.BACK)
+    if not backs:
+        return False
+    step_by_joint_id = {
+        joint_id: step
+        for step in assembly_graph.steps
+        for joint_id in step.joint_ids
+    }
+    for back in backs:
+        back_joints = tuple(
+            joint
+            for joint in joints
+            if back.part_id in {member.part_id for member in joint.members}
+        )
+        if len(back_joints) != 4 or any(
+            joint.joint_type != JointType.DADO
+            or joint.retention_application_class
+            != JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
+            or joint.retention is not None
+            or joint.hardware_sku is not None
+            or joint.hardware_count != 0
+            for joint in back_joints
+        ):
+            return False
+        back_faces: set[FaceName] = set()
+        boundary_roles: set[PartRole] = set()
+        closing_groups: set[tuple[str, ...]] = set()
+        insertion_steps: set[int] = set()
+        closure_steps: set[int] = set()
+        for joint in back_joints:
+            back_member = next(
+                (member for member in joint.members if member.part_id == back.part_id),
+                None,
+            )
+            boundary_member = next(
+                (member for member in joint.members if member.part_id != back.part_id),
+                None,
+            )
+            step = step_by_joint_id.get(joint.joint_id)
+            boundary_part = (
+                part_by_id.get(boundary_member.part_id)
+                if boundary_member is not None
+                else None
+            )
+            if (
+                back_member is None
+                or boundary_member is None
+                or boundary_part is None
+                or step is None
+            ):
+                return False
+            # The back is the uncut captured member; the surrounding panel owns
+            # exactly one groove. A feature on the back is another topology.
+            if back_member.feature_ids or len(boundary_member.feature_ids) != 1:
+                return False
+            groove = feature_by_id.get(boundary_member.feature_ids[0])
+            if (
+                groove is None
+                or groove.kind != FeatureKind.GROOVE
+                or groove.part_id != boundary_member.part_id
+                or groove.joint_id != joint.joint_id
+                or groove.dimensions.depth_um is None
+                or groove.dimensions.depth_um <= 0
+                or groove.fit_clearance_um != joint.tolerance_um
+                or back.actual_thickness_um + joint.tolerance_um
+                not in {groove.dimensions.width_um, groove.dimensions.length_um}
+            ):
+                return False
+            back_faces.add(back_member.mating_face)
+            boundary_roles.add(boundary_part.role)
+            closing_groups.add(tuple(step.moving_part_ids))
+            if back.part_id in step.moving_part_ids:
+                insertion_steps.add(step.step_number)
+            else:
+                closure_steps.add(step.step_number)
+        if back_faces != {FaceName.LEFT, FaceName.RIGHT, FaceName.TOP, FaceName.BOTTOM}:
+            return False
+        if not {PartRole.TOP, PartRole.BOTTOM} <= boundary_roles:
+            return False
+        if not boundary_roles <= {
+            PartRole.LEFT_SIDE,
+            PartRole.RIGHT_SIDE,
+            PartRole.DIVIDER,
+            PartRole.TOP,
+            PartRole.BOTTOM,
+        }:
+            return False
+        # A panel inserted and closed in one movement could reverse along the
+        # same unsupported path. Canonical capture requires a later closure by
+        # at least one different moving group (top and/or outer side). The
+        # closing panel may travel on the insertion axis: a subsequently fitted
+        # top still blocks the back's reverse path.
+        if (
+            len(closing_groups) < 2
+            or not insertion_steps
+            or not closure_steps
+            or max(insertion_steps) >= min(closure_steps)
+        ):
+            return False
+    return True
 
 
 class DesignResult(FrozenModel):
@@ -769,10 +972,20 @@ class DesignResult(FrozenModel):
         referenced_features: dict[str, str] = {}
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
-                if joint.retention != self.spec.joint_retention:
+                if (
+                    joint.retention_application_class
+                    == JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+                    and joint.retention != self.spec.joint_retention
+                ):
                     raise ValueError(
-                        "every DADO joint must carry the frozen design retention contract"
+                        "every load-bearing carcass DADO must carry the frozen retention contract"
                     )
+                if (
+                    joint.retention_application_class
+                    == JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
+                    and joint.retention is not None
+                ):
+                    raise ValueError("captive inset-back grooves cannot carry carcass retention")
             elif joint.retention is not None:
                 raise ValueError("joint retention is bound to a non-DADO joint")
             if joint.retention is not None:
@@ -828,6 +1041,21 @@ class DesignResult(FrozenModel):
             raise ValueError(
                 "joint-retention contract does not match the exact DADO geometry fingerprint"
             )
+        if self.spec.parameters.back_panel == BackPanelType.INSET_GROOVE:
+            if not captive_inset_back_topology_is_complete(
+                self.parts,
+                self.joints,
+                self.assembly_graph,
+            ):
+                raise ValueError(
+                    "inset back panel is not proven captive on four independent boundaries"
+                )
+        elif any(
+            joint.retention_application_class
+            == JointRetentionApplicationClass.CAPTIVE_INSET_BACK_GROOVE
+            for joint in self.joints
+        ):
+            raise ValueError("captive inset-back grooves require an inset back panel")
         if sum(part.weight_g for part in self.parts) != self.total_weight_g:
             raise ValueError("total design weight does not equal the part weights")
         return self

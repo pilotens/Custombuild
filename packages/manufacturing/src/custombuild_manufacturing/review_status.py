@@ -22,6 +22,9 @@ DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE = "DESIGN_REVIEW_PACKAGE_STATUS"
 STOCK_PROFILE_MISSING_BLOCKER_CODE = STOCK_PROFILE_MISSING_CODE
 TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE = "TWO_SIDED_REGISTRATION_MISSING"
 DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE = "DADO_RETENTION_EVIDENCE_MISSING"
+BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE = (
+    "BACK_PANEL_RETENTION_EVIDENCE_MISSING"
+)
 _CATALOG_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _SHA256_PATTERN = re.compile(r"[a-f0-9]{64}")
 BLOCKED_CAM_SUPPORTED_BLOCKER_CODES = (
@@ -29,6 +32,7 @@ BLOCKED_CAM_SUPPORTED_BLOCKER_CODES = (
     DFM_GRAIN_BLOCKER_CODE,
     TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
 )
 GENERATED_REVIEW_REQUIRED_ACTION = (
     "None for design review; physical workshop evidence remains required."
@@ -45,12 +49,15 @@ BLOCKED_CAM_REQUIRED_ACTIONS = {
         "do not infer WCS, pins, fixtures or registration coordinates."
     ),
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE: (
-        "The current MVP cannot resolve this blocker because it has no authenticated "
-        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-        "checksum-addressed mechanical retention contract to every DADO joint, including "
-        "exact geometry, hardware quantity, material/thickness applicability and separate "
-        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-        "bearing check is not retention evidence."
+        "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+        "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+        "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+        "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
+    ),
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE: (
+        "Use only the canonical inset back whose four boundary grooves and multi-direction "
+        "closing sequence prove mechanical capture, or bind independently authenticated "
+        "back-panel retention evidence when that application class is implemented."
     ),
 }
 
@@ -98,6 +105,13 @@ def joint_retention_contract_is_structurally_complete(
         not isinstance(retention_joint_type, str)
         or retention_joint_type.casefold() != joint_type.casefold()
     ):
+        return False
+    application_class = _enum_value(
+        getattr(joint, "retention_application_class", None)
+    )
+    if application_class != "load_bearing_carcass_dado" or _enum_value(
+        getattr(retention, "application_class", None)
+    ) != application_class:
         return False
     if any(
         not _canonical_identity(getattr(retention, field, None))
@@ -264,7 +278,7 @@ def _canonical_design_for_retention_check(design_result: Any) -> Any | None:
 
 
 def dado_retention_evidence_missing(design_result: Any) -> bool:
-    """Return true unless canonical DADO topology has a complete contract application."""
+    """Return true unless every retention-required carcass DADO is covered."""
 
     canonical = _canonical_design_for_retention_check(design_result)
     if canonical is None:
@@ -274,6 +288,8 @@ def dado_retention_evidence_missing(design_result: Any) -> bool:
         for joint in canonical.joints
         if isinstance(value := _enum_value(getattr(joint, "joint_type", None)), str)
         and value.casefold() == "dado"
+        and _enum_value(getattr(joint, "retention_application_class", None))
+        != "captive_inset_back_groove"
     )
     if not dado_joints:
         return False
@@ -309,6 +325,54 @@ def dado_retention_evidence_missing(design_result: Any) -> bool:
         )
         for joint in dado_joints
     )
+
+
+def back_panel_retention_evidence_missing(design_result: Any) -> bool:
+    """Fail closed unless a back is absent or its canonical capture is proven.
+
+    This is not a type-name waiver.  Only the domain-validated four-edge inset
+    topology with multiple closing movements is accepted without a separate
+    back-panel retention contract.  Surface-mounted and unknown applications
+    remain blocked.
+    """
+
+    # This checker owns bookcase back applications only.  A payload that is not
+    # even a BookcaseDesignSpec belongs to the generic unsupported/statusless
+    # gates; claiming a back-panel fact for it would mask those stronger errors.
+    try:
+        from custombuild_domain import BookcaseDesignSpec
+
+        BookcaseDesignSpec.model_validate(getattr(design_result, "spec", None))
+    except (ImportError, TypeError, ValueError):
+        return False
+    canonical = _canonical_design_for_retention_check(design_result)
+    if canonical is None:
+        return True
+    back_panel = _enum_value(getattr(canonical.spec.parameters, "back_panel", None))
+    if back_panel == "none":
+        return False
+    if back_panel != "inset_groove":
+        return True
+    try:
+        from custombuild_domain.models import captive_inset_back_topology_is_complete
+
+        return not captive_inset_back_topology_is_complete(
+            canonical.parts,
+            canonical.joints,
+            canonical.assembly_graph,
+        )
+    except (ImportError, TypeError, ValueError):
+        return True
+
+
+def retention_evidence_blocker_code(design_result: Any) -> str | None:
+    """Return one deterministic retention blocker in prerequisite order."""
+
+    if dado_retention_evidence_missing(design_result):
+        return DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    if back_panel_retention_evidence_missing(design_result):
+        return BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE
+    return None
 
 
 class CAMStageStatus(StrEnum):
@@ -401,17 +465,20 @@ def validate_design_review_status_retention_binding(
 ) -> None:
     """Bind generated/retention-blocked status to canonical frozen topology both ways."""
 
-    retention_missing = dado_retention_evidence_missing(frozen_design)
-    if status.cam_status is CAMStageStatus.VALIDATION_GENERATED and retention_missing:
+    retention_blocker = retention_evidence_blocker_code(frozen_design)
+    if status.cam_status is CAMStageStatus.VALIDATION_GENERATED and retention_blocker:
         raise ValueError(
-            "generated CAM status contradicts unresolved frozen DADO retention"
+            "generated CAM status contradicts unresolved frozen joint retention"
         )
-    if (
-        status.blocker_codes == (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
-        and not retention_missing
+    retention_status_codes = {
+        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+        BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    }
+    if len(status.blocker_codes) == 1 and status.blocker_codes[0] in retention_status_codes and (
+        retention_blocker != status.blocker_codes[0]
     ):
         raise ValueError(
-            "DADO retention blocker contradicts the canonical frozen design"
+            "retention blocker contradicts the canonical frozen design"
         )
 
 

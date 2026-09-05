@@ -210,8 +210,8 @@ class ManufacturingFeature:
             raise ValueError("open-end relief declarations must be unique")
         if not set(self.open_end_reliefs) <= allowed_open_ends:
             raise ValueError("open-end relief declaration is unsupported")
-        if self.open_end_reliefs and self.corner_strategy != "dogbone-v1":
-            raise ValueError("open-end reliefs require the versioned dogbone-v1 strategy")
+        if self.open_end_reliefs and self.corner_strategy not in {"dogbone-v1", "dogbone-v2"}:
+            raise ValueError("open-end reliefs require a supported versioned dogbone strategy")
         if self.tolerance_um < 0 or self.fit_clearance_um < 0:
             raise ValueError("feature tolerance and fit clearance cannot be negative")
 
@@ -270,9 +270,12 @@ class ManufacturingFeature:
         )
 
     def relief_circles(self) -> tuple[tuple[Point2D, int], ...]:
-        """Exact local dogbone cutter circles represented by the v1 strategy."""
+        """Exact local cutter circles under the declared versioned dogbone semantics."""
 
-        if self.corner_strategy != "dogbone-v1" or self.corner_relief_radius_um is None:
+        if (
+            self.corner_strategy not in {"dogbone-v1", "dogbone-v2"}
+            or self.corner_relief_radius_um is None
+        ):
             return ()
         nominal = self.bounds()
         declared = set(self.open_end_reliefs)
@@ -290,7 +293,11 @@ class ManufacturingFeature:
                 ("u_min", "v_max"),
                 ("u_max", "v_max"),
             )
-            if not {u_boundary, v_boundary} <= declared
+            if not (
+                {u_boundary, v_boundary} <= declared
+                if self.corner_strategy == "dogbone-v1"
+                else bool({u_boundary, v_boundary} & declared)
+            )
         )
 
 
@@ -364,6 +371,24 @@ class ToolSpec:
             raise ValueError("invalid tool dimensions or spindle speed")
         if min(self.feed_um_min, self.plunge_um_min) <= 0:
             raise ValueError("tool feeds must be positive")
+        if not self.tool_id or self.tool_id != self.tool_id.strip():
+            raise ValueError("tool_id must be a canonical non-blank string")
+        if not self.name or self.name != self.name.strip():
+            raise ValueError("tool name must be a canonical non-blank string")
+        if not self.version or self.version != self.version.strip():
+            raise ValueError("tool version must be a canonical non-blank string")
+        if not self.supported_operations or len(set(self.supported_operations)) != len(
+            self.supported_operations
+        ):
+            raise ValueError("tool supported operations must be non-empty and unique")
+        if self.measured_diameter_um is not None and (
+            type(self.measured_diameter_um) is not int or self.measured_diameter_um <= 0
+        ):
+            raise ValueError("measured tool diameter must be a positive integer")
+        if type(self.runout_um) is not int or self.runout_um < 0:
+            raise ValueError("tool runout must be a non-negative integer")
+        if 2 * self.runout_um >= self.effective_diameter_um:
+            raise ValueError("tool runout must be smaller than the cutter radius")
 
     @property
     def effective_diameter_um(self) -> int:
@@ -398,6 +423,28 @@ class MachineProfile:
             raise ValueError("safe Z and spindle limit must be positive")
         if self.safe_z_um > self.work_z_um:
             raise ValueError("safe Z exceeds machine Z travel")
+        for label, value in (
+            ("profile_id", self.profile_id),
+            ("machine name", self.name),
+            ("machine version", self.version),
+            ("controller", self.controller),
+        ):
+            if not value or value != value.strip():
+                raise ValueError(f"{label} must be a canonical non-blank string")
+        if type(self.accuracy_um) is not int or self.accuracy_um <= 0:
+            raise ValueError("machine accuracy must be a positive integer")
+        tool_ids = tuple(tool.tool_id for tool in self.tools)
+        if len(tool_ids) != len(set(tool_ids)):
+            raise ValueError("machine tool IDs must be unique")
+        if not self.wcs_codes or len(self.wcs_codes) != len(set(self.wcs_codes)):
+            raise ValueError("machine WCS codes must be non-empty and unique")
+        if any(
+            len(code) != 3
+            or not code.startswith("G5")
+            or code[-1] not in "456789"
+            for code in self.wcs_codes
+        ):
+            raise ValueError("machine WCS codes must be canonical G54-G59 values")
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,12 +462,19 @@ class StockSheet:
     allow_rotation: bool = True
     defect_zones: tuple[Rect, ...] = ()
     clamp_zones: tuple[Rect, ...] = ()
+    declaration_authority: str = "UNSPECIFIED_UNVERIFIED_INPUT"
 
     def __post_init__(self) -> None:
         if min(self.width_um, self.height_um, self.thickness_um, self.quantity) <= 0:
             raise ValueError("stock dimensions and quantity must be positive")
         if self.margin_um < 0 or self.kerf_um < 0:
             raise ValueError("stock margin and kerf cannot be negative")
+        if (
+            not isinstance(self.declaration_authority, str)
+            or not self.declaration_authority
+            or self.declaration_authority != self.declaration_authority.strip()
+        ):
+            raise ValueError("stock declaration authority must be a canonical non-blank string")
         if self.margin_um * 2 >= min(self.width_um, self.height_um):
             raise ValueError("stock margin consumes the usable sheet")
 
@@ -484,7 +538,7 @@ class DFMIssue:
 @dataclass(frozen=True, slots=True)
 class DFMReport:
     issues: tuple[DFMIssue, ...]
-    engine_version: str = "dfm-1.1.0"
+    engine_version: str = "dfm-1.3.0"
 
     @property
     def status(self) -> Severity:

@@ -7,6 +7,7 @@ from typing import Literal
 
 from app.config_guards import (
     BuildIdentityValues,
+    read_production_cam_profile_source,
     validate_production_build_identity,
     validate_production_database_url,
     validate_production_redis_url,
@@ -55,6 +56,10 @@ class WorkerSettings(BaseSettings):
     s3_access_key: str = "custombuild"
     s3_secret_key: str = "development-only-object-secret"  # noqa: S105
     s3_bucket: str = Field(default="custombuild-artifacts", min_length=1)
+    joint_retention_trust_registry_json: str = Field(default="", max_length=262_144)
+    production_cam_profile_path: str = Field(default="", max_length=4096)
+    production_cam_profile_json: str = Field(default="", max_length=1_048_576)
+    production_cam_profile_sha256: str = Field(default="", max_length=64)
     storage_capacity_operator_config_sha256: str = "unverified"
     storage_capacity_volume_identity: str = "development-local-volume"
     storage_capacity_provisioned_bytes: int = Field(
@@ -66,20 +71,25 @@ class WorkerSettings(BaseSettings):
     storage_capacity_emergency_reserve_bytes: int = Field(
         default=4 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER
     )
-    storage_capacity_headroom_bytes: int = Field(
-        default=5 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER
-    )
-    storage_capacity_byte_limit: int = Field(
-        default=251 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER
-    )
-    storage_capacity_object_limit: int = Field(
-        default=1_000_000, ge=1, le=MAX_DATABASE_INTEGER
-    )
+    storage_capacity_headroom_bytes: int = Field(default=5 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER)
+    storage_capacity_byte_limit: int = Field(default=251 * 1024**3, ge=1, le=MAX_DATABASE_INTEGER)
+    storage_capacity_object_limit: int = Field(default=1_000_000, ge=1, le=MAX_DATABASE_INTEGER)
     storage_capacity_deploy_descriptor_sha256: str = "unverified"
     storage_capacity_max_age_seconds: int = Field(default=600, ge=60, le=600)
 
     @model_validator(mode="after")
     def production_guards(self) -> WorkerSettings:
+        if (
+            self.production_cam_profile_path
+            or self.production_cam_profile_json
+            or self.production_cam_profile_sha256
+        ):
+            read_production_cam_profile_source(
+                profile_path=self.production_cam_profile_path,
+                profile_json=self.production_cam_profile_json,
+                profile_sha256=self.production_cam_profile_sha256,
+                production=self.app_env == "production",
+            )
         if self.database_lock_timeout_seconds >= self.database_statement_timeout_seconds:
             raise ValueError(
                 "DATABASE_LOCK_TIMEOUT_SECONDS must be shorter than the statement timeout"
@@ -94,20 +104,13 @@ class WorkerSettings(BaseSettings):
                 "emergency reserve"
             )
         if self.storage_capacity_headroom_bytes >= self.storage_capacity_provisioned_bytes:
-            raise ValueError(
-                "STORAGE_CAPACITY_PROVISIONED_BYTES must exceed capacity headroom"
-            )
+            raise ValueError("STORAGE_CAPACITY_PROVISIONED_BYTES must exceed capacity headroom")
         if self.storage_capacity_byte_limit > (
-            self.storage_capacity_provisioned_bytes
-            - self.storage_capacity_headroom_bytes
+            self.storage_capacity_provisioned_bytes - self.storage_capacity_headroom_bytes
         ):
-            raise ValueError(
-                "STORAGE_CAPACITY_BYTE_LIMIT exceeds attested usable storage"
-            )
+            raise ValueError("STORAGE_CAPACITY_BYTE_LIMIT exceeds attested usable storage")
         if self.app_env == "production":
-            missing_capacity_fields = sorted(
-                PRODUCTION_CAPACITY_FIELDS - self.model_fields_set
-            )
+            missing_capacity_fields = sorted(PRODUCTION_CAPACITY_FIELDS - self.model_fields_set)
             if missing_capacity_fields:
                 raise ValueError(
                     "production worker requires explicit storage-capacity settings: "
@@ -129,37 +132,18 @@ class WorkerSettings(BaseSettings):
             validate_production_redis_url(self.redis_url)
             validate_production_s3_credentials(self.s3_access_key, self.s3_secret_key)
             validate_production_s3_bucket(self.s3_bucket)
-            if (
-                _SHA256_PATTERN.fullmatch(
-                    self.storage_capacity_operator_config_sha256
-                )
-                is None
-            ):
+            if _SHA256_PATTERN.fullmatch(self.storage_capacity_operator_config_sha256) is None:
                 raise ValueError(
                     "production worker requires STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256"
                 )
-            if (
-                _VOLUME_IDENTITY_PATTERN.fullmatch(
-                    self.storage_capacity_volume_identity
-                )
-                is None
-            ):
-                raise ValueError(
-                    "production worker requires a canonical storage volume identity"
-                )
-            if (
-                _SHA256_PATTERN.fullmatch(
-                    self.storage_capacity_deploy_descriptor_sha256
-                )
-                is None
-            ):
+            if _VOLUME_IDENTITY_PATTERN.fullmatch(self.storage_capacity_volume_identity) is None:
+                raise ValueError("production worker requires a canonical storage volume identity")
+            if _SHA256_PATTERN.fullmatch(self.storage_capacity_deploy_descriptor_sha256) is None:
                 raise ValueError(
                     "production worker requires STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256"
                 )
             if self.storage_capacity_max_age_seconds != 600:
-                raise ValueError(
-                    "production worker STORAGE_CAPACITY_MAX_AGE_SECONDS must be 600"
-                )
+                raise ValueError("production worker STORAGE_CAPACITY_MAX_AGE_SECONDS must be 600")
         return self
 
     @property
@@ -172,6 +156,15 @@ class WorkerSettings(BaseSettings):
             "source_manifest_sha256": self.source_manifest_sha256,
             "dependency_lock_sha256": self.dependency_lock_sha256,
         }
+
+    @property
+    def production_cam_profile_source(self) -> bytes | str:
+        return read_production_cam_profile_source(
+            profile_path=self.production_cam_profile_path,
+            profile_json=self.production_cam_profile_json,
+            profile_sha256=self.production_cam_profile_sha256,
+            production=self.app_env == "production",
+        )
 
 
 @lru_cache(maxsize=1)

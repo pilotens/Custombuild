@@ -19,12 +19,14 @@ const DESIGN_SPEC_FIELD_ORDER = [
   "back_material_id",
   "nominal_thickness_mm",
   "measured_thickness_mm",
+  "measured_back_thickness_mm",
   "shelf_count",
   "fixed_shelves",
   "load_per_shelf_kg",
   "back_panel",
   "back_panel_type",
   "plinth",
+  "plinth_height_mm",
   "divider_count",
   "bay_sizing_mode",
   "target_bay_width_mm",
@@ -41,6 +43,7 @@ const DESIGN_SPEC_FIELD_ORDER = [
   "reinforcement_mode",
   "joint_system",
   "edge_band_mm",
+  "wall_anchor_required",
   "wall_anchor_verified",
   "stock_width_mm",
   "stock_height_mm",
@@ -49,6 +52,7 @@ const DESIGN_SPEC_FIELD_ORDER = [
   "back_stock_height_mm",
   "back_stock_count",
   "machine_profile_id",
+  "workshop_context",
 ] as const satisfies readonly (keyof DesignSpec)[];
 
 type MissingDesignSpecField = Exclude<keyof DesignSpec, (typeof DESIGN_SPEC_FIELD_ORDER)[number]>;

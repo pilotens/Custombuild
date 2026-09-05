@@ -147,7 +147,15 @@ def test_current_repository_manifest_contains_release_workflows() -> None:
         "services/api/alembic/versions/0012_storage_quota_ledger.py",
         "services/api/alembic/versions/0013_storage_quota_security_functions.py",
         "services/api/alembic/versions/0014_release_generation_binding.py",
+        "services/api/alembic/versions/0015_outbox_retry_schedule.py",
+        "services/api/alembic/versions/0016_workshop_trust_persistence.py",
+        "services/api/alembic/versions/0017_oidc_issuer_binding.py",
+        "services/api/alembic/versions/0018_joint_retention_registry_state.py",
+        "services/api/alembic/versions/0019_cam_approval_candidate_sha.py",
+        "services/api/alembic/versions/0020_release_cam_approval_identity.py",
+        "scripts/activate_joint_retention_registry.py",
         "services/api/app/artifact_operations.py",
+        "services/api/app/joint_retention_registry.py",
         "services/api/app/storage_capacity.py",
         "services/api/app/storage_quota.py",
         "services/api/app/storage_reaper.py",
@@ -688,9 +696,9 @@ def test_semantic_root_cli_updates_and_checks_exact_control(
 def test_every_release_checkout_immediately_checks_repository_content_root() -> None:
     command = "python3 scripts/source_manifest.py --repo . --check-production-semantic-root"
     expected_checkouts = {
-        ".github/workflows/ci.yml": 3,
-        ".github/workflows/prod-ci.yml": 2,
-        ".github/workflows/cd.yml": 5,
+        ".github/workflows/ci.yml": 4,
+        ".github/workflows/prod-ci.yml": 3,
+        ".github/workflows/cd.yml": 6,
         ".github/workflows/supply-chain.yml": 3,
     }
     for relative, count in expected_checkouts.items():

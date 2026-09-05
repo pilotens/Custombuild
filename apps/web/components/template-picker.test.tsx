@@ -148,6 +148,59 @@ describe("TemplatePicker Explore entry", () => {
     expect(onUploadImage).toHaveBeenCalledWith(expect.objectContaining({ startMode: "reference" }));
   });
 
+  it("preserves exact user dimensions through recommendation and template selection", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", { name: /Skapa med Custombuild/ }));
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Planerad bredd" }), { target: { value: "1234.567" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Planerad höjd" }), { target: { value: "2345.678" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Planerad djup" }), { target: { value: "397.125" } });
+    fireEvent.click(screen.getByRole("button", { name: "Visa tre startförslag" }));
+    fireEvent.click(screen.getByRole("button", { name: "Öppna vald modell i Studio" }));
+
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({
+        patch: expect.objectContaining({
+          width_mm: 1234.567,
+          height_mm: 2345.678,
+          depth_mm: 397.125,
+        }),
+      }),
+      expect.objectContaining({
+        width_mm: 1234.567,
+        height_mm: 2345.678,
+        depth_mm: 397.125,
+        dimensionsConfirmed: true,
+      }),
+    );
+  });
+
+  it("accepts an exact three-decimal dimension despite binary floating-point representation", () => {
+    const onBriefChange = vi.fn();
+    renderPicker({ onBriefChange });
+    fireEvent.click(screen.getByRole("button", { name: /Skapa med Custombuild/ }));
+    const width = screen.getByRole("spinbutton", { name: "Planerad bredd" });
+    fireEvent.change(width, { target: { value: "256.001" } });
+
+    expect(width).toHaveAttribute("aria-invalid", "false");
+    expect(screen.queryByText("Ange högst tre decimaler (en tusendels millimeter).")).not.toBeInTheDocument();
+    const continueButton = screen.getByRole("button", { name: "Visa tre startförslag" });
+    expect(continueButton).toBeEnabled();
+    fireEvent.click(continueButton);
+    expect(onBriefChange).toHaveBeenLastCalledWith(expect.objectContaining({ width_mm: 256.001 }));
+  });
+
+  it("rejects dimensions below the server's whole-micrometre resolution", () => {
+    renderPicker();
+    fireEvent.click(screen.getByRole("button", { name: /Skapa med Custombuild/ }));
+    const depth = screen.getByRole("spinbutton", { name: "Planerad djup" });
+    fireEvent.change(depth, { target: { value: "397.1255" } });
+
+    expect(depth).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Ange högst tre decimaler (en tusendels millimeter).")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Visa tre startförslag" })).toBeDisabled();
+  });
+
   it("exposes the complete canonical B1 dimension envelope", () => {
     const onBriefChange = vi.fn();
     renderPicker({ onBriefChange });

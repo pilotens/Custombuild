@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from collections.abc import Iterable
 from html import escape
 
@@ -19,8 +20,20 @@ from .model import (
     um_to_mm,
 )
 
-DXF_LAYERS = ("OUTLINE", "DRILL", "POCKET", "GROOVE", "EDGE_BAND", "LABEL")
-ARTIFACT_EXPORTERS_VERSION = "manufacturing-exporters-1.3.0"
+DXF_LAYERS = (
+    "OUTLINE",
+    "DRILL",
+    "POCKET",
+    "GROOVE",
+    "RABBET",
+    "INNER_CONTOUR",
+    "ENGRAVE",
+    "EDGE_BAND",
+    "LABEL",
+)
+ARTIFACT_EXPORTERS_VERSION = "manufacturing-exporters-1.4.0"
+PART_DRAWING_CONTRACT_VERSION = "custombuild.part-drawing.v2"
+PART_DRAWING_COORDINATE_SYSTEM = "LOCAL_UV_MM_V_UP_NOT_MIRRORED"
 
 
 def dxf_for_part(part: PartSpec, side: Side) -> bytes:
@@ -28,12 +41,14 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
 
     if side not in (Side.A, Side.B):
         raise ValueError("DXF machining side must be A or B")
+    _validate_part_drawing_scope(part)
     side_features = tuple(
         feature
         for feature in sorted(part.features, key=lambda item: item.feature_id)
         if feature.side == side
     )
     outline_feature, outline_bounds = _outline_for_side(part, side_features)
+    drawing_extents = _drawing_geometry_extents(part, side)
     entities: list[str] = []
     if outline_feature is not None:
         entities.extend(("999", f"FEATURE:{_dxf_text(outline_feature.feature_id)}"))
@@ -51,30 +66,33 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
         if line:
             entities.extend(_dxf_line("EDGE_BAND", *line))
 
-    for feature in side_features:
+    for feature_index, feature in enumerate(side_features, start=1):
         if feature.kind == FeatureKind.OUTER_CONTOUR:
             continue
         entities.extend(("999", f"FEATURE:{_dxf_text(feature.feature_id)}"))
-        if feature.kind in {
-            FeatureKind.DRILL,
-            FeatureKind.DRILL_PATTERN,
-            FeatureKind.COUNTERSINK,
-        }:
+        entities.extend(
+            _dxf_json_comments(
+                f"CUSTOMBUILD_FEATURE_{feature_index:04d}_JSON",
+                _feature_drawing_metadata(feature),
+            )
+        )
+        if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}:
             radius_um = (feature.diameter_um or 0) // 2
             for point in feature.points():
                 entities.extend(_dxf_circle("DRILL", point.x_um, point.y_um, radius_um))
         elif feature.kind in {FeatureKind.GROOVE, FeatureKind.RABBET}:
             bounds = feature.bounds()
+            layer = "RABBET" if feature.kind == FeatureKind.RABBET else "GROOVE"
             entities.extend(
                 _dxf_rectangle(
-                    "GROOVE", bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um
+                    layer, bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um
                 )
             )
             for relief_x_um, relief_y_um in _corner_relief_points(feature):
                 assert feature.corner_relief_radius_um is not None
                 entities.extend(
                     _dxf_circle(
-                        "GROOVE",
+                        layer,
                         relief_x_um,
                         relief_y_um,
                         feature.corner_relief_radius_um,
@@ -82,21 +100,37 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
                 )
         elif feature.kind in {FeatureKind.POCKET, FeatureKind.INNER_CONTOUR}:
             bounds = feature.bounds()
+            layer = (
+                "INNER_CONTOUR"
+                if feature.kind == FeatureKind.INNER_CONTOUR
+                else "POCKET"
+            )
             entities.extend(
                 _dxf_rectangle(
-                    "POCKET", bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um
+                    layer, bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um
                 )
             )
             for relief_x_um, relief_y_um in _corner_relief_points(feature):
                 assert feature.corner_relief_radius_um is not None
                 entities.extend(
                     _dxf_circle(
-                        "POCKET",
+                        layer,
                         relief_x_um,
                         relief_y_um,
                         feature.corner_relief_radius_um,
                     )
                 )
+        elif feature.kind == FeatureKind.ENGRAVE:
+            bounds = feature.bounds()
+            entities.extend(
+                _dxf_rectangle(
+                    "ENGRAVE",
+                    bounds.x_um,
+                    bounds.y_um,
+                    bounds.width_um,
+                    bounds.height_um,
+                )
+            )
         else:
             entities.extend(
                 _dxf_text_entity("LABEL", feature.x_um, feature.y_um, feature.feature_id, 3_000)
@@ -128,6 +162,30 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
         "$MEASUREMENT",
         "70",
         "1",
+        "9",
+        "$LUNITS",
+        "70",
+        "2",
+        "9",
+        "$LUPREC",
+        "70",
+        "3",
+        "9",
+        "$EXTMIN",
+        "10",
+        um_to_mm(drawing_extents.x_um),
+        "20",
+        um_to_mm(drawing_extents.y_um),
+        "30",
+        "0",
+        "9",
+        "$EXTMAX",
+        "10",
+        um_to_mm(drawing_extents.right_um),
+        "20",
+        um_to_mm(drawing_extents.top_um),
+        "30",
+        "0",
         "0",
         "ENDSEC",
         "0",
@@ -172,6 +230,12 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
         )
     tokens.extend(("0", "ENDTAB", "0", "ENDSEC", "0", "SECTION", "2", "ENTITIES"))
     tokens.extend(("999", f"CUSTOMBUILD_SIDE:{side.value}"))
+    tokens.extend(
+        _dxf_json_comments(
+            "CUSTOMBUILD_DRAWING_JSON",
+            _part_drawing_metadata(part, side),
+        )
+    )
     tokens.extend(entities)
     tokens.extend(("0", "ENDSEC", "0", "EOF"))
     return ("\n".join(tokens) + "\n").encode("utf-8")
@@ -180,6 +244,7 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
 def svg_for_part(part: PartSpec, side: Side) -> bytes:
     if side not in (Side.A, Side.B):
         raise ValueError("SVG machining side must be A or B")
+    _validate_part_drawing_scope(part)
     width = um_to_mm(part.width_um)
     height = um_to_mm(part.height_um)
     dimension_offset = 16
@@ -190,9 +255,14 @@ def svg_for_part(part: PartSpec, side: Side) -> bytes:
     )
     outline_feature, outline_bounds = _outline_for_side(part, side_features)
     outline_identity = (
-        ""
+        ' data-outline-source="FINISHED_PART_RECTANGULAR_FALLBACK" '
+        'data-tolerance-status="EXTERNAL_TOLERANCE_REQUIRED"'
         if outline_feature is None
-        else f' data-feature-id="{escape(outline_feature.feature_id, quote=True)}"'
+        else (
+            f' data-feature-id="{escape(outline_feature.feature_id, quote=True)}" '
+            'data-outline-source="SEMANTIC_OUTER_CONTOUR" '
+            f"{_svg_feature_attributes(outline_feature)}"
+        )
     )
     elements = [
         f'<rect class="outline"{outline_identity} '
@@ -204,24 +274,36 @@ def svg_for_part(part: PartSpec, side: Side) -> bytes:
         if feature.kind == FeatureKind.OUTER_CONTOUR:
             continue
         feature_id = escape(feature.feature_id, quote=True)
-        if feature.kind in {
-            FeatureKind.DRILL,
-            FeatureKind.DRILL_PATTERN,
-            FeatureKind.COUNTERSINK,
-        }:
+        if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}:
             radius = um_to_mm((feature.diameter_um or 0) // 2)
             for point in feature.points():
                 elements.append(
                     f'<circle class="drill" data-feature-id="{feature_id}" '
+                    f"{_svg_feature_attributes(feature)} "
                     f'cx="{um_to_mm(point.x_um)}" cy="{um_to_mm(point.y_um)}" r="{radius}"/>'
                 )
+        elif feature.kind == FeatureKind.LABEL:
+            elements.append(
+                f'<circle class="label-mark" data-feature-id="{feature_id}" '
+                f"{_svg_feature_attributes(feature)} "
+                f'cx="{um_to_mm(feature.x_um)}" cy="{um_to_mm(feature.y_um)}" r="1"/>'
+            )
         else:
             bounds = feature.bounds()
             css_class = (
-                "groove" if feature.kind in {FeatureKind.GROOVE, FeatureKind.RABBET} else "pocket"
+                "groove"
+                if feature.kind == FeatureKind.GROOVE
+                else "rabbet"
+                if feature.kind == FeatureKind.RABBET
+                else "inner-contour"
+                if feature.kind == FeatureKind.INNER_CONTOUR
+                else "engrave"
+                if feature.kind == FeatureKind.ENGRAVE
+                else "pocket"
             )
             elements.append(
                 f'<rect class="{css_class}" data-feature-id="{feature_id}" '
+                f"{_svg_feature_attributes(feature)} "
                 f'x="{um_to_mm(bounds.x_um)}" y="{um_to_mm(bounds.y_um)}" '
                 f'width="{um_to_mm(bounds.width_um)}" height="{um_to_mm(bounds.height_um)}"/>'
             )
@@ -229,24 +311,52 @@ def svg_for_part(part: PartSpec, side: Side) -> bytes:
                 for x_um, y_um in _corner_relief_points(feature):
                     elements.append(
                         f'<circle class="{css_class} corner-relief" '
-                        f'data-feature-id="{feature_id}" data-corner-strategy="dogbone-v1" '
+                        f'data-feature-id="{feature_id}" '
+                        f'data-corner-strategy="{feature.corner_strategy}" '
                         f'cx="{um_to_mm(x_um)}" cy="{um_to_mm(y_um)}" '
                         f'r="{um_to_mm(feature.corner_relief_radius_um)}"/>'
                     )
     title = escape(f"{part.part_id} – sida {side.value}")
+    drawing_metadata = escape(
+        _drawing_json(_part_drawing_metadata(part, side)),
+        quote=False,
+    )
+    physical_face = _drawing_physical_face(part, side)
+    physical_face_text = escape(physical_face)
+    axis_mapping = part.axis_mapping
     body = "".join(elements)
     svg = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="-20 -28 {float(width) + 40:g} {float(height) + 48:g}" '
-        f'width="{width}mm" height="{height}mm" data-side="{side.value}">'
+        f'width="{width}mm" height="{height}mm" data-side="{side.value}" '
+        f'data-contract-version="{PART_DRAWING_CONTRACT_VERSION}" '
+        f'data-coordinate-system="{PART_DRAWING_COORDINATE_SYSTEM}" '
+        f'data-part-id="{escape(part.part_id, quote=True)}" '
+        f'data-physical-face="{escape(physical_face, quote=True)}" '
+        f'data-material-id="{escape(part.material_id, quote=True)}" '
+        f'data-material-version="{escape(part.material_version, quote=True)}" '
+        f'data-grain-direction="{escape(part.grain_direction, quote=True)}" '
+        f'data-u-axis="{axis_mapping.u_axis}" data-v-axis="{axis_mapping.v_axis}" '
+        f'data-thickness-axis="{axis_mapping.thickness_axis}" '
+        f'data-thickness-mm="{um_to_mm(part.thickness_um)}">'
         "<style>.outline{fill:none;stroke:#111;stroke-width:.5}"
         ".drill{fill:none;stroke:#06c;stroke-width:.4}"
         ".pocket{fill:#dbeafe;stroke:#2563eb;stroke-width:.4}"
         ".groove{fill:#fef3c7;stroke:#b45309;stroke-width:.4}"
+        ".rabbet{fill:#ffedd5;stroke:#c2410c;stroke-width:.4}"
+        ".inner-contour{fill:none;stroke:#be123c;stroke-width:.5}"
+        ".engrave{fill:none;stroke:#7c3aed;stroke-width:.3}"
+        ".label-mark{fill:#111}.datum{fill:#dc2626;stroke:#fff;stroke-width:.3}"
         ".dim{stroke:#555;stroke-width:.25}.label{font:5px sans-serif;fill:#111}</style>"
-        f'<title>{title}</title><text class="label" x="0" y="-18">{title}</text>'
-        f"{body}"
+        f"<title>{title}</title><metadata>{drawing_metadata}</metadata>"
+        f'<text class="label" x="0" y="-18">{title}</text>'
+        f'<text class="label" x="0" y="-10">T={um_to_mm(part.thickness_um)} mm · '
+        f"face={physical_face_text} · origin=U_MIN/V_MIN · U={axis_mapping.u_axis.upper()} · "
+        f"V={axis_mapping.v_axis.upper()} · coordinates not mirrored</text>"
+        f'<g class="machining-geometry" transform="translate(0 {height}) scale(1 -1)">{body}</g>'
+        f'<circle class="datum" cx="0" cy="{height}" r="1.5"/>'
+        f'<text class="label" x="3" y="{float(height) - 3:g}">U0/V0</text>'
         f'<line class="dim" x1="0" y1="{float(height) + dimension_offset:g}" '
         f'x2="{width}" y2="{float(height) + dimension_offset:g}"/>'
         f'<text class="label" x="{float(width) / 2:g}" '
@@ -261,10 +371,284 @@ def svg_for_part(part: PartSpec, side: Side) -> bytes:
     return svg.encode("utf-8")
 
 
+def _validate_part_drawing_scope(part: PartSpec) -> None:
+    """Fail closed when a two-face drawing would omit or misstate geometry."""
+
+    identifiers = [feature.feature_id for feature in part.features]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError(f"part {part.part_id} has duplicate feature IDs")
+    if part.blank_width_um < part.width_um or part.blank_height_um < part.height_um:
+        raise ValueError(f"part {part.part_id} raw blank is smaller than its finished perimeter")
+    edge_features = tuple(
+        feature.feature_id for feature in part.features if feature.side == Side.EDGE
+    )
+    if edge_features:
+        raise ValueError(
+            f"part {part.part_id} has edge-machining features that A/B drawings cannot represent: "
+            f"{', '.join(sorted(edge_features))}"
+        )
+
+    rectangular = {
+        FeatureKind.POCKET,
+        FeatureKind.GROOVE,
+        FeatureKind.RABBET,
+        FeatureKind.INNER_CONTOUR,
+        FeatureKind.OUTER_CONTOUR,
+        FeatureKind.ENGRAVE,
+    }
+    part_bounds = Rect(0, 0, part.width_um, part.height_um)
+    for feature in part.features:
+        if feature.kind == FeatureKind.COUNTERSINK:
+            raise ValueError(
+                f"countersink feature {feature.feature_id} has no versioned angle/top-diameter "
+                "contract and cannot enter a supplier drawing"
+            )
+        if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}:
+            if feature.diameter_um is None:
+                raise ValueError(f"drill feature {feature.feature_id} has no diameter")
+        elif feature.kind in rectangular and (
+            feature.width_um is None or feature.length_um is None
+        ):
+            raise ValueError(f"rectangular feature {feature.feature_id} has no width/length")
+        if feature.kind not in {
+            FeatureKind.LABEL,
+            FeatureKind.OUTER_CONTOUR,
+        } and not part_bounds.contains(feature.bounds()):
+            raise ValueError(
+                f"feature {feature.feature_id} lies outside the finished-part drawing bounds"
+            )
+        if feature.through:
+            if feature.depth_um < part.thickness_um:
+                raise ValueError(
+                    f"through feature {feature.feature_id} does not reach the full part thickness"
+                )
+        elif feature.depth_um >= part.thickness_um and feature.kind != FeatureKind.LABEL:
+            raise ValueError(
+                f"non-through feature {feature.feature_id} reaches or exceeds the part thickness"
+            )
+
+
+def _drawing_physical_face(part: PartSpec, side: Side) -> str:
+    key = "domain_a_side" if side == Side.A else "domain_b_side"
+    raw = part.metadata.get(key)
+    return str(raw) if isinstance(raw, str) and raw else f"SIDE_{side.value}"
+
+
+def _part_drawing_metadata(part: PartSpec, side: Side) -> dict[str, object]:
+    extents = _drawing_geometry_extents(part, side)
+    side_features = tuple(feature for feature in part.features if feature.side == side)
+    outline_feature, _ = _outline_for_side(part, side_features)
+    physical_face = _drawing_physical_face(part, side)
+    return {
+        "schema_version": PART_DRAWING_CONTRACT_VERSION,
+        "part_id": part.part_id,
+        "part_name": part.name,
+        "quantity": part.quantity,
+        "side": side.value,
+        "physical_face": physical_face,
+        "units": "mm",
+        "coordinate_system": PART_DRAWING_COORDINATE_SYSTEM,
+        "coordinates_mirrored": False,
+        "origin": "FINISHED_PART_U_MIN_V_MIN",
+        "datums": {
+            "primary": f"{physical_face}_FINISHED_SURFACE",
+            "secondary": "U_MIN_FINISHED_EDGE",
+            "tertiary": "V_MIN_FINISHED_EDGE",
+        },
+        "axis_mapping": {
+            "u": part.axis_mapping.u_axis,
+            "v": part.axis_mapping.v_axis,
+            "thickness": part.axis_mapping.thickness_axis,
+        },
+        "material": {"id": part.material_id, "version": part.material_version},
+        "grain_direction": part.grain_direction,
+        "allow_rotation": part.allow_rotation,
+        "edge_bands": [
+            {
+                "edge": detail.edge,
+                "thickness_mm": um_to_mm(detail.thickness_um),
+                "source_face": detail.source_face,
+                "catalog_id": detail.catalog_id,
+                "catalog_version": detail.catalog_version,
+                "attachment_method": detail.attachment_method,
+                "procurement_status": detail.procurement_status,
+            }
+            for detail in part.edge_band_details
+        ],
+        "finished_size_mm": {
+            "u": um_to_mm(part.width_um),
+            "v": um_to_mm(part.height_um),
+            "thickness": um_to_mm(part.thickness_um),
+        },
+        "raw_blank_size_mm": {
+            "u": um_to_mm(part.blank_width_um),
+            "v": um_to_mm(part.blank_height_um),
+            "thickness": um_to_mm(part.thickness_um),
+        },
+        "emitted_geometry_extents_mm": {
+            "u_min": um_to_mm(extents.x_um),
+            "v_min": um_to_mm(extents.y_um),
+            "u_max": um_to_mm(extents.right_um),
+            "v_max": um_to_mm(extents.top_um),
+        },
+        "feature_count_on_side": sum(feature.side == side for feature in part.features),
+        "feature_tolerances_are_individual": True,
+        "finished_outline": {
+            "source": (
+                "SEMANTIC_OUTER_CONTOUR"
+                if outline_feature is not None
+                else "FINISHED_PART_RECTANGULAR_FALLBACK"
+            ),
+            "feature": (
+                _feature_drawing_metadata(outline_feature)
+                if outline_feature is not None
+                else None
+            ),
+            "tolerance_mm": (
+                um_to_mm(outline_feature.tolerance_um)
+                if outline_feature is not None and outline_feature.tolerance_um > 0
+                else None
+            ),
+            "tolerance_status": (
+                "DECLARED_IN_DESIGN"
+                if outline_feature is not None and outline_feature.tolerance_um > 0
+                else "EXTERNAL_TOLERANCE_REQUIRED"
+            ),
+        },
+    }
+
+
+def _drawing_geometry_extents(part: PartSpec, side: Side) -> Rect:
+    side_features = tuple(feature for feature in part.features if feature.side == side)
+    _, outline = _outline_for_side(part, side_features)
+    bounds = [
+        feature.machining_bounds()
+        for feature in side_features
+        if feature.kind not in {FeatureKind.OUTER_CONTOUR, FeatureKind.LABEL}
+    ]
+    left = min((value.x_um for value in bounds), default=outline.x_um)
+    bottom = min((value.y_um for value in bounds), default=outline.y_um)
+    right = max((value.right_um for value in bounds), default=outline.right_um)
+    top = max((value.top_um for value in bounds), default=outline.top_um)
+    return Rect(
+        min(outline.x_um, left),
+        min(outline.y_um, bottom),
+        max(outline.right_um, right) - min(outline.x_um, left),
+        max(outline.top_um, top) - min(outline.y_um, bottom),
+    )
+
+
+def _feature_drawing_metadata(feature: ManufacturingFeature) -> dict[str, object]:
+    origin_semantics = (
+        "FIRST_CENTRE"
+        if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}
+        else "LOWER_LEFT"
+    )
+    dimensions = {
+        key: um_to_mm(value)
+        for key, value in (
+            ("diameter", feature.diameter_um),
+            ("width", feature.width_um),
+            ("length", feature.length_um),
+            ("radius", feature.radius_um),
+            ("pattern_pitch", feature.pitch_um),
+            ("corner_relief_radius", feature.corner_relief_radius_um),
+        )
+        if value is not None
+    }
+    return {
+        "feature_id": feature.feature_id,
+        "kind": feature.kind.value,
+        "side": feature.side.value,
+        "origin_semantics": origin_semantics,
+        "origin_mm": {"u": um_to_mm(feature.x_um), "v": um_to_mm(feature.y_um)},
+        "depth_mm": um_to_mm(feature.depth_um),
+        "dimensions_mm": dimensions,
+        "pattern_count": feature.pattern_count,
+        "through": feature.through,
+        "tolerance_mm": (
+            um_to_mm(feature.tolerance_um) if feature.tolerance_um > 0 else None
+        ),
+        "tolerance_status": (
+            "DECLARED_IN_DESIGN"
+            if feature.tolerance_um > 0
+            else "EXTERNAL_TOLERANCE_REQUIRED"
+        ),
+        "fit_clearance_mm": um_to_mm(feature.fit_clearance_um),
+        "corner_strategy": feature.corner_strategy,
+        "open_end_reliefs": list(feature.open_end_reliefs),
+    }
+
+
+def _dxf_json_comments(label: str, payload: dict[str, object]) -> list[str]:
+    """Encode canonical JSON into legal, deterministic DXF comment chunks."""
+
+    encoded = _drawing_json(payload)
+    chunk_size = 180
+    chunks = tuple(
+        encoded[index : index + chunk_size] for index in range(0, len(encoded), chunk_size)
+    )
+    tokens: list[str] = []
+    for index, chunk in enumerate(chunks, start=1):
+        comment = f"{label}:{index}/{len(chunks)}:{chunk}"
+        if len(comment.encode("utf-8")) > 255:
+            raise ValueError("DXF metadata comment exceeds the 255-byte interoperability limit")
+        tokens.extend(("999", comment))
+    return tokens
+
+
+def _drawing_json(payload: dict[str, object]) -> str:
+    return json.dumps(
+        payload,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def _svg_feature_attributes(feature: ManufacturingFeature) -> str:
+    attributes = {
+        "data-kind": feature.kind.value,
+        "data-origin-u-mm": um_to_mm(feature.x_um),
+        "data-origin-v-mm": um_to_mm(feature.y_um),
+        "data-depth-mm": um_to_mm(feature.depth_um),
+        "data-through": "true" if feature.through else "false",
+        "data-tolerance-status": (
+            "DECLARED_IN_DESIGN"
+            if feature.tolerance_um > 0
+            else "EXTERNAL_TOLERANCE_REQUIRED"
+        ),
+        "data-fit-clearance-mm": um_to_mm(feature.fit_clearance_um),
+        "data-pattern-count": str(feature.pattern_count),
+    }
+    optional_dimensions = {
+        "data-diameter-mm": feature.diameter_um,
+        "data-width-mm": feature.width_um,
+        "data-length-mm": feature.length_um,
+        "data-radius-mm": feature.radius_um,
+        "data-pattern-pitch-mm": feature.pitch_um,
+        "data-corner-relief-radius-mm": feature.corner_relief_radius_um,
+    }
+    attributes.update(
+        {name: um_to_mm(value) for name, value in optional_dimensions.items() if value is not None}
+    )
+    if feature.tolerance_um > 0:
+        attributes["data-tolerance-mm"] = um_to_mm(feature.tolerance_um)
+    if feature.corner_strategy is not None:
+        attributes["data-corner-strategy"] = feature.corner_strategy
+    if feature.open_end_reliefs:
+        attributes["data-open-end-reliefs"] = ",".join(feature.open_end_reliefs)
+    return " ".join(f'{name}="{escape(value, quote=True)}"' for name, value in attributes.items())
+
+
 def _corner_relief_points(feature: ManufacturingFeature) -> tuple[tuple[int, int], ...]:
     if feature.corner_strategy is None:
         return ()
-    if feature.corner_strategy != "dogbone-v1" or feature.corner_relief_radius_um is None:
+    if (
+        feature.corner_strategy not in {"dogbone-v1", "dogbone-v2"}
+        or feature.corner_relief_radius_um is None
+    ):
         raise ValueError(
             f"feature {feature.feature_id} has an unsupported or incomplete corner strategy"
         )
@@ -278,7 +662,11 @@ def _corner_relief_points(feature: ManufacturingFeature) -> tuple[tuple[int, int
             (bounds.x_um, bounds.top_um, "u_min", "v_max"),
             (bounds.right_um, bounds.top_um, "u_max", "v_max"),
         )
-        if not {u_boundary, v_boundary} <= declared
+        if not (
+            {u_boundary, v_boundary} <= declared
+            if feature.corner_strategy == "dogbone-v1"
+            else bool({u_boundary, v_boundary} & declared)
+        )
     )
 
 
@@ -303,7 +691,15 @@ def _outline_for_side(
             f"part {part.part_id} side {outlines[0].side.value} has multiple outer contours"
         )
     if outlines:
-        return outlines[0], outlines[0].bounds()
+        outline = outlines[0]
+        bounds = outline.bounds()
+        expected = Rect(0, 0, part.width_um, part.height_um)
+        if bounds != expected or not outline.through or outline.depth_um != part.thickness_um:
+            raise ValueError(
+                f"part {part.part_id} side {outline.side.value} outer contour does not exactly "
+                "match the finished-part perimeter and thickness"
+            )
+        return outline, bounds
     return None, Rect(0, 0, part.width_um, part.height_um)
 
 

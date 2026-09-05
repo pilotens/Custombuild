@@ -81,7 +81,13 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
-    expose_headers=["Content-Disposition", "Digest", "ETag", "X-Request-ID"],
+    expose_headers=[
+        "Content-Disposition",
+        "Digest",
+        "ETag",
+        "X-Content-Type-Options",
+        "X-Request-ID",
+    ],
 )
 app.add_middleware(
     RequestBodyLimitMiddleware,
@@ -100,7 +106,13 @@ app.add_middleware(
     CORSResponseHeadersMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=False,
-    expose_headers=["Content-Disposition", "Digest", "ETag", "X-Request-ID"],
+    expose_headers=[
+        "Content-Disposition",
+        "Digest",
+        "ETag",
+        "X-Content-Type-Options",
+        "X-Request-ID",
+    ],
 )
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestContextMiddleware)

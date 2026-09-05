@@ -23,6 +23,7 @@ from custombuild_cad import (
 from custombuild_cam import backplot_svg
 from custombuild_postprocessors import LinuxCNCValidationPostprocessor
 
+from . import review_status as review_status_contract
 from .artifact_limits import (
     MAX_ARTIFACT_BYTES,
     MAX_PRODUCTION_BUNDLE_BYTES,
@@ -70,10 +71,13 @@ from .model import (
 )
 from .nesting import DeterministicNester
 from .operations import (
+    CLIENT_DECLARED_AUTHORITY,
+    MIN_VALIDATION_CONTOUR_KERF_UM,
     OPERATIONS_ENGINE_VERSION,
     OPERATIONS_SCHEMA_VERSION,
     TwoSidedRegistration,
     generate_operations_document,
+    registration_pin_keep_out_rectangles,
 )
 from .procurement import GROUPED_BOM_SCHEMA_VERSION, grouped_bom_json, stock_purchase_csv
 from .profiles import (
@@ -81,7 +85,31 @@ from .profiles import (
     linuxcnc_reference_router_5125,
     tool_catalog_fingerprint,
 )
-from .quality import label_index_csv, quality_measurement_plan_json
+from .quality import (
+    JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+    JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+    JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+    JSON_SCHEMA_ROLE,
+    MANUFACTURING_INTENT_JSON_SCHEMA_PATH,
+    MANUFACTURING_INTENT_PATH,
+    MANUFACTURING_INTENT_ROLE,
+    OPERATIONS_JSON_SCHEMA_PATH,
+    START_HERE_PATH,
+    START_HERE_ROLE,
+    SUPPLIER_HANDOFF_JSON_SCHEMA_PATH,
+    SUPPLIER_HANDOFF_MANIFEST_CONTEXT_FIELDS,
+    SUPPLIER_HANDOFF_PATH,
+    SUPPLIER_HANDOFF_ROLE,
+    label_index_csv,
+    manufacturing_intent_json,
+    manufacturing_intent_json_schema,
+    operations_json_schema,
+    quality_measurement_plan_json,
+    start_here_markdown,
+    supplier_handoff_json,
+    supplier_handoff_json_schema,
+    validate_json_schema_instance,
+)
 from .readiness import (
     WorkshopReadinessReport,
     build_workshop_readiness_report,
@@ -89,8 +117,11 @@ from .readiness import (
     validate_workshop_evidence_binding,
 )
 from .review_status import (
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+    DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH,
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_ROLE,
+    TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,
     CAMStageStatus,
     DesignReviewPackageStatus,
     normalize_design_review_package_status,
@@ -101,11 +132,11 @@ MAX_PACKAGE_FILES = 10_000
 MAX_ARTIFACT_SIZE_BYTES = MAX_ARTIFACT_BYTES
 MAX_PACKAGE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 1_000
-PACKAGE_BUILDER_VERSION = "deterministic-package-1.5.0"
-PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v4"
+PACKAGE_BUILDER_VERSION = "deterministic-package-1.11.0"
+PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 ARTIFACT_SCHEMA_VERSION = "custombuild.production-artifacts.v1"
-GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v1"
-GENERATION_PLAN_PIPELINE_VERSION = "production-pipeline-1.10.0"
+GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v2"
+GENERATION_PLAN_PIPELINE_VERSION = "production-pipeline-1.11.0"
 NESTING_ALGORITHM_VERSION = "deterministic-bottom-left-v1"
 MANIFEST_CONTEXT_HASH_FIELDS = (
     "project_id",
@@ -139,6 +170,8 @@ MANIFEST_CONTEXT_HASH_FIELDS = (
     "source_provenance",
     "artifacts",
 )
+if MANIFEST_CONTEXT_HASH_FIELDS[:-1] != SUPPLIER_HANDOFF_MANIFEST_CONTEXT_FIELDS:
+    raise RuntimeError("manifest and supplier-handoff context fields drifted")
 _MANIFEST_CHECKSUM_SCOPE = "all payload files; manifest.json excluded to avoid recursive hashing"
 _MANIFEST_TOP_LEVEL_KEYS = frozenset(
     {
@@ -163,6 +196,32 @@ _BLOCKED_CAM_ALLOWED_FIXED_ARTIFACTS = frozenset(
         ("design/result-summary.json", "DESIGN_RESULT_SUMMARY", "application/json"),
         ("labels/part-labels.pdf", "PART_LABELS", "application/pdf"),
         ("materials/material-list.csv", "MATERIAL_LIST", "text/csv"),
+        (
+            MANUFACTURING_INTENT_PATH,
+            MANUFACTURING_INTENT_ROLE,
+            "application/json",
+        ),
+        (START_HERE_PATH, START_HERE_ROLE, "text/markdown"),
+        (
+            JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+            JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+            JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+        ),
+        (
+            MANUFACTURING_INTENT_JSON_SCHEMA_PATH,
+            JSON_SCHEMA_ROLE,
+            "application/schema+json",
+        ),
+        (
+            OPERATIONS_JSON_SCHEMA_PATH,
+            JSON_SCHEMA_ROLE,
+            "application/schema+json",
+        ),
+        (
+            SUPPLIER_HANDOFF_JSON_SCHEMA_PATH,
+            JSON_SCHEMA_ROLE,
+            "application/schema+json",
+        ),
         ("model/design.fcstd", "NON_AUTHORITATIVE_FREECAD_PROJECT", "application/vnd.freecad"),
         ("model/design.glb", "WEB_PREVIEW_GLB", "model/gltf-binary"),
         ("model/design.step", "AUTHORITATIVE_STEP", "model/step"),
@@ -204,6 +263,7 @@ _BLOCKED_CAM_ALLOWED_FIXED_ARTIFACTS = frozenset(
             "WORKSHOP_READINESS_REPORT",
             "application/json",
         ),
+        (SUPPLIER_HANDOFF_PATH, SUPPLIER_HANDOFF_ROLE, "application/json"),
     }
 )
 _STATUS_REVIEW_REQUIRED_ARTIFACTS = (
@@ -213,6 +273,11 @@ _STATUS_REVIEW_REQUIRED_ARTIFACTS = (
     ("design/design-spec.json", "FROZEN_DESIGN_SPEC", "application/json"),
     ("design/result-summary.json", "DESIGN_RESULT_SUMMARY", "application/json"),
     ("materials/material-list.csv", "MATERIAL_LIST", "text/csv"),
+    (
+        MANUFACTURING_INTENT_PATH,
+        MANUFACTURING_INTENT_ROLE,
+        "application/json",
+    ),
     ("model/design.glb", "WEB_PREVIEW_GLB", "model/gltf-binary"),
     ("model/design.step", "AUTHORITATIVE_STEP", "model/step"),
     ("validation/cad-interchange-status.json", "CAD_INTERCHANGE_STATUS", "application/json"),
@@ -224,6 +289,7 @@ _STATUS_REVIEW_REQUIRED_ARTIFACTS = (
         "application/json",
     ),
     ("validation/workshop-readiness.json", "WORKSHOP_READINESS_REPORT", "application/json"),
+    (SUPPLIER_HANDOFF_PATH, SUPPLIER_HANDOFF_ROLE, "application/json"),
 )
 _WORKSHOP_READINESS_ARTIFACT_PATH = "validation/workshop-readiness.json"
 _WORKSHOP_READINESS_ARTIFACT_ROLE = "WORKSHOP_READINESS_REPORT"
@@ -235,6 +301,12 @@ _GENERATION_PLAN_ARTIFACT_PATH = GENERATION_PLAN_ARTIFACT_PATH
 _GENERATION_PLAN_ARTIFACT_ROLE = GENERATION_PLAN_ARTIFACT_ROLE
 _PERSISTED_PACKAGE_ARTIFACT_KINDS = {
     "manifest.json": "manifest",
+    START_HERE_PATH: "package_guide",
+    MANUFACTURING_INTENT_PATH: "manufacturing_intent",
+    MANUFACTURING_INTENT_JSON_SCHEMA_PATH: "contract_schema",
+    OPERATIONS_JSON_SCHEMA_PATH: "contract_schema",
+    SUPPLIER_HANDOFF_PATH: "supplier_handoff",
+    SUPPLIER_HANDOFF_JSON_SCHEMA_PATH: "contract_schema",
     _WORKSHOP_READINESS_ARTIFACT_PATH: "workshop_readiness",
     _DFM_REPORT_ARTIFACT_PATH: "dfm_report",
     DESIGN_REVIEW_PACKAGE_STATUS_ARTIFACT_PATH: "design_review_package_status",
@@ -244,6 +316,7 @@ _PERSISTED_PACKAGE_ARTIFACT_KINDS = {
     "validation/source-provenance.json": "source_provenance",
     "validation/cad-interchange-status.json": "cad_interchange_status",
     "assembly/assembly-readiness.json": "assembly_readiness",
+    JOINT_RETENTION_SIGNED_EVIDENCE_PATH: "joint_retention_signed_evidence",
 }
 _DFM_REPORT_KEYS = frozenset({"engine_version", "issues"})
 _DFM_ISSUE_KEYS = frozenset(
@@ -258,7 +331,15 @@ _DFM_ISSUE_KEYS = frozenset(
         "suggestion",
     }
 )
-STOCK_SELECTION_SCHEMA_VERSION = "custombuild.stock-selection.v1"
+STOCK_SELECTION_SCHEMA_VERSION = "custombuild.stock-selection.v2"
+_UNVERIFIED_STOCK_DECLARATION_AUTHORITIES = frozenset(
+    {
+        CLIENT_DECLARED_AUTHORITY,
+        "LEGACY_UNSTRUCTURED_CLIENT_INPUT",
+        "AUTOMATED_DESIGN_REVIEW_FIXTURE",
+        "UNSPECIFIED_UNVERIFIED_INPUT",
+    }
+)
 FROZEN_DESIGN_SPEC_SCHEMA_VERSION = "custombuild.frozen-design-spec.v1"
 DESIGN_RESULT_SUMMARY_SCHEMA_VERSION = "custombuild.design-result-summary.v1"
 _SAFE_CALLER_ADDITIONAL_ARTIFACTS = frozenset(
@@ -268,6 +349,11 @@ _SAFE_CALLER_ADDITIONAL_ARTIFACTS = frozenset(
         ("bom/bom.pdf", "BOM_PDF", "application/pdf"),
         ("bom/hardware-list.csv", "HARDWARE_LIST", "text/csv"),
         ("labels/part-labels.pdf", "PART_LABELS", "application/pdf"),
+        (
+            JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+            JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+            JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+        ),
         ("qa/measurement-protocol.pdf", "QA_PROTOCOL", "application/pdf"),
         (
             "validation/construction-report.json",
@@ -298,12 +384,20 @@ def stock_selection_artifact(
     """
 
     stock_values = tuple(sorted(stocks, key=lambda item: item.stock_id))
+    if any(
+        stock.declaration_authority not in _UNVERIFIED_STOCK_DECLARATION_AUTHORITIES
+        for stock in stock_values
+    ):
+        raise ValueError("stock declaration authority is unsupported or implies verification")
+    if any(stock.kerf_um < MIN_VALIDATION_CONTOUR_KERF_UM for stock in stock_values):
+        raise ValueError("stock kerf is below the supported validation contour envelope")
     assignment_values = tuple(sorted(grouped_parts, key=lambda item: item[0].stock_id))
     payload = {
         "schema_version": STOCK_SELECTION_SCHEMA_VERSION,
         "stocks": [
             {
                 "stock_id": stock.stock_id,
+                "declaration_authority": stock.declaration_authority,
                 "material_id": stock.material_id,
                 "material_version": stock.material_version,
                 "width_um": stock.width_um,
@@ -380,6 +474,7 @@ def generation_plan_artifact(
             raise ValueError("two-sided registration sheets must be a mapping")
         stock = stock_by_id[stock_id]
         sheet_rows: list[dict[str, Any]] = []
+        declared_footprints: set[Rect] = set()
         for sheet_index in sorted(sheets):
             plan = sheets[sheet_index]
             if (
@@ -390,33 +485,31 @@ def generation_plan_artifact(
                 raise ValueError("two-sided registration sheet identity is invalid")
             method_id = plan.method_id
             coordinates = tuple((point.x_um, point.y_um) for point in plan.points)
-            if (
-                not isinstance(method_id, str)
-                or method_id != method_id.strip()
-                or not method_id
-                or any(
-                    character
-                    not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
-                    for character in method_id
-                )
-                or len(coordinates) < 2
-                or len(set(coordinates)) != len(coordinates)
-                or any(
-                    type(x_um) is not int
-                    or type(y_um) is not int
-                    or not 0 <= x_um <= stock.width_um
-                    or not 0 <= y_um <= stock.height_um
-                    for x_um, y_um in coordinates
-                )
-            ):
-                raise ValueError("two-sided registration plan is invalid")
+            footprints = registration_pin_keep_out_rectangles(plan)
+            declared_footprints.update(footprints)
             sheet_rows.append(
                 {
                     "sheet_index": sheet_index,
+                    "declaration_authority": plan.declaration_authority,
                     "method_id": method_id,
+                    "fixture_method_version": plan.fixture_method_version,
+                    "pin_diameter_um": plan.pin_diameter_um,
+                    "position_tolerance_um": plan.position_tolerance_um,
                     "points": [{"x_um": x_um, "y_um": y_um} for x_um, y_um in coordinates],
                 }
             )
+        sheet_bounds = Rect(0, 0, stock.width_um, stock.height_um)
+        if any(
+            not sheet_bounds.contains(footprint)
+            or footprint not in stock.clamp_zones
+            or any(footprint.intersects(zone) for zone in stock.defect_zones)
+            or any(
+                zone not in declared_footprints and footprint.intersects(zone)
+                for zone in stock.clamp_zones
+            )
+            for footprint in declared_footprints
+        ):
+            raise ValueError("two-sided registration plan is invalid")
         if sheet_rows:
             registration_rows.append({"stock_id": stock_id, "sheets": sheet_rows})
 
@@ -432,6 +525,9 @@ def generation_plan_artifact(
             "version": machine.version,
             "fingerprint": machine_profile_fingerprint(machine),
         },
+        "stock_declaration_authorities": sorted(
+            {stock.declaration_authority for stock in stock_values}
+        ),
         "stock_profiles_fingerprint": stock_profiles_fingerprint(stock_values),
         "postprocessor": {
             "id": "linuxcnc-validation",
@@ -565,16 +661,76 @@ class ManifestContext:
                     raise ValueError(f"manifest source provenance requires {field}")
 
 
+def supplier_handoff_manifest_context(context: ManifestContext) -> dict[str, Any]:
+    """Project one frozen builder context without recursive artifact identities."""
+
+    capability_version = context.template_capability.get("template_version")
+    if not isinstance(capability_version, str) or not capability_version:
+        raise ValueError("manifest requires a frozen template capability version")
+    capability_registry_version = context.production_engine_context.get(
+        "template_capability_registry_version"
+    )
+    if not isinstance(capability_registry_version, str) or not capability_registry_version:
+        raise ValueError("manifest requires a frozen template capability registry version")
+    projection = {
+        "project_id": context.project_id,
+        "revision": context.revision,
+        "design_hash": context.design_hash,
+        "app_version": context.app_version,
+        "engine_version": context.engine_version,
+        # ``template_version`` remains a legacy compatibility alias in the current
+        # v5 contract; ``domain_template_version`` is the explicit domain identity.
+        "template_version": context.template_version,
+        "domain_template_version": context.template_version,
+        "template_capability_version": capability_version,
+        "template_capability_registry_version": capability_registry_version,
+        "template_id": context.template_id,
+        "template_capability_fingerprint": context.template_capability_fingerprint,
+        "template_capability": context.template_capability,
+        "rule_version": context.rule_version,
+        "material_versions": sorted(context.material_versions),
+        "joint_version": context.joint_version,
+        "machine_profile": {
+            "id": context.machine_profile_id,
+            "version": context.machine_profile_version,
+        },
+        "postprocessor_version": context.postprocessor_version,
+        "generation_context_hash": context.generation_context_hash,
+        "production_engine_context": context.production_engine_context,
+        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
+        "cad_status": context.cad_status,
+        "release_scope": "design_review",
+        "machine_use": "validation_only",
+        "physical_cutting_authorized": False,
+        "approved_assumptions": sorted(context.approved_assumptions),
+        "warnings": sorted(context.warnings),
+        "overrides": list(context.overrides),
+        "external_evidence": list(context.external_evidence),
+        "source_provenance": context.source_provenance,
+    }
+    return projection
+
+
 def default_artifacts(
     *,
     parts: Iterable[PartSpec],
     layout: NestingLayout | Iterable[NestingLayout],
     operations: OperationsDocument,
+    project_id: str | None = None,
+    revision: str | None = None,
+    design_hash: str | None = None,
     additional: Iterable[ArtifactFile] = (),
 ) -> tuple[ArtifactFile, ...]:
     part_values = tuple(parts)
     layouts = (layout,) if isinstance(layout, NestingLayout) else tuple(layout)
-    files = list(design_review_artifacts(parts=part_values))
+    files = list(
+        design_review_artifacts(
+            parts=part_values,
+            project_id=project_id,
+            revision=revision,
+            design_hash=design_hash,
+        )
+    )
     files.extend(
         (
             ArtifactFile(
@@ -635,6 +791,9 @@ def default_artifacts(
 def design_review_artifacts(
     *,
     parts: Iterable[PartSpec],
+    project_id: str | None = None,
+    revision: str | None = None,
+    design_hash: str | None = None,
     additional: Iterable[ArtifactFile] = (),
 ) -> tuple[ArtifactFile, ...]:
     """Build the machine-independent core of a design-review package.
@@ -645,7 +804,18 @@ def design_review_artifacts(
     """
 
     part_values = tuple(parts)
+    identity_values = (project_id, revision, design_hash)
+    if any(value is not None for value in identity_values) and not all(
+        value is not None for value in identity_values
+    ):
+        raise ValueError("manufacturing intent identity must be supplied as one complete set")
     files: list[ArtifactFile] = [
+        ArtifactFile(
+            START_HERE_PATH,
+            start_here_markdown(),
+            "text/markdown",
+            START_HERE_ROLE,
+        ),
         ArtifactFile("bom/bom.csv", bom_csv(part_values), "text/csv", "BOM"),
         ArtifactFile(
             "bom/grouped-bom.json",
@@ -660,7 +830,42 @@ def design_review_artifacts(
             "text/csv",
             "MATERIAL_LIST",
         ),
+        ArtifactFile(
+            MANUFACTURING_INTENT_JSON_SCHEMA_PATH,
+            manufacturing_intent_json_schema(),
+            "application/schema+json",
+            JSON_SCHEMA_ROLE,
+        ),
+        ArtifactFile(
+            OPERATIONS_JSON_SCHEMA_PATH,
+            operations_json_schema(),
+            "application/schema+json",
+            JSON_SCHEMA_ROLE,
+        ),
+        ArtifactFile(
+            SUPPLIER_HANDOFF_JSON_SCHEMA_PATH,
+            supplier_handoff_json_schema(),
+            "application/schema+json",
+            JSON_SCHEMA_ROLE,
+        ),
     ]
+    if all(value is not None for value in identity_values):
+        assert project_id is not None
+        assert revision is not None
+        assert design_hash is not None
+        files.append(
+            ArtifactFile(
+                MANUFACTURING_INTENT_PATH,
+                manufacturing_intent_json(
+                    parts=part_values,
+                    project_id=project_id,
+                    revision=revision,
+                    design_hash=design_hash,
+                ),
+                "application/json",
+                MANUFACTURING_INTENT_ROLE,
+            )
+        )
     for part in sorted(part_values, key=lambda item: item.part_id):
         component = safe_component(part.part_id)
         for side in (Side.A, Side.B):
@@ -700,51 +905,8 @@ def build_manifest(
         }
         for artifact in files
     ]
-    capability_version = context.template_capability.get("template_version")
-    if not isinstance(capability_version, str) or not capability_version:
-        raise ValueError("manifest requires a frozen template capability version")
-    capability_registry_version = context.production_engine_context.get(
-        "template_capability_registry_version"
-    )
-    if not isinstance(capability_registry_version, str) or not capability_registry_version:
-        raise ValueError("manifest requires a frozen template capability registry version")
-
     production_context = {
-        "project_id": context.project_id,
-        "revision": context.revision,
-        "design_hash": context.design_hash,
-        "app_version": context.app_version,
-        "engine_version": context.engine_version,
-        # ``template_version`` remains as a compatibility alias in schema v4.
-        # The explicit fields below remove the old ambiguity between the domain
-        # template, the product capability and the capability registry.
-        "template_version": context.template_version,
-        "domain_template_version": context.template_version,
-        "template_capability_version": capability_version,
-        "template_capability_registry_version": capability_registry_version,
-        "template_id": context.template_id,
-        "template_capability_fingerprint": context.template_capability_fingerprint,
-        "template_capability": context.template_capability,
-        "rule_version": context.rule_version,
-        "material_versions": sorted(context.material_versions),
-        "joint_version": context.joint_version,
-        "machine_profile": {
-            "id": context.machine_profile_id,
-            "version": context.machine_profile_version,
-        },
-        "postprocessor_version": context.postprocessor_version,
-        "generation_context_hash": context.generation_context_hash,
-        "production_engine_context": context.production_engine_context,
-        "artifact_schema_version": ARTIFACT_SCHEMA_VERSION,
-        "cad_status": context.cad_status,
-        "release_scope": "design_review",
-        "machine_use": "validation_only",
-        "physical_cutting_authorized": False,
-        "approved_assumptions": sorted(context.approved_assumptions),
-        "warnings": sorted(context.warnings),
-        "overrides": list(context.overrides),
-        "external_evidence": list(context.external_evidence),
-        "source_provenance": context.source_provenance,
+        **supplier_handoff_manifest_context(context),
         "artifacts": artifact_entries,
     }
     manifest = {
@@ -831,6 +993,8 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
             raise ArtifactError("production ZIP contains duplicate paths")
         for name in names:
             _validate_artifact_path(name)
+            if name.casefold() == "__main__.py":
+                raise ArtifactError("production ZIP must not contain executable __main__.py")
         try:
             manifest_bytes = archive.read("manifest.json")
             manifest_value = json.loads(manifest_bytes)
@@ -841,6 +1005,11 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
         manifest: dict[str, Any] = {str(key): value for key, value in manifest_value.items()}
         if frozenset(manifest) != _MANIFEST_TOP_LEVEL_KEYS:
             raise ArtifactError("production manifest has an unexpected structure")
+        if manifest.get("schema_version") == "custombuild.production-manifest.v4":
+            raise ArtifactError(
+                "legacy production manifest v4 requires its exact archived v4 verifier; "
+                "it is not reinterpreted as v5"
+            )
         if manifest.get("schema_version") != PRODUCTION_MANIFEST_SCHEMA_VERSION:
             raise ArtifactError("unsupported production manifest schema")
         cad_status = manifest.get("cad_status")
@@ -873,6 +1042,19 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
                 raise ArtifactError(f"artifact checksum mismatch: {path}")
         if set(names) != {"manifest.json", *artifact_paths}:
             raise ArtifactError("production ZIP contains files outside the manifest")
+        try:
+            context_payload = {field: manifest[field] for field in MANIFEST_CONTEXT_HASH_FIELDS}
+        except KeyError as exc:
+            raise ArtifactError(f"manifest context field missing: {exc.args[0]}") from exc
+        try:
+            expected_context_hash = sha256_hex(canonical_json_bytes(context_payload))
+            canonical_manifest = canonical_json_bytes(manifest)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ArtifactError("production manifest is not canonical JSON") from exc
+        if manifest.get("production_context_hash") != expected_context_hash:
+            raise ArtifactError("manifest production_context_hash mismatch")
+        if manifest_bytes != canonical_manifest:
+            raise ArtifactError("manifest.json is not canonical UTF-8 JSON")
         status_entries = [
             entry
             for entry in artifact_entries
@@ -881,12 +1063,17 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
         ]
         if len(status_entries) != 1:
             raise ArtifactError(
-                "schema-v4 production packages require one canonical design-review status"
+                "schema-v5 production packages require one canonical design-review status"
             )
         review_core_truth = _validate_review_core_semantics(
             archive,
             artifact_entries,
             manifest=manifest,
+        )
+        _validate_joint_retention_signed_evidence(
+            archive,
+            artifact_entries,
+            design=review_core_truth.design,
         )
         readiness = _validate_workshop_readiness_artifact(archive, artifact_entries)
         grouped_bom_truth = _design_requirements_from_grouped_bom(
@@ -939,19 +1126,6 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
             canonical_design=review_core_truth.design,
             manifest=manifest,
         )
-        try:
-            context_payload = {field: manifest[field] for field in MANIFEST_CONTEXT_HASH_FIELDS}
-        except KeyError as exc:
-            raise ArtifactError(f"manifest context field missing: {exc.args[0]}") from exc
-        try:
-            expected_context_hash = sha256_hex(canonical_json_bytes(context_payload))
-            canonical_manifest = canonical_json_bytes(manifest)
-        except (TypeError, ValueError, RecursionError) as exc:
-            raise ArtifactError("production manifest is not canonical JSON") from exc
-        if manifest.get("production_context_hash") != expected_context_hash:
-            raise ArtifactError("manifest production_context_hash mismatch")
-        if manifest_bytes != canonical_manifest:
-            raise ArtifactError("manifest.json is not canonical UTF-8 JSON")
         return manifest
 
 
@@ -981,6 +1155,113 @@ def _canonical_artifact_entry(
     return entry
 
 
+def _validate_published_supplier_contracts(
+    archive: zipfile.ZipFile,
+    entries: Iterable[Mapping[str, Any]],
+) -> None:
+    """Verify the guide, published schemas and both supplier JSON instances.
+
+    The whole ZIP is deliberately unsigned, so an attacker could recalculate
+    manifest hashes after changing bytes.  These contracts are consequently
+    checked against the builder's canonical schemas and document semantics,
+    not merely against the attacker-controlled inventory.
+    """
+
+    entry_values = tuple(entries)
+    _canonical_artifact_entry(
+        entry_values,
+        path=START_HERE_PATH,
+        role=START_HERE_ROLE,
+        media_type="text/markdown",
+    )
+    if archive.read(START_HERE_PATH) != start_here_markdown():
+        raise ArtifactError("START-HERE guide differs from the canonical supplier guide")
+
+    contracts = (
+        (
+            MANUFACTURING_INTENT_JSON_SCHEMA_PATH,
+            manufacturing_intent_json_schema(),
+            MANUFACTURING_INTENT_PATH,
+            "manufacturing intent",
+        ),
+        (
+            SUPPLIER_HANDOFF_JSON_SCHEMA_PATH,
+            supplier_handoff_json_schema(),
+            SUPPLIER_HANDOFF_PATH,
+            "supplier handoff",
+        ),
+    )
+    for schema_path, expected_schema_bytes, document_path, label in contracts:
+        _canonical_artifact_entry(
+            entry_values,
+            path=schema_path,
+            role=JSON_SCHEMA_ROLE,
+            media_type="application/schema+json",
+            role_unique=False,
+        )
+        schema = _strict_canonical_json_object(
+            archive.read(schema_path),
+            label=f"{label} JSON Schema",
+        )
+        if archive.read(schema_path) != expected_schema_bytes:
+            raise ArtifactError(f"{label} JSON Schema differs from the canonical schema")
+        document = _strict_canonical_json_object(
+            archive.read(document_path),
+            label=label,
+        )
+        if (
+            document_path == SUPPLIER_HANDOFF_PATH
+            and document.get("schema_version") == "custombuild.supplier-handoff.v2"
+        ):
+            raise ArtifactError(
+                "legacy supplier handoff v2 requires its exact archived v4 verifier; "
+                "it is not reinterpreted as v3"
+            )
+        try:
+            validate_json_schema_instance(document, schema)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ArtifactError(f"{label} does not conform to its published JSON Schema") from exc
+
+    _canonical_artifact_entry(
+        entry_values,
+        path=OPERATIONS_JSON_SCHEMA_PATH,
+        role=JSON_SCHEMA_ROLE,
+        media_type="application/schema+json",
+        role_unique=False,
+    )
+    operations_schema_bytes = archive.read(OPERATIONS_JSON_SCHEMA_PATH)
+    operations_schema = _strict_canonical_json_object(
+        operations_schema_bytes,
+        label="operations JSON Schema",
+    )
+    if operations_schema_bytes != operations_json_schema():
+        raise ArtifactError("operations JSON Schema differs from the canonical schema")
+
+    operations_entries = [
+        entry
+        for entry in entry_values
+        if str(entry["path"]).casefold() == "cam/operations.json"
+        or str(entry["role"]).casefold() == "machine_neutral_operations"
+    ]
+    if operations_entries:
+        _canonical_artifact_entry(
+            entry_values,
+            path="cam/operations.json",
+            role="MACHINE_NEUTRAL_OPERATIONS",
+            media_type="application/json",
+        )
+        operations_document = _strict_canonical_json_object(
+            archive.read("cam/operations.json"),
+            label="operations document",
+        )
+        try:
+            validate_json_schema_instance(operations_document, operations_schema)
+        except (TypeError, ValueError, RecursionError) as exc:
+            raise ArtifactError(
+                "operations document does not conform to its published JSON Schema"
+            ) from exc
+
+
 def _validate_review_core_semantics(
     archive: zipfile.ZipFile,
     entries: Iterable[Mapping[str, Any]],
@@ -989,7 +1270,7 @@ def _validate_review_core_semantics(
 ) -> _ReviewCoreTruth:
     """Rebuild every product projection from the checksum-bound DesignSpec.
 
-    A schema-v4 ZIP is self-contained but unsigned. Rehashing the entire archive
+    A schema-v5 ZIP is self-contained but unsigned. Rehashing the entire archive
     can therefore create a different package; within one package, however, no
     BOM, drawing or summary may drift from its frozen parametric source.
     """
@@ -1030,12 +1311,28 @@ def _validate_review_core_semantics(
         raise ArtifactError("manifest identity does not match the rebuilt frozen DesignSpec")
 
     parts = tuple(adapted.parts)
-    expected_core = {artifact.path: artifact for artifact in design_review_artifacts(parts=parts)}
+    expected_core = {
+        artifact.path: artifact
+        for artifact in design_review_artifacts(
+            parts=parts,
+            project_id=str(manifest["project_id"]),
+            revision=str(manifest["revision"]),
+            design_hash=str(manifest["design_hash"]),
+        )
+        if artifact.path
+        not in {
+            START_HERE_PATH,
+            MANUFACTURING_INTENT_JSON_SCHEMA_PATH,
+            OPERATIONS_JSON_SCHEMA_PATH,
+            SUPPLIER_HANDOFF_JSON_SCHEMA_PATH,
+        }
+    }
     semantic_roles = {
         "BOM",
         "GROUPED_BOM",
         "CUT_LIST",
         "MATERIAL_LIST",
+        MANUFACTURING_INTENT_ROLE,
         "PART_DXF",
         "PART_DRAWING",
     }
@@ -1054,7 +1351,7 @@ def _validate_review_core_semantics(
             path=path,
             role=expected.role,
             media_type=expected.media_type,
-            role_unique=expected.role not in {"PART_DXF", "PART_DRAWING"},
+            role_unique=expected.role not in {JSON_SCHEMA_ROLE, "PART_DXF", "PART_DRAWING"},
         )
         if archive.read(path) != expected.data:
             raise ArtifactError(f"review-core artifact differs from frozen DesignSpec: {path}")
@@ -1098,6 +1395,55 @@ def _validate_review_core_semantics(
     if manifest.get("material_versions") != expected_material_versions:
         raise ArtifactError("manifest material versions do not match the canonical BOM")
     return _ReviewCoreTruth(design=design, parts=parts)
+
+
+def _validate_joint_retention_signed_evidence(
+    archive: zipfile.ZipFile,
+    entries: Iterable[Mapping[str, Any]],
+    *,
+    design: Any,
+) -> None:
+    """Cross-bind the historical statement bytes to the frozen retention contract.
+
+    This is intentionally an integrity and completeness check only.  The ZIP
+    contains neither a trusted registry nor current revocation state; callers
+    must use the authenticated server gate before treating the signed statement
+    as current.  Package verification never authorizes machining or assembly.
+    """
+
+    entry_values = tuple(entries)
+    candidates = [
+        entry
+        for entry in entry_values
+        if str(entry["path"]).casefold() == JOINT_RETENTION_SIGNED_EVIDENCE_PATH.casefold()
+        or str(entry["role"]).casefold() == JOINT_RETENTION_SIGNED_EVIDENCE_ROLE.casefold()
+    ]
+    retention = getattr(getattr(design, "spec", None), "joint_retention", None)
+    if retention is None:
+        if candidates:
+            raise ArtifactError(
+                "unbound frozen DesignSpec cannot contain signed joint-retention evidence"
+            )
+        return
+    if len(candidates) != 1:
+        raise ArtifactError(
+            "retention-bound frozen DesignSpec requires one signed evidence artifact"
+        )
+    entry = _canonical_artifact_entry(
+        entry_values,
+        path=JOINT_RETENTION_SIGNED_EVIDENCE_PATH,
+        role=JOINT_RETENTION_SIGNED_EVIDENCE_ROLE,
+        media_type=JOINT_RETENTION_SIGNED_EVIDENCE_MEDIA_TYPE,
+    )
+    expected_sha256 = getattr(retention, "evidence_sha256", None)
+    if (
+        not isinstance(expected_sha256, str)
+        or entry["sha256"] != expected_sha256
+        or sha256_hex(archive.read(JOINT_RETENTION_SIGNED_EVIDENCE_PATH)) != expected_sha256
+    ):
+        raise ArtifactError(
+            "signed joint-retention evidence does not match the frozen retention contract"
+        )
 
 
 def _validate_cad_semantics(
@@ -1263,6 +1609,7 @@ def _stock_selection_truth(
     stocks: list[StockSheet] = []
     stock_row_keys = {
         "stock_id",
+        "declaration_authority",
         "material_id",
         "material_version",
         "width_um",
@@ -1280,6 +1627,13 @@ def _stock_selection_truth(
     for row in raw_stocks:
         if not isinstance(row, Mapping) or frozenset(row) != stock_row_keys:
             raise ArtifactError("stock selection stock row is invalid")
+        if (
+            not isinstance(row["declaration_authority"], str)
+            or not row["declaration_authority"]
+            or row["declaration_authority"] != row["declaration_authority"].strip()
+            or row["declaration_authority"] not in _UNVERIFIED_STOCK_DECLARATION_AUTHORITIES
+        ):
+            raise ArtifactError("stock selection declaration authority is invalid")
         string_fields = ("stock_id", "material_id", "material_version", "grain_direction")
         if any(
             not isinstance(row[field], str) or not row[field] or row[field] != row[field].strip()
@@ -1299,6 +1653,7 @@ def _stock_selection_truth(
         if (
             any(type(row[field]) is not int for field in integer_fields)
             or type(row["allow_rotation"]) is not bool
+            or row["kerf_um"] < MIN_VALIDATION_CONTOUR_KERF_UM
         ):
             raise ArtifactError("stock selection stock dimensions are invalid")
         try:
@@ -1316,6 +1671,7 @@ def _stock_selection_truth(
                 allow_rotation=bool(row["allow_rotation"]),
                 defect_zones=parse_zones(row["defect_zones"], label="defect zones"),
                 clamp_zones=parse_zones(row["clamp_zones"], label="clamp zones"),
+                declaration_authority=str(row["declaration_authority"]),
             )
             sheet_bounds = Rect(0, 0, stock.width_um, stock.height_um)
             if any(
@@ -1439,6 +1795,7 @@ def _generation_plan_truth(
         "operations_schema_version",
         "operations_engine_version",
         "machine_profile",
+        "stock_declaration_authorities",
         "stock_profiles_fingerprint",
         "postprocessor",
         "validation_program_requested",
@@ -1452,6 +1809,10 @@ def _generation_plan_truth(
         or payload.get("operations_schema_version") != OPERATIONS_SCHEMA_VERSION
         or payload.get("operations_engine_version") != OPERATIONS_ENGINE_VERSION
         or type(payload.get("validation_program_requested")) is not bool
+        or payload.get("stock_declaration_authorities")
+        != sorted(
+            {stock.declaration_authority for stock in stock_selection_truth.stocks_by_id.values()}
+        )
     ):
         raise ArtifactError("generation plan version contract is invalid")
 
@@ -1513,27 +1874,43 @@ def _generation_plan_truth(
         stock = stock_selection_truth.stocks_by_id[stock_id]
         sheets: dict[int, TwoSidedRegistration] = {}
         sheet_indices: list[int] = []
+        declared_footprints: set[Rect] = set()
         for sheet_row in raw_sheets:
             if not isinstance(sheet_row, Mapping) or frozenset(sheet_row) != {
                 "sheet_index",
+                "declaration_authority",
                 "method_id",
+                "fixture_method_version",
+                "pin_diameter_um",
+                "position_tolerance_um",
                 "points",
             }:
                 raise ArtifactError("generation plan registration sheet row is invalid")
             sheet_index = sheet_row.get("sheet_index")
+            declaration_authority = sheet_row.get("declaration_authority")
             method_id = sheet_row.get("method_id")
+            fixture_method_version = sheet_row.get("fixture_method_version")
+            pin_diameter_um = sheet_row.get("pin_diameter_um")
+            position_tolerance_um = sheet_row.get("position_tolerance_um")
             raw_points = sheet_row.get("points")
             if (
                 type(sheet_index) is not int
                 or not 0 <= sheet_index < stock.quantity
+                or declaration_authority != CLIENT_DECLARED_AUTHORITY
                 or not isinstance(method_id, str)
                 or not method_id
                 or method_id != method_id.strip()
+                or not isinstance(fixture_method_version, str)
+                or not fixture_method_version
+                or fixture_method_version != fixture_method_version.strip()
                 or any(
                     character
                     not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
-                    for character in method_id
+                    for value in (method_id, fixture_method_version)
+                    for character in value
                 )
+                or type(pin_diameter_um) is not int
+                or type(position_tolerance_um) is not int
                 or not isinstance(raw_points, list)
                 or len(raw_points) < 2
             ):
@@ -1554,8 +1931,40 @@ def _generation_plan_truth(
                 points.append(Point2D(x_um, y_um))
             if len({(point.x_um, point.y_um) for point in points}) != len(points):
                 raise ArtifactError("generation plan registration points are not unique")
+            try:
+                plan = TwoSidedRegistration(
+                    declaration_authority=declaration_authority,
+                    method_id=method_id,
+                    fixture_method_version=fixture_method_version,
+                    pin_diameter_um=pin_diameter_um,
+                    position_tolerance_um=position_tolerance_um,
+                    points=tuple(points),
+                )
+            except ValueError as exc:
+                raise ArtifactError("generation plan registration contract is invalid") from exc
+            footprints = registration_pin_keep_out_rectangles(plan)
+            declared_footprints.update(footprints)
+            sheet_bounds = Rect(0, 0, stock.width_um, stock.height_um)
+            if (
+                any(not sheet_bounds.contains(footprint) for footprint in footprints)
+                or any(footprint not in stock.clamp_zones for footprint in footprints)
+                or any(
+                    footprint.intersects(zone)
+                    for footprint in footprints
+                    for zone in stock.defect_zones
+                )
+            ):
+                raise ArtifactError("generation plan registration keep-out is invalid")
             sheet_indices.append(sheet_index)
-            sheets[sheet_index] = TwoSidedRegistration(method_id, tuple(points))
+            sheets[sheet_index] = plan
+        if any(
+            zone not in declared_footprints and footprint.intersects(zone)
+            for footprint in declared_footprints
+            for zone in stock.clamp_zones
+        ):
+            raise ArtifactError(
+                "generation plan registration collides with a declared fixture keep-out"
+            )
         if sheet_indices != sorted(set(sheet_indices)):
             raise ArtifactError("generation plan registration sheets are not canonical")
         registrations[stock_id] = sheets
@@ -1685,7 +2094,7 @@ def validate_design_review_status_inventory_entries(
             raise ArtifactError("design-review inventory entry identity is invalid")
 
     if status is None:
-        raise ArtifactError("schema-v4 production package status is mandatory")
+        raise ArtifactError("schema-v5 production package status is mandatory")
     _validate_status_review_core(entry_values)
     if status.cam_status is CAMStageStatus.BLOCKED:
         violations = [
@@ -1729,7 +2138,7 @@ def _validate_design_review_status_inventory(
         or entry["role"].casefold() == status_role.casefold()
     ]
     if not status_candidates:
-        raise ArtifactError("schema-v4 production package status is mandatory")
+        raise ArtifactError("schema-v5 production package status is mandatory")
     if len(status_candidates) != 1:
         raise ArtifactError("design-review package status entry is not unique")
     status_entry = status_candidates[0]
@@ -1755,6 +2164,7 @@ def _validate_design_review_status_inventory(
         ) from exc
 
     validate_design_review_status_inventory_entries(status, entries)
+    _validate_published_supplier_contracts(archive, entries)
     dfm_report = _validate_dfm_report_artifact(archive, entries)
     validate_design_review_status_dfm_report(status, dfm_report)
     _validate_stock_and_grain_report_binding(
@@ -1763,6 +2173,18 @@ def _validate_design_review_status_inventory(
         stock_selection_truth=stock_selection_truth,
         canonical_parts=canonical_parts,
     )
+    if status.blocker_codes in {
+        (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,),
+        (BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,),
+        (TWO_SIDED_REGISTRATION_MISSING_BLOCKER_CODE,),
+    }:
+        rebuilt_report, _ = _rebuild_complete_stock_dfm(
+            canonical_parts=canonical_parts,
+            stock_selection_truth=stock_selection_truth,
+            machine=generation_plan_truth.machine,
+        )
+        if canonical_json_bytes(rebuilt_report) != canonical_json_bytes(dfm_report):
+            raise ArtifactError("blocked CAM DFM report differs from deterministic reconstruction")
     if grouped_bom_truth is not None:
         _validate_grain_issues_against_grouped_bom(dfm_report, grouped_bom_truth)
     if (
@@ -1815,6 +2237,85 @@ def _validate_design_review_status_inventory(
     if readiness.as_dict() != expected_readiness.as_dict():
         raise ArtifactError(
             "workshop readiness text and evidence do not match deterministic reconstruction"
+        )
+    _validate_supplier_handoff_artifact(
+        archive,
+        entries,
+        manifest=manifest,
+        machine=generation_plan_truth.machine,
+        stocks=stock_selection_truth.stocks_by_id.values(),
+        operations=operations,
+        status=status,
+        readiness=readiness,
+        canonical_design=canonical_design,
+        dfm_report=dfm_report,
+    )
+
+
+def _validate_supplier_handoff_artifact(
+    archive: zipfile.ZipFile,
+    entries: Iterable[Mapping[str, Any]],
+    *,
+    manifest: Mapping[str, Any],
+    machine: MachineProfile,
+    stocks: Iterable[StockSheet],
+    operations: OperationsDocument | None,
+    status: DesignReviewPackageStatus,
+    readiness: WorkshopReadinessReport,
+    canonical_design: Any,
+    dfm_report: DFMReport,
+) -> None:
+    """Rebuild the supplier cover sheet from already verified package truth."""
+
+    entry_values = tuple(entries)
+    _canonical_artifact_entry(
+        entry_values,
+        path=SUPPLIER_HANDOFF_PATH,
+        role=SUPPLIER_HANDOFF_ROLE,
+        media_type="application/json",
+    )
+    expected = supplier_handoff_json(
+        project_id=str(manifest["project_id"]),
+        revision=str(manifest["revision"]),
+        design_hash=str(manifest["design_hash"]),
+        machine=machine,
+        stocks=stocks,
+        operations=operations,
+        cam_status=status.cam_status.value,
+        blocker_codes=status.blocker_codes,
+        cam_required_action=status.required_action,
+        design_review_ready=readiness.design_review_ready,
+        manifest_context_projection={
+            field: manifest[field] for field in SUPPLIER_HANDOFF_MANIFEST_CONTEXT_FIELDS
+        },
+        payload_inventory_entries=(
+            entry for entry in entry_values if entry["path"] != SUPPLIER_HANDOFF_PATH
+        ),
+        known_unresolved_decision_codes=tuple(
+            sorted(
+                code
+                for code, unresolved in (
+                    (
+                        DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+                        review_status_contract.dado_retention_evidence_missing(canonical_design),
+                    ),
+                    (
+                        BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
+                        review_status_contract.back_panel_retention_evidence_missing(
+                            canonical_design
+                        ),
+                    ),
+                )
+                if unresolved
+            )
+        ),
+        dfm_warning_issues=(
+            issue for issue in dfm_report.issues if issue.severity is Severity.WARNING
+        ),
+    )
+    if archive.read(SUPPLIER_HANDOFF_PATH) != expected:
+        raise ArtifactError(
+            "supplier handoff does not match package identity, assumptions and inventory"
         )
 
 
@@ -2388,34 +2889,17 @@ def _validate_generated_package_semantics(
 ) -> tuple[OperationsDocument, tuple[ArtifactFile, ...]]:
     """Re-run every machine-neutral GENERATED projection from frozen inputs."""
 
-    if stock_selection_truth.unmatched_part_ids:
-        raise ArtifactError("generated CAM package cannot contain unmatched canonical parts")
-    part_by_id = {part.part_id: part for part in canonical_parts}
-    grouped: dict[str, list[PartSpec]] = {}
-    for part_id, stock_id in sorted(stock_selection_truth.assigned_stock_by_part_id.items()):
-        grouped.setdefault(stock_id, []).append(part_by_id[part_id])
-    if not grouped:
-        raise ArtifactError("generated CAM package has no deterministic stock assignment")
-
     machine = generation_plan_truth.machine
-    layouts: list[NestingLayout] = []
-    validated_groups: list[tuple[StockSheet, tuple[PartSpec, ...], NestingLayout]] = []
-    report_issues: list[DFMIssue] = []
-    validator = DFMValidator()
-    for stock_id in sorted(grouped):
-        stock = stock_selection_truth.stocks_by_id[stock_id]
-        selected_parts = tuple(grouped[stock_id])
-        layout = DeterministicNester().nest(selected_parts, stock)
-        if not layout.is_complete or layout.used_sheet_count <= 0:
-            raise ArtifactError("generated CAM package cannot rebuild a complete nesting layout")
-        layouts.append(layout)
-        validated_groups.append((stock, selected_parts, layout))
-        report_issues.extend(validator.validate(selected_parts, layout, machine).issues)
-    rebuilt_report = DFMReport(tuple(report_issues), engine_version=validator.engine_version)
+    rebuilt_report, validated_groups = _rebuild_complete_stock_dfm(
+        canonical_parts=canonical_parts,
+        stock_selection_truth=stock_selection_truth,
+        machine=machine,
+    )
     if rebuilt_report.blocking_issues:
         raise ArtifactError("generated CAM package rebuild has a blocking DFM issue")
     if canonical_json_bytes(rebuilt_report) != canonical_json_bytes(dfm_report):
         raise ArtifactError("generated CAM DFM report differs from deterministic reconstruction")
+    layouts = [layout for _, _, layout in validated_groups]
 
     design_hash = _archive_design_hash(archive)
     try:
@@ -2524,6 +3008,43 @@ def _validate_generated_package_semantics(
     return operations, tuple(sorted(expected, key=lambda item: item.path))
 
 
+def _rebuild_complete_stock_dfm(
+    *,
+    canonical_parts: tuple[PartSpec, ...],
+    stock_selection_truth: _StockSelectionTruth,
+    machine: MachineProfile,
+) -> tuple[
+    DFMReport,
+    tuple[tuple[StockSheet, tuple[PartSpec, ...], NestingLayout], ...],
+]:
+    """Rebuild DFM from authenticated parts, stock selection and machine identity."""
+
+    if stock_selection_truth.unmatched_part_ids:
+        raise ArtifactError("complete-stock DFM reconstruction has unmatched canonical parts")
+    part_by_id = {part.part_id: part for part in canonical_parts}
+    grouped: dict[str, list[PartSpec]] = {}
+    for part_id, stock_id in sorted(stock_selection_truth.assigned_stock_by_part_id.items()):
+        grouped.setdefault(stock_id, []).append(part_by_id[part_id])
+    if not grouped:
+        raise ArtifactError("complete-stock DFM reconstruction has no stock assignment")
+
+    validator = DFMValidator()
+    report_issues: list[DFMIssue] = []
+    validated_groups: list[tuple[StockSheet, tuple[PartSpec, ...], NestingLayout]] = []
+    for stock_id in sorted(grouped):
+        stock = stock_selection_truth.stocks_by_id[stock_id]
+        selected_parts = tuple(grouped[stock_id])
+        layout = DeterministicNester().nest(selected_parts, stock)
+        if not layout.is_complete or layout.used_sheet_count <= 0:
+            raise ArtifactError("complete-stock DFM reconstruction has an incomplete layout")
+        validated_groups.append((stock, selected_parts, layout))
+        report_issues.extend(validator.validate(selected_parts, layout, machine).issues)
+    return (
+        DFMReport(tuple(report_issues), engine_version=validator.engine_version),
+        tuple(validated_groups),
+    )
+
+
 def _archive_design_hash(archive: zipfile.ZipFile) -> str:
     """Read the already-validated design hash from the canonical result summary."""
 
@@ -2547,7 +3068,12 @@ def _validate_complete_package_inventory(
 ) -> None:
     """Reject aliases and extras by matching one complete case-sensitive inventory."""
 
-    review_core = design_review_artifacts(parts=canonical_parts)
+    review_core = design_review_artifacts(
+        parts=canonical_parts,
+        project_id=str(manifest["project_id"]),
+        revision=str(manifest["revision"]),
+        design_hash=str(manifest["design_hash"]),
+    )
     fixed = {
         ("design/design-spec.json", "FROZEN_DESIGN_SPEC", "application/json"),
         ("design/result-summary.json", "DESIGN_RESULT_SUMMARY", "application/json"),
@@ -2575,6 +3101,7 @@ def _validate_complete_package_inventory(
             _WORKSHOP_READINESS_ARTIFACT_ROLE,
             "application/json",
         ),
+        (SUPPLIER_HANDOFF_PATH, SUPPLIER_HANDOFF_ROLE, "application/json"),
         ("model/design.fcstd", "NON_AUTHORITATIVE_FREECAD_PROJECT", "application/vnd.freecad"),
     }
     allowed = {
@@ -2763,7 +3290,7 @@ def _validate_unique_paths(files: tuple[ArtifactFile, ...]) -> None:
 
 
 def validate_manifest_context_contract(manifest: Mapping[str, Any]) -> None:
-    """Validate schema-v4 manifest context shape and internal field bindings."""
+    """Validate schema-v5 manifest context shape and internal field bindings."""
 
     try:
         _validate_manifest_context_contract(manifest)

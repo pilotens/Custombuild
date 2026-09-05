@@ -69,7 +69,7 @@ def test_digest_promotion_contract_requires_descriptor_and_exact_overlay(
 
 SEMANTIC_FIXTURE_SOURCES = {
     PRODUCTION_SEMANTIC_SOURCE_PATHS[0]: """
-PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v4"
+PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 MANIFEST_CONTEXT_HASH_FIELDS = (
     "domain_template_version",
     "template_capability_version",
@@ -263,30 +263,48 @@ async def inspect_import(principal, project, digest):
 """,
     PRODUCTION_SEMANTIC_SOURCE_PATHS[4]: """
 CONTEXT_HASH_FIELDS = ("generation_context_hash",)
-PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v4"
+PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 WORKSHOP_READINESS_SCHEMA_VERSION = "custombuild.workshop-readiness.v2"
 DFM_ENGINE_VERSION = "dfm-1.3.0"
 STOCK_SELECTION_PATH = "validation/stock-selection.json"
 STOCK_SELECTION_ROLE = "STOCK_SELECTION_SNAPSHOT"
-STOCK_SELECTION_SCHEMA_VERSION = "custombuild.stock-selection.v1"
+STOCK_SELECTION_SCHEMA_VERSION = "custombuild.stock-selection.v2"
 GENERATION_PLAN_PATH = "validation/generation-plan.json"
 GENERATION_PLAN_ROLE = "GENERATION_PLAN"
-GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v1"
-PRODUCTION_PIPELINE_VERSION = "production-pipeline-1.10.0"
+GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v2"
+PRODUCTION_PIPELINE_VERSION = "production-pipeline-1.11.0"
 OPERATIONS_SCHEMA_VERSION = "custombuild.operations.v2"
-OPERATIONS_ENGINE_VERSION = "semantic-operations-1.2.0"
+OPERATIONS_ENGINE_VERSION = "semantic-operations-1.3.0"
 REQUIRED_REVIEW_PACKAGE_PATHS = frozenset({STOCK_SELECTION_PATH, GENERATION_PLAN_PATH})
 STOCK_PROFILE_MISSING = "STOCK_PROFILE_MISSING"
 DFM_GRAIN_MISSING = "DFM-GRAIN-001"
+TWO_SIDED_REGISTRATION_MISSING = "TWO_SIDED_REGISTRATION_MISSING"
 DADO_RETENTION_EVIDENCE_MISSING = "DADO_RETENTION_EVIDENCE_MISSING"
+BACK_PANEL_RETENTION_EVIDENCE_MISSING = "BACK_PANEL_RETENTION_EVIDENCE_MISSING"
 BLOCKED_CAM_REQUIRED_ACTIONS = {
+    STOCK_PROFILE_MISSING: (
+        "Select and server-bind an exact stock profile for every part material, version, "
+        "thickness, blank size and quantity; do not infer sheet size, stock identity or "
+        "machine capacity."
+    ),
+    DFM_GRAIN_MISSING: (
+        "Bind an exact, structured X or Y stock-grain axis for every directional material "
+        "stock profile; opaque evidence or acknowledgement cannot resolve this blocker."
+    ),
+    TWO_SIDED_REGISTRATION_MISSING: (
+        "Bind an externally specified two-sided registration and fixture plan; "
+        "do not infer WCS, pins, fixtures or registration coordinates."
+    ),
     DADO_RETENTION_EVIDENCE_MISSING: (
-        "The current MVP cannot resolve this blocker because it has no authenticated "
-        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-        "checksum-addressed mechanical retention contract to every DADO joint, including "
-        "exact geometry, hardware quantity, material/thickness applicability and separate "
-        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-        "bearing check is not retention evidence."
+        "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+        "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+        "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+        "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
+    ),
+    BACK_PANEL_RETENTION_EVIDENCE_MISSING: (
+        "Use only the canonical inset back whose four boundary grooves and multi-direction "
+        "closing sequence prove mechanical capture, or bind independently authenticated "
+        "back-panel retention evidence when that application class is implemented."
     ),
 }
 
@@ -372,10 +390,177 @@ def test_checked_in_production_semantic_contract_is_current() -> None:
     assert production_semantic_contract_issues(Path.cwd()) == []
 
 
+def _canonical_worker_resolver_source() -> str:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = SEMANTIC_FIXTURE_SOURCES[relative]
+    stock_start = source.index("    carcass_stock = StockSheet(")
+    evidence_start = source.index("    evidence_candidates = [", stock_start)
+    resolver = """    stocks = stock_configuration_for_design(design, request)
+    registrations = two_sided_registration_for_design(
+        design,
+        request,
+        stocks=stocks,
+    )
+"""
+    return (
+        "from app.design_service import (\n"
+        "    stock_configuration_for_design,\n"
+        "    two_sided_registration_for_design,\n"
+        ")\n\n" + source[:stock_start] + resolver + source[evidence_start:]
+    )
+
+
+def test_production_semantic_contract_accepts_canonical_worker_stock_resolver(
+    tmp_path: Path,
+) -> None:
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[PRODUCTION_SEMANTIC_SOURCE_PATHS[2]] = _canonical_worker_resolver_source()
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert production_semantic_contract_issues(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("canonical", "unsafe"),
+    (
+        (
+            "stock_configuration_for_design(design, request)",
+            "stock_configuration_for_design(request, design)",
+        ),
+        ("stocks=stocks", "stocks=()"),
+        (
+            "    two_sided_registration_for_design,\n",
+            "    legacy_two_sided_registration_for_design,\n",
+        ),
+    ),
+)
+def test_production_semantic_contract_rejects_worker_stock_resolver_drift(
+    tmp_path: Path,
+    canonical: str,
+    unsafe: str,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_worker_resolver_source()
+    assert canonical in source
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source.replace(canonical, unsafe, 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "unique role/thickness stock IDs with UNBOUND grain" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
 def test_minimal_exact_production_semantic_contract_passes(tmp_path: Path) -> None:
     write_production_semantic_fixture(tmp_path)
 
     assert production_semantic_contract_issues(tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("canonical", "unsafe"),
+    (
+        (
+            "Bind current certifier-signed, checksum-addressed mechanical retention evidence ",
+            "Accept an unsigned retention acknowledgement ",
+        ),
+        (
+            "Use only the canonical inset back whose four boundary grooves and multi-direction ",
+            "Accept any named back-panel arrangement ",
+        ),
+    ),
+)
+def test_production_semantic_contract_rejects_weakened_retention_actions(
+    tmp_path: Path,
+    canonical: str,
+    unsafe: str,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    assert canonical in sources[relative]
+    sources[relative] = sources[relative].replace(canonical, unsafe, 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "retention blockers to canonical actions" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def test_production_semantic_contract_requires_every_supported_blocked_cam_action(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    back_panel_action = """    BACK_PANEL_RETENTION_EVIDENCE_MISSING: (
+        "Use only the canonical inset back whose four boundary grooves and multi-direction "
+        "closing sequence prove mechanical capture, or bind independently authenticated "
+        "back-panel retention evidence when that application class is implemented."
+    ),
+"""
+    assert back_panel_action in sources[relative]
+    sources[relative] = sources[relative].replace(back_panel_action, "", 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    issues = production_semantic_contract_issues(tmp_path)
+
+    assert any(
+        relative in issue and "exact supported blocked-CAM action set" in issue for issue in issues
+    )
+    assert any(
+        relative in issue and "retention blockers to canonical actions" in issue for issue in issues
+    )
+
+
+def test_production_semantic_contract_rejects_an_extra_blocked_cam_action(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    anchor = "\n}\n\ndef verify_workshop_readiness"
+    assert anchor in sources[relative]
+    sources[relative] = sources[relative].replace(
+        anchor,
+        '\n    "UNREVIEWED_BLOCKER": "Treat the package as accepted.",\n}'
+        "\n\ndef verify_workshop_readiness",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "exact supported blocked-CAM action set" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def test_production_semantic_contract_requires_a_statically_provable_action_map(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[4]
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    source = sources[relative].replace(
+        "BLOCKED_CAM_REQUIRED_ACTIONS = {",
+        "BLOCKED_CAM_REQUIRED_ACTIONS = dict({",
+        1,
+    )
+    anchor = "\n}\n\ndef verify_workshop_readiness"
+    assert anchor in source
+    sources[relative] = source.replace(
+        anchor,
+        "\n})\n\ndef verify_workshop_readiness",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    issues = production_semantic_contract_issues(tmp_path)
+
+    assert any(
+        relative in issue and "exact supported blocked-CAM action set" in issue for issue in issues
+    )
+    assert any(
+        relative in issue and "retention blockers to canonical actions" in issue for issue in issues
+    )
 
 
 @pytest.mark.parametrize("relative", PRODUCTION_SEMANTIC_SOURCE_PATHS)
@@ -392,15 +577,15 @@ def test_production_semantic_contract_requires_every_source(tmp_path: Path, rela
     [
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[0],
+            "custombuild.production-manifest.v5",
             "custombuild.production-manifest.v4",
-            "custombuild.production-manifest.v3",
-            "manifest v4 schema",
+            "manifest v5 schema",
         ),
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[0],
             '    "template_capability_registry_version",\n',
             "",
-            "v4 safety fields",
+            "v5 safety fields",
         ),
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[0],
@@ -576,6 +761,18 @@ def test_production_semantic_contract_requires_every_source(tmp_path: Path, rela
             'idempotency_key=f"imported:{asset_id}"',
             'idempotency_key=f"imported:{digest}"',
             "UUID key incarnation",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[4],
+            'TWO_SIDED_REGISTRATION_MISSING = "TWO_SIDED_REGISTRATION_MISSING"',
+            'TWO_SIDED_REGISTRATION_MISSING = "UNBOUND_REGISTRATION"',
+            "unsafe or missing TWO_SIDED_REGISTRATION_MISSING",
+        ),
+        (
+            PRODUCTION_SEMANTIC_SOURCE_PATHS[4],
+            'BACK_PANEL_RETENTION_EVIDENCE_MISSING = "BACK_PANEL_RETENTION_EVIDENCE_MISSING"',
+            'BACK_PANEL_RETENTION_EVIDENCE_MISSING = "UNBOUND_BACK_PANEL_RETENTION"',
+            "unsafe or missing BACK_PANEL_RETENTION_EVIDENCE_MISSING",
         ),
         (
             PRODUCTION_SEMANTIC_SOURCE_PATHS[4],
@@ -772,6 +969,149 @@ def _generate():
     assert any(
         relative in issue and "unique immutable _generate result" in issue
         for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def _canonical_executable_worker_source() -> str:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = SEMANTIC_FIXTURE_SOURCES[relative]
+    legacy = """    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED
+    result = {
+        "bundle_sha256": "bundle",
+        "manifest_sha256": "manifest",
+        "bundle_object_key": bundle_key,
+        "manifest_object_key": manifest_key,
+        "evidence_artifacts": evidence_artifacts,
+        "generation_context_hash": "context",
+        "design_review_package_status": bundle.review_status.as_dict(),
+        "machine_program_mode": "CAM_BLOCKED" if cam_blocked else "VALIDATION_DRY_RUN",
+        "production_machine_program": False,
+    }
+"""
+    executable = """    cutting_candidate = build_worker_cam_candidate()
+    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED
+    result = {
+        "bundle_sha256": "bundle",
+        "manifest_sha256": "manifest",
+        "bundle_object_key": bundle_key,
+        "manifest_object_key": manifest_key,
+        "evidence_artifacts": evidence_artifacts,
+        "generation_context_hash": "context",
+        "design_review_package_status": bundle.review_status.as_dict(),
+        "machine_program_mode": (
+            "EXECUTABLE_CAM_CANDIDATE"
+            if cutting_candidate is not None
+            else ("CAM_BLOCKED" if cam_blocked else "VALIDATION_DRY_RUN")
+        ),
+        "production_machine_program": cutting_candidate is not None,
+        **(
+            {
+                "cam_status": "CUTTING_CANDIDATE_GENERATED",
+                "physical_cutting_authorized": False,
+                "workshop_acceptance_required": True,
+                "cam_candidate": cutting_candidate.result_claims,
+            }
+            if cutting_candidate is not None
+            else {}
+        ),
+    }
+"""
+    assert legacy in source
+    return source.replace(legacy, executable, 1)
+
+
+def test_worker_semantic_contract_accepts_atomic_executable_candidate_result(
+    tmp_path: Path,
+) -> None:
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[PRODUCTION_SEMANTIC_SOURCE_PATHS[2]] = _canonical_executable_worker_source()
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert production_semantic_contract_issues(tmp_path) == []
+
+
+def test_worker_semantic_contract_rejects_executable_result_post_mutation(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_executable_worker_source()
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source.replace(
+        "    frozen_result = MappingProxyType(result)",
+        '    result["physical_cutting_authorized"] = True\n'
+        "    frozen_result = MappingProxyType(result)",
+        1,
+    )
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "unique immutable _generate result" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+def test_worker_semantic_contract_rejects_candidate_discriminator_alias(
+    tmp_path: Path,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_executable_worker_source().replace(
+        "    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED",
+        "    candidate_alias = cutting_candidate\n"
+        "    cam_blocked = bundle.review_status.cam_status is CAMStageStatus.BLOCKED",
+        1,
+    )
+    source = source.replace(
+        "            if cutting_candidate is not None\n            else {}",
+        "            if candidate_alias is not None\n            else {}",
+        1,
+    )
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    assert any(
+        relative in issue and "not atomically bound" in issue
+        for issue in production_semantic_contract_issues(tmp_path)
+    )
+
+
+@pytest.mark.parametrize(
+    ("canonical", "unsafe"),
+    (
+        ('"cam_status": "CUTTING_CANDIDATE_GENERATED"', '"cam_status": "VALIDATED"'),
+        ('"physical_cutting_authorized": False', '"physical_cutting_authorized": True'),
+        ('"workshop_acceptance_required": True', '"workshop_acceptance_required": False'),
+        (
+            '"cam_candidate": cutting_candidate.result_claims',
+            '"cam_candidate": {}',
+        ),
+        (
+            '"production_machine_program": cutting_candidate is not None',
+            '"production_machine_program": True',
+        ),
+        ('"EXECUTABLE_CAM_CANDIDATE"', '"VALIDATION_DRY_RUN"'),
+        (
+            "            else {}\n        ),",
+            '            else {"cam_status": "CUTTING_CANDIDATE_GENERATED"}\n        ),',
+        ),
+    ),
+)
+def test_worker_semantic_contract_rejects_executable_candidate_downgrade(
+    tmp_path: Path,
+    canonical: str,
+    unsafe: str,
+) -> None:
+    relative = PRODUCTION_SEMANTIC_SOURCE_PATHS[2]
+    source = _canonical_executable_worker_source()
+    assert canonical in source
+    sources = dict(SEMANTIC_FIXTURE_SOURCES)
+    sources[relative] = source.replace(canonical, unsafe, 1)
+    write_production_semantic_fixture(tmp_path, sources=sources)
+
+    issues = production_semantic_contract_issues(tmp_path)
+    assert any(
+        relative in issue and ("not atomically bound" in issue or "not strictly bound" in issue)
+        for issue in issues
     )
 
 
@@ -1107,7 +1447,49 @@ def hardened_compose_config() -> dict[str, object]:
     }
     worker = hardened_service(networks=["backend"]) | {
         "healthcheck": {"test": ["CMD", "worker-probe"]},
-        "environment": {"REDIS_URL": "redis://:strong-secret@redis:6379/0"},
+        "command": list(release_readiness.REVIEWED_GENERATION_WORKER_COMMAND),
+        "environment": {
+            "REDIS_URL": "redis://:strong-secret@redis:6379/0",
+            "CELERY_EXPECTED_QUEUE": "generation",
+        },
+        "depends_on": {
+            "storage-capacity-attestor": {
+                "condition": "service_healthy",
+                "restart": True,
+            }
+        },
+    }
+    maintenance_worker = hardened_service(networks=["backend"]) | {
+        "healthcheck": {"test": ["CMD", "worker-probe"]},
+        "command": [
+            "celery",
+            "worker",
+            "--concurrency=1",
+            "--queues=maintenance",
+        ],
+        "environment": {
+            "REDIS_URL": "redis://:strong-secret@redis:6379/0",
+            "CELERY_EXPECTED_QUEUE": "maintenance",
+        },
+        "depends_on": {
+            "storage-capacity-attestor": {
+                "condition": "service_healthy",
+                "restart": True,
+            }
+        },
+    }
+    storage_reaper_worker = hardened_service(networks=["backend"]) | {
+        "healthcheck": {"test": ["CMD", "worker-probe"]},
+        "command": [
+            "celery",
+            "worker",
+            "--concurrency=1",
+            "--queues=storage-reaper",
+        ],
+        "environment": {
+            "REDIS_URL": "redis://:strong-secret@redis:6379/0",
+            "CELERY_EXPECTED_QUEUE": "storage-reaper",
+        },
         "depends_on": {
             "storage-capacity-attestor": {
                 "condition": "service_healthy",
@@ -1185,14 +1567,17 @@ def hardened_compose_config() -> dict[str, object]:
         "services": {
             "api": api,
             "worker": worker,
+            "maintenance-worker": maintenance_worker,
+            "storage-reaper-worker": storage_reaper_worker,
             "scheduler": hardened_service(networks=["backend"])
             | {
+                "command": ["celery", "beat"],
                 "depends_on": {
                     "storage-capacity-attestor": {
                         "condition": "service_healthy",
                         "restart": True,
                     }
-                }
+                },
             },
             "web": web,
             "postgres": datastore | {"restart": "no"},
@@ -1216,13 +1601,35 @@ def test_hardened_compose_contract_passes() -> None:
     assert compose_hardening_issues(config) == []
 
 
+def test_hardening_rejects_cross_routed_or_missing_maintenance_worker() -> None:
+    config = hardened_compose_config()
+    maintenance = config["services"]["maintenance-worker"]
+    maintenance["command"] = ["celery", "worker", "--queues=generation"]
+    maintenance["environment"]["CELERY_EXPECTED_QUEUE"] = "generation"
+
+    issues = compose_hardening_issues(config)
+
+    assert "maintenance-worker is not an isolated singleton" in issues
+    assert "maintenance-worker health is not bound to its exact Celery queue" in issues
+
+
+def test_hardening_rejects_generation_worker_that_bypasses_registry_preflight() -> None:
+    config = hardened_compose_config()
+    config["services"]["worker"]["command"] = [
+        "celery",
+        "worker",
+        "--concurrency=2",
+        "--queues=generation",
+    ]
+
+    assert "worker is not isolated to the generation queue" in compose_hardening_issues(config)
+
+
 @pytest.mark.parametrize(
     ("mutation", "expected_issue"),
     [
         (
-            lambda config: config["services"]["postgres"].update(
-                {"restart": "unless-stopped"}
-            ),
+            lambda config: config["services"]["postgres"].update({"restart": "unless-stopped"}),
             "postgres automatic restart can bypass the storage-recovery barrier",
         ),
         (
@@ -1232,9 +1639,9 @@ def test_hardened_compose_contract_passes() -> None:
             "migrate does not restart after a Compose-managed PostgreSQL update",
         ),
         (
-            lambda config: config["services"]["storage-recovery"]["depends_on"][
-                "migrate"
-            ].update({"restart": False}),
+            lambda config: config["services"]["storage-recovery"]["depends_on"]["migrate"].update(
+                {"restart": False}
+            ),
             "storage-recovery does not restart after a Compose-managed migration",
         ),
         (

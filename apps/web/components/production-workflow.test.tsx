@@ -5,20 +5,41 @@ import {
   productionContextFromSpec,
   type ArtifactRead,
   type DesignVersionRead,
+  type ExternalEvidenceRead,
   type JobRead,
   type ProductionStateRead,
   type ProjectRead,
+  type ReleaseRead,
 } from "@/lib/api-client";
 import { resolveDesign } from "@/lib/design-engine";
-import { DEFAULT_DESIGN_SPEC, type ResolvedDesign, type RuleEvaluation } from "@/lib/design-types";
+import {
+  DEFAULT_DESIGN_SPEC,
+  MACHINES,
+  type DesignSpec,
+  type ResolvedDesign,
+  type RuleEvaluation,
+} from "@/lib/design-types";
 import { productionSessionKey, readProductionSession } from "@/lib/production-session-storage";
 import {
   ProductionWorkflow,
+  approvalExternalEvidenceIds,
+  artifactDownloadFileName,
+  artifactFileExtension,
+  artifactReviewUseLabel,
+  artifactRoleLabel,
   blockedCamEvidenceKindIsForbidden,
+  camApprovalCandidateBindingMatchesJob,
+  camCandidateArtifactsMatchJob,
+  camCandidateFromJob,
+  canonicalRetentionCertificationRequestJson,
   designReviewPackageStatusFromJob,
   generationProgressMessage,
   permitsStocklessDesignReview,
   productionSuggestionPatch,
+  retentionEvidenceUploadMetadata,
+  reviewArtifactKindsFromJob,
+  reviewBundleArtifactMatchesJob,
+  reviewBundleSha256FromJob,
   reviewPackageArtifactInventoryIsTruthful,
   serverApprovalWarningRuleIds,
   workshopRequirementPresentation,
@@ -27,7 +48,7 @@ import {
 } from "./production-workflow";
 
 const project: ProjectRead = {
-  id: "project-1",
+  id: "11111111-1111-4111-8111-111111111111",
   name: "Arkitektväggen",
   description: "",
   furniture_type: "bookcase",
@@ -36,6 +57,93 @@ const project: ProjectRead = {
   created_at: "2026-08-01T08:00:00Z",
   updated_at: "2026-08-01T08:00:00Z",
 };
+
+const designerPrincipal = {
+  organization_id: "org-1",
+  user_id: "designer-1",
+  role: "designer",
+} as const;
+
+const reviewerPrincipal = {
+  organization_id: "org-1",
+  user_id: "reviewer-1",
+  role: "reviewer",
+} as const;
+
+const secondReviewerPrincipal = {
+  organization_id: "org-1",
+  user_id: "reviewer-2",
+  role: "reviewer",
+} as const;
+
+const ownerPrincipal = {
+  organization_id: "org-1",
+  user_id: "owner-1",
+  role: "owner",
+} as const;
+
+const operatorPrincipal = {
+  organization_id: "org-1",
+  user_id: "operator-1",
+  role: "operator",
+} as const;
+
+function structuredWorkshopSpec(): DesignSpec {
+  return {
+    ...DEFAULT_DESIGN_SPEC,
+    workshop_context: {
+      stock_profiles: [
+        {
+          role: "carcass",
+          declaration_authority: "CLIENT_DECLARED",
+          supplier_profile_id: "supplier-birch-18",
+          supplier_profile_version: "batch-2026.09",
+          material_id: "birch-plywood",
+          material_version: "screening-2026.1",
+          sheet_width_um: 2_440_000,
+          sheet_height_um: 1_220_000,
+          thickness_um: 17_800,
+          sheet_count: 4,
+          trim_margin_um: 10_000,
+          kerf_um: 6_000,
+          grain_direction: "X",
+          allow_rotation: false,
+          defect_zones: [],
+          fixture_keep_out_zones: [],
+        },
+        {
+          role: "back",
+          declaration_authority: "CLIENT_DECLARED",
+          supplier_profile_id: "supplier-birch-6",
+          supplier_profile_version: "batch-2026.09",
+          material_id: "birch-plywood-6",
+          material_version: "screening-2026.1",
+          sheet_width_um: 2_440_000,
+          sheet_height_um: 1_220_000,
+          thickness_um: 6_000,
+          sheet_count: 2,
+          trim_margin_um: 10_000,
+          kerf_um: 6_000,
+          grain_direction: "X",
+          allow_rotation: false,
+          defect_zones: [],
+          fixture_keep_out_zones: [],
+        },
+      ],
+      two_sided_registrations: [{
+        stock_role: "carcass",
+        sheet_index: 0,
+        declaration_authority: "CLIENT_DECLARED",
+        flip_axis: "X",
+        fixture_method_id: "shop-pin-fixture",
+        fixture_method_version: "v1.2",
+        pin_diameter_um: 10_000,
+        position_tolerance_um: 1_000,
+        pins: [{ x_um: 80_000, y_um: 30_000 }, { x_um: 2_360_000, y_um: 30_000 }],
+      }],
+    },
+  };
+}
 
 function version(status: DesignVersionRead["status"]): DesignVersionRead {
   return {
@@ -71,6 +179,7 @@ const queuedJob: JobRead = {
   started_at: null,
   lease_expires_at: null,
   deadline_at: "2026-08-01T10:01:00Z",
+  next_attempt_at: null,
   finished_at: null,
   created_at: "2026-08-01T08:01:00Z",
   updated_at: "2026-08-01T08:01:00Z",
@@ -214,13 +323,17 @@ function blockedCamPackageStatusFixture(
         )
       : blockerCode === "DADO_RETENTION_EVIDENCE_MISSING"
         ? (
-            "The current MVP cannot resolve this blocker because it has no authenticated "
-            + "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-            + "checksum-addressed mechanical retention contract to every DADO joint, including "
-            + "exact geometry, hardware quantity, material/thickness applicability and separate "
-            + "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-            + "bearing check is not retention evidence."
+            "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+            + "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+            + "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+            + "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
           )
+        : blockerCode === "BACK_PANEL_RETENTION_EVIDENCE_MISSING"
+          ? (
+              "Use only the canonical inset back whose four boundary grooves and multi-direction "
+              + "closing sequence prove mechanical capture, or bind independently authenticated "
+              + "back-panel retention evidence when that application class is implemented."
+            )
         : (
             "Bind an externally specified two-sided registration and fixture plan; "
             + "do not infer WCS, pins, fixtures or registration coordinates."
@@ -277,6 +390,42 @@ function stockBlockedReadinessWithVerifiedDfm(): ReadinessFixture {
   return readiness;
 }
 
+function reviewJobArtifactResult(camBlocked: boolean): Record<string, unknown> {
+  const artifactKinds = [
+    "manufacturing_intent",
+    "supplier_handoff",
+    "dfm_report",
+    "stock_selection",
+    "generation_plan",
+    ...(camBlocked ? [] : ["operations", "validation_backplot", "setup_sheet_001"]),
+    "design_glb",
+    "workshop_readiness",
+    "design_review_package_status",
+  ];
+  const contentType = (kind: string) => (
+    kind === "validation_backplot" || kind.startsWith("setup_sheet_")
+      ? "image/svg+xml"
+      : kind === "design_glb"
+        ? "model/gltf-binary"
+        : "application/json"
+  );
+  return {
+    bundle_object_key: "tenant/review/production.zip",
+    bundle_sha256: "b".repeat(64),
+    bundle_size_bytes: 2_400_000,
+    manifest_object_key: "tenant/review/manifest.json",
+    manifest_sha256: "d".repeat(64),
+    manifest_size_bytes: 4_096,
+    evidence_artifacts: artifactKinds.map((kind, index) => ({
+      kind,
+      object_key: `tenant/review/evidence/${index}-${kind}`,
+      sha256: (index % 10).toString().repeat(64),
+      size_bytes: 1_024,
+      content_type: contentType(kind),
+    })),
+  };
+}
+
 const succeededJob: JobRead = {
   ...queuedJob,
   status: "succeeded",
@@ -284,7 +433,8 @@ const succeededJob: JobRead = {
   started_at: "2026-08-01T08:01:05Z",
   finished_at: "2026-08-01T08:02:00Z",
   result_json: {
-    manifest_sha256: "d".repeat(64),
+    ...reviewJobArtifactResult(false),
+    authoritative_geometry: true,
     machine_program_mode: "VALIDATION_DRY_RUN",
     production_machine_program: false,
     design_review_package_status: generatedCamPackageStatusFixture(),
@@ -292,9 +442,21 @@ const succeededJob: JobRead = {
   },
 };
 
+const immutableDesignReviewRelease: ReleaseRead = {
+  release_id: "22222222-2222-4222-8222-222222222222",
+  release_number: "R1",
+  status: "released",
+  bundle_sha256: "b".repeat(64),
+  manifest_sha256: "d".repeat(64),
+  release_kind: "design_review",
+  machine_use: "validation_only",
+  physical_cutting_authorized: false,
+};
+
 const blockedCamJob: JobRead = {
   ...succeededJob,
   result_json: {
+    ...reviewJobArtifactResult(true),
     manifest_sha256: "d".repeat(64),
     authoritative_geometry: true,
     dfm_status: "PASS",
@@ -338,6 +500,16 @@ const retentionBlockedCamJob: JobRead = {
   },
 };
 
+const backPanelRetentionBlockedCamJob: JobRead = {
+  ...blockedCamJob,
+  result_json: {
+    ...blockedCamJob.result_json,
+    design_review_package_status: blockedCamPackageStatusFixture(
+      "BACK_PANEL_RETENTION_EVIDENCE_MISSING",
+    ),
+  },
+};
+
 const safeMachineProgramFields = {
   machine_program_mode: "VALIDATION_DRY_RUN",
   production_machine_program: false,
@@ -361,7 +533,7 @@ function jobWithReadiness(
 const bundle: ArtifactRead = {
   id: "artifact-bundle",
   kind: "production_bundle",
-  sha256: "d".repeat(64),
+  sha256: "b".repeat(64),
   size_bytes: 2_400_000,
   content_type: "application/zip",
   download_url: "https://artifacts.example.test/underlag.zip?signature=fresh",
@@ -370,7 +542,25 @@ const bundle: ArtifactRead = {
 
 const completeArtifacts: ArtifactRead[] = [
   bundle,
-  { ...bundle, id: "manifest", kind: "manifest", content_type: "application/json" },
+  {
+    ...bundle,
+    id: "manifest",
+    kind: "manifest",
+    sha256: "d".repeat(64),
+    content_type: "application/json",
+  },
+  {
+    ...bundle,
+    id: "manufacturing-intent",
+    kind: "manufacturing_intent",
+    content_type: "application/json",
+  },
+  {
+    ...bundle,
+    id: "supplier-handoff",
+    kind: "supplier_handoff",
+    content_type: "application/json",
+  },
   { ...bundle, id: "dfm", kind: "dfm_report", content_type: "application/json" },
   { ...bundle, id: "stock-selection", kind: "stock_selection", content_type: "application/json" },
   { ...bundle, id: "generation-plan", kind: "generation_plan", content_type: "application/json" },
@@ -384,7 +574,25 @@ const completeArtifacts: ArtifactRead[] = [
 
 const blockedReviewArtifacts: ArtifactRead[] = [
   bundle,
-  { ...bundle, id: "manifest", kind: "manifest", content_type: "application/json" },
+  {
+    ...bundle,
+    id: "manifest",
+    kind: "manifest",
+    sha256: "d".repeat(64),
+    content_type: "application/json",
+  },
+  {
+    ...bundle,
+    id: "manufacturing-intent",
+    kind: "manufacturing_intent",
+    content_type: "application/json",
+  },
+  {
+    ...bundle,
+    id: "supplier-handoff",
+    kind: "supplier_handoff",
+    content_type: "application/json",
+  },
   { ...bundle, id: "dfm", kind: "dfm_report", content_type: "application/json" },
   { ...bundle, id: "stock-selection", kind: "stock_selection", content_type: "application/json" },
   { ...bundle, id: "generation-plan", kind: "generation_plan", content_type: "application/json" },
@@ -397,6 +605,178 @@ const blockedReviewArtifacts: ArtifactRead[] = [
     content_type: "application/json",
   },
 ];
+
+const completeArtifactKinds = completeArtifacts.map((artifact) => artifact.kind);
+const blockedArtifactKinds = blockedReviewArtifacts.map((artifact) => artifact.kind);
+
+function cuttingCandidateFixture(): {
+  job: JobRead;
+  artifacts: ArtifactRead[];
+} {
+  const candidateBundleHash = "a".repeat(64);
+  const productionProfileHash = "3".repeat(64);
+  const toolpathsHash = "5".repeat(64);
+  const candidateEvidence = [
+    {
+      kind: "cam_candidate_bundle",
+      object_key: "tenant/candidate/cam-candidate.zip",
+      sha256: candidateBundleHash,
+      size_bytes: 3_000_000,
+      content_type: "application/zip",
+    },
+    {
+      kind: "cutting_toolpaths",
+      object_key: "tenant/candidate/toolpaths.json",
+      sha256: toolpathsHash,
+      size_bytes: 12_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "machine_program_index",
+      object_key: "tenant/candidate/program-index.json",
+      sha256: "6".repeat(64),
+      size_bytes: 2_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "cutting_program_validation_report",
+      object_key: "tenant/candidate/validation-report.json",
+      sha256: "7".repeat(64),
+      size_bytes: 8_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "cutting_backplot",
+      object_key: "tenant/candidate/backplot.svg",
+      sha256: "8".repeat(64),
+      size_bytes: 24_000,
+      content_type: "image/svg+xml",
+    },
+    {
+      kind: "production_machine_profile",
+      object_key: "tenant/candidate/production-profile.json",
+      sha256: productionProfileHash,
+      size_bytes: 18_000,
+      content_type: "application/json",
+    },
+    {
+      kind: "machine_program_001",
+      object_key: "tenant/candidate/program-001.ngc",
+      sha256: "9".repeat(64),
+      size_bytes: 32_000,
+      content_type: "text/x-gcode",
+    },
+    {
+      kind: "machine_program_002",
+      object_key: "tenant/candidate/program-002.ngc",
+      sha256: "0".repeat(64),
+      size_bytes: 31_000,
+      content_type: "text/x-gcode",
+    },
+  ];
+  const result = {
+    ...succeededJob.result_json,
+    evidence_artifacts: [
+      ...((succeededJob.result_json?.evidence_artifacts as Record<string, unknown>[]) ?? []),
+      ...candidateEvidence,
+    ],
+    cam_status: "CUTTING_CANDIDATE_GENERATED",
+    machine_program_mode: "EXECUTABLE_CAM_CANDIDATE",
+    production_machine_program: true,
+    physical_cutting_authorized: false,
+    workshop_acceptance_required: true,
+    cam_candidate: {
+      schema_version: "custombuild.cam-candidate-result.v2",
+      status: "CUTTING_CANDIDATE_GENERATED",
+      mode: "EXECUTABLE_CAM_CANDIDATE",
+      physical_cutting_authorized: false,
+      workshop_acceptance_required: true,
+      base_design_review_bundle_sha256: "b".repeat(64),
+      bundle_sha256: candidateBundleHash,
+      bundle_size_bytes: 3_000_000,
+      manifest_sha256: "e".repeat(64),
+      candidate_context_hash: "f".repeat(64),
+      software_provenance: {
+        schema_version: "custombuild.cam-software-provenance.v1",
+        code_root: {
+          kind: "SOURCE_MANIFEST_SHA256",
+          sha256: "a".repeat(64),
+        },
+        producer_build: {
+          schema_version: "custombuild.producer-build-identity.v1",
+          app_version: "1.0.0",
+          vcs_ref: "b".repeat(40),
+          source_manifest_sha256: "a".repeat(64),
+          dependency_lock_sha256: "c".repeat(64),
+        },
+        implementations: {
+          toolpath_schema_version: "custombuild.toolpaths.v1",
+          toolpath_engine_version: "production-toolpaths-1.1.0",
+          cutting_verifier_version: "cutting-program-verifier-1.1.0",
+          cutting_backplot_version: "cutting-backplot-1.1.0",
+          postprocessor_id: "linuxcnc-3axis-production",
+          postprocessor_version: "1.1.0",
+          gcode_parser_version: "linuxcnc-production-parser-1.3.0",
+          gcode_safety_validator_version: "linuxcnc-production-safety-1.3.0",
+          candidate_manifest_schema_version: "custombuild.cam-candidate-manifest.v2",
+          candidate_package_builder_version: "deterministic-cam-candidate-package-1.1.0",
+        },
+      },
+      software_provenance_sha256: "d".repeat(64),
+      production_profile_job_binding: {
+        acceptance: {
+          evidence_id: "shop-acceptance-2026-09",
+          evidence_sha256: "d".repeat(64),
+          evidence_version: "v1",
+          status: "WORKSHOP_ACCEPTED",
+        },
+        document_sha256: productionProfileHash,
+        execution_context_sha256: "2".repeat(64),
+        payload_sha256: "1".repeat(64),
+        postprocessor_profile: {
+          config_sha256: "4".repeat(64),
+          profile_id: "shop-router-01-linuxcnc",
+          version: "1.0.0",
+        },
+        profile_class: "SERVER_OWNED_PRODUCTION",
+        schema_version: "custombuild.production-machine-profile.v1",
+      },
+      production_profile_payload_sha256: "1".repeat(64),
+      execution_context_sha256: "2".repeat(64),
+      production_machine_profile_sha256: productionProfileHash,
+      postprocessor_machine_profile_sha256: "4".repeat(64),
+      toolpaths_sha256: toolpathsHash,
+      program_count: 2,
+      postprocessor: {
+        id: "linuxcnc-3axis-production",
+        version: "1.1.0",
+      },
+    },
+  };
+  return {
+    job: {
+      ...succeededJob,
+      production_engine_context_json: {
+        app_version: "1.0.0",
+        vcs_ref: "b".repeat(40),
+        source_manifest_sha256: "a".repeat(64),
+        dependency_lock_sha256: "c".repeat(64),
+      },
+      result_json: result,
+    },
+    artifacts: [
+      ...completeArtifacts,
+      ...candidateEvidence.map((claim, index) => ({
+        ...bundle,
+        id: `candidate-${index + 1}`,
+        kind: claim.kind,
+        sha256: claim.sha256,
+        size_bytes: claim.size_bytes,
+        content_type: claim.content_type,
+      })),
+    ],
+  };
+}
 
 function apiClient(state?: Partial<ProductionStateRead>): ProductionApi {
   return {
@@ -415,8 +795,15 @@ function apiClient(state?: Partial<ProductionStateRead>): ProductionApi {
     validateVersion: vi.fn(async () => version("design_validated")),
     approveVersion: vi.fn(async () => version("design_validated")),
     generateVersion: vi.fn(async () => queuedJob),
+    releaseVersion: vi.fn(async () => immutableDesignReviewRelease),
     getJob: vi.fn(async () => succeededJob),
     listArtifacts: vi.fn(async () => completeArtifacts),
+    listExternalEvidence: vi.fn(async () => []),
+    uploadExternalEvidence: vi.fn(),
+    downloadJointRetentionEvidence: vi.fn(async () => new Blob(["signed evidence"], {
+      type: "application/json",
+    })),
+    setJointRetentionEvidence: vi.fn(),
     downloadArtifact: vi.fn(async () => new Blob(["verified bundle"], {
       type: "application/zip",
     })),
@@ -456,6 +843,43 @@ function designWith(evaluations: RuleEvaluation[], status: ResolvedDesign["statu
     source: "server-preview",
     status,
     rule_evaluations: evaluations,
+  };
+}
+
+function designWithCertificationRequest(boundDesignHash?: string): ResolvedDesign {
+  const design = designWith([], "PASS");
+  const request: NonNullable<ResolvedDesign["retention_certification_request"]> = {
+    schema_version: "custombuild.joint-retention-certification-request.v2",
+    signed_evidence_schema_version: "custombuild.joint-retention-signed-evidence.v2",
+    application_class: "load_bearing_carcass_dado",
+    joint_geometry_fingerprint_schema: "custombuild.joint-retention-application-geometry.v1",
+    source_design_hash: design.design_hash,
+    joint_geometry_sha256: "b".repeat(64),
+    engine_version: "bookcase-engine-6.0.0",
+    template_version: "bookcase-template-5.0.0",
+    eligible_for_current_binding: true,
+    blocking_issue: null,
+    excluded_applications: [{
+      application_class: "captive_inset_back_groove",
+      joint_count: 4,
+      retention_basis: "canonical_four_boundary_geometric_capture",
+      capture_proven: true,
+    }],
+    required_materials: [{
+      material_id: "birch-plywood",
+      material_version: "screening-2026.1",
+      actual_thickness_um: 17_800,
+    }],
+    required_load_cases: [
+      { mode: "shear", rated_design_load_n: 785 },
+      { mode: "withdrawal", rated_design_load_n: 250 },
+    ],
+    minimum_safety_factor_permille: 2_000,
+  };
+  return {
+    ...design,
+    ...(boundDesignHash ? { design_hash: boundDesignHash } : {}),
+    retention_certification_request: request,
   };
 }
 
@@ -703,6 +1127,12 @@ describe("designReviewPackageStatusFromJob", () => {
     );
   });
 
+  it("accepts the exact server-owned back-panel retention blocker status", () => {
+    expect(designReviewPackageStatusFromJob(backPanelRetentionBlockedCamJob)).toEqual(
+      blockedCamPackageStatusFixture("BACK_PANEL_RETENTION_EVIDENCE_MISSING"),
+    );
+  });
+
   it.each([
     {
       name: "physical cutting is claimed",
@@ -764,18 +1194,198 @@ describe("designReviewPackageStatusFromJob", () => {
   });
 });
 
+describe("CNC-shop review artifact presentation", () => {
+  it.each([
+    {
+      kind: "supplier_handoff",
+      role: "Leverantörsöverlämning",
+      use: "Överlämning till CNC-verkstad för granskning – inte arbetsorder eller körbar CNC-kod",
+      fileName: `custombuild-project-${project.id}-cnc-shop-handoff-rev-12.json`,
+    },
+    {
+      kind: "manufacturing_intent",
+      role: "Maskinneutralt bearbetningsunderlag",
+      use: "Maskinneutralt bearbetningsunderlag för CNC-verkstadens granskning – inte körbar CNC-kod",
+      fileName: `custombuild-project-${project.id}-manufacturing-intent-rev-12.json`,
+    },
+  ])("presents $kind as review material rather than executable machine code", ({
+    kind,
+    role,
+    use,
+    fileName,
+  }) => {
+    const artifact = {
+      kind,
+      content_type: "application/json",
+    } satisfies Pick<ArtifactRead, "kind" | "content_type">;
+
+    expect(artifactRoleLabel(kind)).toBe(role);
+    expect(artifactReviewUseLabel(kind)).toBe(use);
+    expect(artifactFileExtension(artifact)).toBe("json");
+    expect(artifactDownloadFileName(artifact, project.id, 12)).toBe(fileName);
+  });
+
+  it("mirrors the server's project-unique artifact filename boundary fail-closed", () => {
+    expect(artifactDownloadFileName(
+      { kind: "setup_sheet_012", content_type: "image/svg+xml" },
+      project.id,
+      3,
+    )).toBe(`custombuild-project-${project.id}-setup-sheet-012-rev-3.svg`);
+    expect(() => artifactDownloadFileName(
+      { kind: "production_bundle", content_type: "application/json" },
+      project.id,
+      3,
+    )).toThrow(/medieformat/i);
+    expect(() => artifactDownloadFileName(
+      { kind: "production_bundle", content_type: "application/zip" },
+      "project-1",
+      3,
+    )).toThrow(/projektidentitet/i);
+    expect(() => artifactDownloadFileName(
+      { kind: "production_bundle", content_type: "application/zip" },
+      project.id,
+      0,
+    )).toThrow(/revision/i);
+  });
+
+  it("uses explicit cutting labels and server-identical names for candidate files", () => {
+    const program = {
+      kind: "machine_program_002",
+      content_type: "text/x-gcode",
+    } satisfies Pick<ArtifactRead, "kind" | "content_type">;
+    const candidate = {
+      kind: "cam_candidate_bundle",
+      content_type: "application/zip",
+    } satisfies Pick<ArtifactRead, "kind" | "content_type">;
+
+    expect(artifactRoleLabel(program.kind)).toBe("Skärande maskinprogram 002");
+    expect(artifactReviewUseLabel(program.kind)).toMatch(/Skärande LinuxCNC-program/);
+    expect(artifactFileExtension(program)).toBe("ngc");
+    expect(artifactDownloadFileName(program, project.id, 12)).toBe(
+      `custombuild-project-${project.id}-machine-program-002-rev-12.ngc`,
+    );
+    expect(artifactRoleLabel(candidate.kind)).toBe("Körbar CAM-kandidat (ZIP)");
+    expect(artifactDownloadFileName(candidate, project.id, 12)).toBe(
+      `custombuild-project-${project.id}-cam-candidate-rev-12.zip`,
+    );
+    expect(() => artifactDownloadFileName(
+      { kind: "machine_program_000", content_type: "text/x-gcode" },
+      project.id,
+      12,
+    )).toThrow(/filnamnskontrakt/i);
+  });
+});
+
 describe("review package artifact inventory", () => {
+  it("derives the exact persisted inventory from bounded successful-job metadata", () => {
+    expect(reviewArtifactKindsFromJob(succeededJob)).toEqual(completeArtifactKinds);
+    expect(reviewArtifactKindsFromJob(blockedCamJob)).toEqual(blockedArtifactKinds);
+    expect(reviewBundleSha256FromJob(succeededJob)).toBe("b".repeat(64));
+    expect(reviewBundleArtifactMatchesJob(
+      completeArtifacts,
+      reviewBundleSha256FromJob(succeededJob),
+    )).toBe(true);
+  });
+
+  it("rejects a bundle artifact whose checksum is not the successful job checksum", () => {
+    const changedArtifacts = completeArtifacts.map((artifact) => (
+      artifact.kind === "production_bundle"
+        ? { ...artifact, sha256: "c".repeat(64) }
+        : artifact
+    ));
+
+    expect(reviewBundleArtifactMatchesJob(
+      changedArtifacts,
+      reviewBundleSha256FromJob(succeededJob),
+    )).toBe(false);
+    expect(reviewBundleSha256FromJob({ ...succeededJob, status: "running" })).toBeUndefined();
+  });
+
+  it.each([
+    ["unknown kind", (result: Record<string, unknown>) => {
+      const rows = result.evidence_artifacts as Array<Record<string, unknown>>;
+      rows[0] = { ...rows[0], kind: "unexpected_machine_program" };
+    }],
+    ["case alias", (result: Record<string, unknown>) => {
+      const rows = result.evidence_artifacts as Array<Record<string, unknown>>;
+      rows[0] = { ...rows[0], kind: "Manufacturing_Intent" };
+    }],
+    ["duplicate kind", (result: Record<string, unknown>) => {
+      const rows = result.evidence_artifacts as Array<Record<string, unknown>>;
+      rows.push({ ...rows[0], object_key: "tenant/review/evidence/duplicate" });
+    }],
+    ["wrong content type", (result: Record<string, unknown>) => {
+      const rows = result.evidence_artifacts as Array<Record<string, unknown>>;
+      rows[0] = { ...rows[0], content_type: "application/octet-stream" };
+    }],
+    ["extra field", (result: Record<string, unknown>) => {
+      const rows = result.evidence_artifacts as Array<Record<string, unknown>>;
+      rows[0] = { ...rows[0], provider_url: "https://storage.invalid/private" };
+    }],
+    ["uppercase digest", (result: Record<string, unknown>) => {
+      const rows = result.evidence_artifacts as Array<Record<string, unknown>>;
+      rows[0] = { ...rows[0], sha256: "A".repeat(64) };
+    }],
+    ["oversized readiness document", (result: Record<string, unknown>) => {
+      const rows = result.evidence_artifacts as Array<Record<string, unknown>>;
+      const index = rows.findIndex((row) => row.kind === "workshop_readiness");
+      rows[index] = { ...rows[index], size_bytes: 64 * 1024 + 1 };
+    }],
+  ])("rejects %s in job-owned artifact metadata", (_label, mutate) => {
+    const job = structuredClone(succeededJob);
+    const result = job.result_json as Record<string, unknown>;
+    mutate(result);
+
+    expect(reviewArtifactKindsFromJob(job)).toBeUndefined();
+  });
+
+  it("rejects an unexpected generated artifact even when every required kind remains", () => {
+    expect(reviewPackageArtifactInventoryIsTruthful(
+      [...completeArtifacts, { ...bundle, id: "rogue", kind: "machine_program" }],
+      generatedCamPackageStatusFixture(),
+      true,
+      completeArtifactKinds,
+    )).toBe(false);
+  });
+
+  it.each([
+    "manufacturing_intent",
+    "supplier_handoff",
+  ])("allows and requires the CNC-shop review artifact %s", (kind) => {
+    expect(blockedCamEvidenceKindIsForbidden(kind)).toBe(false);
+    expect(reviewPackageArtifactInventoryIsTruthful(
+      blockedReviewArtifacts,
+      blockedCamPackageStatusFixture(),
+      true,
+      blockedArtifactKinds,
+    )).toBe(true);
+    expect(reviewPackageArtifactInventoryIsTruthful(
+      blockedReviewArtifacts.filter((artifact) => artifact.kind !== kind),
+      blockedCamPackageStatusFixture(),
+      true,
+      blockedArtifactKinds,
+    )).toBe(false);
+    expect(reviewPackageArtifactInventoryIsTruthful(
+      completeArtifacts.filter((artifact) => artifact.kind !== kind),
+      generatedCamPackageStatusFixture(),
+      true,
+      completeArtifactKinds,
+    )).toBe(false);
+  });
+
   it("allows and requires the checksum-bound stock-selection snapshot", () => {
     expect(blockedCamEvidenceKindIsForbidden("stock_selection")).toBe(false);
     expect(reviewPackageArtifactInventoryIsTruthful(
       blockedReviewArtifacts,
       blockedCamPackageStatusFixture(),
       true,
+      blockedArtifactKinds,
     )).toBe(true);
     expect(reviewPackageArtifactInventoryIsTruthful(
       blockedReviewArtifacts.filter((artifact) => artifact.kind !== "stock_selection"),
       blockedCamPackageStatusFixture(),
       true,
+      blockedArtifactKinds,
     )).toBe(false);
   });
 
@@ -785,11 +1395,13 @@ describe("review package artifact inventory", () => {
       blockedReviewArtifacts,
       blockedCamPackageStatusFixture(),
       true,
+      blockedArtifactKinds,
     )).toBe(true);
     expect(reviewPackageArtifactInventoryIsTruthful(
       blockedReviewArtifacts.filter((artifact) => artifact.kind !== "generation_plan"),
       blockedCamPackageStatusFixture(),
       true,
+      blockedArtifactKinds,
     )).toBe(false);
   });
 
@@ -826,6 +1438,7 @@ describe("review package artifact inventory", () => {
       [...blockedReviewArtifacts, { ...bundle, id: `rogue-${kind}`, kind }],
       blockedCamPackageStatusFixture(),
       true,
+      blockedArtifactKinds,
     )).toBe(false);
   });
 
@@ -837,6 +1450,7 @@ describe("review package artifact inventory", () => {
       ],
       blockedCamPackageStatusFixture(),
       true,
+      [...blockedArtifactKinds, "assembly_readiness"],
     )).toBe(true);
   });
 
@@ -847,6 +1461,7 @@ describe("review package artifact inventory", () => {
       completeArtifacts,
       status,
       true,
+      completeArtifactKinds,
     )).toBe(false);
   });
 
@@ -855,6 +1470,7 @@ describe("review package artifact inventory", () => {
       completeArtifacts.filter((artifact) => artifact.kind !== "design_review_package_status"),
       undefined,
       true,
+      completeArtifactKinds,
     )).toBe(false);
   });
 
@@ -863,6 +1479,7 @@ describe("review package artifact inventory", () => {
       completeArtifacts.filter((artifact) => artifact.kind !== "design_review_package_status"),
       undefined,
       false,
+      completeArtifactKinds,
     )).toBe(false);
   });
 
@@ -874,7 +1491,185 @@ describe("review package artifact inventory", () => {
       ],
       undefined,
       false,
+      completeArtifactKinds,
     )).toBe(false);
+  });
+});
+
+describe("camCandidateFromJob", () => {
+  it("accepts only the complete executable pair and dense public program inventory", () => {
+    const fixture = cuttingCandidateFixture();
+
+    const candidate = camCandidateFromJob(fixture.job);
+
+    expect(candidate).toMatchObject({
+      status: "CUTTING_CANDIDATE_GENERATED",
+      mode: "EXECUTABLE_CAM_CANDIDATE",
+      physical_cutting_authorized: false,
+      workshop_acceptance_required: true,
+      program_count: 2,
+      bundle_sha256: "a".repeat(64),
+    });
+    expect(workshopReadinessFromJob(fixture.job)?.design_review_ready).toBe(true);
+    expect(reviewArtifactKindsFromJob(fixture.job)).toEqual(
+      fixture.artifacts.map((artifact) => artifact.kind),
+    );
+    expect(camCandidateArtifactsMatchJob(fixture.job, fixture.artifacts)).toBe(true);
+  });
+
+  const invalidCandidateCases: {
+    name: string;
+    mutate: (root: Record<string, unknown>, candidate: Record<string, unknown>) => void;
+  }[] = [
+    {
+      name: "a required executable root flag is missing",
+      mutate: (root) => { delete root.workshop_acceptance_required; },
+    },
+    {
+      name: "the executable pair claims no production program",
+      mutate: (root) => { root.production_machine_program = false; },
+    },
+    {
+      name: "physical cutting is claimed as authorized",
+      mutate: (root) => { root.physical_cutting_authorized = true; },
+    },
+    {
+      name: "the candidate has an unknown field",
+      mutate: (_root, candidate) => { candidate.machine_start_authorized = true; },
+    },
+    {
+      name: "software provenance has an unknown field",
+      mutate: (_root, candidate) => {
+        const provenance = candidate.software_provenance as Record<string, unknown>;
+        provenance.container_digest = "a".repeat(64);
+      },
+    },
+    {
+      name: "the code root differs from the producer source manifest",
+      mutate: (_root, candidate) => {
+        const provenance = candidate.software_provenance as Record<string, unknown>;
+        const codeRoot = provenance.code_root as Record<string, unknown>;
+        codeRoot.sha256 = "f".repeat(64);
+      },
+    },
+    {
+      name: "a CAM implementation version is stale",
+      mutate: (_root, candidate) => {
+        const provenance = candidate.software_provenance as Record<string, unknown>;
+        const implementations = provenance.implementations as Record<string, unknown>;
+        implementations.cutting_verifier_version = "cutting-program-verifier-stale";
+      },
+    },
+    {
+      name: "the bundle hash differs from public evidence",
+      mutate: (_root, candidate) => { candidate.bundle_sha256 = "c".repeat(64); },
+    },
+    {
+      name: "the toolpath hash differs from public evidence",
+      mutate: (_root, candidate) => { candidate.toolpaths_sha256 = "c".repeat(64); },
+    },
+    {
+      name: "the declared program count differs from its rows",
+      mutate: (_root, candidate) => { candidate.program_count = 3; },
+    },
+    {
+      name: "the machine-program rows are sparse",
+      mutate: (root) => {
+        const evidence = root.evidence_artifacts as Record<string, unknown>[];
+        const second = evidence.find((row) => row.kind === "machine_program_002");
+        if (second) second.kind = "machine_program_003";
+      },
+    },
+    {
+      name: "a program uses a non-canonical four-digit suffix",
+      mutate: (root) => {
+        const evidence = root.evidence_artifacts as Record<string, unknown>[];
+        const second = evidence.find((row) => row.kind === "machine_program_002");
+        if (second) second.kind = "machine_program_1000";
+      },
+    },
+    {
+      name: "the postprocessor hash is detached from its profile binding",
+      mutate: (_root, candidate) => {
+        candidate.postprocessor_machine_profile_sha256 = "c".repeat(64);
+      },
+    },
+    {
+      name: "the production profile document hash is detached from its binding",
+      mutate: (_root, candidate) => {
+        candidate.production_machine_profile_sha256 = "c".repeat(64);
+      },
+    },
+    {
+      name: "a production profile carries test-only acceptance",
+      mutate: (_root, candidate) => {
+        const binding = candidate.production_profile_job_binding as Record<string, unknown>;
+        const acceptance = binding.acceptance as Record<string, unknown>;
+        acceptance.status = "TEST_ONLY";
+      },
+    },
+  ];
+
+  it.each(invalidCandidateCases)("rejects $name without mutating it", ({ mutate }) => {
+    const fixture = cuttingCandidateFixture();
+    const root = fixture.job.result_json as Record<string, unknown>;
+    const candidate = root.cam_candidate as Record<string, unknown>;
+    mutate(root, candidate);
+    const untouched = structuredClone(root);
+
+    expect(camCandidateFromJob(fixture.job)).toBeUndefined();
+    expect(reviewArtifactKindsFromJob(fixture.job)).toBeUndefined();
+    expect(root).toEqual(untouched);
+  });
+
+  it("rejects a fetched candidate artifact whose checksum changed after job completion", () => {
+    const fixture = cuttingCandidateFixture();
+    const changed = fixture.artifacts.map((artifact) => artifact.kind === "machine_program_002"
+      ? { ...artifact, sha256: "c".repeat(64) }
+      : artifact);
+
+    expect(camCandidateFromJob(fixture.job)).toBeDefined();
+    expect(camCandidateArtifactsMatchJob(fixture.job, changed)).toBe(false);
+  });
+
+  it.each([
+    ["app_version", "2.0.0"],
+    ["vcs_ref", "f".repeat(40)],
+    ["source_manifest_sha256", "f".repeat(64)],
+    ["dependency_lock_sha256", "f".repeat(64)],
+  ])("rejects producer %s drift from the frozen job", (field, replacement) => {
+    const fixture = cuttingCandidateFixture();
+    (fixture.job.production_engine_context_json as Record<string, unknown>)[field] = replacement;
+
+    expect(camCandidateFromJob(fixture.job)).toBeUndefined();
+  });
+});
+
+describe("camApprovalCandidateBindingMatchesJob", () => {
+  it("accepts the exact executable-candidate bundle hash", () => {
+    const fixture = cuttingCandidateFixture();
+
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: "a".repeat(64),
+    }, fixture.job)).toBe(true);
+  });
+
+  it("rejects a mismatched or null binding when the job has an executable candidate", () => {
+    const fixture = cuttingCandidateFixture();
+
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: "c".repeat(64),
+    }, fixture.job)).toBe(false);
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: null,
+    }, fixture.job)).toBe(false);
+  });
+
+  it("accepts null only when the job has no executable candidate and rejects a missing field", () => {
+    expect(camApprovalCandidateBindingMatchesJob({
+      cam_candidate_bundle_sha256: null,
+    }, succeededJob)).toBe(true);
+    expect(camApprovalCandidateBindingMatchesJob({}, succeededJob)).toBe(false);
   });
 });
 
@@ -1059,7 +1854,857 @@ describe("workshopRequirementPresentation", () => {
   });
 });
 
+describe("approvalExternalEvidenceIds", () => {
+  const evidenceId = "33333333-3333-4333-8333-333333333333";
+  const canonicalOverride = {
+    rule_id: "CB-TIP-001",
+    rule_version: "1.3.0",
+    reason: "Extern kontroll verifierad för exakt revision.",
+    approved_by: "reviewer-1",
+    approved_at: "2026-09-03T08:00:00+00:00",
+    evidence_status: "verified",
+    external_evidence: [{
+      evidence_id: evidenceId,
+      evidence_type: "wall_anchor",
+      rule_id: "CB-TIP-001",
+      catalog_id: "ANCHOR-M8",
+      catalog_version: "2026.2",
+      design_hash: "d".repeat(64),
+      sha256: "e".repeat(64),
+      size_bytes: 2_048,
+      content_type: "application/pdf",
+      created_by: "reviewer-1",
+      created_at: "2026-09-03T07:55:00+00:00",
+      expires_at: null,
+    }],
+  };
+
+  it("restores IDs from the exact response shape persisted by approve_version", () => {
+    expect(approvalExternalEvidenceIds([canonicalOverride])).toEqual([evidenceId]);
+  });
+
+  it("retains the intentional request-shaped legacy read path", () => {
+    expect(approvalExternalEvidenceIds([{
+      rule_id: "CB-TIP-001",
+      reason: "Äldre godkännande med verifierad evidens.",
+      evidence_ids: [evidenceId],
+    }])).toEqual([evidenceId]);
+  });
+
+  it("fails closed on partial snapshots, duplicate IDs and mixed response/legacy shapes", () => {
+    expect(approvalExternalEvidenceIds([{
+      ...canonicalOverride,
+      external_evidence: [{
+        ...canonicalOverride.external_evidence[0],
+        sha256: undefined,
+      }],
+    }])).toBeUndefined();
+    expect(approvalExternalEvidenceIds([{
+      ...canonicalOverride,
+      external_evidence: [
+        canonicalOverride.external_evidence[0],
+        canonicalOverride.external_evidence[0],
+      ],
+    }])).toBeUndefined();
+    expect(approvalExternalEvidenceIds([
+      canonicalOverride,
+      {
+        rule_id: "CB-HARDWARE-001",
+        reason: "Äldre form får inte blandas med ny form.",
+        evidence_ids: [],
+      },
+    ])).toBeUndefined();
+  });
+});
+
+describe("retentionEvidenceUploadMetadata", () => {
+  function signedRetentionFile(
+    payload: unknown = {
+      catalogue_entry: {
+        system_id: "mechanical-dado-lock",
+        system_version: "1.0.0",
+      },
+      expires_at: "2099-02-01T23:59:59.999Z",
+      design_hash: "must-not-be-read-from-the-file",
+    },
+    name = "signed-retention.json",
+    type = "application/json",
+  ): File {
+    const contents = JSON.stringify(payload);
+    const file = new File([contents], name, { type });
+    Object.defineProperty(file, "text", { value: async () => contents });
+    return file;
+  }
+
+  it("extracts only exact catalogue and expiry metadata from a valid JSON file", async () => {
+    await expect(retentionEvidenceUploadMetadata(signedRetentionFile(), Date.parse("2026-09-03T00:00:00Z")))
+      .resolves.toEqual({
+        catalogId: "mechanical-dado-lock",
+        catalogVersion: "1.0.0",
+        expiresAt: "2099-02-01T23:59:59.999Z",
+      });
+  });
+
+  it("rejects the wrong suffix, media type, oversize data and malformed signed metadata", async () => {
+    await expect(retentionEvidenceUploadMetadata(signedRetentionFile(undefined, "signed-retention.txt")))
+      .rejects.toThrow(/\.json-fil/);
+    await expect(retentionEvidenceUploadMetadata(signedRetentionFile(undefined, "signed-retention.json", "text/plain")))
+      .rejects.toThrow(/application\/json/);
+
+    const oversized = {
+      name: "signed-retention.json",
+      type: "application/json",
+      size: 20 * 1024 * 1024 + 1,
+      text: vi.fn(async () => "{}"),
+    } as unknown as File;
+    await expect(retentionEvidenceUploadMetadata(oversized)).rejects.toThrow(/högst 20 MiB/);
+    expect(oversized.text).not.toHaveBeenCalled();
+
+    await expect(retentionEvidenceUploadMetadata(signedRetentionFile({
+      catalogue_entry: { system_id: " mechanical-dado-lock ", system_version: "1.0.0" },
+      expires_at: "2099-02-01T23:59:59.999Z",
+    }))).rejects.toThrow(/system_id/);
+    await expect(retentionEvidenceUploadMetadata(signedRetentionFile({
+      catalogue_entry: { system_id: "mechanical-dado-lock", system_version: "1.0.0" },
+      expires_at: "2020-02-01T23:59:59.999Z",
+    }), Date.parse("2026-09-03T00:00:00Z"))).rejects.toThrow(/framtida/);
+  });
+});
+
+describe("canonicalRetentionCertificationRequestJson", () => {
+  it("serializes the untouched server request with recursively sorted compact keys", () => {
+    const request = designWithCertificationRequest().retention_certification_request!;
+    const serialized = canonicalRetentionCertificationRequestJson(request);
+    const parsed = JSON.parse(serialized) as Record<string, unknown>;
+
+    expect(parsed).toEqual(request);
+    expect(serialized).not.toMatch(/\n|\s{2}/);
+    expect(Object.keys(parsed)).toEqual([...Object.keys(parsed)].sort());
+    expect(Object.keys((parsed.required_materials as Array<Record<string, unknown>>)[0]!))
+      .toEqual(["actual_thickness_um", "material_id", "material_version"]);
+  });
+});
+
 describe("ProductionWorkflow", () => {
+  it.each([
+    { selected: false, expected: false },
+    { selected: true, expected: true },
+  ])(
+    "sends explicit cutting-candidate opt-in=$expected while defaulting safely",
+    async ({ selected, expected }) => {
+      const api = apiClient({
+        version: version("design_validated"),
+        approvals: [{
+          approval_type: "design",
+          approved_by: "reviewer-1",
+          reason: "Designkontroll godkänd.",
+          generation_job_id: null,
+          production_context_hash: null,
+          manifest_sha256: null,
+          overrides_json: [],
+          created_at: "2026-08-01T08:00:00Z",
+          updated_at: "2026-08-01T08:00:00Z",
+        }],
+      });
+
+      render(
+        <ProductionWorkflow
+          apiClient={api}
+          spec={DEFAULT_DESIGN_SPEC}
+          design={designWith([], "PASS")}
+          onSummaryChange={vi.fn()}
+          principal={designerPrincipal}
+        />,
+      );
+
+      const option = await screen.findByRole("checkbox", {
+        name: /Skapa även körbar CAM-kandidat/,
+      });
+      expect(option).not.toBeChecked();
+      expect(screen.getByText(/Avmarkerad som standard/)).toBeVisible();
+      expect(screen.getByText(/aldrig en arbetsorder eller maskinstart/i)).toBeVisible();
+      if (selected) fireEvent.click(option);
+      fireEvent.click(screen.getByRole("button", { name: "Skapa underlag" }));
+
+      await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(
+        project.id,
+        1,
+        expect.objectContaining({ include_cutting_candidate: expected }),
+      ));
+    },
+  );
+
+  it("downloads the exact server-issued certification request without calling an evidence API", async () => {
+    const design = designWithCertificationRequest("f".repeat(64));
+    const api = apiClient();
+    let downloadedName: string | undefined;
+    let downloadedBlob: Blob | undefined;
+    vi.spyOn(URL, "createObjectURL").mockImplementation((blob) => {
+      if (!(blob instanceof Blob)) throw new Error("Expected a JSON Blob download.");
+      downloadedBlob = blob;
+      return "blob:retention-certification-request";
+    });
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloadedName = this.download;
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={design}
+        onSummaryChange={vi.fn()}
+        principal={reviewerPrincipal}
+      />,
+    );
+
+    const region = await screen.findByRole("region", {
+      name: "Certifieringsbegäran för joint-retention",
+    });
+    await waitFor(() => expect(api.getProductionState).toHaveBeenCalled());
+    vi.mocked(api.setJointRetentionEvidence!).mockClear();
+    expect(within(region).getByText(/begäran och ett provningsunderlag, inte signerad evidens/i))
+      .toBeVisible();
+    fireEvent.click(within(region).getByRole("button", {
+      name: "Hämta certifieringsbegäran (.json)",
+    }));
+
+    expect(downloadedBlob).toBeInstanceOf(Blob);
+    expect(downloadedBlob?.type).toBe("application/json");
+    expect(downloadedName).toBe(
+      `custombuild-retention-certification-request-${design.retention_certification_request!.source_design_hash}.json`,
+    );
+    expect(api.uploadExternalEvidence).not.toHaveBeenCalled();
+    expect(api.setJointRetentionEvidence).not.toHaveBeenCalled();
+    expect(screen.getByText(/inte retentionsevidens eller ett godkännande/i)).toBeVisible();
+  });
+
+  it("lets a reviewer register an externally certified retention JSON without binding it", async () => {
+    const currentDesign = designWith([], "PASS");
+    const evidenceId = "22222222-2222-4222-8222-222222222222";
+    const uploadedEvidence: ExternalEvidenceRead = {
+      id: evidenceId,
+      project_id: project.id,
+      evidence_type: "joint_retention",
+      rule_id: "CB-JOINT-001",
+      catalog_id: "mechanical-dado-lock",
+      catalog_version: "1.0.0",
+      design_hash: currentDesign.design_hash,
+      sha256: "a".repeat(64),
+      size_bytes: 2_048,
+      content_type: "application/json",
+      created_by: "reviewer-1",
+      expires_at: "2099-02-01T23:59:59.999Z",
+      created_at: "2026-09-03T08:00:00Z",
+    };
+    const api = apiClient();
+    vi.mocked(api.uploadExternalEvidence!).mockResolvedValue(uploadedEvidence);
+    const contents = JSON.stringify({
+      catalogue_entry: {
+        system_id: uploadedEvidence.catalog_id,
+        system_version: uploadedEvidence.catalog_version,
+      },
+      expires_at: uploadedEvidence.expires_at,
+      design_hash: "untrusted-file-value",
+    });
+    const file = new File([contents], "certifier-signed-retention.json", {
+      type: "application/json",
+    });
+    Object.defineProperty(file, "text", { value: async () => contents });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={currentDesign}
+        onSummaryChange={vi.fn()}
+        principal={reviewerPrincipal}
+      />,
+    );
+
+    const upload = await screen.findByLabelText("Certifierarsignerad retention-JSON");
+    await waitFor(() => expect(upload).toBeEnabled());
+    vi.mocked(api.setJointRetentionEvidence!).mockClear();
+    fireEvent.change(upload, { target: { files: [file] } });
+
+    await waitFor(() => expect(api.uploadExternalEvidence).toHaveBeenCalledWith(
+      project.id,
+      {
+        document: file,
+        evidenceType: "joint_retention",
+        ruleId: "CB-JOINT-001",
+        catalogId: "mechanical-dado-lock",
+        catalogVersion: "1.0.0",
+        designHash: currentDesign.design_hash,
+        expiresAt: "2099-02-01T23:59:59.999Z",
+      },
+    ));
+    expect(api.setJointRetentionEvidence).not.toHaveBeenCalled();
+    expect(await within(screen.getByRole("combobox", { name: "Signerad retentionsevidens" }))
+      .findByRole("option", { name: /mechanical-dado-lock/ })).toBeVisible();
+    expect(screen.getByText(/Uppladdningen godkände eller band den inte/i)).toBeVisible();
+    expect(screen.getByText(/måste komma direkt från en extern certifierare/i)).toBeVisible();
+  });
+
+  it("lets a workshop operator download the exact signed evidence bound to the saved revision", async () => {
+    const evidenceId = "22222222-2222-4222-8222-222222222222";
+    const baseDesignHash = "a".repeat(64);
+    const savedVersion: DesignVersionRead = {
+      ...version("design_validated"),
+      result_json: {
+        production_context: productionContextFromSpec(DEFAULT_DESIGN_SPEC),
+        retention_trust: {
+          base_design_hash: baseDesignHash,
+          storage_evidence_id: evidenceId,
+        },
+      },
+    };
+    const evidence: ExternalEvidenceRead = {
+      id: evidenceId,
+      project_id: project.id,
+      evidence_type: "joint_retention",
+      rule_id: "CB-JOINT-001",
+      catalog_id: "mechanical-dado-lock",
+      catalog_version: "1.0.0",
+      design_hash: baseDesignHash,
+      sha256: "a".repeat(64),
+      size_bytes: 2_048,
+      content_type: "application/json",
+      created_by: "reviewer-1",
+      expires_at: "2099-02-01T23:59:59.999Z",
+      created_at: "2026-09-03T08:00:00Z",
+    };
+    const api = apiClient({ version: savedVersion });
+    vi.mocked(api.listExternalEvidence!).mockResolvedValue([evidence]);
+    const verifiedBlob = new Blob(["signed evidence"], { type: "application/json" });
+    vi.mocked(api.downloadJointRetentionEvidence!).mockResolvedValue(verifiedBlob);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-retention");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    let downloadedName: string | undefined;
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      function (this: HTMLAnchorElement) {
+        downloadedName = this.download;
+      },
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={operatorPrincipal}
+      />,
+    );
+
+    const region = await screen.findByRole("region", {
+      name: "Signerad retention för verkstadsverifiering",
+    });
+    const download = within(region).getByRole("button", {
+      name: "Hämta signerad retention-JSON (originalbytes)",
+    });
+    await waitFor(() => expect(download).toBeEnabled());
+    expect(within(region).getByText(/auktoriserar aldrig fysisk kapning/i)).toBeVisible();
+    fireEvent.click(download);
+
+    await waitFor(() => expect(api.downloadJointRetentionEvidence).toHaveBeenCalledWith(
+      project.id,
+      evidence,
+    ));
+    expect(downloadedName).toBe(`custombuild-joint-retention-${evidenceId}.json`);
+    expect(await screen.findByText(/verifierad byte för byte/i)).toBeVisible();
+  });
+
+  it("does not expose signed retention bytes to a designer", async () => {
+    const evidenceId = "22222222-2222-4222-8222-222222222222";
+    const baseDesignHash = "a".repeat(64);
+    const savedVersion: DesignVersionRead = {
+      ...version("design_validated"),
+      result_json: {
+        production_context: productionContextFromSpec(DEFAULT_DESIGN_SPEC),
+        retention_trust: {
+          base_design_hash: baseDesignHash,
+          storage_evidence_id: evidenceId,
+        },
+      },
+    };
+    const evidence: ExternalEvidenceRead = {
+      id: evidenceId,
+      project_id: project.id,
+      evidence_type: "joint_retention",
+      rule_id: "CB-JOINT-001",
+      catalog_id: "mechanical-dado-lock",
+      catalog_version: "1.0.0",
+      design_hash: baseDesignHash,
+      sha256: "a".repeat(64),
+      size_bytes: 2_048,
+      content_type: "application/json",
+      created_by: "reviewer-1",
+      expires_at: "2099-02-01T23:59:59.999Z",
+      created_at: "2026-09-03T08:00:00Z",
+    };
+    const api = apiClient({ version: savedVersion });
+    vi.mocked(api.listExternalEvidence!).mockResolvedValue([evidence]);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={designerPrincipal}
+      />,
+    );
+
+    const region = await screen.findByRole("region", {
+      name: "Signerad retention för verkstadsverifiering",
+    });
+    const download = within(region).getByRole("button", {
+      name: "Hämta signerad retention-JSON (originalbytes)",
+    });
+    expect(download).toBeDisabled();
+    expect(within(region).getByText(/Endast reviewer, operator, production, admin eller owner/i))
+      .toBeVisible();
+    fireEvent.click(download);
+    expect(api.downloadJointRetentionEvidence).not.toHaveBeenCalled();
+  });
+
+  it("stops a strict reviewer after approval and requires a generator handoff", async () => {
+    const api = apiClient({ version: version("design_validated") });
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={reviewerPrincipal}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Godkänn designkontroll" }));
+    await waitFor(() => expect(api.approveVersion).toHaveBeenCalledOnce());
+    expect(api.generateVersion).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox", { name: "Signerad retentionsevidens" })).toBeDisabled();
+
+    const generate = await screen.findByRole("button", { name: "Skapa underlag" });
+    expect(generate).toBeDisabled();
+    expect(screen.getByText(/En designer, admin eller owner måste nu skapa underlaget/)).toBeVisible();
+  });
+
+  it("restores approved evidence for a strict designer without exposing reviewer controls", async () => {
+    const evidenceId = "33333333-3333-4333-8333-333333333333";
+    const currentDesign = designWith([
+      warning("CB-TIP-001", "Vältrisk", "Förankringen ska kontrolleras."),
+    ], "WARNING");
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Kontrollerad med serverevidens.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [{
+          rule_id: "CB-TIP-001",
+          rule_version: "1.0.0",
+          reason: "Verifierad för revisionen.",
+          approved_by: "reviewer-1",
+          approved_at: "2026-08-01T08:00:00+00:00",
+          evidence_status: "verified",
+          external_evidence: [{
+            evidence_id: evidenceId,
+            evidence_type: "wall_anchor",
+            rule_id: "CB-TIP-001",
+            catalog_id: "ANCHOR-M8",
+            catalog_version: "2026.2",
+            design_hash: currentDesign.design_hash,
+            sha256: "b".repeat(64),
+            size_bytes: 2_048,
+            content_type: "application/pdf",
+            created_by: "reviewer-1",
+            created_at: "2026-08-01T08:00:00+00:00",
+            expires_at: null,
+          }],
+        }],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+    });
+    vi.mocked(api.listExternalEvidence!).mockResolvedValue([{
+      id: evidenceId,
+      project_id: project.id,
+      evidence_type: "wall_anchor",
+      rule_id: "CB-TIP-001",
+      catalog_id: "ANCHOR-M8",
+      catalog_version: "2026.2",
+      design_hash: currentDesign.design_hash,
+      sha256: "b".repeat(64),
+      size_bytes: 2_048,
+      content_type: "application/pdf",
+      created_by: "reviewer-1",
+      expires_at: null,
+      created_at: "2026-08-01T08:00:00Z",
+    }]);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={currentDesign}
+        onSummaryChange={vi.fn()}
+        principal={designerPrincipal}
+      />,
+    );
+
+    const generate = await screen.findByRole("button", { name: "Skapa underlag" });
+    await waitFor(() => expect(generate).toBeEnabled());
+    expect(screen.getByRole("combobox", { name: "Signerad retentionsevidens" })).toBeEnabled();
+    fireEvent.click(generate);
+
+    await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(
+      project.id,
+      1,
+      expect.objectContaining({ external_evidence_ids: [evidenceId] }),
+    ));
+    expect(api.approveVersion).not.toHaveBeenCalled();
+  });
+
+  it("generates with the exact frozen structured workshop context", async () => {
+    const spec = structuredWorkshopSpec();
+    const resolved = { ...resolveDesign(spec), source: "server-preview" as const };
+    const structuredVersion: DesignVersionRead = {
+      ...version("design_validated"),
+      design_hash: resolved.design_hash,
+      result_json: { production_context: productionContextFromSpec(spec) },
+    };
+    const api = apiClient({
+      version: structuredVersion,
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={spec}
+        design={resolved}
+        onSummaryChange={vi.fn()}
+        onApplyDesignChange={vi.fn()}
+        principal={designerPrincipal}
+      />,
+    );
+
+    const frozenContext = await screen.findByRole("region", { name: "Fryst verkstadskontext" });
+    await waitFor(() => expect(frozenContext).toHaveTextContent("supplier-birch-18"));
+    fireEvent.click(screen.getByRole("button", { name: "Skapa underlag" }));
+    await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(
+      project.id,
+      1,
+      expect.objectContaining(productionContextFromSpec(spec)),
+    ));
+  });
+
+  it("blocks generation when a newer workshop draft removes a required supplier ID", async () => {
+    const spec = structuredWorkshopSpec();
+    const resolved = { ...resolveDesign(spec), source: "server-preview" as const };
+    const structuredVersion: DesignVersionRead = {
+      ...version("design_validated"),
+      design_hash: resolved.design_hash,
+      result_json: { production_context: productionContextFromSpec(spec) },
+    };
+    const api = apiClient({
+      version: structuredVersion,
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+    });
+    const draftStateChange = vi.fn();
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={spec}
+        design={resolved}
+        onSummaryChange={vi.fn()}
+        onApplyDesignChange={vi.fn()}
+        onWorkshopContextDraftStateChange={draftStateChange}
+        principal={designerPrincipal}
+      />,
+    );
+
+    const generate = await screen.findByRole("button", { name: "Skapa underlag" });
+    await waitFor(() => expect(generate).toBeEnabled());
+    fireEvent.change(screen.getAllByRole("textbox", {
+      name: "Leverantörens profil-ID (deklarerat)",
+    })[0]!, { target: { value: "" } });
+
+    await waitFor(() => expect(generate).toBeDisabled());
+    expect(draftStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      dirty: true,
+      valid: false,
+    }));
+    expect(screen.getByText(/osparade eller ofullständiga uppgifter/i)).toBeVisible();
+    fireEvent.click(generate);
+    expect(api.generateVersion).not.toHaveBeenCalled();
+  });
+
+  it("blocks revision save while a new workshop binding is only partially filled", async () => {
+    const api = apiClient();
+    const draftStateChange = vi.fn();
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        onApplyDesignChange={vi.fn()}
+        onWorkshopContextDraftStateChange={draftStateChange}
+        principal={designerPrincipal}
+      />,
+    );
+
+    const save = await screen.findByRole("button", {
+      name: /Spara (och kontrollera|för lagerobunden granskning)/,
+    });
+    fireEvent.click(screen.getByRole("button", {
+      name: "Bind leverantörsdeklarerad verkstadsprofil",
+    }));
+    fireEvent.change(screen.getAllByRole("textbox", {
+      name: "Leverantörens profil-ID (deklarerat)",
+    })[0]!, { target: { value: "partial-profile" } });
+
+    await waitFor(() => expect(save).toBeDisabled());
+    expect(draftStateChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      dirty: true,
+      valid: false,
+    }));
+    expect(screen.getAllByText(/Återgå till lagerobundet paket/i)).not.toHaveLength(0);
+    fireEvent.click(save);
+    expect(api.createVersion).not.toHaveBeenCalled();
+  });
+
+  it("uses the selected large-format catalog profile unchanged for a larger design", async () => {
+    const largeMachine = MACHINES[1]!;
+    const spec: DesignSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      width_mm: 4_200,
+      stock_width_mm: largeMachine.workAreaMm.x,
+      stock_height_mm: largeMachine.workAreaMm.y,
+      back_stock_width_mm: largeMachine.workAreaMm.x,
+      back_stock_height_mm: largeMachine.workAreaMm.y,
+      machine_profile_id: largeMachine.id,
+    };
+    const resolved: ResolvedDesign = {
+      ...resolveDesign(spec),
+      source: "server-preview",
+      status: "PASS",
+      rule_evaluations: [],
+    };
+    const machineVersion: DesignVersionRead = {
+      ...version("design_validated"),
+      design_hash: resolved.design_hash,
+      result_json: { production_context: productionContextFromSpec(spec) },
+    };
+    const api = apiClient({
+      version: machineVersion,
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-09-03T08:00:00Z",
+        updated_at: "2026-09-03T08:00:00Z",
+      }],
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={spec}
+        design={resolved}
+        onSummaryChange={vi.fn()}
+        onApplyDesignChange={vi.fn()}
+        principal={designerPrincipal}
+      />,
+    );
+
+    expect(screen.getByRole("radio", {
+      name: (accessibleName) => accessibleName.includes(largeMachine.name),
+    })).toBeChecked();
+    expect(screen.getByText(/X 5100 × Y 2600 × Z 150 mm/)).toBeVisible();
+    const generate = await screen.findByRole("button", { name: "Skapa underlag" });
+    await waitFor(() => expect(generate).toBeEnabled());
+    fireEvent.click(generate);
+
+    await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(
+      project.id,
+      1,
+      expect.objectContaining({
+        machine_profile_id: largeMachine.id,
+        stock_width_mm: largeMachine.workAreaMm.x,
+        stock_height_mm: largeMachine.workAreaMm.y,
+      }),
+    ));
+  });
+
+  it("fails closed when persisted approval overrides are malformed", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Felaktigt lagrad override.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [{ rule_id: "CB-TIP-001", evidence_ids: ["not-a-uuid"] }],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+    });
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={designerPrincipal}
+      />,
+    );
+
+    const generate = await screen.findByRole("button", { name: "Skapa underlag" });
+    expect(generate).toBeDisabled();
+    expect(screen.getByText(/evidenslista är ogiltig/i)).toBeVisible();
+    fireEvent.click(generate);
+    expect(api.generateVersion).not.toHaveBeenCalled();
+  });
+
+  it("binds review-authorized retention to the revision and keeps it out of general generation evidence", async () => {
+    const retentionId = "22222222-2222-4222-8222-222222222222";
+    const wallAnchorId = "33333333-3333-4333-8333-333333333333";
+    const design = designWith([
+      warning("CB-TIP-001", "Vältrisk", "Förankringen ska kontrolleras."),
+    ], "WARNING");
+    const evidence = [
+      {
+        id: retentionId,
+        project_id: project.id,
+        evidence_type: "joint_retention",
+        rule_id: "CB-JOINT-001",
+        catalog_id: "mechanical-dado-lock",
+        catalog_version: "1.0.0",
+        design_hash: design.design_hash,
+        sha256: "a".repeat(64),
+        size_bytes: 1_024,
+        content_type: "application/json",
+        created_by: "reviewer-1",
+        expires_at: "2099-02-01T23:59:59.999Z",
+        created_at: "2026-08-11T12:00:00Z",
+      },
+      {
+        id: wallAnchorId,
+        project_id: project.id,
+        evidence_type: "wall_anchor",
+        rule_id: "CB-TIP-001",
+        catalog_id: "ANCHOR-M8",
+        catalog_version: "2026.2",
+        design_hash: design.design_hash,
+        sha256: "b".repeat(64),
+        size_bytes: 2_048,
+        content_type: "application/pdf",
+        created_by: "reviewer-1",
+        expires_at: null,
+        created_at: "2026-08-11T12:01:00Z",
+      },
+    ] satisfies ExternalEvidenceRead[];
+    const api = apiClient();
+    vi.mocked(api.listExternalEvidence!).mockResolvedValue(evidence);
+    const requestPreview = vi.fn();
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={design}
+        onSummaryChange={vi.fn()}
+        onRequestServerPreviewRetry={requestPreview}
+        principal={ownerPrincipal}
+        pollIntervalMs={60_000}
+      />,
+    );
+
+    const retentionSelect = await screen.findByRole("combobox", {
+      name: "Signerad retentionsevidens",
+    });
+    expect(await within(retentionSelect).findByRole("option", { name: /mechanical-dado-lock/ })).toBeVisible();
+    fireEvent.change(retentionSelect, { target: { value: retentionId } });
+    expect(api.setJointRetentionEvidence).toHaveBeenCalledWith(project.id, retentionId);
+    expect(requestPreview).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Spara och kontrollera" }));
+    await waitFor(() => expect(api.createVersion).toHaveBeenCalledWith(
+      project.id,
+      DEFAULT_DESIGN_SPEC,
+      design.design_hash,
+      0,
+      "shelving",
+      retentionId,
+    ));
+
+    const generalSelect = await screen.findByRole("combobox", {
+      name: "Kompletterande evidens: Väggförankring",
+    });
+    fireEvent.change(generalSelect, { target: { value: wallAnchorId } });
+    fireEvent.click(screen.getByRole("checkbox", {
+      name: "Jag har läst och kontrollerat varningarna ovan.",
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Godkänn designkontroll" }));
+
+    await waitFor(() => expect(api.approveVersion).toHaveBeenCalled());
+    expect(api.generateVersion).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Skapa underlag" }));
+
+    await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(
+      project.id,
+      1,
+      expect.objectContaining({ external_evidence_ids: [wallAnchorId] }),
+    ));
+    const generationRequest = vi.mocked(api.generateVersion).mock.calls.at(-1)?.[2];
+    expect(generationRequest?.external_evidence_ids).not.toContain(retentionId);
+    expect(api.approveVersion).toHaveBeenCalledWith(
+      project.id,
+      1,
+      expect.objectContaining({
+        warning_overrides: [expect.objectContaining({
+          rule_id: "CB-TIP-001",
+          evidence_ids: [wallAnchorId],
+        })],
+      }),
+    );
+  });
+
   it("shows warnings as information and requires one acknowledgement before creating", async () => {
     const api = apiClient();
     const design = designWith([
@@ -1074,12 +2719,13 @@ describe("ProductionWorkflow", () => {
         spec={DEFAULT_DESIGN_SPEC}
         design={design}
         onSummaryChange={vi.fn()}
+        principal={ownerPrincipal}
         pollIntervalMs={60_000}
       />,
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Spara och kontrollera" }));
-    const create = await screen.findByRole("button", { name: "Skapa underlag" });
+    const approve = await screen.findByRole("button", { name: "Godkänn designkontroll" });
     const confirmation = screen.getByRole("checkbox", {
       name: "Jag har läst och kontrollerat varningarna ovan.",
     });
@@ -1090,11 +2736,11 @@ describe("ProductionWorkflow", () => {
     expect(screen.queryByLabelText("Dokument")).not.toBeInTheDocument();
     expect(screen.queryByText("Bevis saknas")).not.toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Status för verifieringen" })).toHaveTextContent("Behöver beslut");
-    expect(create).toBeDisabled();
+    expect(approve).toBeDisabled();
 
     fireEvent.click(confirmation);
-    expect(create).toBeEnabled();
-    fireEvent.click(create);
+    expect(approve).toBeEnabled();
+    fireEvent.click(approve);
 
     await waitFor(() => expect(api.approveVersion).toHaveBeenCalledWith(project.id, 1, {
       approval_type: "design",
@@ -1118,10 +2764,12 @@ describe("ProductionWorkflow", () => {
         },
       ],
     }));
-    expect(api.generateVersion).toHaveBeenCalledWith(project.id, 1, expect.objectContaining({
+    expect(api.generateVersion).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Skapa underlag" }));
+    await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(project.id, 1, expect.objectContaining({
       include_freecad_project: false,
       external_evidence_ids: [],
-    }));
+    })));
   });
 
   it("keeps a structural BLOCK disabled and never approves or generates", async () => {
@@ -1137,13 +2785,69 @@ describe("ProductionWorkflow", () => {
         spec={DEFAULT_DESIGN_SPEC}
         design={blocked}
         onSummaryChange={vi.fn()}
+        principal={reviewerPrincipal}
       />,
     );
 
-    const create = await screen.findByRole("button", { name: "Skapa underlag" });
+    const create = await screen.findByRole("button", { name: "Godkänn designkontroll" });
     expect(create).toBeDisabled();
     expect(screen.getByRole("alert", { name: "Krav som måste lösas" })).toBeVisible();
     expect(screen.getByRole("region", { name: "Status för verifieringen" })).toHaveTextContent("Måste lösas");
+    fireEvent.click(create);
+    expect(api.approveVersion).not.toHaveBeenCalled();
+    expect(api.generateVersion).not.toHaveBeenCalled();
+  });
+
+  it("never saves a revision whose free part edits would be dropped by the server", async () => {
+    const api = apiClient();
+    const customizedSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      part_overrides: { "side-left": { width_mm: 2_000 } },
+    };
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={customizedSpec}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={reviewerPrincipal}
+      />,
+    );
+
+    const save = await screen.findByRole("button", { name: "Spara och kontrollera" });
+    const alert = screen.getByRole("alert");
+    expect(save).toBeDisabled();
+    expect(alert).toHaveTextContent(
+      /Deländringarna ingår inte i serverunderlaget/,
+    );
+    expect(alert).toHaveTextContent(/bygg samma ändring med de parametriska möbelvalen/i);
+    fireEvent.click(save);
+    expect(api.createVersion).not.toHaveBeenCalled();
+  });
+
+  it("never approves or generates from a revision when current part edits are local-only", async () => {
+    const api = apiClient({ version: version("design_validated") });
+    const customizedSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      removed_part_ids: ["shelf-1-bay-1"],
+    };
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={customizedSpec}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={reviewerPrincipal}
+      />,
+    );
+
+    const create = await screen.findByRole("button", { name: "Godkänn designkontroll" });
+    expect(create).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /inte serverauktoritativa/,
+    );
     fireEvent.click(create);
     expect(api.approveVersion).not.toHaveBeenCalled();
     expect(api.generateVersion).not.toHaveBeenCalled();
@@ -1185,6 +2889,7 @@ describe("ProductionWorkflow", () => {
         design={stocklessDesign}
         onSummaryChange={vi.fn()}
         onApplyDesignChange={applyDesignChange}
+        principal={ownerPrincipal}
       />,
     );
 
@@ -1195,9 +2900,9 @@ describe("ProductionWorkflow", () => {
     }));
     await waitFor(() => expect(api.validateVersion).toHaveBeenCalledWith(project.id, 1));
 
-    const create = await screen.findByRole("button", { name: "Skapa underlag" });
-    expect(create).toBeEnabled();
-    fireEvent.click(create);
+    const approve = await screen.findByRole("button", { name: "Godkänn designkontroll" });
+    expect(approve).toBeEnabled();
+    fireEvent.click(approve);
 
     await waitFor(() => expect(api.approveVersion).toHaveBeenCalledWith(project.id, 1, {
       approval_type: "design",
@@ -1205,13 +2910,15 @@ describe("ProductionWorkflow", () => {
       generation_job_id: null,
       warning_overrides: [],
     }));
-    expect(api.generateVersion).toHaveBeenCalledWith(project.id, 1, expect.objectContaining({
+    expect(api.generateVersion).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole("button", { name: "Skapa underlag" }));
+    await waitFor(() => expect(api.generateVersion).toHaveBeenCalledWith(project.id, 1, expect.objectContaining({
       stock_width_mm: DEFAULT_DESIGN_SPEC.stock_width_mm,
       stock_height_mm: DEFAULT_DESIGN_SPEC.stock_height_mm,
       back_stock_width_mm: DEFAULT_DESIGN_SPEC.back_stock_width_mm,
       back_stock_height_mm: DEFAULT_DESIGN_SPEC.back_stock_height_mm,
       machine_profile_id: DEFAULT_DESIGN_SPEC.machine_profile_id,
-    }));
+    })));
     expect(applyDesignChange).not.toHaveBeenCalled();
     expect(productionSuggestionPatch(stocklessBlocker("DFM-STOCK-001"))).toBeUndefined();
   });
@@ -1249,6 +2956,7 @@ describe("ProductionWorkflow", () => {
         design={designWith([], "PASS")}
         onSummaryChange={vi.fn()}
         onApplyDesignChange={applyDesignChange}
+        principal={designerPrincipal}
       />,
     );
 
@@ -1273,7 +2981,12 @@ describe("ProductionWorkflow", () => {
     expect(applyDesignChange).not.toHaveBeenCalled();
     expect(api.approveVersion).not.toHaveBeenCalled();
     expect(document.body).not.toHaveTextContent("5000");
-    expect(document.body).not.toHaveTextContent("5125");
+    expect(screen.getByRole("radio", {
+      name: (accessibleName) => accessibleName.includes(MACHINES[0]!.name),
+    })).toBeChecked();
+    expect(screen.getByRole("radio", {
+      name: (accessibleName) => accessibleName.includes(MACHINES[1]!.name),
+    })).not.toBeChecked();
   });
 
   it("does not offer stock-profile recovery for an unrelated generation error", async () => {
@@ -1392,6 +3105,7 @@ describe("ProductionWorkflow", () => {
         onSummaryChange={vi.fn()}
         onApplyDesignChange={applyDesignChange}
         pollIntervalMs={1}
+        principal={designerPrincipal}
       />,
     );
 
@@ -1415,6 +3129,331 @@ describe("ProductionWorkflow", () => {
     ));
     expect(applyDesignChange).not.toHaveBeenCalled();
     expect(screen.queryByText(/anpassats enbart för validering/i)).not.toBeInTheDocument();
+  });
+
+  it("restores CAM approval only for the exact executable-candidate bundle", async () => {
+    const fixture = cuttingCandidateFixture();
+    const camApproval = {
+      approval_type: "cam" as const,
+      approved_by: "reviewer-2",
+      reason: "Exakt CAM-kandidat granskad.",
+      generation_job_id: fixture.job.id,
+      production_context_hash: fixture.job.production_context_hash,
+      manifest_sha256: fixture.job.result_json?.manifest_sha256 as string,
+      cam_candidate_bundle_sha256: "a".repeat(64),
+      overrides_json: [],
+      created_at: "2026-08-01T08:05:00Z",
+      updated_at: "2026-08-01T08:05:00Z",
+    };
+    const api = apiClient({
+      version: version("approved"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }, camApproval],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={ownerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Godkänn CAM-granskning" }))
+      .not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["a mismatched hash", "c".repeat(64)],
+    ["a null hash", null],
+  ])("does not restore candidate CAM approval with %s", async (_name, candidateHash) => {
+    const fixture = cuttingCandidateFixture();
+    const camApproval = {
+      approval_type: "cam" as const,
+      approved_by: "reviewer-2",
+      reason: "Stale CAM approval.",
+      generation_job_id: fixture.job.id,
+      production_context_hash: fixture.job.production_context_hash,
+      manifest_sha256: fixture.job.result_json?.manifest_sha256 as string,
+      cam_candidate_bundle_sha256: candidateHash,
+      overrides_json: [],
+      created_at: "2026-08-01T08:05:00Z",
+      updated_at: "2026-08-01T08:05:00Z",
+    };
+    const api = apiClient({
+      version: version("approved"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }, camApproval],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={ownerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByRole("checkbox", {
+      name: /Jag har granskat exakt designjobb, manifest och den separata skärande CAM-kandidaten/i,
+    })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Godkänn CAM-granskning" })).toBeDisabled();
+    expect(screen.queryByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).not.toBeInTheDocument();
+  });
+
+  it("restores a null CAM candidate binding only when the job has no candidate", async () => {
+    const camApproval = {
+      approval_type: "cam" as const,
+      approved_by: "reviewer-2",
+      reason: "Valideringspaket granskat.",
+      generation_job_id: succeededJob.id,
+      production_context_hash: succeededJob.production_context_hash,
+      manifest_sha256: succeededJob.result_json?.manifest_sha256 as string,
+      cam_candidate_bundle_sha256: null,
+      overrides_json: [],
+      created_at: "2026-08-01T08:05:00Z",
+      updated_at: "2026-08-01T08:05:00Z",
+    };
+    const api = apiClient({
+      version: version("approved"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }, camApproval],
+      latest_job: succeededJob,
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={ownerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).toBeVisible();
+  });
+
+  it("shows and re-verifies every executable candidate file without implying machine start", async () => {
+    const fixture = cuttingCandidateFixture();
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+    vi.mocked(api.downloadArtifact).mockResolvedValue(new Blob(["verified candidate"]));
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-candidate");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    const downloadedNames: string[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      downloadedNames.push(this.download);
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={secondReviewerPrincipal}
+      />,
+    );
+
+    const status = await screen.findByRole("status", {
+      name: "Status för körbar CAM-kandidat",
+    });
+    expect(within(status).getByText("Körbar CAM-kandidat klar")).toBeVisible();
+    expect(status).toHaveTextContent("2 checksummebundna, skärande LinuxCNC-program");
+    expect(status).toHaveTextContent("physical_cutting_authorized=false");
+    expect(status).toHaveTextContent("workshop_acceptance_required=true");
+    expect(status).toHaveTextContent(/inte en arbetsorder eller maskinstart/i);
+    expect(screen.getByRole("heading", {
+      level: 3,
+      name: "Granska körbar CAM-kandidat",
+    })).toBeVisible();
+    const physicalStatus = screen.getByRole("status", {
+      name: "Status för fysisk tillverkning",
+    });
+    expect(physicalStatus).toHaveTextContent(/innehåller skärande rörelser/i);
+    expect(physicalStatus).toHaveTextContent(/inte en arbetsorder eller maskinstart/i);
+
+    const serverFiles = screen.getByRole("region", {
+      name: "Separat verifierbara serverfiler",
+    });
+    for (const label of [
+      "Körbar CAM-kandidat (ZIP)",
+      "Skärande verktygsbanor",
+      "Körordning för maskinprogram",
+      "Oberoende CAM-kontrollrapport",
+      "Backplot för skärande rörelser",
+      "Bunden produktionsmaskinprofil",
+      "Skärande maskinprogram 001",
+      "Skärande maskinprogram 002",
+    ]) {
+      expect(within(serverFiles).getByText(label)).toBeVisible();
+      expect(within(serverFiles).getByRole("button", { name: `Hämta fil – ${label}` }))
+        .toBeEnabled();
+    }
+
+    fireEvent.click(within(status).getByRole("button", {
+      name: "Ladda ned CAM-kandidat (.zip)",
+    }));
+    await waitFor(() => expect(downloadedNames).toContain(
+      `custombuild-project-${project.id}-cam-candidate-rev-1.zip`,
+    ));
+    expect(api.downloadArtifact).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "cam_candidate_bundle",
+      sha256: "a".repeat(64),
+    }));
+
+    const programDownload = within(serverFiles).getByRole("button", {
+      name: "Hämta fil – Skärande maskinprogram 002",
+    });
+    await waitFor(() => expect(programDownload).toBeEnabled());
+    fireEvent.click(programDownload);
+    await waitFor(() => expect(downloadedNames).toContain(
+      `custombuild-project-${project.id}-machine-program-002-rev-1.ngc`,
+    ));
+    expect(await screen.findByText(/Hämtats efter förnyad checksummeverifiering/i))
+      .toBeVisible();
+  });
+
+  it("hard-blocks TEST_ONLY candidates from CAM approval and production-ready labelling", async () => {
+    const fixture = cuttingCandidateFixture();
+    const root = fixture.job.result_json as Record<string, unknown>;
+    const candidate = root.cam_candidate as Record<string, unknown>;
+    const binding = candidate.production_profile_job_binding as Record<string, unknown>;
+    const acceptance = binding.acceptance as Record<string, unknown>;
+    binding.profile_class = "TEST_ONLY";
+    acceptance.status = "TEST_ONLY";
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={secondReviewerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText(
+      "TEST_ONLY CAM-kandidat – ej produktionsgodkännbar",
+    )).toBeVisible();
+    expect(screen.queryByText("Körbar CAM-kandidat klar")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Godkänn CAM-granskning" })).toBeDisabled();
+    expect(screen.getByText(/TEST_ONLY-kandidater får aldrig CAM-godkännas/i)).toBeVisible();
+    expect(api.approveVersion).not.toHaveBeenCalled();
+  });
+
+  it("does not show candidate-ready controls for a malformed executable result", async () => {
+    const fixture = cuttingCandidateFixture();
+    const root = fixture.job.result_json as Record<string, unknown>;
+    const candidate = root.cam_candidate as Record<string, unknown>;
+    candidate.program_count = 3;
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: fixture.job,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(fixture.artifacts);
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/inte komplett/i);
+    expect(screen.queryByText("Körbar CAM-kandidat klar")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", {
+      name: "Ladda ned CAM-kandidat (.zip)",
+    })).not.toBeInTheDocument();
+    expect(api.downloadArtifact).not.toHaveBeenCalled();
   });
 
   it("offers a truthful design-review ZIP without claiming physical authorization", async () => {
@@ -1455,7 +3494,10 @@ describe("ProductionWorkflow", () => {
     );
 
     expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
-    expect(screen.getByRole("heading", { level: 3, name: "Hämta granskningspaket" })).toBeVisible();
+    expect(screen.getByRole("heading", {
+      level: 3,
+      name: "Granska CAM-valideringspaketet",
+    })).toBeVisible();
     expect(screen.getByRole("heading", { level: 4, name: "Granskningspaketet är klart" })).toBeVisible();
     expect(screen.getByRole("status", { name: "Status för fysisk tillverkning" })).toHaveTextContent(
       "Ej frisläppt för fysisk kapning",
@@ -1464,14 +3506,38 @@ describe("ProductionWorkflow", () => {
       "14 externa verkstadskrav återstår",
     );
     expect(screen.getByText(/endast avsett för designgranskning och validering/i)).toBeVisible();
+    const releaseBoundary = screen.getByRole("region", {
+      name: "Skillnad mellan designgranskning och fysisk frisläppning",
+    });
+    expect(within(releaseBoundary).getByText("Klar för revision 1")).toBeVisible();
+    expect(within(releaseBoundary).getByText("Ej frisläppt")).toBeVisible();
+    expect(within(releaseBoundary).getByText(/inte en arbetsorder eller skärande CNC-kod/i)).toBeVisible();
     const packageIdentity = screen.getByRole("region", { name: "Paketidentitet" });
     expect(within(packageIdentity).getByText("Designgranskning")).toBeVisible();
+    expect(within(packageIdentity).getByText("Designgranskning klar")).toBeVisible();
+    expect(
+      within(packageIdentity).getByText("Svenska PDF:er · tekniska datafält på engelska"),
+    ).toBeVisible();
     expect(within(packageIdentity).getByText("2.4 MB")).toBeVisible();
+    expect(within(packageIdentity).getByText("b".repeat(64))).toBeVisible();
     expect(within(packageIdentity).getByText("d".repeat(64))).toBeVisible();
     expect(within(packageIdentity).getByText("Designgranskningspaket (ZIP)")).toBeVisible();
     expect(within(packageIdentity).getByText("Lagerurval")).toBeVisible();
     expect(within(packageIdentity).getByText("Genereringsplan")).toBeVisible();
     expect(within(packageIdentity).getByText("Readinessbevis")).toBeVisible();
+    const customerDocuments = screen.getByRole("region", {
+      name: "Kunddokument i granskningspaketet",
+    });
+    expect(within(customerDocuments).getByText("Monteringsmanual")).toBeVisible();
+    expect(within(customerDocuments).getByText(/inte frisläppt monteringsinstruktion/i)).toBeVisible();
+    expect(within(customerDocuments).getByText(/START-HERE\.md/)).toBeVisible();
+    expect(within(customerDocuments).getByText(/sida A\/B som DXF och SVG/)).toBeVisible();
+    expect(within(customerDocuments).getByText(/råmaterialval, generationsplan, operationer och setupblad/)).toBeVisible();
+    const serverFiles = screen.getByRole("region", {
+      name: "Separat verifierbara serverfiler",
+    });
+    expect(within(serverFiles).getByRole("button", { name: "Hämta fil – Manifest" })).toBeEnabled();
+    expect(within(serverFiles).getAllByText(/JSON · revision 1 · 2.4 MB · Verifieringsbevis/i).length).toBeGreaterThan(0);
     const workshopRequirements = screen.getByRole("region", {
       name: "Återstående externa verkstadskrav",
     });
@@ -1501,9 +3567,16 @@ describe("ProductionWorkflow", () => {
     );
     expect(screen.queryByText("Underlaget är klart")).not.toBeInTheDocument();
     expect(screen.queryByText(/ritningar och tillverkningsfiler/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/CAM|lås revision|frisläpp revision/i)).not.toBeInTheDocument();
+    const camReview = screen.getByRole("region", {
+      name: "CAM-granskning och immutable designrevision",
+    });
+    expect(within(camReview).getByText(/aldrig en arbetsorder eller skärande CNC-kod/i)).toBeVisible();
+    expect(within(camReview).getByRole("button", {
+      name: "Godkänn CAM-valideringspaket",
+    })).toBeDisabled();
+    expect(within(camReview).getByText(/Endast reviewer, admin eller owner/i)).toBeVisible();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
-    expect(document.querySelector('input[type="file"]')).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Certifierarsignerad retention-JSON")).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
     await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
@@ -1511,11 +3584,280 @@ describe("ProductionWorkflow", () => {
     expect(api.downloadArtifact).toHaveBeenCalledWith(bundle);
     expect(createObjectUrl).toHaveBeenCalledWith(verifiedBlob);
     expect(clickedUrl).toBe("blob:verified-bundle");
-    expect(suggestedFileName).toBe("custombuild-design-review-rev-1.zip");
+    expect(suggestedFileName).toBe(
+      `custombuild-project-${project.id}-design-review-rev-1.zip`,
+    );
     await waitFor(() => expect(revokeObjectUrl).toHaveBeenCalledExactlyOnceWith(
       "blob:verified-bundle",
     ));
     expect(api.approveVersion).not.toHaveBeenCalled();
+  });
+
+  it("enforces maker-checker before CAM approval and creates only an immutable design-review release", async () => {
+    const designApproval = {
+      approval_type: "design" as const,
+      approved_by: reviewerPrincipal.user_id,
+      reason: "Designkontroll godkänd.",
+      generation_job_id: null,
+      production_context_hash: null,
+      manifest_sha256: null,
+      overrides_json: [],
+      created_at: "2026-08-01T08:00:00Z",
+      updated_at: "2026-08-01T08:00:00Z",
+    };
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [designApproval],
+      latest_job: succeededJob,
+    });
+    vi.mocked(api.approveVersion).mockResolvedValue(version("approved"));
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={secondReviewerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    const camConfirmation = screen.getByRole("checkbox", {
+      name: /Jag har granskat exakt jobb, manifest och maskinbunden validering/i,
+    });
+    const approveCam = screen.getByRole("button", {
+      name: "Godkänn CAM-valideringspaket",
+    });
+    expect(camConfirmation).toBeEnabled();
+    expect(approveCam).toBeDisabled();
+
+    fireEvent.click(camConfirmation);
+    expect(approveCam).toBeEnabled();
+    fireEvent.click(approveCam);
+
+    await waitFor(() => expect(api.approveVersion).toHaveBeenCalledWith(project.id, 1, {
+      approval_type: "cam",
+      reason: "Exakt genererat CAM-valideringspaket och manifest granskat. Godkännandet gäller endast icke-skärande validering och auktoriserar inte fysisk kapning.",
+      generation_job_id: succeededJob.id,
+      warning_overrides: [],
+    }));
+    expect(await screen.findByText(/CAM-granskningen är bunden till aktuellt jobb och manifest/i)).toBeVisible();
+
+    const releaseConfirmation = screen.getByRole("checkbox", {
+      name: /Jag bekräftar att revisionslåset endast gäller immutable designgranskning/i,
+    });
+    const releaseButton = screen.getByRole("button", {
+      name: "Lås designgranskningsrevision R1",
+    });
+    expect(releaseButton).toBeDisabled();
+    fireEvent.click(releaseConfirmation);
+    expect(releaseButton).toBeEnabled();
+    fireEvent.click(releaseButton);
+
+    await waitFor(() => expect(api.releaseVersion).toHaveBeenCalledWith(project.id, 1, "R1"));
+    expect(await screen.findByText(/Immutable designgranskningsrevision R1/i)).toBeVisible();
+    const releasedZipVerification = screen.getByRole("region", {
+      name: "Verifiera frisläppt ZIP",
+    });
+    expect(within(releasedZipVerification).getByText(
+      `--expect-bundle-sha256 ${"b".repeat(64)}`,
+    )).toBeVisible();
+    expect(within(releasedZipVerification).getByText(
+      /PASS bekräftar filidentiteten men auktoriserar inte fysisk kapning/i,
+    )).toBeVisible();
+    expect(screen.getByRole("status", { name: "Status för fysisk tillverkning" })).toHaveTextContent(
+      "Ej frisläppt för fysisk kapning",
+    );
+    expect(screen.queryByText(/Fysisk kapning är auktoriserad/i)).not.toBeInTheDocument();
+  });
+
+  it("rejects a release response bound to another ZIP checksum", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: reviewerPrincipal.user_id,
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    vi.mocked(api.approveVersion).mockResolvedValue(version("approved"));
+    vi.mocked(api.releaseVersion).mockResolvedValue({
+      ...immutableDesignReviewRelease,
+      bundle_sha256: "c".repeat(64),
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={secondReviewerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox", {
+      name: /Jag har granskat exakt jobb, manifest och maskinbunden validering/i,
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "Godkänn CAM-valideringspaket" }));
+    expect(await screen.findByText(
+      /CAM-granskningen är bunden till aktuellt jobb och manifest/i,
+    )).toBeVisible();
+    fireEvent.click(screen.getByRole("checkbox", {
+      name: /Jag bekräftar att revisionslåset endast gäller immutable designgranskning/i,
+    }));
+    fireEvent.click(screen.getByRole("button", {
+      name: "Lås designgranskningsrevision R1",
+    }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /revisionsbevis matchar inte exakt designgranskningspaket/i,
+    );
+    expect(screen.queryByText(/Immutable designgranskningsrevision R1/i)).not.toBeInTheDocument();
+  });
+
+  it("does not let the design reviewer approve the CAM validation package", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: reviewerPrincipal.user_id,
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+        principal={reviewerPrincipal}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    expect(screen.getByRole("checkbox", {
+      name: /Jag har granskat exakt jobb, manifest och maskinbunden validering/i,
+    })).toBeDisabled();
+    expect(screen.getByRole("button", {
+      name: "Godkänn CAM-valideringspaket",
+    })).toBeDisabled();
+    expect(screen.getByText(/Maker–checker kräver att en annan person än designgranskaren/i)).toBeVisible();
+    expect(api.approveVersion).not.toHaveBeenCalled();
+    expect(api.releaseVersion).not.toHaveBeenCalled();
+  });
+
+  it("downloads an individually listed server artifact only after re-verifying its identity", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    const manifest = completeArtifacts.find((artifact) => artifact.kind === "manifest")!;
+    const verifiedBlob = new Blob(["{}"], { type: "application/json" });
+    vi.mocked(api.downloadArtifact).mockResolvedValue(verifiedBlob);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-manifest");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    let suggestedFileName: string | undefined;
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      function (this: HTMLAnchorElement) {
+        suggestedFileName = this.download;
+      },
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Hämta fil – Manifest" }));
+
+    await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
+    expect(api.downloadArtifact).toHaveBeenCalledExactlyOnceWith(manifest);
+    expect(anchorClick).toHaveBeenCalledOnce();
+    expect(suggestedFileName).toBe(
+      `custombuild-project-${project.id}-design-review-manifest-rev-1.json`,
+    );
+    expect(await screen.findByText("Manifest har hämtats för designgranskning.")).toBeVisible();
+  });
+
+  it("fails closed when an individually listed artifact changes before download", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    const changedArtifacts = completeArtifacts.map((artifact) => (
+      artifact.kind === "manifest" ? { ...artifact, sha256: "e".repeat(64) } : artifact
+    ));
+    vi.mocked(api.listArtifacts)
+      .mockResolvedValueOnce(completeArtifacts)
+      .mockResolvedValueOnce(changedArtifacts);
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL");
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Hämta fil – Manifest" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /Filen har ändrats eller är inte längre entydigt bunden till paketet/i,
+    );
+    expect(api.downloadArtifact).not.toHaveBeenCalled();
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(anchorClick).not.toHaveBeenCalled();
   });
 
   it("revokes a pending verified Blob URL exactly once when the workflow unmounts", async () => {
@@ -1576,7 +3918,7 @@ describe("ProductionWorkflow", () => {
       latest_job: succeededJob,
     });
     vi.mocked(api.downloadArtifact).mockRejectedValue(new ApiError(
-      "Artefaktens innehåll matchar inte den signerade SHA-256-identiteten.",
+      "Artefaktens innehåll matchar inte den förväntade SHA-256-identiteten.",
       409,
     ));
     const createObjectUrl = vi.spyOn(URL, "createObjectURL");
@@ -1597,6 +3939,53 @@ describe("ProductionWorkflow", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/SHA-256-identiteten/i);
     expect(api.downloadArtifact).toHaveBeenCalledWith(bundle);
+    expect(createObjectUrl).not.toHaveBeenCalled();
+    expect(anchorClick).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the refreshed ZIP artifact checksum differs from the job", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontroll godkänd.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: succeededJob,
+    });
+    const changedArtifacts = completeArtifacts.map((artifact) => (
+      artifact.kind === "production_bundle"
+        ? { ...artifact, sha256: "c".repeat(64) }
+        : artifact
+    ));
+    vi.mocked(api.listArtifacts)
+      .mockResolvedValueOnce(completeArtifacts)
+      .mockResolvedValueOnce(changedArtifacts);
+    const createObjectUrl = vi.spyOn(URL, "createObjectURL");
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+
+    expect(await screen.findByText(/aktuella artefaktlista/i)).toBeVisible();
+    expect(api.downloadArtifact).not.toHaveBeenCalled();
     expect(createObjectUrl).not.toHaveBeenCalled();
     expect(anchorClick).not.toHaveBeenCalled();
   });
@@ -1658,10 +4047,10 @@ describe("ProductionWorkflow", () => {
       latest_job: blockedCamJob,
     });
     vi.mocked(api.listArtifacts).mockResolvedValue(blockedReviewArtifacts);
-    let suggestedFileName: string | undefined;
+    const suggestedFileNames: string[] = [];
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
       function (this: HTMLAnchorElement) {
-        suggestedFileName = this.download;
+        suggestedFileNames.push(this.download);
       },
     );
 
@@ -1689,14 +4078,36 @@ describe("ProductionWorkflow", () => {
     expect(physicalStatus).toHaveTextContent("inga CAM- eller maskinvalideringsfiler");
     const packageIdentity = screen.getByRole("region", { name: "Paketidentitet" });
     expect(within(packageIdentity).getByText("Status för designgranskningspaket")).toBeVisible();
+    expect(within(packageIdentity).getByText("Leverantörsöverlämning")).toBeVisible();
+    expect(within(packageIdentity).getByText("Maskinneutralt bearbetningsunderlag")).toBeVisible();
+    expect(within(packageIdentity).getByRole("button", {
+      name: "Hämta fil – Leverantörsöverlämning",
+    })).toBeEnabled();
+    expect(within(packageIdentity).getByRole("button", {
+      name: "Hämta fil – Maskinneutralt bearbetningsunderlag",
+    })).toBeEnabled();
     expect(within(packageIdentity).queryByText("Semantiska operationer")).not.toBeInTheDocument();
     expect(within(packageIdentity).queryByText("Valideringsbackplot")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Skapa om underlag" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+    fireEvent.click(within(packageIdentity).getByRole("button", {
+      name: "Hämta fil – Leverantörsöverlämning",
+    }));
     await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
-    expect(anchorClick).toHaveBeenCalledOnce();
-    expect(suggestedFileName).toBe("custombuild-design-review-rev-1.zip");
+    expect(api.downloadArtifact).toHaveBeenLastCalledWith(
+      blockedReviewArtifacts.find((artifact) => artifact.kind === "supplier_handoff"),
+    );
+    expect(suggestedFileNames).toEqual([
+      `custombuild-project-${project.id}-cnc-shop-handoff-rev-1.json`,
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+    await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(3));
+    expect(anchorClick).toHaveBeenCalledTimes(2);
+    expect(suggestedFileNames).toEqual([
+      `custombuild-project-${project.id}-cnc-shop-handoff-rev-1.json`,
+      `custombuild-project-${project.id}-design-review-rev-1.zip`,
+    ]);
     expect(api.approveVersion).not.toHaveBeenCalled();
   });
 
@@ -1738,7 +4149,12 @@ describe("ProductionWorkflow", () => {
       "Lagerinköp, nesting, operationer, setupblad, backplot och maskinvalideringskod",
     );
     expect(document.body).not.toHaveTextContent("5000");
-    expect(document.body).not.toHaveTextContent("5125");
+    expect(screen.getByRole("radio", {
+      name: (accessibleName) => accessibleName.includes(MACHINES[0]!.name),
+    })).toBeChecked();
+    expect(screen.getByRole("radio", {
+      name: (accessibleName) => accessibleName.includes(MACHINES[1]!.name),
+    })).not.toBeChecked();
 
     fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
     await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
@@ -1834,6 +4250,47 @@ describe("ProductionWorkflow", () => {
     await waitFor(() => expect(onSummaryChange).toHaveBeenLastCalledWith(
       expect.objectContaining({ designReviewReady: true, physicalCuttingAuthorized: false }),
     ));
+  });
+
+  it("keeps a back-panel-retention-blocked review ZIP downloadable", async () => {
+    const api = apiClient({
+      version: version("design_validated"),
+      approvals: [{
+        approval_type: "design",
+        approved_by: "reviewer-1",
+        reason: "Designkontrollen har granskats.",
+        generation_job_id: null,
+        production_context_hash: null,
+        manifest_sha256: null,
+        overrides_json: [],
+        created_at: "2026-08-01T08:00:00Z",
+        updated_at: "2026-08-01T08:00:00Z",
+      }],
+      latest_job: backPanelRetentionBlockedCamJob,
+    });
+    vi.mocked(api.listArtifacts).mockResolvedValue(blockedReviewArtifacts);
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(
+      () => undefined,
+    );
+
+    render(
+      <ProductionWorkflow
+        apiClient={api}
+        spec={DEFAULT_DESIGN_SPEC}
+        design={designWith([], "PASS")}
+        onSummaryChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByText("Granskningspaketet är klart")).toBeVisible();
+    const camStatus = screen.getByRole("status", { name: "Status för CAM" });
+    expect(camStatus).toHaveTextContent("fyrsidiga mekaniska infångningen");
+    expect(camStatus).toHaveTextContent("fortfarande tillgängligt för designgranskning");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned granskningspaket (.zip)" }));
+    await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledTimes(2));
+    expect(api.downloadArtifact).toHaveBeenCalledOnce();
+    expect(anchorClick).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -2087,7 +4544,7 @@ describe("ProductionWorkflow", () => {
       latest_job: {
         ...succeededJob,
         result_json: {
-          manifest_sha256: "d".repeat(64),
+          ...reviewJobArtifactResult(false),
           ...safeMachineProgramFields,
           design_review_package_status: generatedCamPackageStatusFixture(),
           workshop_readiness: incompleteReadiness,
@@ -2222,6 +4679,7 @@ describe("ProductionWorkflow", () => {
         onSummaryChange={vi.fn()}
         onRequestServerPreviewRetry={retryServerPreview}
         projectId={project.id}
+        principal={designerPrincipal}
       />,
     );
 
@@ -2245,6 +4703,7 @@ describe("ProductionWorkflow", () => {
         onSummaryChange={vi.fn()}
         onRequestServerPreviewRetry={retryServerPreview}
         projectId={project.id}
+        principal={designerPrincipal}
       />,
     );
     const retry = await screen.findByRole("button", { name: "Spara och kontrollera" });
@@ -2326,6 +4785,7 @@ describe("ProductionWorkflow", () => {
         design={currentDesign}
         onSummaryChange={vi.fn()}
         projectId={project.id}
+        principal={designerPrincipal}
       />,
     );
 
@@ -2341,7 +4801,7 @@ describe("ProductionWorkflow", () => {
       "shelving",
     );
 
-    const sessionKey = productionSessionKey(undefined, project.id, DEFAULT_DESIGN_SPEC.design_id);
+    const sessionKey = productionSessionKey(designerPrincipal, project.id, DEFAULT_DESIGN_SPEC.design_id);
     await waitFor(() => {
       const recovered = readProductionSession(window.sessionStorage, sessionKey);
       expect(recovered?.version?.revision).toBe(2);

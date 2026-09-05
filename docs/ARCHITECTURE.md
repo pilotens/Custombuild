@@ -129,7 +129,12 @@ available only when the API is running in development authentication mode.
 
 ## Background jobs
 
-Generation uses a transactional outbox. The idempotency key covers the design
+Generation uses a transactional outbox. API-created work and every retry are committed
+with a durable outbox event; `available_at` provides database-owned not-before
+semantics for bounded backoff. The generation pool consumes only `generation`, while
+a singleton maintenance pool consumes outbox dispatch, lease recovery and reaping
+from `maintenance`. Beat only schedules maintenance work, and unknown tasks are sent
+to an unconsumed fail-closed queue. The idempotency key covers the design
 hash plus the complete production context. Jobs claim work atomically, retry in
 a bounded manner and give every claimed lease a distinct physical incarnation.
 The attempt ID is UUIDv5 over the job UUID and canonical lease token; each

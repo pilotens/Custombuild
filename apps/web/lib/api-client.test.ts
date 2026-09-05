@@ -2,11 +2,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   CustombuildApiClient,
+  designSpecFromServer,
   normalizePreviewResponse,
   productionContextFromSpec,
   toPreviewRequest,
   toSourceProvenance,
   type DesignVersionRead,
+  type ExternalEvidenceRead,
   type ProjectDraftRead,
   versionProductionContextMatches,
 } from "./api-client";
@@ -46,6 +48,56 @@ function exactServerParts(spec: DesignSpec = DEFAULT_DESIGN_SPEC) {
   }));
 }
 
+function backendRetentionCertificationRequest(designHash = "a".repeat(64)) {
+  return {
+    schema_version: "custombuild.joint-retention-certification-request.v2",
+    signed_evidence_schema_version: "custombuild.joint-retention-signed-evidence.v2",
+    application_class: "load_bearing_carcass_dado",
+    joint_geometry_fingerprint_schema: "custombuild.joint-retention-application-geometry.v1",
+    source_design_hash: designHash,
+    joint_geometry_sha256: "b".repeat(64),
+    engine_version: "bookcase-engine-6.0.0",
+    template_version: "bookcase-template-5.0.0",
+    eligible_for_current_binding: true,
+    blocking_issue: null,
+    excluded_applications: [{
+      application_class: "captive_inset_back_groove",
+      joint_count: 4,
+      retention_basis: "canonical_four_boundary_geometric_capture",
+      capture_proven: true,
+    }],
+    required_materials: [{
+      material_id: "birch-plywood",
+      material_version: "screening-2026.1",
+      actual_thickness_um: 17_800,
+    }],
+    required_load_cases: [
+      { mode: "shear", rated_design_load_n: 785 },
+      { mode: "withdrawal", rated_design_load_n: 250 },
+    ],
+    minimum_safety_factor_permille: 2_000,
+  };
+}
+
+function backendRetentionTrust(baseDesignHash = "a".repeat(64)) {
+  return {
+    schema_version: "custombuild.joint-retention-binding.v2",
+    application_class: "load_bearing_carcass_dado",
+    storage_evidence_id: "22222222-2222-4222-8222-222222222222",
+    storage_evidence_sha256: "c".repeat(64),
+    base_design_hash: baseDesignHash,
+    joint_geometry_sha256: "b".repeat(64),
+    registry_sha256: "d".repeat(64),
+    issuer_id: "retention-lab",
+    key_id: "retention-lab-2026",
+    signed_evidence_id: "retention-lab-report-2026-001",
+    signed_evidence_expires_at: "2099-02-01T23:59:59.999+00:00",
+    system_id: "mechanical-dado-lock",
+    system_version: "1.0.0",
+    contract_sha256: "e".repeat(64),
+  };
+}
+
 async function sha256Hex(content: Uint8Array): Promise<string> {
   const buffer = new ArrayBuffer(content.byteLength);
   new Uint8Array(buffer).set(content);
@@ -53,6 +105,21 @@ async function sha256Hex(content: Uint8Array): Promise<string> {
   return [...new Uint8Array(digest)]
     .map((value) => value.toString(16).padStart(2, "0"))
     .join("");
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === "boolean" || typeof value === "string") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`,
+    ).join(",")}}`;
+  }
+  throw new TypeError("non-canonical test value");
 }
 
 function sha256Base64(sha256: string): string {
@@ -98,7 +165,159 @@ function artifactResponse(
   return response;
 }
 
+function jointRetentionEvidenceResponse(
+  content: Uint8Array,
+  evidence: ExternalEvidenceRead,
+  projectId: string,
+  overrides: {
+    headers?: Record<string, string | undefined>;
+    redirected?: boolean;
+    status?: number;
+    url?: string;
+  } = {},
+): Response {
+  const headers = new Headers({
+    "Cache-Control": "private, no-store, no-transform, max-age=0",
+    "Content-Disposition": `attachment; filename="custombuild-joint-retention-${evidence.id}.json"`,
+    "Content-Length": String(evidence.size_bytes),
+    "Content-Type": evidence.content_type,
+    Digest: `sha-256=${sha256Base64(evidence.sha256)}`,
+    ETag: `"${evidence.sha256}"`,
+    Pragma: "no-cache",
+    "X-Content-Type-Options": "nosniff",
+  });
+  for (const [name, value] of Object.entries(overrides.headers ?? {})) {
+    if (value === undefined) headers.delete(name);
+    else headers.set(name, value);
+  }
+  const body = new ArrayBuffer(content.byteLength);
+  new Uint8Array(body).set(content);
+  const response = new Response(body, {
+    status: overrides.status ?? 200,
+    headers,
+  });
+  Object.defineProperties(response, {
+    redirected: { configurable: true, value: overrides.redirected ?? false },
+    url: {
+      configurable: true,
+      value: overrides.url ?? (
+        `https://api.example.test/v1/projects/${projectId}/evidence/${evidence.id}/download`
+      ),
+    },
+  });
+  return response;
+}
+
 describe("API preview normalization", () => {
+  it("preserves the exact backend retention certification request without reconstructing it", () => {
+    const request = backendRetentionCertificationRequest();
+    const result = normalizePreviewResponse({
+      design_hash: request.source_design_hash,
+      retention_certification_request: request,
+    }, DEFAULT_DESIGN_SPEC);
+
+    expect(result.retention_certification_request).toBe(request);
+    expect(result.retention_certification_request).toEqual(request);
+  });
+
+  it("accepts the base-design request retained by a distinct bound preview hash", () => {
+    const request = backendRetentionCertificationRequest("a".repeat(64));
+    const result = normalizePreviewResponse({
+      design_hash: "f".repeat(64),
+      retention_certification_request: request,
+      retention_trust: backendRetentionTrust(request.source_design_hash),
+    }, DEFAULT_DESIGN_SPEC);
+
+    expect(result.design_hash).toBe("f".repeat(64));
+    expect(result.retention_certification_request).toBe(request);
+    expect(result.retention_certification_request?.source_design_hash).toBe("a".repeat(64));
+  });
+
+  it("accepts the exact v2 stable-key lengths and safety-factor boundaries", () => {
+    for (const minimumSafetyFactorPermille of [1_000, 5_000]) {
+      const request = {
+        ...backendRetentionCertificationRequest(),
+        engine_version: "e".repeat(80),
+        template_version: "t".repeat(80),
+        required_materials: [{
+          material_id: "m".repeat(128),
+          material_version: "v".repeat(80),
+          actual_thickness_um: 17_800,
+        }],
+        minimum_safety_factor_permille: minimumSafetyFactorPermille,
+      };
+
+      expect(normalizePreviewResponse({
+        design_hash: request.source_design_hash,
+        retention_certification_request: request,
+      }, DEFAULT_DESIGN_SPEC).retention_certification_request).toBe(request);
+    }
+  });
+
+  it("fails closed outside the exact v2 key, type, field and safety-factor contract", () => {
+    const request = backendRetentionCertificationRequest();
+    const material = request.required_materials[0]!;
+    const invalidRequests: unknown[] = [
+      { ...request, engine_version: "e".repeat(81) },
+      { ...request, template_version: "t".repeat(81) },
+      { ...request, engine_version: "-engine" },
+      { ...request, template_version: "template/version" },
+      { ...request, engine_version: 2 },
+      {
+        ...request,
+        required_materials: [{ ...material, material_id: "m".repeat(129) }],
+      },
+      {
+        ...request,
+        required_materials: [{ ...material, material_version: "v".repeat(81) }],
+      },
+      {
+        ...request,
+        required_materials: [{ ...material, material_id: "_material" }],
+      },
+      {
+        ...request,
+        required_materials: [{ ...material, material_version: "version 2" }],
+      },
+      {
+        ...request,
+        required_materials: [{ ...material, material_id: 42 }],
+      },
+      {
+        ...request,
+        required_materials: [{ ...material, client_note: "forbidden" }],
+      },
+      { ...request, minimum_safety_factor_permille: 999 },
+      { ...request, minimum_safety_factor_permille: 5_001 },
+      { ...request, minimum_safety_factor_permille: 1_000.5 },
+      { ...request, minimum_safety_factor_permille: "2000" },
+    ];
+
+    for (const invalidRequest of invalidRequests) {
+      expect(() => normalizePreviewResponse({
+        design_hash: request.source_design_hash,
+        retention_certification_request: invalidRequest,
+      }, DEFAULT_DESIGN_SPEC)).toThrow(ApiError);
+    }
+  });
+
+  it("fails closed on a mismatched or extended retention certification request", () => {
+    const request = backendRetentionCertificationRequest();
+    expect(() => normalizePreviewResponse({
+      design_hash: "c".repeat(64),
+      retention_certification_request: request,
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/matchar inte aktuell designgeometri/i);
+    expect(() => normalizePreviewResponse({
+      design_hash: request.source_design_hash,
+      retention_certification_request: { ...request, client_rebuilt_hash: "forbidden" },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/ogiltigt fältset/i);
+    expect(() => normalizePreviewResponse({
+      design_hash: "f".repeat(64),
+      retention_certification_request: request,
+      retention_trust: { ...backendRetentionTrust(), base_design_hash: "0".repeat(64) },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(/matchar inte aktuell designgeometri/i);
+  });
+
   it("merges a tolerant server response with deterministic local output", () => {
     const result = normalizePreviewResponse(
       {
@@ -281,6 +500,10 @@ describe("API preview normalization", () => {
       bay_sizing_mode: "target_width",
       target_bay_width_mm: 300,
       divider_count: 2,
+      measured_thickness_mm: 17.6,
+      edge_band_mm: 1.2,
+      plinth_height_mm: 125,
+      wall_anchor_required: true,
       wall_anchor_verified: true,
       reference_image_import: {
         source: "reference_image",
@@ -312,8 +535,13 @@ describe("API preview normalization", () => {
     expect(request.joint_system).toBe("dado");
     expect(request.back_material_id).toBe(DEFAULT_DESIGN_SPEC.back_material_id);
     expect(request.back_panel).toBe("inset_groove");
+    expect(request.plinth_height_mm).toBe(125);
+    expect(request.wall_anchor_required).toBe(true);
     expect(request.wall_anchor_verified).toBe(false);
     expect(request.divider_count).toBe(2);
+    expect(request.measured_thickness_mm).toBe(17.6);
+    expect(request.measured_back_thickness_mm).toBe(DEFAULT_DESIGN_SPEC.measured_back_thickness_mm);
+    expect(request.edge_band_mm).toBe(1.2);
     expect(request).not.toHaveProperty("schema_version");
     expect(request).not.toHaveProperty("machine_profile_id");
     expect(request.bay_width_ratios).toEqual(DEFAULT_DESIGN_SPEC.bay_width_ratios);
@@ -481,15 +709,17 @@ describe("API preview normalization", () => {
             depth_um: 320_000,
             nominal_thickness_um: 18_000,
             actual_thickness_um: 17_800,
+            back_thickness_um: 5_800,
             shelf_count: 5,
             shelf_mount: "fixed",
             shelf_load_n: 314,
             back_panel: "inset_groove",
-            plinth_height_um: 80_000,
+            plinth_height_um: 125_000,
+            wall_anchor: { required: true, verified: false },
             vertical_divider_count: 1,
             reinforcement_mode: "auto",
             joint_system: "dado",
-            edge_band_thickness_um: 1_000,
+            edge_band_thickness_um: 1_200,
           },
         },
         rule_evaluations: [
@@ -531,6 +761,10 @@ describe("API preview normalization", () => {
     expect(result.spec.divider_count).toBe(1);
     expect(result.spec.reinforcement_mode).toBe("auto");
     expect(result.spec.back_material_id).toBe("mdf-6");
+    expect(result.spec.measured_back_thickness_mm).toBe(5.8);
+    expect(result.spec.edge_band_mm).toBe(1.2);
+    expect(result.spec.plinth_height_mm).toBe(125);
+    expect(result.spec.wall_anchor_required).toBe(true);
     expect(result.rule_evaluations).toHaveLength(1);
     expect(result.rule_evaluations[0]?.calculation).toContain("5wL^4");
     expect(result.rule_evaluations[0]?.affected_part_ids).toEqual(["server-shelf-id"]);
@@ -554,6 +788,19 @@ describe("API preview normalization", () => {
       },
       DEFAULT_DESIGN_SPEC,
     )).toThrow(/förbandssystemet dowel.*inte stöds/i);
+  });
+
+  it.each([
+    [true, /återställa väggförankringsbevis/i],
+    ["false", /wall_anchor\.verified/i],
+  ])("rejects non-editable wall-anchor verification returned as %j", (verified, message) => {
+    expect(() => designSpecFromServer({
+      back_material: { material_id: DEFAULT_DESIGN_SPEC.back_material_id },
+      parameters: {
+        back_panel: DEFAULT_DESIGN_SPEC.back_panel_type,
+        wall_anchor: { required: true, verified },
+      },
+    }, DEFAULT_DESIGN_SPEC)).toThrow(message);
   });
 
   it("rejects unknown, incomplete and backless server back-material identities", () => {
@@ -744,6 +991,53 @@ describe("production API contract", () => {
     expect((body.spec as Record<string, unknown>).back_material_id).toBe(
       spec.back_material_id,
     );
+  });
+
+  it("binds one validated retention identity to preview, autofix replay and version creation", async () => {
+    const evidenceId = "22222222-2222-4222-8222-222222222222";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(
+      JSON.stringify({ design_hash: "d".repeat(64) }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    api.setJointRetentionEvidence("project/1", evidenceId);
+    await api.previewDesign(DEFAULT_DESIGN_SPEC, undefined, "project/1");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `https://api.example.test/v1/designs/preview?project_id=project%2F1&joint_retention_evidence_id=${evidenceId}`,
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    await api.autofixDesign(DEFAULT_DESIGN_SPEC, undefined, "project/1");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://api.example.test/v1/designs/autofix?project_id=project%2F1",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `https://api.example.test/v1/designs/preview?project_id=project%2F1&joint_retention_evidence_id=${evidenceId}`,
+      expect.objectContaining({ method: "POST" }),
+    );
+
+    await api.createVersion("project/1", DEFAULT_DESIGN_SPEC, "d".repeat(64), 0, "shelving");
+    const createBody = JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body)) as Record<string, unknown>;
+    expect(createBody.joint_retention_evidence_id).toBe(evidenceId);
+
+    api.setJointRetentionEvidence("project/1", undefined);
+    await api.previewDesign(DEFAULT_DESIGN_SPEC, undefined, "project/1");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
+      "https://api.example.test/v1/designs/preview?project_id=project%2F1",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("rejects a non-UUID retention selection before any request is made", () => {
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+    expect(() => api.setJointRetentionEvidence("project-1", "not-an-evidence-id"))
+      .toThrow(/ogiltig serveridentitet/i);
   });
 
   it("treats legacy, extra-key and wrong-type production snapshots as stale", () => {
@@ -1167,14 +1461,160 @@ describe("production API contract", () => {
     await expect(api.downloadArtifact(artifact)).rejects.toThrow(ApiError);
   });
 
+  it("downloads exact signed retention bytes only through the authenticated same-origin API", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const content = new TextEncoder().encode('{"signed":"canonical-v2"}\n');
+    const evidence: ExternalEvidenceRead = {
+      id: "22222222-2222-4222-8222-222222222222",
+      project_id: projectId,
+      evidence_type: "joint_retention",
+      rule_id: "CB-JOINT-001",
+      catalog_id: "mechanical-dado-lock",
+      catalog_version: "1.0.0",
+      design_hash: "a".repeat(64),
+      sha256: await sha256Hex(content),
+      size_bytes: content.byteLength,
+      content_type: "application/json",
+      created_by: "33333333-3333-4333-8333-333333333333",
+      expires_at: "2099-02-01T23:59:59Z",
+      created_at: "2026-08-01T08:00:00Z",
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jointRetentionEvidenceResponse(content, evidence, projectId),
+    );
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    const blob = await api.downloadJointRetentionEvidence(projectId, evidence);
+
+    expect(blob.type).toBe("application/json");
+    expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual(Array.from(content));
+    expect(fetchMock).toHaveBeenCalledWith(
+      `https://api.example.test/v1/projects/${projectId}/evidence/${evidence.id}/download`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: "Bearer tenant-token",
+        },
+        cache: "no-store",
+        redirect: "error",
+        signal: undefined,
+      },
+    );
+  });
+
+  it.each([
+    ["cross-project", { project_id: "44444444-4444-4444-8444-444444444444" }],
+    ["wrong evidence type", { evidence_type: "hardware" }],
+    ["wrong rule", { rule_id: "CB-HARDWARE-001" }],
+    ["wrong media type", { content_type: "application/octet-stream" }],
+    ["non-canonical id", { id: "../signed.json" }],
+    ["invalid digest", { sha256: "not-a-digest" }],
+    ["oversized", { size_bytes: 20 * 1024 * 1024 + 1 }],
+  ])("rejects retention download metadata before network I/O: %s", async (_name, patch) => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const evidence = {
+      id: "22222222-2222-4222-8222-222222222222",
+      project_id: projectId,
+      evidence_type: "joint_retention",
+      rule_id: "CB-JOINT-001",
+      catalog_id: "mechanical-dado-lock",
+      catalog_version: "1.0.0",
+      design_hash: "a".repeat(64),
+      sha256: "b".repeat(64),
+      size_bytes: 12,
+      content_type: "application/json",
+      created_by: "33333333-3333-4333-8333-333333333333",
+      expires_at: "2099-02-01T23:59:59Z",
+      created_at: "2026-08-01T08:00:00Z",
+      ...patch,
+    } as ExternalEvidenceRead;
+    const fetchMock = vi.spyOn(globalThis, "fetch");
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.downloadJointRetentionEvidence(projectId, evidence)).rejects.toThrow(
+      /servermetadata är ogiltig/i,
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["missing Content-Length", { headers: { "Content-Length": undefined } }],
+    ["wrong Content-Type", { headers: { "Content-Type": "application/octet-stream" } }],
+    ["wrong filename", { headers: { "Content-Disposition": "attachment; filename=other.json" } }],
+    ["missing Digest", { headers: { Digest: undefined } }],
+    ["wrong ETag", { headers: { ETag: `"${"e".repeat(64)}"` } }],
+    ["cacheable", { headers: { "Cache-Control": "public, max-age=3600" } }],
+    ["HTTP error", { status: 409 }],
+    ["HTTP redirect", { redirected: true }],
+    ["cross-origin response", { url: "https://storage.example/signed.json" }],
+  ])("rejects retention evidence response metadata: %s", async (_name, overrides) => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const content = new TextEncoder().encode("safe-json");
+    const evidence: ExternalEvidenceRead = {
+      id: "22222222-2222-4222-8222-222222222222",
+      project_id: projectId,
+      evidence_type: "joint_retention",
+      rule_id: "CB-JOINT-001",
+      catalog_id: "mechanical-dado-lock",
+      catalog_version: "1.0.0",
+      design_hash: "a".repeat(64),
+      sha256: await sha256Hex(content),
+      size_bytes: content.byteLength,
+      content_type: "application/json",
+      created_by: "33333333-3333-4333-8333-333333333333",
+      expires_at: "2099-02-01T23:59:59Z",
+      created_at: "2026-08-01T08:00:00Z",
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jointRetentionEvidenceResponse(content, evidence, projectId, overrides),
+    );
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.downloadJointRetentionEvidence(projectId, evidence)).rejects.toThrow(ApiError);
+  });
+
+  it("rejects changed retention bytes even when all response headers claim the registered digest", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const expected = new TextEncoder().encode("expected-json");
+    const changed = new TextEncoder().encode("tampered-json");
+    expect(changed.byteLength).toBe(expected.byteLength);
+    const evidence: ExternalEvidenceRead = {
+      id: "22222222-2222-4222-8222-222222222222",
+      project_id: projectId,
+      evidence_type: "joint_retention",
+      rule_id: "CB-JOINT-001",
+      catalog_id: "mechanical-dado-lock",
+      catalog_version: "1.0.0",
+      design_hash: "a".repeat(64),
+      sha256: await sha256Hex(expected),
+      size_bytes: expected.byteLength,
+      content_type: "application/json",
+      created_by: "33333333-3333-4333-8333-333333333333",
+      expires_at: "2099-02-01T23:59:59Z",
+      created_at: "2026-08-01T08:00:00Z",
+    };
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jointRetentionEvidenceResponse(changed, evidence, projectId),
+    );
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.downloadJointRetentionEvidence(projectId, evidence)).rejects.toThrow(
+      /SHA-256-identiteten/i,
+    );
+  });
+
   it("binds release confirmation and rejects incomplete release evidence", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
     const release = {
-      release_id: "release-1",
+      release_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       release_number: "R7",
       status: "released",
+      bundle_sha256: "b".repeat(64),
       manifest_sha256: "f".repeat(64),
       release_kind: "design_review",
       machine_use: "validation_only",
+      physical_cutting_authorized: false,
     };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
       JSON.stringify(release),
@@ -1182,21 +1622,212 @@ describe("production API contract", () => {
     ));
     const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
 
-    await expect(api.releaseVersion("project/1", 3, "R7")).resolves.toEqual(release);
+    await expect(api.releaseVersion(projectId, 3, "R7")).resolves.toEqual(release);
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.example.test/v1/projects/project%2F1/versions/3/release",
+      `https://api.example.test/v1/projects/${projectId}/versions/3/release`,
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ release_number: "R7", confirmation: "RELEASE" }),
       }),
     );
 
+    const invalidResponses: Array<Record<string, unknown>> = [
+      { ...release, release_id: "release-1" },
+      { ...release, release_id: release.release_id.toUpperCase() },
+      { ...release, release_number: "R8" },
+      { ...release, release_number: "lowercase" },
+      { ...release, status: "design_validated" },
+      { ...release, bundle_sha256: "B".repeat(64) },
+      { ...release, bundle_sha256: "b".repeat(63) },
+      { ...release, manifest_sha256: "F".repeat(64) },
+      { ...release, manifest_sha256: "f".repeat(63) },
+      { ...release, release_kind: "physical_production" },
+      { ...release, machine_use: "production" },
+      { ...release, physical_cutting_authorized: true },
+      { ...release, extra_server_claim: true },
+    ];
+    for (const invalid of invalidResponses) {
+      fetchMock.mockResolvedValueOnce(new Response(
+        JSON.stringify(invalid),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+      await expect(api.releaseVersion(projectId, 3, "R7")).rejects.toThrow(
+        /ofullständigt frisläppningsbevis/i,
+      );
+    }
+    for (const missingKey of Object.keys(release)) {
+      const incomplete = { ...release } as Record<string, unknown>;
+      delete incomplete[missingKey];
+      fetchMock.mockResolvedValueOnce(new Response(
+        JSON.stringify(incomplete),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+      await expect(api.releaseVersion(projectId, 3, "R7")).rejects.toThrow(
+        /ofullständigt frisläppningsbevis/i,
+      );
+    }
+  });
+
+  it("accepts only a fully cross-bound executable CAM release receipt", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const candidateBundle = "c".repeat(64);
+    const designManifest = "d".repeat(64);
+    const unsignedApproval = {
+      schema_version: "custombuild.cam-approval-release-binding.v1",
+      approval_id: "33333333-3333-4333-8333-333333333333",
+      organization_id: "11111111-1111-4111-8111-111111111111",
+      design_version_id: "55555555-5555-4555-8555-555555555555",
+      approval_type: "cam",
+      approved_by: "66666666-6666-4666-8666-666666666666",
+      reason: "Verifierad CAM-kandidat för frisläppning",
+      generation_job_id: "44444444-4444-4444-8444-444444444444",
+      production_context_hash: "3".repeat(64),
+      manifest_sha256: designManifest,
+      candidate_bundle_sha256: candidateBundle,
+      overrides_json: [],
+      created_at: "2026-09-01T10:30:00.000000Z",
+      updated_at: "2026-09-01T10:30:00.000000Z",
+    } as const;
+    const bindingSha256 = await sha256Hex(
+      new TextEncoder().encode(canonicalJson(unsignedApproval)),
+    );
+    const release = {
+      release_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      release_number: "R8",
+      status: "released",
+      release_kind: "executable_cam",
+      machine_use: "executable_cam_candidate",
+      design_review_bundle: {
+        bundle_sha256: "b".repeat(64),
+        manifest_sha256: designManifest,
+      },
+      executable_cam: {
+        candidate_bundle_sha256: candidateBundle,
+        candidate_manifest_sha256: "e".repeat(64),
+        production_profile_document_sha256: "f".repeat(64),
+        production_profile_payload_sha256: "1".repeat(64),
+        program_inventory_sha256: "2".repeat(64),
+        cam_approval: {
+          ...unsignedApproval,
+          binding_sha256: bindingSha256,
+        },
+        workshop_acceptance_required: true,
+      },
+      physical_cutting_authorized: false,
+    } as const;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(
+      JSON.stringify(release),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.releaseVersion(projectId, 3, "R8")).resolves.toEqual(release);
+
+    for (const invalid of (
+      [
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            program_inventory_sha256: "X".repeat(64),
+          },
+        },
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            cam_approval: {
+              ...release.executable_cam.cam_approval,
+              candidate_bundle_sha256: "9".repeat(64),
+            },
+          },
+        },
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            workshop_acceptance_required: false,
+          },
+        },
+        {
+          ...release,
+          executable_cam: {
+            ...release.executable_cam,
+            cam_approval: {
+              ...release.executable_cam.cam_approval,
+              overrides_json: [{ rule_id: "not-valid-for-cam" }],
+            },
+          },
+        },
+        { ...release, physical_cutting_authorized: true },
+      ] as const
+    )) {
+      fetchMock.mockResolvedValueOnce(new Response(
+        JSON.stringify(invalid),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+      await expect(api.releaseVersion(projectId, 3, "R8")).rejects.toThrow(
+        /ofullständigt frisläppningsbevis/i,
+      );
+    }
     fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
       ...release,
-      machine_use: "production",
+      executable_cam: {
+        ...release.executable_cam,
+        cam_approval: {
+          ...release.executable_cam.cam_approval,
+          reason: "Manipulerad men fortfarande välformaterad motivering",
+        },
+      },
     }), { status: 200, headers: { "Content-Type": "application/json" } }));
-    await expect(api.releaseVersion("project-1", 3, "R8")).rejects.toThrow(
+    await expect(api.releaseVersion(projectId, 3, "R8")).rejects.toThrow(
+      /fel SHA-256-identitet/i,
+    );
+  });
+
+  it("strictly validates restored release evidence in production state", async () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const release = {
+      release_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      release_number: "R7",
+      status: "released",
+      bundle_sha256: "b".repeat(64),
+      manifest_sha256: "f".repeat(64),
+      release_kind: "design_review",
+      machine_use: "validation_only",
+      physical_cutting_authorized: false,
+    };
+    const state = {
+      project_id: projectId,
+      version: null,
+      approvals: [],
+      latest_job: null,
+      release,
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(new Response(
+      JSON.stringify(state),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ));
+    const api = new CustombuildApiClient("https://api.example.test", "tenant-token");
+
+    await expect(api.getProductionState(projectId)).resolves.toEqual(state);
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      ...state,
+      release: { ...release, bundle_sha256: "B".repeat(64) },
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(api.getProductionState(projectId)).rejects.toThrow(
       /ofullständigt frisläppningsbevis/i,
+    );
+
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      project_id: projectId,
+      version: null,
+      approvals: [],
+      latest_job: null,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await expect(api.getProductionState(projectId)).rejects.toThrow(
+      /saknar ett entydigt frisläppningsfält/i,
     );
   });
 

@@ -576,3 +576,30 @@ def test_real_cadquery_export_rejects_step_roundtrip_geometry_drift(monkeypatch)
     monkeypatch.setattr(cq.Assembly, "load", lambda *args, **kwargs: wrong_volume)
     with pytest.raises(CADExportError, match="volume differs"):
         CadQueryAdapter().export_design(design)
+
+    # A relocated bore preserves the outer bounds and exact aggregate volume.
+    # It must still fail because those two coarse invariants are not enough to
+    # prove that a supplier received the intended machining geometry.
+    bore = SimpleNamespace(
+        feature_id="relocated-bore",
+        kind="DRILL",
+        face="TOP",
+        origin=SimpleNamespace(x_um=80_000, y_um=100_000, z_um=18_000),
+        dimensions=SimpleNamespace(diameter_um=10_000, depth_um=8_000),
+        pattern_count=1,
+        pitch_um=None,
+        through=False,
+    )
+    drilled_part = SimpleNamespace(**{**vars(part), "features": (bore,)})
+    drilled_design = SimpleNamespace(design_hash="b" * 64, parts=(drilled_part,))
+    relocated = (
+        cq.Workplane("XY")
+        .box(300, 200, 18, centered=(False, False, False))
+        .cut(cq.Workplane("XY").circle(5).extrude(8).translate((220, 100, 10)))
+        .val()
+    )
+    relocated_bore = cq.Assembly(name="roundtrip")
+    relocated_bore.add(relocated, name="cad-panel")
+    monkeypatch.setattr(cq.Assembly, "load", lambda *args, **kwargs: relocated_bore)
+    with pytest.raises(CADExportError, match="solid differs.*machining geometry"):
+        CadQueryAdapter().export_design(drilled_design)

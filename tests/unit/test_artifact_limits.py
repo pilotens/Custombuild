@@ -31,6 +31,8 @@ MIB = 1024 * 1024
         ("design_review_package_status", MAX_READINESS_STATUS_BYTES),
         ("manifest", MAX_CORE_DOCUMENT_BYTES),
         ("dfm_report", MAX_CORE_DOCUMENT_BYTES),
+        ("manufacturing_intent", MAX_CORE_DOCUMENT_BYTES),
+        ("supplier_handoff", MAX_CORE_DOCUMENT_BYTES),
         ("setup_sheet_001", MAX_CORE_DOCUMENT_BYTES),
     ),
 )

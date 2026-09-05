@@ -1,9 +1,10 @@
 # Custombuild
 
 Custombuild is a deterministic, tenant-aware B2B design-to-production system for
-parametric casework. The implemented vertical is a configurable bookcase: one
-frozen `DesignSpec` drives construction screening, stable parts and joints, BOM,
-CAD, drawings, assembly data and a checksummed design-review bundle. CAM
+parametric casework. The first supported product is a configurable bookcase: a
+customer can enter exact outer dimensions, bays and shelf levels, then one frozen
+`DesignSpec` drives construction screening, stable parts and joints, BOM, CAD,
+drawings, assembly data and a checksummed package for an external CNC shop. CAM
 validation is generated only when every structured CAM prerequisite is present.
 
 > Machine output is validation-only. It is not safe for physical cutting until
@@ -46,6 +47,17 @@ validation is generated only when every structured CAM prerequisite is present.
   features, machine/setup/tool validation and deterministic multi-stock nesting.
 - CadQuery/OpenCascade STEP and GLB, side-separated DXF, SVG detail drawings,
   PDFs, labels, setup sheets, BOM/cut/material/hardware/tool lists and backplot.
+- A machine-neutral manufacturing-intent document accompanies every review
+  package. It gives an external CNC shop the exact finished/raw part dimensions,
+  local datums, face assignments, feature positions, depths, tolerances and fit
+  clearances without pretending to choose that shop's fixture, WCS, cutters,
+  feeds or executable toolpaths.
+- A checksum-bound supplier handoff identifies the exact project and revision,
+  binds the accepted manifest's canonical non-artifact context and payload
+  inventory without a recursive self-hash, separates quote/geometry intake from
+  cutting authorization, and lists the material, import, setup, tooling,
+  tolerance, simulation and first-article questions the shop must close in its
+  controlled workflow.
 - Optional headless FreeCAD bridge that imports authoritative STEP into a native
   derivative FCStd project. The Compose worker includes it by default; FreeCAD stays
   hidden, replaceable and non-authoritative.
@@ -115,7 +127,8 @@ non-PostgreSQL database. The supplied `.env.example` is development-only.
 Even locally, the continuous storage-capacity attestor uses the separate
 `custombuild_storage_attestor` login. Compose runs the one-shot
 `storage-recovery` service with the migrator credential after migrations and
-before the attestor; API, worker and scheduler cannot start unless recovery
+before the attestor; API, the generation worker, the maintenance worker and scheduler
+cannot start unless recovery
 exits successfully and the attestor becomes healthy. The migrator credential
 must never be supplied as `CAPACITY_ATTESTOR_DATABASE_URL` or to a long-running
 service. PostgreSQL intentionally has no container-runtime automatic restart;
@@ -133,11 +146,17 @@ one-shot recovery and attestation barriers rerun before writers.
 3. Save a real server revision and validate it.
 4. Enter a review reason and explicitly approve the design. Every WARNING needs
    a matching attributed override.
-5. Generate the frozen context through the worker. If CAM is available, inspect
+5. Generate the frozen context through the worker. Download the separate
+   machine-neutral manufacturing intent and CNC-shop handoff, or the complete
+   checksummed ZIP. These files are suitable for supplier import, quotation and
+   engineering review; they are explicitly not an executable machining order.
+   If CAM is available, inspect
    the individual operations, setup sheet and validation backplot evidence. If a
    fail-closed CAM prerequisite is missing, the downloadable design-review package
-   identifies that blocker and deliberately omits every CAM, nesting and controller
-   artifact. An optional API flag can also create a checksum-linked,
+   preserves the authoritative STEP, per-part A/B DXF/SVG, BOM, cut/material
+   lists and machine-neutral manufacturing intent, identifies the blocker, and
+   deliberately omits every CAM, nesting and controller artifact. An optional API
+   flag can also create a checksum-linked,
    non-authoritative FCStd review derivative when a separately reviewed worker
    runtime provides a compatible headless FreeCAD executable. The supplied web
    client leaves that flag disabled.
@@ -151,8 +170,13 @@ one-shot recovery and attestation barriers rerun before writers.
 6. Enter a separate CAM review reason and approve that exact successful job only
    when its complete CAM evidence set exists. A CAM-blocked review package cannot
    enter this step.
-7. Lock the design-review revision. It becomes immutable and exposes the signed
-   ZIP, but remains validation-only and cannot authorize physical machining.
+7. Lock the design-review revision. It becomes immutable and exposes the
+   checksum-verified ZIP and its exact outer-file SHA-256 through the authenticated
+   release view. Give that digest to the recipient over a separately trusted
+   channel and require it with `--expect-bundle-sha256` in the offline verifier.
+   The ZIP itself is not digitally signed and remains validation-only; matching
+   the externally obtained digest proves exact byte identity, not publisher
+   signature, and can never authorize physical machining.
 8. Any later design revision supersedes the old review lock, cancels unfinished
    old work and prevents new access to its stale artifacts.
 
@@ -215,7 +239,8 @@ then frozen on the server. This is a reviewed model conversion, not proof that a
 photograph contains hidden joints, hardware or anchors and not a physical release.
 
 CI additionally starts the full Compose topology—PostgreSQL, Redis, SeaweedFS, API,
-worker and web—and verifies tenant isolation, a genuine CadQuery generation and
+generation worker, singleton maintenance worker, beat scheduler and web—and verifies
+tenant isolation, a genuine CadQuery generation and
 package hashes. For the current plain-DADO fixture it also proves that the
 design-review ZIP remains downloadable while CAM approval and release are both
 rejected with the exact retention blocker. A Chromium acceptance drives the
@@ -224,14 +249,16 @@ built workbench through that real worker-backed flow without route mocks.
 ## Production package
 
 The deterministic ZIP includes `manifest.json` with SHA-256 for every payload;
-STEP/GLB; A/B DXF and SVG per part; BOM, cut and material lists;
+STEP/GLB; A/B DXF and SVG per part; BOM, cut and material lists; machine-neutral
+manufacturing intent; a CNC-supplier handoff and acceptance checklist;
 geometry-derived assembly information; construction, DFM and readiness reports;
 optional FreeCAD interchange status and, when explicitly requested, a native
 FCStd review derivative; and any verified reference-image source provenance
 attached to the revision. Tool lists, nesting maps, labels tied to placements,
 semantic operations, setup sheets, validation backplot/program and operation-based
 QA are included only when CAM validation is complete. An explicitly CAM-blocked
-package omits that entire set.
+package omits that CAM-specific set while retaining the supplier-review geometry
+and intent listed above.
 
 ## Repository map
 
