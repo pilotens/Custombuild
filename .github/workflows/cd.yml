@@ -95,6 +95,7 @@ jobs:
       - name: Install the same-SHA browser matrix
         run: pnpm --dir apps/web exec playwright install --with-deps chromium firefox webkit
       - name: Same-SHA WCAG 2.2 AA production-build acceptance
+        id: wcag_acceptance
         env:
           PLAYWRIGHT_REAL_API: "0"
           PLAYWRIGHT_HTML_OUTPUT_DIR: playwright-report-wcag
@@ -112,6 +113,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Upload SHA-bound browser and WCAG evidence
+        if: always() && (steps.wcag_acceptance.outcome == 'success' || steps.wcag_acceptance.outcome == 'failure')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-browser-wcag-${{ github.sha }}

@@ -1,4 +1,4 @@
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page, type Route } from "@playwright/test";
 import { openPlanning, startWithEmptyPlanningStorage } from "./planning-helpers";
 
 test.skip(
@@ -38,11 +38,27 @@ interface ViewerRenderCheckpoint {
   renderCommit: number;
 }
 
-test.use({ video: "off" });
+test.use({ video: "off", contextOptions: { reducedMotion: "reduce" } });
 
-async function freezeVisualMotion(page: Page): Promise<void> {
-  await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.evaluate(async () => document.fonts.ready);
+async function waitForVisualFonts(page: Page, timeout = 10_000): Promise<void> {
+  // FontFaceSet.ready can wait for the whole document to finish loading, even
+  // when an unrelated image is the only pending request. Flush layout and
+  // inspect the font faces themselves so WebKit cannot block on that request.
+  // https://drafts.csswg.org/css-font-loading/#font-face-set-ready
+  await expect.poll(() => page.evaluate(() => {
+    document.documentElement.getBoundingClientRect();
+    return {
+      pendingStylesheets: [...document.querySelectorAll<HTMLLinkElement>("link[rel='stylesheet']")]
+        .filter((link) => !link.disabled && link.sheet === null)
+        .map((link) => link.href),
+      pendingFonts: [...document.fonts]
+        .filter((font) => font.status === "loading" || font.status === "error")
+        .map((font) => ({ family: font.family, status: font.status })),
+    };
+  }), {
+    message: "Visual evidence requires loaded stylesheets and no loading or failed font faces.",
+    timeout,
+  }).toEqual({ pendingStylesheets: [], pendingFonts: [] });
 }
 
 function renderedModelSurface(page: Page) {
@@ -179,7 +195,7 @@ async function settleViewport(
 ): Promise<ViewerRenderCheckpoint | undefined> {
   let settledCheckpoint: ViewerRenderCheckpoint | undefined;
   await expect(page.locator(".save-state")).toContainText("Sparad lokalt");
-  await page.evaluate(async () => document.fonts.ready);
+  await waitForVisualFonts(page);
   await page.evaluate(() => window.scrollTo(0, 0));
 
   if (withModel) {
@@ -756,6 +772,52 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   expect(statusStripIsExposed).toBe(true);
 }
 
+test("font settling does not wait for an unrelated pending image", async ({ page }) => {
+  let observeImage!: (route: Route) => void;
+  const imageRequested = new Promise<Route>((resolve) => { observeImage = resolve; });
+  await page.route("**/visual-font-gate-image.png", observeImage);
+  await page.route("**/visual-font-gate", (route) => route.fulfill({
+    contentType: "text/html",
+    body: "<!doctype html><p>Ready text</p><img src='/visual-font-gate-image.png' alt='Pending image'>",
+  }));
+  await page.goto("/visual-font-gate", { waitUntil: "domcontentloaded" });
+  const imageRoute = await imageRequested;
+  try {
+    await waitForVisualFonts(page);
+    await expect(page.getByText("Ready text")).toBeVisible();
+    expect(await page.evaluate(() => document.readyState)).toBe("interactive");
+    expect(await page.locator("img").evaluate((image) => (
+      image instanceof HTMLImageElement && !image.complete
+    ))).toBe(true);
+  } finally {
+    await imageRoute.fulfill({ status: 204 });
+  }
+});
+
+test("font settling rejects a loading font and its eventual load failure", async ({ page }) => {
+  let observeFont!: (route: Route) => void;
+  const fontRequested = new Promise<Route>((resolve) => { observeFont = resolve; });
+  await page.route("**/visual-font-gate-pending.woff2", observeFont);
+  await page.route("**/visual-font-gate", (route) => route.fulfill({
+    contentType: "text/html",
+    body: `<!doctype html><style>
+      @font-face { font-family: VisualGate; src: url('/visual-font-gate-pending.woff2'); }
+      p { font-family: VisualGate, sans-serif; }
+    </style><p>Text requiring a font</p>`,
+  }));
+  await page.goto("/visual-font-gate", { waitUntil: "domcontentloaded" });
+  await page.locator("p").boundingBox();
+  const fontRoute = await fontRequested;
+  try {
+    await expect(waitForVisualFonts(page, 250)).rejects.toThrow("Visual evidence requires");
+  } finally {
+    await fontRoute.fulfill({ contentType: "font/woff2", body: "unavailable font data" });
+  }
+  await expect.poll(() => page.evaluate(() => [...document.fonts].map((font) => font.status)))
+    .toEqual(["error"]);
+  await expect(waitForVisualFonts(page, 250)).rejects.toThrow("Visual evidence requires");
+});
+
 test("renderer settling requires a new commit on the same canvas", async ({ page }) => {
   await page.setContent(`
     <canvas
@@ -803,9 +865,8 @@ for (const visualCase of visualCases) {
       // openPlanning below is the product hydration barrier. Network idleness
       // can remain false for unrelated background work on a loaded WebKit runner.
       await page.goto("/", { waitUntil: "domcontentloaded" });
-      await freezeVisualMotion(page);
-
       const explore = await openPlanning(page);
+      await waitForVisualFonts(page);
       await expect(explore.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible();
       await expect(explore).toHaveAttribute("data-presentation", "embedded");
       await settleViewport(page, visualCase.viewport.width);
