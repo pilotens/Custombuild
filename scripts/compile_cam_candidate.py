@@ -187,7 +187,9 @@ def compile_cam_candidate(
 def _read_bounded_regular_file(path: Path, *, label: str, limit: int) -> bytes:
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        # A FIFO must reach the regular-file check without waiting for a writer.
+        # O_NONBLOCK does not alter reads from accepted regular files.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
             raise CAMCandidateCompileError(f"{label} must be a regular, non-symlink file")
@@ -198,11 +200,13 @@ def _read_bounded_regular_file(path: Path, *, label: str, limit: int) -> bytes:
             payload = handle.read(limit + 1)
             after = os.fstat(handle.fileno())
     except OSError as exc:
-        if descriptor is not None:
-            os.close(descriptor)
         raise CAMCandidateCompileError(
             f"{label} must be a readable regular, non-symlink file: {exc}"
         ) from exc
+    finally:
+        # Validation can reject an opened descriptor before fdopen owns it.
+        if descriptor is not None:
+            os.close(descriptor)
     identity_before = (
         before.st_dev,
         before.st_ino,

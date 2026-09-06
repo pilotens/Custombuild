@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -27,6 +30,55 @@ _SOFTWARE_PROVENANCE_SHA256 = cam_software_provenance_sha256(
     _SOFTWARE_PROVENANCE,
     allow_test_only=True,
 )
+
+
+@pytest.mark.parametrize("input_kind", ("empty", "oversized", "directory"))
+def test_rejected_input_closes_opened_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, input_kind: str
+) -> None:
+    source = tmp_path / "input"
+    if input_kind == "directory":
+        source.mkdir()
+    else:
+        source.write_bytes(b"" if input_kind == "empty" else b"too large")
+    opened: list[int] = []
+    real_open = os.open
+
+    def track_open(path: Path, flags: int) -> int:
+        descriptor = real_open(path, flags)
+        opened.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(os, "open", track_open)
+    with pytest.raises(compiler.CAMCandidateCompileError):
+        compiler._read_bounded_regular_file(source, label="source", limit=1)
+    assert len(opened) == 1
+    with pytest.raises(OSError, match="Bad file descriptor"):
+        os.fstat(opened[0])
+
+
+def test_fifo_input_is_rejected_without_waiting_for_writer(tmp_path: Path) -> None:
+    source = tmp_path / "input.fifo"
+    os.mkfifo(source)
+    # Isolate the call so a regression fails with a timeout instead of hanging
+    # the test runner. There is deliberately no writer on this pipe.
+    result = subprocess.run(  # noqa: S603
+        [
+            sys.executable,
+            "-c",
+            "from pathlib import Path; import sys; "
+            "from scripts.compile_cam_candidate import _read_bounded_regular_file; "
+            "_read_bounded_regular_file(Path(sys.argv[1]), label='source', limit=100)",
+            str(source),
+        ],
+        cwd=compiler._REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "must be a regular, non-symlink file" in result.stderr
 
 
 def test_bounded_input_rejects_symlink_and_exclusive_output_preserves_existing(
@@ -163,7 +215,7 @@ def test_compile_wires_verified_source_profile_toolpaths_post_and_round_trip(
         base_design_review_bundle: bytes,
         expected_producer_source_manifest_sha256: str,
         allow_test_only: bool,
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         calls.append(
             (
                 "round_trip",
