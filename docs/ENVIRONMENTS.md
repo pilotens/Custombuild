@@ -49,7 +49,7 @@ with the base and external-production files and run `up --no-build` so environme
 promotion cannot rebuild source or resolve a tag. The workflow publishes, signs and
 attests the accepted GHCR manifests, but does not deploy them. A protected production
 environment, hosting and its operational evidence remain external prerequisites.
-Descriptor v2 keeps the archived object checksum, the accepted image config digest
+Descriptor v3 keeps the archived object checksum, the accepted image config digest
 and the published registry manifest digest as distinct identities. For a pinned OCI
 index it also records the resolved `linux/amd64` child manifest; operators must not
 substitute that child digest for the reviewed deployment index digest.

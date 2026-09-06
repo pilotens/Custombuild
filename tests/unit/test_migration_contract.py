@@ -26,6 +26,7 @@ GENERATION_LEASE_HEARTBEAT_MIGRATION = (
 TENANT_GRAPH_MIGRATION = MIGRATIONS / "0010_tenant_graph_foreign_keys.py"
 RUNTIME_ROLE_PRIVILEGES_MIGRATION = MIGRATIONS / "0011_runtime_role_privileges.py"
 STORAGE_QUOTA_MIGRATION = MIGRATIONS / "0012_storage_quota_ledger.py"
+OUTBOX_RETRY_MIGRATION = MIGRATIONS / "0015_outbox_retry_schedule.py"
 TEMPLATE_CAPABILITY_MIGRATION = MIGRATIONS / "0005_template_capability_identity.py"
 
 
@@ -160,6 +161,18 @@ def test_generation_heartbeat_lease_is_migrated_after_runtime_reliability() -> N
     assert '"ix_generation_jobs_status_lease_expires_at"' in source
     assert "INTERVAL '30 minutes'" in source
     assert "INTERVAL '2 hours'" in source
+
+
+def test_outbox_retry_schedule_is_durable_and_indexed_after_release_binding() -> None:
+    source = OUTBOX_RETRY_MIGRATION.read_text(encoding="utf-8")
+
+    assert 'down_revision = "0014_release_generation_binding"' in source
+    assert '"available_at"' in source
+    assert '"next_attempt_at"' in source
+    assert 'server_default=sa.text("CURRENT_TIMESTAMP")' in source
+    assert '"ix_outbox_events_pending_available"' in source
+    assert '["organization_id", "available_at", "created_at", "id"]' in source
+    assert '"ix_generation_jobs_status_next_attempt_at"' in source
 
 
 def test_tenant_graph_migration_preflights_and_replaces_every_parent_edge() -> None:

@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Custombuild signed joint-retention evidence v2",
+  "description": "Canonical Ed25519-signed external evidence for the load-bearing carcass DADO application. The signature covers every member except signature_base64. This evidence does not authorize physical cutting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_id",
+    "issuer_id",
+    "key_id",
+    "issued_at",
+    "expires_at",
+    "application_class",
+    "joint_geometry_fingerprint_schema",
+    "engine_version",
+    "template_version",
+    "joint_geometry_sha256",
+    "catalogue_entry",
+    "test_report",
+    "installation_instruction",
+    "signature_base64"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "custombuild.joint-retention-signed-evidence.v2"
+    },
+    "evidence_id": {
+      "$ref": "#/$defs/stableKey"
+    },
+    "issuer_id": {
+      "$ref": "#/$defs/stableKey"
+    },
+    "key_id": {
+      "$ref": "#/$defs/stableKey"
+    },
+    "issued_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "expires_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "application_class": {
+      "const": "load_bearing_carcass_dado"
+    },
+    "joint_geometry_fingerprint_schema": {
+      "const": "custombuild.joint-retention-application-geometry.v1"
+    },
+    "engine_version": {
+      "$ref": "#/$defs/versionKey"
+    },
+    "template_version": {
+      "$ref": "#/$defs/versionKey"
+    },
+    "joint_geometry_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "catalogue_entry": {
+      "$ref": "#/$defs/catalogueEntry"
+    },
+    "test_report": {
+      "$ref": "#/$defs/embeddedDocument"
+    },
+    "installation_instruction": {
+      "$ref": "#/$defs/embeddedDocument"
+    },
+    "signature_base64": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "minLength": 88,
+      "maxLength": 88,
+      "pattern": "^[A-Za-z0-9+/]{85}[AQgw]==$"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "stableKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "versionKey": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "material_id",
+        "material_version"
+      ],
+      "properties": {
+        "material_id": {
+          "$ref": "#/$defs/stableKey"
+        },
+        "material_version": {
+          "$ref": "#/$defs/versionKey"
+        }
+      }
+    },
+    "loadCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "rated_design_load_n",
+        "verified_capacity_n"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "shear",
+            "withdrawal"
+          ]
+        },
+        "rated_design_load_n": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "verified_capacity_n": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "catalogueEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system_id",
+        "system_version",
+        "joint_type",
+        "application_class",
+        "method",
+        "machining_scope",
+        "hardware_sku",
+        "hardware_count_per_joint",
+        "applicable_materials",
+        "minimum_applicable_thickness_um",
+        "maximum_applicable_thickness_um",
+        "load_cases",
+        "safety_factor_permille"
+      ],
+      "properties": {
+        "system_id": {
+          "$ref": "#/$defs/stableKey"
+        },
+        "system_version": {
+          "$ref": "#/$defs/versionKey"
+        },
+        "joint_type": {
+          "const": "dado"
+        },
+        "application_class": {
+          "const": "load_bearing_carcass_dado"
+        },
+        "method": {
+          "const": "mechanical"
+        },
+        "machining_scope": {
+          "const": "no_additional_cnc"
+        },
+        "hardware_sku": {
+          "$ref": "#/$defs/stableKey"
+        },
+        "hardware_count_per_joint": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "applicable_materials": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/material"
+          }
+        },
+        "minimum_applicable_thickness_um": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "maximum_applicable_thickness_um": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        },
+        "load_cases": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "prefixItems": [
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/loadCase"
+                },
+                {
+                  "properties": {
+                    "mode": {
+                      "const": "shear"
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/loadCase"
+                },
+                {
+                  "properties": {
+                    "mode": {
+                      "const": "withdrawal"
+                    }
+                  }
+                }
+              ]
+            }
+          ],
+          "items": false
+        },
+        "safety_factor_permille": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 10000
+        }
+      }
+    },
+    "embeddedDocument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_id",
+        "document_version",
+        "sha256",
+        "content_base64"
+      ],
+      "properties": {
+        "document_id": {
+          "$ref": "#/$defs/stableKey"
+        },
+        "document_version": {
+          "$ref": "#/$defs/versionKey"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "content_base64": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "minLength": 4,
+          "maxLength": 11184812,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?$"
+        }
+      }
+    }
+  }
+}

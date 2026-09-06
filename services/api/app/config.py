@@ -13,6 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .config_guards import (
     BuildIdentityValues,
     is_insecure_secret,
+    read_production_cam_profile_source,
     validate_production_build_identity,
     validate_production_database_url,
     validate_production_redis_url,
@@ -74,6 +75,10 @@ class Settings(BaseSettings):
     )
     artifact_url_ttl_seconds: int = Field(default=300, ge=30, le=3600)
     artifact_stream_timeout_seconds: int = Field(default=120, ge=30, le=600)
+    joint_retention_trust_registry_json: str = Field(default="", max_length=262_144)
+    production_cam_profile_path: str = Field(default="", max_length=4096)
+    production_cam_profile_json: str = Field(default="", max_length=1_048_576)
+    production_cam_profile_sha256: str = Field(default="", max_length=64)
     s3_endpoint: str = "http://localhost:9000"
     s3_access_key: str = "custombuild"
     s3_secret_key: str = "development-only-object-secret"  # noqa: S105
@@ -116,6 +121,17 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def production_guards(self) -> Settings:
+        if (
+            self.production_cam_profile_path
+            or self.production_cam_profile_json
+            or self.production_cam_profile_sha256
+        ):
+            read_production_cam_profile_source(
+                profile_path=self.production_cam_profile_path,
+                profile_json=self.production_cam_profile_json,
+                profile_sha256=self.production_cam_profile_sha256,
+                production=self.app_env == "production",
+            )
         if self.database_lock_timeout_seconds >= self.database_statement_timeout_seconds:
             raise ValueError(
                 "DATABASE_LOCK_TIMEOUT_SECONDS must be shorter than the statement timeout"
@@ -134,16 +150,11 @@ class Settings(BaseSettings):
                 "emergency reserve"
             )
         if self.storage_capacity_headroom_bytes >= self.storage_capacity_provisioned_bytes:
-            raise ValueError(
-                "STORAGE_CAPACITY_PROVISIONED_BYTES must exceed capacity headroom"
-            )
+            raise ValueError("STORAGE_CAPACITY_PROVISIONED_BYTES must exceed capacity headroom")
         if self.storage_capacity_byte_limit > (
-            self.storage_capacity_provisioned_bytes
-            - self.storage_capacity_headroom_bytes
+            self.storage_capacity_provisioned_bytes - self.storage_capacity_headroom_bytes
         ):
-            raise ValueError(
-                "STORAGE_CAPACITY_BYTE_LIMIT exceeds attested usable storage"
-            )
+            raise ValueError("STORAGE_CAPACITY_BYTE_LIMIT exceeds attested usable storage")
         if self.app_env == "production" and self.auth_mode != "oidc":
             raise ValueError("production requires AUTH_MODE=oidc")
         if self.app_env == "production" and not self.production_four_eyes_required:
@@ -153,9 +164,7 @@ class Settings(BaseSettings):
         if self.auth_mode == "oidc" and not self.oidc_issuer:
             raise ValueError("OIDC_ISSUER is required in OIDC mode")
         if self.app_env == "production":
-            missing_capacity_fields = sorted(
-                PRODUCTION_CAPACITY_FIELDS - self.model_fields_set
-            )
+            missing_capacity_fields = sorted(PRODUCTION_CAPACITY_FIELDS - self.model_fields_set)
             if missing_capacity_fields:
                 raise ValueError(
                     "production requires explicit storage-capacity settings: "
@@ -221,37 +230,14 @@ class Settings(BaseSettings):
         if self.app_env == "production":
             validate_production_s3_credentials(self.s3_access_key, self.s3_secret_key)
             validate_production_s3_bucket(self.s3_bucket)
-            if (
-                _SHA256_PATTERN.fullmatch(
-                    self.storage_capacity_operator_config_sha256
-                )
-                is None
-            ):
-                raise ValueError(
-                    "production requires STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256"
-                )
-            if (
-                _VOLUME_IDENTITY_PATTERN.fullmatch(
-                    self.storage_capacity_volume_identity
-                )
-                is None
-            ):
-                raise ValueError(
-                    "production requires a canonical STORAGE_CAPACITY_VOLUME_IDENTITY"
-                )
-            if (
-                _SHA256_PATTERN.fullmatch(
-                    self.storage_capacity_deploy_descriptor_sha256
-                )
-                is None
-            ):
-                raise ValueError(
-                    "production requires STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256"
-                )
+            if _SHA256_PATTERN.fullmatch(self.storage_capacity_operator_config_sha256) is None:
+                raise ValueError("production requires STORAGE_CAPACITY_OPERATOR_CONFIG_SHA256")
+            if _VOLUME_IDENTITY_PATTERN.fullmatch(self.storage_capacity_volume_identity) is None:
+                raise ValueError("production requires a canonical STORAGE_CAPACITY_VOLUME_IDENTITY")
+            if _SHA256_PATTERN.fullmatch(self.storage_capacity_deploy_descriptor_sha256) is None:
+                raise ValueError("production requires STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256")
             if self.storage_capacity_max_age_seconds != 600:
-                raise ValueError(
-                    "production STORAGE_CAPACITY_MAX_AGE_SECONDS must be exactly 600"
-                )
+                raise ValueError("production STORAGE_CAPACITY_MAX_AGE_SECONDS must be exactly 600")
         return self
 
     @property
@@ -273,6 +259,15 @@ class Settings(BaseSettings):
             "source_manifest_sha256": self.source_manifest_sha256,
             "dependency_lock_sha256": self.dependency_lock_sha256,
         }
+
+    @property
+    def production_cam_profile_source(self) -> bytes | str:
+        return read_production_cam_profile_source(
+            profile_path=self.production_cam_profile_path,
+            profile_json=self.production_cam_profile_json,
+            profile_sha256=self.production_cam_profile_sha256,
+            production=self.app_env == "production",
+        )
 
 
 @lru_cache(maxsize=1)

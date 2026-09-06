@@ -1,27 +1,10 @@
 {
   "schema_version": "custombuild.design-review-gate-fixture.v1",
   "fixture_scope": "AUTOMATED_DESIGN_REVIEW_ONLY",
-  "warning": "These stock-frame coordinates are deterministic automated test data, not a WCS, fixture, machine setup, calibration record, or workshop approval.",
+  "warning": "Automated design review is not workshop evidence and deliberately provides no physical two-sided registration, WCS, fixture, machine setup, calibration record, or workshop approval.",
   "templates": {
     "shelving": {
-      "registrations_by_stock": {
-        "gate-shelving-mdf-18": {
-          "0": {
-            "method_id": "automated-design-review:shelving:mdf-18:sheet-001",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          },
-          "1": {
-            "method_id": "automated-design-review:shelving:mdf-18:sheet-002",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          }
-        },
-        "gate-shelving-mdf-6": {
-          "0": {
-            "method_id": "automated-design-review:shelving:mdf-6:sheet-001",
-            "points_um": [[50000, 50000], [2390000, 50000]]
-          }
-        }
-      }
+      "registrations_by_stock": {}
     }
   }
 }

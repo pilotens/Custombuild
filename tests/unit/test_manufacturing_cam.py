@@ -12,6 +12,7 @@ from custombuild_manufacturing import (
     ManufacturingFeature,
     PartSpec,
     Point2D,
+    Rect,
     Severity,
     Side,
     StockSheet,
@@ -63,8 +64,12 @@ def test_rotated_a_and_b_features_are_transformed_into_machine_coordinates() -> 
         600_000,
         18_000,
         margin_um=10_000,
-        kerf_um=5_000,
+        kerf_um=6_000,
         grain_direction="NONE",
+        clamp_zones=(
+            Rect(16_500, 576_500, 7_000, 7_000),
+            Rect(896_500, 576_500, 7_000, 7_000),
+        ),
     )
     layout = DeterministicNester().nest((panel,), source_stock)
     document = generate_operations_document(
@@ -74,8 +79,12 @@ def test_rotated_a_and_b_features_are_transformed_into_machine_coordinates() -> 
         machine=linuxcnc_reference_router_1325(),
         two_sided_registration_by_sheet={
             0: TwoSidedRegistration(
+                declaration_authority="CLIENT_DECLARED",
                 method_id="fixture-registration-v1",
-                points=(Point2D(20_000, 20_000), Point2D(900_000, 20_000)),
+                fixture_method_version="fixture-v1",
+                pin_diameter_um=6_000,
+                position_tolerance_um=500,
+                points=(Point2D(20_000, 580_000), Point2D(900_000, 580_000)),
             )
         },
     )

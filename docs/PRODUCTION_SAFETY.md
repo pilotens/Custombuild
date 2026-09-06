@@ -41,6 +41,10 @@ Supported CAM-only blockers have additional hard requirements:
   self-locking or mechanical retention system exists. The design-review package
   remains available while CAM approval and release remain blocked.
 
+The clean-install registry, certifier signing and revocation procedure is in
+[Joint-retention certifier handoff](JOINT_RETENTION_CERTIFIER_HANDOFF.md). The
+repository intentionally contains no trusted issuer or production private key.
+
 The package status document is mandatory for the current manifest format. A
 status-stripped package is invalid; it must never be reinterpreted automatically
 as a weaker legacy CAM package.

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
+from uuid import UUID
 
 from custombuild_manufacturing import (
     canonical_json_bytes,
@@ -70,8 +73,123 @@ class AssemblyManualPlan:
         )
 
 
-DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.3.0"
+DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.4.0"
 ASSEMBLY_READINESS_SCHEMA_VERSION = "custombuild.assembly-readiness.v1"
+RETENTION_TRUST_SCHEMA_VERSION = "custombuild.joint-retention-binding.v2"
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedRetentionTrust:
+    """One immutable trust snapshot promoted only after canonical worker preflight.
+
+    A structurally complete ``JointRetentionContract`` cannot establish issuer
+    authenticity by itself.  The worker constructs this descriptor from the
+    server-owned frozen snapshot only after the API trust gate has re-read the
+    signed evidence, checked the activated registry and compared the complete
+    snapshot.  Document renderers accept no mapping-shaped substitute.
+    """
+
+    schema_version: str
+    application_class: str
+    storage_evidence_id: str
+    storage_evidence_sha256: str
+    base_design_hash: str
+    joint_geometry_sha256: str
+    registry_sha256: str
+    issuer_id: str
+    key_id: str
+    signed_evidence_id: str
+    signed_evidence_expires_at: str
+    system_id: str
+    system_version: str
+    contract_sha256: str
+
+    @classmethod
+    def from_verified_snapshot(cls, value: object) -> VerifiedRetentionTrust:
+        """Parse the exact v2 snapshot after, never instead of, trust verification."""
+
+        field_names = tuple(cls.__dataclass_fields__)
+        if not isinstance(value, Mapping) or set(value) != set(field_names):
+            raise ValueError("verified retention trust snapshot has an invalid field set")
+        normalized: dict[str, str] = {}
+        for field_name in field_names:
+            field_value = value.get(field_name)
+            if type(field_value) is not str or not field_value:
+                raise ValueError(
+                    f"verified retention trust snapshot {field_name} must be a non-empty string"
+                )
+            normalized[field_name] = field_value
+        if normalized["schema_version"] != RETENTION_TRUST_SCHEMA_VERSION:
+            raise ValueError("verified retention trust snapshot schema is unsupported")
+        if normalized["application_class"] != "load_bearing_carcass_dado":
+            raise ValueError("verified retention trust application class is unsupported")
+        for field_name in (
+            "storage_evidence_sha256",
+            "base_design_hash",
+            "joint_geometry_sha256",
+            "registry_sha256",
+            "contract_sha256",
+        ):
+            digest = normalized[field_name]
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError(
+                    f"verified retention trust snapshot {field_name} is not canonical SHA-256"
+                )
+        try:
+            evidence_uuid = UUID(normalized["storage_evidence_id"])
+        except ValueError as exc:
+            raise ValueError("verified retention storage evidence ID is not a UUID") from exc
+        if str(evidence_uuid) != normalized["storage_evidence_id"]:
+            raise ValueError("verified retention storage evidence ID is not canonical")
+        try:
+            expiry = datetime.fromisoformat(normalized["signed_evidence_expires_at"])
+        except ValueError as exc:
+            raise ValueError("verified retention signed-evidence expiry is malformed") from exc
+        if expiry.tzinfo is None or expiry.utcoffset() is None:
+            raise ValueError("verified retention signed-evidence expiry must include a timezone")
+        return cls(**normalized)
+
+    def matches_contract(self, contract: Any) -> bool:
+        """Require every descriptor field that can be rebuilt from the frozen contract."""
+
+        if contract is None:
+            return False
+        try:
+            contract_sha256 = hashlib.sha256(canonical_json_bytes(contract)).hexdigest()
+            application_class = str(
+                getattr(contract.application_class, "value", contract.application_class)
+            )
+            return (
+                self.application_class == application_class
+                and self.storage_evidence_sha256 == contract.evidence_sha256
+                and self.signed_evidence_id == contract.evidence_id
+                and self.joint_geometry_sha256 == contract.joint_geometry_sha256
+                and self.system_id == contract.system_id
+                and self.system_version == contract.system_version
+                and self.contract_sha256 == contract_sha256
+            )
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+
+def _verified_retention_trust(
+    design: Any,
+    retention_trust: object | None,
+) -> VerifiedRetentionTrust | None:
+    """Return an explicitly promoted descriptor only when it binds this exact contract."""
+
+    if not isinstance(retention_trust, VerifiedRetentionTrust):
+        return None
+    retention = getattr(getattr(design, "spec", None), "joint_retention", None)
+    if (
+        retention is None
+        or dado_retention_evidence_missing(design)
+        or not retention_trust.matches_contract(retention)
+    ):
+        return None
+    return retention_trust
 
 
 def _canvas() -> tuple[io.BytesIO, Canvas]:
@@ -111,7 +229,10 @@ def _part_dimensions(part: Any) -> tuple[float, float, float]:
     return size.width_um / 1000, size.depth_um / 1000, size.height_um / 1000
 
 
-def bom_pdf(design: Any) -> bytes:
+def bom_pdf(
+    design: Any,
+    retention_trust: VerifiedRetentionTrust | None = None,
+) -> bytes:
     buffer, canvas = _canvas()
     y = _header(canvas, "Material- och komponentlista", f"Designhash {design.design_hash}")
     canvas.setFont("Helvetica-Bold", 8)
@@ -151,22 +272,75 @@ def bom_pdf(design: Any) -> bytes:
     canvas.setFont("Helvetica", 8)
     retention = getattr(getattr(design, "spec", None), "joint_retention", None)
     retention_resolved = retention is not None and not dado_retention_evidence_missing(design)
+    verified_trust = _verified_retention_trust(design, retention_trust)
     for sku, quantity in sorted(hardware.items()):
         y -= 12
-        if retention is not None and retention_resolved and sku == retention.hardware_sku:
+        if (
+            retention is not None
+            and retention_resolved
+            and sku == retention.hardware_sku
+            and verified_trust is not None
+        ):
+            status = "SERVERVERIFIERAD CERTIFIERARSIGNATUR"
+        elif retention is not None and retention_resolved and sku == retention.hardware_sku:
             status = (
                 f"{retention.system_id}@{retention.system_version} – STRUKTURELLT BUNDET, "
                 "KÄLLAUTENTICITET EJ FASTSTÄLLD"
             )
         else:
             status = "EJ VERIFIERAD"
-        canvas.drawString(MARGIN, y, f"{sku} – {status}")
+        canvas.drawString(MARGIN, y, sku)
         canvas.drawRightString(PAGE_WIDTH - MARGIN, y, str(quantity))
+        y -= 10
+        canvas.setFont("Helvetica", 6.5)
+        y = _draw_wrapped_text(
+            canvas,
+            "Status: " + status,
+            MARGIN,
+            y,
+            max_chars=120,
+            leading=8,
+        )
+        if verified_trust is not None and retention is not None and sku == retention.hardware_sku:
+            y -= 2
+            y = _draw_wrapped_text(
+                canvas,
+                (
+                    f"System {retention.system_id}@{retention.system_version}; certifierare "
+                    f"{verified_trust.issuer_id} / nyckel {verified_trust.key_id}; "
+                    f"signerat evidens {verified_trust.signed_evidence_id}; giltigt till "
+                    f"{verified_trust.signed_evidence_expires_at}; lagrings-SHA-256 "
+                    f"{verified_trust.storage_evidence_sha256}; register-SHA-256 "
+                    f"{verified_trust.registry_sha256}; kontrakts-SHA-256 "
+                    f"{verified_trust.contract_sha256}."
+                ),
+                MARGIN,
+                y,
+                max_chars=120,
+                leading=8,
+            )
+            y -= 2
+            y = _draw_wrapped_text(
+                canvas,
+                (
+                    "Kontrollera aktuell revokering och giltighet mot den hämtade signerade "
+                    "originalfilen och det aktiverade registret före fysisk användning. "
+                    "Generationssnapshoten auktoriserar inte kapning eller montering."
+                ),
+                MARGIN,
+                y,
+                max_chars=120,
+                leading=8,
+            )
+        canvas.setFont("Helvetica", 8)
     _footer(canvas, "Genererad deterministiskt från fryst DesignSpec")
     return _finish(buffer, canvas)
 
 
-def hardware_csv(design: Any) -> bytes:
+def hardware_csv(
+    design: Any,
+    retention_trust: VerifiedRetentionTrust | None = None,
+) -> bytes:
     """Return exact retention provenance or fail-closed hardware identifiers."""
 
     quantities: Counter[str] = Counter()
@@ -194,6 +368,13 @@ def hardware_csv(design: Any) -> bytes:
             "catalog_system_version",
             "catalog_entry_sha256",
             "catalog_authenticity_status",
+            "storage_evidence_id",
+            "storage_evidence_sha256",
+            "trust_registry_sha256",
+            "certifier_issuer_id",
+            "certifier_key_id",
+            "signed_evidence_expires_at",
+            "retention_contract_sha256",
             "evidence_id",
             "evidence_sha256",
             "installation_instruction_id",
@@ -212,6 +393,7 @@ def hardware_csv(design: Any) -> bytes:
             "required_action",
         )
     )
+    verified_trust = _verified_retention_trust(design, retention_trust)
     for sku, quantity in sorted(quantities.items()):
         joints = joints_by_sku[sku]
         contracts = tuple(getattr(joint, "retention", None) for joint in joints)
@@ -229,13 +411,53 @@ def hardware_csv(design: Any) -> bytes:
             )
             and not dado_retention_evidence_missing(design)
         )
+        trust_for_contract = (
+            verified_trust
+            if contract is not None
+            and contract_is_bound
+            and verified_trust is not None
+            and verified_trust.matches_contract(contract)
+            else None
+        )
         if contract is not None and contract_is_bound:
             load_cases = {item.mode.value: item for item in contract.load_cases}
+            trust_fields: tuple[Any, ...]
+            if trust_for_contract is not None:
+                authenticity_status = (
+                    "CERTIFIER_SIGNED_ENTRY_SERVER_VERIFIED_FOR_GENERATION_SNAPSHOT"
+                )
+                trust_fields = (
+                    trust_for_contract.storage_evidence_id,
+                    trust_for_contract.storage_evidence_sha256,
+                    trust_for_contract.registry_sha256,
+                    trust_for_contract.issuer_id,
+                    trust_for_contract.key_id,
+                    trust_for_contract.signed_evidence_expires_at,
+                    trust_for_contract.contract_sha256,
+                )
+                selection_status = "SERVER_VERIFIED_RETENTION_APPLICATION"
+                required_action = (
+                    "Archive and re-verify the exact downloaded signed evidence against the "
+                    "activated registry, including current revocation and expiry, before physical "
+                    "use. This verified generation snapshot does not authorize physical assembly "
+                    "or cutting."
+                )
+            else:
+                authenticity_status = "NOT_ESTABLISHED_BY_CURRENT_MVP"
+                trust_fields = ("",) * 7
+                selection_status = "STRUCTURALLY_COMPLETE_RETENTION_APPLICATION"
+                required_action = (
+                    "The structural application is checksum-bound, but no verified trust "
+                    "descriptor was supplied to the document renderer. Treat source authenticity "
+                    "as unverified; this design evidence does not authorize physical assembly or "
+                    "cutting."
+                )
             catalog_fields: tuple[Any, ...] = (
                 contract.system_id,
                 contract.system_version,
                 contract.catalog_entry_sha256,
-                "NOT_ESTABLISHED_BY_CURRENT_MVP",
+                authenticity_status,
+                *trust_fields,
                 contract.evidence_id,
                 contract.evidence_sha256,
                 contract.installation_instruction_id,
@@ -254,14 +476,8 @@ def hardware_csv(design: Any) -> bytes:
                 load_cases["withdrawal"].verified_capacity_n,
                 contract.safety_factor_permille,
             )
-            selection_status = "STRUCTURALLY_COMPLETE_RETENTION_APPLICATION"
-            required_action = (
-                "The structural application is checksum-bound, but the current MVP has no "
-                "catalogue trust root and does not establish issuer authenticity. This design "
-                "evidence does not authorize physical assembly or cutting."
-            )
         else:
-            catalog_fields = ("",) * 18
+            catalog_fields = ("",) * 25
             selection_status = "UNVERIFIED_IDENTIFIER"
             required_action = (
                 "Treat this value as an unverified identifier only. Select a versioned "
@@ -287,7 +503,7 @@ def hardware_csv(design: Any) -> bytes:
                 "",
                 "",
                 "|".join(unresolved_front_ids),
-                *("",) * 18,
+                *("",) * 25,
                 "EXTERNAL_SELECTION_REQUIRED",
                 (
                     "Select versioned hinges or other mechanical front hardware and verify "
@@ -311,7 +527,10 @@ def _unresolved_front_hardware_part_ids(design: Any) -> tuple[str, ...]:
     )
 
 
-def assembly_manual_pdf(design: Any) -> bytes:
+def assembly_manual_pdf(
+    design: Any,
+    retention_trust: VerifiedRetentionTrust | None = None,
+) -> bytes:
     buffer, canvas = _canvas()
     steps = design.assembly_graph.steps
     part_by_id = {part.part_id: part for part in design.parts}
@@ -464,9 +683,15 @@ def assembly_manual_pdf(design: Any) -> bytes:
             tools = ", ".join(step.tool_ids) if step.tool_ids else "Inga handverktyg angivna"
             canvas.drawString(MARGIN, y, "Verktyg: " + tools)
             y -= 12
-            hardware_text = _assembly_step_hardware_text(design, step)
-            canvas.drawString(MARGIN, y, "Beslag: " + hardware_text)
-            y -= 12
+            hardware_text = _assembly_step_hardware_text(design, step, retention_trust)
+            y = _draw_wrapped_text(
+                canvas,
+                "Beslag: " + hardware_text,
+                MARGIN,
+                y,
+                max_chars=118,
+                leading=9,
+            )
             canvas.setFillColor(MUTED)
             canvas.setFont("Helvetica", 6.5)
             canvas.drawString(
@@ -522,7 +747,10 @@ def assembly_manual_pdf(design: Any) -> bytes:
     return _finish(buffer, canvas)
 
 
-def assembly_readiness_json(design: Any) -> bytes:
+def assembly_readiness_json(
+    design: Any,
+    retention_trust: VerifiedRetentionTrust | None = None,
+) -> bytes:
     """Return a machine-readable, fail-closed assembly review summary."""
 
     plan = _assembly_manual_plan(design)
@@ -530,7 +758,7 @@ def assembly_readiness_json(design: Any) -> bytes:
         "named_assembly_safety_approver",
         "approved_local_work_preparation",
     ]
-    if dado_retention_evidence_missing(design):
+    if _verified_retention_trust(design, retention_trust) is None:
         missing_requirements.append("verified_adhesive_free_joint_retention")
     missing_requirements.extend(
         f"verified_cabinet_front_hardware:{part_id}"
@@ -650,7 +878,11 @@ def _assembly_step_hardware(design: Any, step: Any) -> tuple[tuple[str, int], ..
     return tuple(sorted(quantities.items()))
 
 
-def _assembly_step_hardware_text(design: Any, step: Any) -> str:
+def _assembly_step_hardware_text(
+    design: Any,
+    step: Any,
+    retention_trust: VerifiedRetentionTrust | None = None,
+) -> str:
     unresolved_fronts = set(_unresolved_front_hardware_part_ids(design)) & set(step.part_ids)
     if unresolved_fronts:
         return "FRONT EJ MONTERINGSBAR: verifierat mekaniskt beslag och borrbild saknas"
@@ -664,6 +896,7 @@ def _assembly_step_hardware_text(design: Any, step: Any) -> str:
         if getattr(joint, "retention", None) is not None
     )
     if retention_contracts and not dado_retention_evidence_missing(design):
+        verified_trust = _verified_retention_trust(design, retention_trust)
         identities = ", ".join(
             sorted(
                 {
@@ -672,6 +905,19 @@ def _assembly_step_hardware_text(design: Any, step: Any) -> str:
                 }
             )
         )
+        if verified_trust is not None and all(
+            verified_trust.matches_contract(contract) for contract in retention_contracts
+        ):
+            return (
+                f"SERVERVERIFIERAT CERTIFIERARSIGNERAT RETENTIONSSYSTEM FÖR EXAKT "
+                f"GENERATIONSSNAPSHOT: {identities}; certifierare {verified_trust.issuer_id} / "
+                f"nyckel {verified_trust.key_id}; signerat evidens "
+                f"{verified_trust.signed_evidence_id}, giltigt till "
+                f"{verified_trust.signed_evidence_expires_at}; följ endast den "
+                "checksum-bundna installationsinstruktionen. Kontrollera aktuell revokering och "
+                "giltighet mot hämtade signerade originalbytes och det aktiverade registret före "
+                "fysisk användning. Snapshoten auktoriserar inte fysisk montering eller kapning"
+            )
         return (
             f"VERSIONSBUNDET RETENTIONSSYSTEM: {identities}; följ endast den "
             "checksum-bundna installationsinstruktionen. Källautenticitet fastställs inte "

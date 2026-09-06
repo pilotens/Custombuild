@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
@@ -24,6 +26,7 @@ from app.models import (
 from celery.exceptions import SoftTimeLimitExceeded
 from custombuild_manufacturing import MAX_ARTIFACT_BYTES, MAX_CORE_DOCUMENT_BYTES
 from custombuild_manufacturing.readiness import ReadinessValidationError
+from custombuild_worker.documents import VerifiedRetentionTrust
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -43,8 +46,18 @@ def worker_session_factory(
     monkeypatch.setattr(worker_tasks, "SessionFactory", factory)
     monkeypatch.setattr(
         worker_tasks,
+        "_scheduler_start_index",
+        lambda _tenant_count, *, cursor_key, scheduler_name: 0,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
         "_validate_completion_evidence",
         lambda _session, _organization_id, _job: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_validate_retention_before_generation",
+        lambda _organization_id, _version, *, minimum_valid_until: None,
     )
     return factory
 
@@ -96,6 +109,7 @@ def _seed_generation_job(
                 production_engine_context_json={"schema": "test"},
                 request_json={},
                 attempts=0,
+                next_attempt_at=datetime(2020, 1, 1, tzinfo=UTC),
             )
         )
     return job_id, organization_id
@@ -114,6 +128,144 @@ def _generation_result() -> dict[str, Any]:
         "manifest_size_bytes": 200,
         "evidence_artifacts": [],
     }
+
+
+def test_generate_package_threads_exact_verified_retention_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signed_evidence_bytes = b"signed-retention-evidence"
+    trust = VerifiedRetentionTrust.from_verified_snapshot(
+        {
+            "schema_version": "custombuild.joint-retention-binding.v2",
+            "application_class": "load_bearing_carcass_dado",
+            "storage_evidence_id": "44444444-4444-4444-8444-444444444444",
+            "storage_evidence_sha256": worker_tasks.sha256_hex(signed_evidence_bytes),
+            "base_design_hash": "2" * 64,
+            "joint_geometry_sha256": "3" * 64,
+            "registry_sha256": "4" * 64,
+            "issuer_id": "independent-retention-lab",
+            "key_id": "independent-retention-lab-2026",
+            "signed_evidence_id": "signed-evidence-1",
+            "signed_evidence_expires_at": "2027-08-30T12:00:00+00:00",
+            "system_id": "mechanical-dado-lock",
+            "system_version": "1.0.0",
+            "contract_sha256": "5" * 64,
+        }
+    )
+    retention_input = worker_tasks.VerifiedRetentionPackageInput(
+        document_trust=trust,
+        signed_evidence_bytes=signed_evidence_bytes,
+    )
+    deadline = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+    exact_claim = str(worker_tasks.uuid4())
+    job = SimpleNamespace(lease_token=exact_claim, deadline_at=deadline)
+    version = SimpleNamespace(id="version-1")
+    order: list[str] = []
+
+    class Guard:
+        def check(self) -> None:
+            order.append("lease-check")
+
+    @contextmanager
+    def maintain(*_args: object):
+        order.append("lease-start")
+        yield Guard()
+        order.append("lease-stop")
+
+    def preflight(
+        organization_id: str,
+        claimed_version: object,
+        *,
+        minimum_valid_until: datetime | None,
+    ) -> worker_tasks.VerifiedRetentionPackageInput:
+        assert organization_id == "tenant-1"
+        assert claimed_version is version
+        assert minimum_valid_until == deadline
+        order.append("preflight")
+        return retention_input
+
+    expected_result = _generation_result()
+
+    def generate(
+        claimed_job: object,
+        claimed_version: object,
+        *,
+        lease_token: str,
+        lease_guard: object,
+        verified_retention_input: worker_tasks.VerifiedRetentionPackageInput | None,
+    ) -> dict[str, Any]:
+        assert claimed_job is job
+        assert claimed_version is version
+        assert lease_token == exact_claim
+        assert isinstance(lease_guard, Guard)
+        assert verified_retention_input is retention_input
+        order.append("generate")
+        return expected_result
+
+    def complete(*_args: object, **_kwargs: object) -> bool:
+        order.append("complete")
+        return True
+
+    monkeypatch.setattr(worker_tasks, "_claim_job", lambda *_args: (job, version))
+    monkeypatch.setattr(worker_tasks, "_maintain_generation_lease", maintain)
+    monkeypatch.setattr(worker_tasks, "_validate_retention_before_generation", preflight)
+    monkeypatch.setattr(worker_tasks, "_generate", generate)
+    monkeypatch.setattr(worker_tasks, "_complete_job", complete)
+
+    result = worker_tasks.generate_package.run(job_id="job-1", organization_id="tenant-1")
+
+    assert result is expected_result
+    assert order.index("preflight") < order.index("generate") < order.index("complete")
+
+
+def test_verified_retention_package_input_rejects_mutable_or_detached_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exact = b"signed-retention-evidence"
+    trust = VerifiedRetentionTrust.from_verified_snapshot(
+        {
+            "schema_version": "custombuild.joint-retention-binding.v2",
+            "application_class": "load_bearing_carcass_dado",
+            "storage_evidence_id": "44444444-4444-4444-8444-444444444444",
+            "storage_evidence_sha256": worker_tasks.sha256_hex(exact),
+            "base_design_hash": "2" * 64,
+            "joint_geometry_sha256": "3" * 64,
+            "registry_sha256": "4" * 64,
+            "issuer_id": "independent-retention-lab",
+            "key_id": "independent-retention-lab-2026",
+            "signed_evidence_id": "signed-evidence-1",
+            "signed_evidence_expires_at": "2027-08-30T12:00:00+00:00",
+            "system_id": "mechanical-dado-lock",
+            "system_version": "1.0.0",
+            "contract_sha256": "5" * 64,
+        }
+    )
+
+    with pytest.raises(TypeError, match="must be exact bytes"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=trust,
+            signed_evidence_bytes=bytearray(exact),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=trust,
+            signed_evidence_bytes=b"different",
+        )
+    empty_trust = replace(
+        trust,
+        storage_evidence_sha256=worker_tasks.sha256_hex(b""),
+    )
+    with pytest.raises(ValueError, match="size is invalid"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=empty_trust,
+            signed_evidence_bytes=b"",
+        )
+    monkeypatch.setattr(worker_tasks, "MAX_SIGNED_EVIDENCE_BYTES", len(exact) - 1)
+    with pytest.raises(ValueError, match="size is invalid"):
+        worker_tasks.VerifiedRetentionPackageInput(
+            document_trust=trust,
+            signed_evidence_bytes=exact,
+        )
 
 
 def test_completion_rejects_detached_engine_context_before_state_or_artifacts(
@@ -147,18 +299,27 @@ def test_completion_rejects_detached_engine_context_before_state_or_artifacts(
         assert stored.lease_token == token
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
-        assert list(
-            session.scalars(
-                select(AuditEvent).where(
-                    AuditEvent.entity_id == job_id,
-                    AuditEvent.action == "generation.succeeded",
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
                 )
             )
-        ) == []
+            == []
+        )
 
 
+@pytest.mark.parametrize(
+    ("app_env", "expected_production_mode"),
+    (("production", True), ("test", False)),
+)
 def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
     monkeypatch: pytest.MonkeyPatch,
+    app_env: str,
+    expected_production_mode: bool,
 ) -> None:
     payload = b'{"completion":"verified"}'
     digest = hashlib.sha256(payload).hexdigest()
@@ -183,8 +344,10 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
 
     client = WorkerS3Client()
     runtime = SimpleNamespace(
+        app_env=app_env,
         s3_bucket="production-artifacts",
         build_identity=build_identity,
+        joint_retention_trust_registry_json='{"registry":"worker-owned"}',
     )
 
     def must_not_load_api_settings() -> None:
@@ -198,6 +361,8 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
     ) -> None:
         assert organization_id == "tenant-a"
         assert kwargs["build_identity"] == build_identity
+        assert kwargs["trust_registry_json"] == '{"registry":"worker-owned"}'
+        assert kwargs["production_mode"] is expected_production_mode
         storage_module.verify_stored_object(
             storage_module.StoredObjectExpectation(
                 object_key="tenant-a/evidence.json",
@@ -211,6 +376,7 @@ def test_worker_completion_gate_uses_worker_storage_and_build_runtime(
     monkeypatch.setattr(worker_tasks, "WORKER_SETTINGS", runtime)
     monkeypatch.setattr(worker_tasks, "_s3_client", lambda: client)
     monkeypatch.setattr(api_module, "_require_review_evidence", canonical_gate)
+    monkeypatch.setattr(api_module, "get_settings", must_not_load_api_settings)
     monkeypatch.setattr(storage_module, "get_settings", must_not_load_api_settings)
 
     worker_tasks._validate_completion_evidence(
@@ -238,9 +404,11 @@ def test_replaced_lease_rejects_old_worker_completion_and_failure(
     with worker_session_factory.begin() as session:
         stored = session.get(GenerationJob, job_id)
         assert stored is not None
+        recovery_now = datetime.now(UTC)
+        stored.lease_expires_at = recovery_now - timedelta(seconds=1)
         recovery = worker_tasks._recover_stale_job(
             stored,
-            now=datetime.now(UTC) + worker_tasks.GENERATION_LEASE_TTL + timedelta(seconds=1),
+            now=recovery_now,
         )
         assert recovery is not None
         session.add(recovery)
@@ -250,20 +418,26 @@ def test_replaced_lease_rejects_old_worker_completion_and_failure(
     second_token = second_job.lease_token
     assert second_token is not None and second_token != first_token
 
-    assert worker_tasks._complete_job(
-        job_id,
-        organization_id,
-        first_token,
-        first_version,
-        _generation_result(),
-    ) is False
-    assert worker_tasks._record_failure(
-        job_id,
-        organization_id,
-        first_token,
-        RuntimeError("old worker must not win"),
-        terminal=True,
-    ) is None
+    assert (
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            first_token,
+            first_version,
+            _generation_result(),
+        )
+        is False
+    )
+    assert (
+        worker_tasks._record_failure(
+            job_id,
+            organization_id,
+            first_token,
+            RuntimeError("old worker must not win"),
+            terminal=True,
+        )
+        is None
+    )
 
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
@@ -273,13 +447,16 @@ def test_replaced_lease_rejects_old_worker_completion_and_failure(
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
 
-    assert worker_tasks._complete_job(
-        job_id,
-        organization_id,
-        second_token,
-        second_version,
-        _generation_result(),
-    ) is True
+    assert (
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            second_token,
+            second_version,
+            _generation_result(),
+        )
+        is True
+    )
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
         assert stored is not None
@@ -343,14 +520,83 @@ def test_deadline_fences_owned_completion_before_artifacts_and_success_audit(
         assert stored.error == worker_tasks.GENERATION_DEADLINE_ERROR
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
-        assert list(
-            session.scalars(
-                select(AuditEvent).where(
-                    AuditEvent.entity_id == job_id,
-                    AuditEvent.action == "generation.succeeded",
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
                 )
             )
-        ) == []
+            == []
+        )
+
+
+@pytest.mark.parametrize(
+    ("expired_fence", "expected_error"),
+    (
+        ("deadline", worker_tasks.GenerationDeadlineExceeded),
+        ("lease", worker_tasks.GenerationLeaseOwnershipLost),
+    ),
+)
+def test_final_completion_fence_rolls_back_if_liveness_expires_during_evidence(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    expired_fence: str,
+    expected_error: type[Exception],
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    job, version = claim
+    token = job.lease_token
+    assert token is not None
+    first_check = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+    final_check = first_check + timedelta(seconds=10)
+    with worker_session_factory.begin() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        stored.deadline_at = (
+            final_check if expired_fence == "deadline" else final_check + timedelta(minutes=1)
+        )
+        stored.lease_expires_at = (
+            final_check if expired_fence == "lease" else final_check + timedelta(minutes=1)
+        )
+    checks = iter((first_check, final_check))
+    monkeypatch.setattr(
+        worker_tasks,
+        "_database_time",
+        lambda _session, _override=None: next(checks),
+    )
+
+    with pytest.raises(expected_error):
+        worker_tasks._complete_job(
+            job_id,
+            organization_id,
+            token,
+            version,
+            _generation_result(),
+        )
+
+    with worker_session_factory() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.status == JobStatus.running
+        assert stored.lease_token == token
+        assert stored.result_json is None
+        assert list(session.scalars(select(Artifact))) == []
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
+                )
+            )
+            == []
+        )
 
 
 def test_completion_validation_runs_before_success_and_rolls_back_on_failure(
@@ -407,14 +653,17 @@ def test_completion_validation_runs_before_success_and_rolls_back_on_failure(
         assert stored.lease_token == token
         assert stored.result_json is None
         assert list(session.scalars(select(Artifact))) == []
-        assert list(
-            session.scalars(
-                select(AuditEvent).where(
-                    AuditEvent.entity_id == job_id,
-                    AuditEvent.action == "generation.succeeded",
+        assert (
+            list(
+                session.scalars(
+                    select(AuditEvent).where(
+                        AuditEvent.entity_id == job_id,
+                        AuditEvent.action == "generation.succeeded",
+                    )
                 )
             )
-        ) == []
+            == []
+        )
 
 
 @pytest.mark.parametrize(
@@ -481,24 +730,33 @@ def test_lease_heartbeat_extends_only_the_current_tenant_owner(
     assert token is not None
 
     renewed_at = datetime(2026, 8, 12, 12, 0, tzinfo=UTC)
-    assert worker_tasks._renew_job_lease(
-        job_id,
-        organization_id,
-        token,
-        now=renewed_at,
-    ) is True
-    assert worker_tasks._renew_job_lease(
-        job_id,
-        organization_id,
-        "00000000-0000-4000-8000-000000000000",
-        now=renewed_at,
-    ) is False
-    assert worker_tasks._renew_job_lease(
-        job_id,
-        "99999999-9999-4999-8999-999999999999",
-        token,
-        now=renewed_at,
-    ) is False
+    assert (
+        worker_tasks._renew_job_lease(
+            job_id,
+            organization_id,
+            token,
+            now=renewed_at,
+        )
+        is True
+    )
+    assert (
+        worker_tasks._renew_job_lease(
+            job_id,
+            organization_id,
+            "00000000-0000-4000-8000-000000000000",
+            now=renewed_at,
+        )
+        is False
+    )
+    assert (
+        worker_tasks._renew_job_lease(
+            job_id,
+            "99999999-9999-4999-8999-999999999999",
+            token,
+            now=renewed_at,
+        )
+        is False
+    )
 
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
@@ -578,8 +836,7 @@ def test_celery_generation_limits_are_bound_to_the_server_job_policy() -> None:
         worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS
     )
     assert worker_tasks.GENERATION_TASK_HARD_TIME_LIMIT_SECONDS == (
-        worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS
-        + 60
+        worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS + 60
     )
     assert worker_tasks.celery_app.conf.task_soft_time_limit == (
         worker_tasks.GENERATION_TASK_SOFT_TIME_LIMIT_SECONDS
@@ -587,6 +844,38 @@ def test_celery_generation_limits_are_bound_to_the_server_job_policy() -> None:
     assert worker_tasks.celery_app.conf.task_time_limit == (
         worker_tasks.GENERATION_TASK_HARD_TIME_LIMIT_SECONDS
     )
+    assert (
+        worker_tasks.celery_app.conf.broker_transport_options["visibility_timeout"]
+        >= worker_tasks.GENERATION_TASK_HARD_TIME_LIMIT_SECONDS
+    )
+
+
+def test_celery_routes_generation_and_maintenance_to_exact_fail_closed_queues() -> None:
+    configured_queues = {queue.name for queue in worker_tasks.celery_app.conf.task_queues}
+    assert configured_queues == {
+        worker_tasks.GENERATION_QUEUE,
+        worker_tasks.MAINTENANCE_QUEUE,
+        worker_tasks.STORAGE_REAPER_QUEUE,
+        worker_tasks.UNROUTED_QUEUE,
+    }
+    assert worker_tasks.celery_app.conf.task_default_queue == worker_tasks.UNROUTED_QUEUE
+    assert worker_tasks.celery_app.conf.task_create_missing_queues is False
+    assert worker_tasks.celery_app.conf.task_routes == {
+        "custombuild.generate_package": {"queue": worker_tasks.GENERATION_QUEUE},
+        "custombuild.dispatch_outbox": {"queue": worker_tasks.MAINTENANCE_QUEUE},
+        "custombuild.recover_stale_jobs": {"queue": worker_tasks.MAINTENANCE_QUEUE},
+        "custombuild.reap_abandoned_storage": {"queue": worker_tasks.STORAGE_REAPER_QUEUE},
+    }
+    schedules = worker_tasks.celery_app.conf.beat_schedule
+    assert schedules["dispatch-transactional-outbox"]["options"] == {
+        "queue": worker_tasks.MAINTENANCE_QUEUE
+    }
+    assert schedules["recover-stale-generation-leases"]["options"] == {
+        "queue": worker_tasks.MAINTENANCE_QUEUE
+    }
+    assert schedules["reap-abandoned-storage"]["options"] == {
+        "queue": worker_tasks.STORAGE_REAPER_QUEUE
+    }
 
 
 def test_soft_time_limit_terminalizes_the_owned_job_without_retry(
@@ -666,10 +955,6 @@ def test_runtime_error_remains_retryable_and_requeues_owned_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     job_id, organization_id = _seed_generation_job(worker_session_factory)
-    retry_calls: list[Exception] = []
-
-    class RetryRequested(Exception):
-        pass
 
     def fail_transiently(
         _job: GenerationJob,
@@ -678,21 +963,17 @@ def test_runtime_error_remains_retryable_and_requeues_owned_job(
     ) -> dict[str, Any]:
         raise RuntimeError("temporary dependency failure")
 
-    def capture_retry(*_args: object, **kwargs: Any) -> None:
-        retry_calls.append(kwargs["exc"])
-        raise RetryRequested()
-
     monkeypatch.setattr(worker_tasks, "_generate", fail_transiently)
-    monkeypatch.setattr(worker_tasks.generate_package, "retry", capture_retry)
+    result = worker_tasks.generate_package.run(
+        job_id=job_id,
+        organization_id=organization_id,
+    )
 
-    with pytest.raises(RetryRequested):
-        worker_tasks.generate_package.run(
-            job_id=job_id,
-            organization_id=organization_id,
-        )
-
-    assert len(retry_calls) == 1
-    assert isinstance(retry_calls[0], RuntimeError)
+    assert result == {
+        "job_id": job_id,
+        "state": "retry_scheduled",
+        "retry_after_seconds": 5,
+    }
     with worker_session_factory() as session:
         stored = session.get(GenerationJob, job_id)
         assert stored is not None
@@ -703,6 +984,47 @@ def test_runtime_error_remains_retryable_and_requeues_owned_job(
         assert stored.started_at is None
         assert stored.finished_at is None
         assert stored.error == "RuntimeError: temporary dependency failure"
+        retry_event = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_key == f"generation-retry:{job_id}:1")
+        )
+        assert retry_event is not None
+        assert retry_event.dispatched_at is None
+        assert retry_event.dead_lettered_at is None
+        assert retry_event.available_at >= retry_event.created_at + timedelta(seconds=4)
+        assert stored.next_attempt_at == retry_event.available_at
+
+
+def test_duplicate_delivery_cannot_bypass_durable_job_retry_time(
+    worker_session_factory: sessionmaker[Session],
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    claim = worker_tasks._claim_job(job_id, organization_id)
+    assert claim is not None
+    token = claim[0].lease_token
+    assert token is not None
+
+    status = worker_tasks._record_failure(
+        job_id,
+        organization_id,
+        token,
+        RuntimeError("transient storage ownership"),
+        terminal=False,
+        retry_after_seconds=125,
+    )
+
+    assert status is JobStatus.queued
+    assert worker_tasks._claim_job(job_id, organization_id) is None
+    with worker_session_factory.begin() as session:
+        stored = session.get(GenerationJob, job_id)
+        assert stored is not None
+        assert stored.attempts == 1
+        assert stored.next_attempt_at is not None
+        stored.next_attempt_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    second_claim = worker_tasks._claim_job(job_id, organization_id)
+    assert second_claim is not None
+    assert second_claim[0].attempts == 2
+    assert second_claim[0].next_attempt_at is None
 
 
 def test_transient_failure_after_server_deadline_is_terminal_without_retry(
@@ -827,9 +1149,7 @@ def test_queued_job_at_global_attempt_budget_is_not_claimed_again(
         assert stored.lease_token is None
         assert stored.lease_expires_at is None
         assert stored.finished_at is not None
-        assert stored.error == (
-            "Generation job exhausted the maximum of 4 attempts"
-        )
+        assert stored.error == ("Generation job exhausted the maximum of 4 attempts")
 
 
 def test_recovery_task_ignores_live_lease_then_requeues_expired_lease(
@@ -896,6 +1216,206 @@ def test_recovery_task_deadline_overrides_a_still_live_lease(
         assert recovery_events == []
 
 
+def test_queued_delivery_watchdog_reuses_one_event_after_acknowledged_broker_loss(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = stale_at
+        job.updated_at = stale_at
+        job.deadline_at = now + timedelta(hours=1)
+        session.add(
+            OutboxEvent(
+                organization_id=organization_id,
+                event_key=f"generation:{job_id}",
+                topic="generation.requested",
+                payload_json={
+                    "job_id": job_id,
+                    "organization_id": organization_id,
+                },
+                available_at=stale_at,
+                dispatched_at=stale_at,
+                attempts=1,
+            )
+        )
+
+    clock = {"now": now}
+    monkeypatch.setattr(
+        worker_tasks,
+        "_database_time",
+        lambda _session, _override=None: clock["now"],
+    )
+    published: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published.append(kwargs),
+    )
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 0
+    event_key = f"{worker_tasks.GENERATION_DELIVERY_WATCHDOG_EVENT_PREFIX}:{job_id}"
+    with worker_session_factory() as session:
+        watchdogs = list(
+            session.scalars(select(OutboxEvent).where(OutboxEvent.event_key == event_key))
+        )
+        assert len(watchdogs) == 1
+        watchdog_id = watchdogs[0].id
+        assert watchdogs[0].dispatched_at is None
+
+    assert worker_tasks.dispatch_outbox.run(limit=1) == 1
+    assert len(published) == 1
+    clock["now"] = now + worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL + timedelta(seconds=1)
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    with worker_session_factory() as session:
+        watchdogs = list(
+            session.scalars(select(OutboxEvent).where(OutboxEvent.event_key == event_key))
+        )
+        assert len(watchdogs) == 1
+        assert watchdogs[0].id == watchdog_id
+        assert watchdogs[0].dispatched_at is None
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.queued
+        assert job.attempts == 0
+
+    assert worker_tasks.dispatch_outbox.run(limit=1) == 1
+    assert len(published) == 2
+    first_claim = worker_tasks._claim_job(job_id, organization_id)
+    assert first_claim is not None
+    assert first_claim[0].attempts == 1
+    assert worker_tasks._claim_job(job_id, organization_id) is None
+
+
+def test_queued_delivery_watchdog_does_not_duplicate_pending_outbox_delivery(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = stale_at
+        job.updated_at = stale_at
+        job.deadline_at = now + timedelta(hours=1)
+        session.add(
+            OutboxEvent(
+                organization_id=organization_id,
+                event_key=f"generation:{job_id}",
+                topic="generation.requested",
+                payload_json={
+                    "job_id": job_id,
+                    "organization_id": organization_id,
+                },
+                available_at=stale_at,
+            )
+        )
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: now)
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 0
+    with worker_session_factory() as session:
+        events = list(session.scalars(select(OutboxEvent)))
+        assert [event.event_key for event in events] == [f"generation:{job_id}"]
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert worker_tasks._as_utc(job.updated_at) == now
+        assert job.attempts == 0
+
+
+@pytest.mark.parametrize(
+    "terminal_bound",
+    ("deadline", "missing_deadline", "missing_schedule", "attempts"),
+)
+def test_queued_delivery_watchdog_respects_terminal_bounds_without_republish(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_bound: str,
+) -> None:
+    job_id, _organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = None if terminal_bound == "missing_schedule" else stale_at
+        job.updated_at = stale_at
+        if terminal_bound == "deadline":
+            job.deadline_at = now - timedelta(seconds=1)
+        elif terminal_bound == "missing_deadline":
+            job.deadline_at = None
+        else:
+            job.deadline_at = now + timedelta(hours=1)
+        if terminal_bound == "attempts":
+            job.attempts = worker_tasks.MAX_GENERATION_ATTEMPTS
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: now)
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    with worker_session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.failed
+        assert job.next_attempt_at is None
+        assert job.finished_at is not None
+        if terminal_bound == "deadline":
+            assert job.error == worker_tasks.GENERATION_DEADLINE_ERROR
+        elif terminal_bound in {"missing_deadline", "missing_schedule"}:
+            assert job.error == worker_tasks.GENERATION_DELIVERY_WATCHDOG_ERROR
+        else:
+            assert job.error == "Generation job exhausted the maximum of 4 attempts"
+        assert list(session.scalars(select(OutboxEvent))) == []
+
+
+def test_queued_delivery_watchdog_fails_closed_on_corrupt_canonical_event(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id, organization_id = _seed_generation_job(worker_session_factory)
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    stale_at = now - worker_tasks.GENERATION_DELIVERY_WATCHDOG_INTERVAL - timedelta(seconds=1)
+    event_key = f"{worker_tasks.GENERATION_DELIVERY_WATCHDOG_EVENT_PREFIX}:{job_id}"
+    with worker_session_factory.begin() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        job.next_attempt_at = stale_at
+        job.updated_at = stale_at
+        job.deadline_at = now + timedelta(hours=1)
+        session.add(
+            OutboxEvent(
+                organization_id=organization_id,
+                event_key=event_key,
+                topic="generation.requested",
+                payload_json={
+                    "job_id": job_id,
+                    "organization_id": organization_id,
+                    "secret": "must-not-leak",
+                },
+                available_at=stale_at,
+                dispatched_at=stale_at,
+                attempts=1,
+            )
+        )
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: now)
+
+    assert worker_tasks.recover_stale_jobs.run(limit=1) == 1
+    with worker_session_factory() as session:
+        job = session.get(GenerationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.failed
+        assert job.error == worker_tasks.GENERATION_DELIVERY_WATCHDOG_ERROR
+        assert "must-not-leak" not in (job.error or "")
+        watchdog = session.scalar(select(OutboxEvent).where(OutboxEvent.event_key == event_key))
+        assert watchdog is not None
+        assert watchdog.dispatched_at is not None
+
+
 def test_poison_outbox_event_is_dead_lettered_without_blocking_the_next_event(
     worker_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
@@ -942,9 +1462,7 @@ def test_poison_outbox_event_is_dead_lettered_without_blocking_the_next_event(
     assert worker_tasks.dispatch_outbox.run(limit=10) == 1
 
     with worker_session_factory() as session:
-        poison = session.scalar(
-            select(OutboxEvent).where(OutboxEvent.event_key == "poison-topic")
-        )
+        poison = session.scalar(select(OutboxEvent).where(OutboxEvent.event_key == "poison-topic"))
         valid = session.scalar(
             select(OutboxEvent).where(OutboxEvent.event_key == "valid-after-poison")
         )
@@ -959,12 +1477,14 @@ def test_poison_outbox_event_is_dead_lettered_without_blocking_the_next_event(
             "kwargs": {
                 "job_id": job_id,
                 "organization_id": organization_id,
-            }
+            },
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
         }
     ]
 
 
-def test_transient_outbox_failure_is_bounded_and_sanitized(
+def test_transient_outbox_failure_is_durable_backed_off_and_sanitized(
     worker_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -990,6 +1510,7 @@ def test_transient_outbox_failure_is_bounded_and_sanitized(
             )
         )
     attempts = 0
+    clock = datetime.now(UTC)
 
     def fail_publish(*_args: object, **_kwargs: object) -> None:
         nonlocal attempts
@@ -997,21 +1518,47 @@ def test_transient_outbox_failure_is_bounded_and_sanitized(
         raise RuntimeError("broker-secret-password")
 
     monkeypatch.setattr(worker_tasks.celery_app, "send_task", fail_publish)
-    for _ in range(worker_tasks.MAX_OUTBOX_PUBLISH_ATTEMPTS + 1):
-        worker_tasks.dispatch_outbox.run(limit=10)
+    monkeypatch.setattr(worker_tasks, "_database_time", lambda _session: clock)
+    for expected_attempts in range(1, 9):
+        assert worker_tasks.dispatch_outbox.run(limit=10) == 0
+        with worker_session_factory() as session:
+            pending = session.scalar(
+                select(OutboxEvent).where(OutboxEvent.event_key == "bounded-transient")
+            )
+            assert pending is not None
+            assert pending.attempts == expected_attempts
+            assert worker_tasks._as_utc(pending.available_at) > clock
+            clock = worker_tasks._as_utc(pending.available_at)
 
     with worker_session_factory() as session:
         event = session.scalar(
             select(OutboxEvent).where(OutboxEvent.event_key == "bounded-transient")
         )
         assert event is not None
-        assert event.attempts == worker_tasks.MAX_OUTBOX_PUBLISH_ATTEMPTS
-        assert event.dead_lettered_at is not None
+        assert event.attempts == 8
+        assert event.dead_lettered_at is None
         assert event.dispatched_at is None
         assert event.last_error is not None
         assert "broker-secret-password" not in event.last_error
         assert "payload-secret" not in event.last_error
-    assert attempts == worker_tasks.MAX_OUTBOX_PUBLISH_ATTEMPTS
+        assert worker_tasks._as_utc(event.available_at) <= clock + timedelta(
+            seconds=worker_tasks.OUTBOX_PUBLISH_BACKOFF_MAX_SECONDS
+        )
+    assert attempts == 8
+
+    published: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published.append(kwargs),
+    )
+    assert worker_tasks.dispatch_outbox.run(limit=10) == 1
+    with worker_session_factory() as session:
+        event = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_key == "bounded-transient")
+        )
+        assert event is not None and event.dispatched_at is not None
+        assert event.last_error is None
 
 
 def test_outbox_dispatch_is_tenant_local_payload_bound_and_globally_limited(
@@ -1077,20 +1624,30 @@ def test_outbox_dispatch_is_tenant_local_payload_bound_and_globally_limited(
 
     assert worker_tasks.dispatch_outbox.run(limit=1) == 1
     assert published == [
-        {"kwargs": {"job_id": job_a, "organization_id": organization_a}}
+        {
+            "kwargs": {"job_id": job_a, "organization_id": organization_a},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        }
     ]
     assert worker_tasks.dispatch_outbox.run(limit=10) == 1
 
     assert contexts == [organization_a, organization_a, organization_b]
     assert published == [
-        {"kwargs": {"job_id": job_a, "organization_id": organization_a}},
-        {"kwargs": {"job_id": job_b, "organization_id": organization_b}},
+        {
+            "kwargs": {"job_id": job_a, "organization_id": organization_a},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        },
+        {
+            "kwargs": {"job_id": job_b, "organization_id": organization_b},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        },
     ]
     with worker_session_factory() as session:
         forged = session.scalar(
-            select(OutboxEvent).where(
-                OutboxEvent.event_key == "tenant-a-forged-payload"
-            )
+            select(OutboxEvent).where(OutboxEvent.event_key == "tenant-a-forged-payload")
         )
         assert forged is not None
         assert forged.dispatched_at is None
@@ -1133,9 +1690,7 @@ def test_stale_recovery_runs_one_tenant_transaction_per_organization(
     monkeypatch.setattr(
         worker_tasks,
         "set_tenant_context",
-        lambda session, organization_id: tenant_sessions.append(
-            (organization_id, session)
-        ),
+        lambda session, organization_id: tenant_sessions.append((organization_id, session)),
     )
 
     assert worker_tasks.recover_stale_jobs.run(limit=2) == 2
@@ -1161,6 +1716,117 @@ def test_stale_recovery_runs_one_tenant_transaction_per_organization(
             organization_a,
             organization_b,
         ]
+
+
+def test_outbox_global_limit_rotates_first_tenant_durably(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenants = tuple(f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 4))
+    jobs = tuple(f"10000000-0000-4000-8000-{index:012d}" for index in range(1, 4))
+    available_at = datetime.now(UTC) - timedelta(seconds=1)
+    with worker_session_factory.begin() as session:
+        for index, (tenant_id, job_id) in enumerate(zip(tenants, jobs, strict=True), start=1):
+            session.add(
+                Organization(
+                    id=tenant_id,
+                    name=f"Fair outbox tenant {index}",
+                    slug=f"fair-outbox-{index}",
+                )
+            )
+            session.add(
+                OutboxEvent(
+                    organization_id=tenant_id,
+                    event_key=f"fair-outbox-{index}",
+                    topic="generation.requested",
+                    payload_json={
+                        "job_id": job_id,
+                        "organization_id": tenant_id,
+                    },
+                    available_at=available_at,
+                )
+            )
+
+    starts = iter((0, 1, 2))
+    cursor_calls: list[tuple[int, str, str]] = []
+
+    def next_start(
+        tenant_count: int,
+        *,
+        cursor_key: str,
+        scheduler_name: str,
+    ) -> int:
+        cursor_calls.append((tenant_count, cursor_key, scheduler_name))
+        return next(starts)
+
+    published_tenants: list[str] = []
+    monkeypatch.setattr(worker_tasks, "_scheduler_start_index", next_start)
+    monkeypatch.setattr(
+        worker_tasks.celery_app,
+        "send_task",
+        lambda _name, **kwargs: published_tenants.append(str(kwargs["kwargs"]["organization_id"])),
+    )
+
+    assert [worker_tasks.dispatch_outbox.run(limit=1) for _ in range(3)] == [1, 1, 1]
+    assert published_tenants == list(tenants)
+    assert cursor_calls == [
+        (3, worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY, "outbox dispatcher"),
+        (3, worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY, "outbox dispatcher"),
+        (3, worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY, "outbox dispatcher"),
+    ]
+
+
+def test_recovery_global_limit_rotates_first_tenant_durably(
+    worker_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenants = tuple(f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 4))
+    jobs: list[str] = []
+    for index, tenant_id in enumerate(tenants, start=1):
+        job_id, _ = _seed_generation_job(
+            worker_session_factory,
+            organization_id=tenant_id,
+            version_id=f"20000000-0000-4000-8000-{index:012d}",
+            job_id=f"30000000-0000-4000-8000-{index:012d}",
+            project_id=f"40000000-0000-4000-8000-{index:012d}",
+        )
+        jobs.append(job_id)
+        assert worker_tasks._claim_job(job_id, tenant_id) is not None
+    with worker_session_factory.begin() as session:
+        for job_id in jobs:
+            job = session.get(GenerationJob, job_id)
+            assert job is not None
+            job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+    starts = iter((0, 1, 2))
+    cursor_calls: list[tuple[int, str, str]] = []
+
+    def next_start(
+        tenant_count: int,
+        *,
+        cursor_key: str,
+        scheduler_name: str,
+    ) -> int:
+        cursor_calls.append((tenant_count, cursor_key, scheduler_name))
+        return next(starts)
+
+    monkeypatch.setattr(worker_tasks, "_scheduler_start_index", next_start)
+
+    assert [worker_tasks.recover_stale_jobs.run(limit=1) for _ in range(3)] == [1, 1, 1]
+    with worker_session_factory() as session:
+        recovered = list(
+            session.scalars(
+                select(OutboxEvent)
+                .where(OutboxEvent.event_key.like("generation-recovery:%"))
+                .order_by(OutboxEvent.organization_id)
+            )
+        )
+        assert [event.organization_id for event in recovered] == list(tenants)
+    assert cursor_calls == [
+        (3, worker_tasks.GENERATION_RECOVERY_CURSOR_KEY, "generation recovery"),
+        (3, worker_tasks.GENERATION_RECOVERY_CURSOR_KEY, "generation recovery"),
+        (3, worker_tasks.GENERATION_RECOVERY_CURSOR_KEY, "generation recovery"),
+    ]
 
 
 def test_outbox_tenant_rollback_does_not_block_other_tenants(
@@ -1199,11 +1865,15 @@ def test_outbox_tenant_rollback_does_not_block_other_tenants(
 
     original_dispatch = worker_tasks._dispatch_tenant_outbox_events
 
-    def fail_tenant_a(events: list[OutboxEvent], organization_id: str) -> int:
+    def fail_tenant_a(
+        events: list[OutboxEvent],
+        organization_id: str,
+        **kwargs: Any,
+    ) -> int:
         if organization_id == organization_a:
             events[0].last_error = "must roll back"
             raise RuntimeError("isolated tenant failure")
-        return original_dispatch(events, organization_id)
+        return original_dispatch(events, organization_id, **kwargs)
 
     published: list[dict[str, Any]] = []
     monkeypatch.setattr(worker_tasks, "_dispatch_tenant_outbox_events", fail_tenant_a)
@@ -1215,7 +1885,11 @@ def test_outbox_tenant_rollback_does_not_block_other_tenants(
 
     assert worker_tasks.dispatch_outbox.run(limit=1) == 1
     assert published == [
-        {"kwargs": {"job_id": job_b, "organization_id": organization_b}}
+        {
+            "kwargs": {"job_id": job_b, "organization_id": organization_b},
+            "queue": worker_tasks.GENERATION_QUEUE,
+            "retry": False,
+        }
     ]
     with worker_session_factory() as session:
         event_a = session.scalar(
@@ -1290,3 +1964,73 @@ def test_scheduler_tasks_reject_invalid_global_limits(
         worker_tasks.dispatch_outbox.run(limit=invalid_limit)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="positive integer"):
         worker_tasks.recover_stale_jobs.run(limit=invalid_limit)  # type: ignore[arg-type]
+
+
+def test_scheduler_cursor_is_task_specific_atomic_and_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    counts: dict[str, int] = {}
+    closed = 0
+
+    class FakeRedis:
+        def incr(self, key: str) -> int:
+            counts[key] = counts.get(key, 0) + 1
+            return counts[key]
+
+        def close(self) -> None:
+            nonlocal closed
+            closed += 1
+
+    fake = FakeRedis()
+    monkeypatch.setattr(worker_tasks.Redis, "from_url", lambda *_args, **_kwargs: fake)
+
+    assert (
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY,
+            scheduler_name="outbox dispatcher",
+        )
+        == 0
+    )
+    assert (
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY,
+            scheduler_name="outbox dispatcher",
+        )
+        == 1
+    )
+    assert (
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.GENERATION_RECOVERY_CURSOR_KEY,
+            scheduler_name="generation recovery",
+        )
+        == 0
+    )
+    assert worker_tasks._storage_reaper_start_index(3) == 0
+    assert closed == 4
+    assert counts == {
+        worker_tasks.OUTBOX_DISPATCH_CURSOR_KEY: 2,
+        worker_tasks.GENERATION_RECOVERY_CURSOR_KEY: 1,
+        worker_tasks.STORAGE_REAPER_CURSOR_KEY: 1,
+    }
+
+    class BrokenRedis:
+        def incr(self, _key: str) -> int:
+            raise worker_tasks.RedisError("redis-secret")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        worker_tasks.Redis,
+        "from_url",
+        lambda *_args, **_kwargs: BrokenRedis(),
+    )
+    with pytest.raises(RuntimeError, match="generation recovery fairness cursor is unavailable"):
+        worker_tasks._scheduler_start_index(
+            3,
+            cursor_key=worker_tasks.GENERATION_RECOVERY_CURSOR_KEY,
+            scheduler_name="generation recovery",
+        )

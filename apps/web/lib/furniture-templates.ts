@@ -191,6 +191,22 @@ export function furnitureTemplate(id: FurnitureTemplateId): FurnitureTemplate {
   return FURNITURE_TEMPLATES.find((template) => template.id === id) ?? FURNITURE_TEMPLATES[0]!;
 }
 
+/**
+ * Keeps the browser's template identity compatible with the canonical
+ * furniture family sent to the API. A semantic edit may legitimately turn a
+ * bookcase into a wall library (for example when an under-cabinet row is
+ * added), but a stale template id would make that otherwise-valid draft fail
+ * the server capability boundary.
+ */
+export function compatibleFurnitureTemplateId(
+  selectedId: FurnitureTemplateId,
+  furnitureType: DesignSpec["furniture_type"],
+): FurnitureTemplateId {
+  const selected = furnitureTemplate(selectedId);
+  if (selected.patch.furniture_type === furnitureType) return selectedId;
+  return furnitureType === "wall_library" ? "wall-library" : "shelving";
+}
+
 export function hasCustomInteriorLayout(spec: DesignSpec): boolean {
   return spec.bay_width_ratios.length > 0 || spec.shelf_height_ratios.length > 0;
 }

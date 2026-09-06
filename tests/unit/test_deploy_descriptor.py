@@ -346,6 +346,7 @@ def test_compose_environment_contains_only_verified_application_references() -> 
     ("path", "replacement"),
     (
         (("roles", "scheduler"), "api"),
+        (("roles", "maintenance-worker"), "api"),
         (("images", "api"), application_images()["worker"]),
     ),
 )
@@ -363,7 +364,7 @@ def test_compose_environment_rejects_unverified_role_or_repository(
 @pytest.mark.parametrize(
     ("path", "replacement"),
     (
-        (("schema_version",), "custombuild.deploy-descriptor.v3"),
+        (("schema_version",), "custombuild.deploy-descriptor.v2"),
         (("repository",), "another/Repository"),
         (("git_revision",), "c" * 40),
         (("source_manifest_sha256",), "c" * 64),
@@ -393,6 +394,7 @@ def test_compose_environment_rejects_unverified_role_or_repository(
             f"cgr.dev/chainguard/postgres@sha256:{'9' * 64}",
         ),
         (("roles", "scheduler"), "api"),
+        (("roles", "maintenance-worker"), "api"),
         (
             ("signing_policy", "cosign", "certificate_identity"),
             "https://github.com/pilotens/Custombuild/*@refs/heads/main",

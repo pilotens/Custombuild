@@ -21,6 +21,109 @@ describe("StudioInspector", () => {
     expect(screen.getByLabelText("Höjd")).toHaveAttribute("max", "4000");
     expect(screen.getByLabelText("Djup")).toHaveAttribute("min", "100");
     expect(screen.getByLabelText("Djup")).toHaveAttribute("max", "1200");
+    expect(screen.getByLabelText("Bredd")).toHaveAttribute("step", "0.001");
+    expect(screen.getByText(/samma servermodell som skapar granskningsunderlaget/i)).toBeVisible();
+  });
+
+  it("preserves an exact millimetre value instead of snapping it to ten millimetres", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    const depth = screen.getByLabelText("Djup");
+    fireEvent.change(depth, { target: { value: "397.125" } });
+    fireEvent.blur(depth);
+
+    expect(onChange).toHaveBeenCalledWith(
+      { depth_mm: 397.125 },
+      "Djup ändrades",
+    );
+  });
+
+  it("captures the measured material batch thickness at exact micrometre resolution", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    const thickness = screen.getByLabelText("Faktisk uppmätt skivtjocklek");
+    expect(thickness).toHaveAttribute("min", "17");
+    expect(thickness).toHaveAttribute("max", "19");
+    expect(thickness).toHaveAttribute("step", "0.001");
+
+    fireEvent.change(thickness, { target: { value: "17.6" } });
+    fireEvent.blur(thickness);
+    expect(onChange).toHaveBeenCalledWith(
+      { measured_thickness_mm: 17.6 },
+      "Faktisk uppmätt skivtjocklek ändrades",
+    );
+
+    onChange.mockClear();
+    fireEvent.change(thickness, { target: { value: "17.6005" } });
+    fireEvent.blur(thickness);
+    expect(thickness).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText(/steg om 0,001 mm/i)).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.change(thickness, { target: { value: "16.999" } });
+    fireEvent.blur(thickness);
+    expect(screen.getByText(/mellan 17 och 19 mm/i)).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1, 1.2])("accepts exact %.3f mm front edge-band intent", (edgeBandMm) => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    const edgeBand = screen.getByLabelText("Framkantlistens tjocklek");
+    expect(edgeBand).toHaveAttribute("min", "0");
+    expect(edgeBand).toHaveAttribute("max", "5");
+    expect(edgeBand).toHaveAttribute("step", "0.001");
+    fireEvent.change(edgeBand, { target: { value: String(edgeBandMm) } });
+    fireEvent.blur(edgeBand);
+
+    expect(onChange).toHaveBeenCalledWith(
+      { edge_band_mm: edgeBandMm },
+      expect.stringMatching(edgeBandMm === 0 ? /togs bort/i : /ändrades/i),
+    );
+    expect(screen.getByText(/separat SKU, infästningsmetod och kapmåttskompensation/i))
+      .toBeVisible();
+  });
+
+  it("rejects lossy and out-of-range front edge-band input", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+    const edgeBand = screen.getByLabelText("Framkantlistens tjocklek");
+
+    fireEvent.change(edgeBand, { target: { value: "1.0005" } });
+    fireEvent.blur(edgeBand);
+    expect(edgeBand).toHaveAttribute("aria-invalid", "true");
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.change(edgeBand, { target: { value: "5.001" } });
+    fireEvent.blur(edgeBand);
+    expect(screen.getByText(/mellan 0 och 5 mm/i)).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("shows concept scope before the user reaches package generation", () => {
+    render(<StudioInspector
+      spec={{
+        ...DEFAULT_DESIGN_SPEC,
+        furniture_type: "wall_library",
+        base_cabinet_height_mm: 680,
+        base_cabinet_depth_mm: DEFAULT_DESIGN_SPEC.depth_mm,
+        base_cabinet_count: 1,
+      }}
+      status="WARNING"
+      partCount={22}
+      templateName="Väggbibliotek"
+      productionLevel="concept"
+      onChange={vi.fn()}
+      onOpenExplore={vi.fn()}
+      onOpenCheck={vi.fn()}
+    />);
+
+    expect(screen.getByText("Konceptdesign – underlag spärrat")).toBeVisible();
+    expect(screen.getByText(/kan inte bli ett produktionsunderlag/i)).toBeVisible();
+    expect(screen.getByText(/inte ett godkännande för skärande CNC/i)).toBeVisible();
   });
 
   it("maximizes equal bays from a requested clear width", () => {
@@ -49,7 +152,30 @@ describe("StudioInspector", () => {
     expect(onChange).toHaveBeenCalledWith({ reinforcement_mode: "manual" }, expect.stringContaining("Manuella"));
   });
 
-  it("edits the explicit back-panel mounting and 6 mm material contract", () => {
+  it("edits the exact sockel height and carries wall-anchor intent without claiming verification", () => {
+    const onChange = vi.fn();
+    const { rerender } = render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    const plinthHeight = screen.getByLabelText("Sockelhöjd");
+    expect(plinthHeight).toHaveAttribute("step", "0.001");
+    fireEvent.change(plinthHeight, { target: { value: "125.5" } });
+    fireEvent.blur(plinthHeight);
+    expect(onChange).toHaveBeenCalledWith(
+      { plinth_height_mm: 125.5 },
+      "Sockelhöjden ändrades",
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Planera väggförankring/ }));
+    expect(onChange).toHaveBeenCalledWith(
+      { wall_anchor_required: true },
+      "Planera väggförankring ändrades",
+    );
+
+    rerender(<StudioInspector spec={{ ...DEFAULT_DESIGN_SPEC, wall_anchor_required: true }} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+    expect(screen.getByText(/inte ett verifierat montagebevis/i)).toBeVisible();
+  });
+
+  it("keeps unsupported surface mounting unavailable as a new production choice", () => {
     const onChange = vi.fn();
     render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
 
@@ -57,16 +183,68 @@ describe("StudioInspector", () => {
     expect(screen.getByLabelText("Välj Björkplywood 6 mm för bakstycket")).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText(/verkstadsunderlaget förblir spärrat/i)).toBeVisible();
 
-    fireEvent.click(screen.getByRole("radio", { name: /Utanpåliggande/ }));
-    expect(onChange).toHaveBeenCalledWith(
-      { back_panel_type: "surface_mounted" },
-      expect.stringContaining("Utanpåliggande"),
-    );
+    const surfaceMounted = screen.getByRole("radio", { name: /Utanpåliggande/ });
+    expect(surfaceMounted).toBeDisabled();
+    expect(screen.getByText(/saknar en implementerad autentiserad retentionklass/i)).toBeVisible();
+    fireEvent.click(surfaceMounted);
+    expect(onChange).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByLabelText("Välj MDF 6 mm för bakstycket"));
     expect(onChange).toHaveBeenCalledWith(
-      { back_material_id: "mdf-6" },
+      { back_material_id: "mdf-6", measured_back_thickness_mm: 6 },
       expect.stringContaining("MDF 6 mm"),
+    );
+  });
+
+  it("captures exact measured back thickness without rounding", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector spec={DEFAULT_DESIGN_SPEC} status="PASS" partCount={18} onChange={onChange} onOpenExplore={vi.fn()} onOpenCheck={vi.fn()} />);
+
+    const thickness = screen.getByLabelText("Faktisk uppmätt bakstyckestjocklek");
+    expect(thickness).toHaveAttribute("min", "5.5");
+    expect(thickness).toHaveAttribute("max", "6.5");
+    expect(thickness).toHaveAttribute("step", "0.001");
+
+    fireEvent.change(thickness, { target: { value: "5.8" } });
+    fireEvent.blur(thickness);
+    expect(onChange).toHaveBeenCalledWith(
+      { measured_back_thickness_mm: 5.8 },
+      "Bakstyckets uppmätta tjocklek ändrades",
+    );
+
+    onChange.mockClear();
+    fireEvent.change(thickness, { target: { value: "5.8005" } });
+    fireEvent.blur(thickness);
+    expect(thickness).toHaveAttribute("aria-invalid", "true");
+    expect(onChange).not.toHaveBeenCalled();
+
+    fireEvent.change(thickness, { target: { value: "5.499" } });
+    fireEvent.blur(thickness);
+    expect(screen.getByText(/mellan 5,5 och 6,5 mm/i)).toBeVisible();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("lets a hydrated surface-mounted design move to the supported inset back", () => {
+    const onChange = vi.fn();
+    render(<StudioInspector
+      spec={{ ...DEFAULT_DESIGN_SPEC, back_panel_type: "surface_mounted" }}
+      status="BLOCK"
+      partCount={18}
+      onChange={onChange}
+      onOpenExplore={vi.fn()}
+      onOpenCheck={vi.fn()}
+    />);
+
+    expect(screen.getByRole("radio", { name: /Utanpåliggande/ })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /Utanpåliggande/ })).toBeDisabled();
+    expect(screen.getByText(/Den inlästa designen använder ett äldre utanpåliggande bakstycke/i))
+      .toBeVisible();
+    const inset = screen.getByRole("radio", { name: /Infällt i not/ });
+    expect(inset).toBeEnabled();
+    fireEvent.click(inset);
+    expect(onChange).toHaveBeenCalledWith(
+      { back_panel_type: "inset_groove" },
+      "Infällt bakstycke valdes",
     );
   });
 

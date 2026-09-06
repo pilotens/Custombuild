@@ -19,6 +19,7 @@ from app.models import (
     GenerationJob,
     JobStatus,
     Organization,
+    OutboxEvent,
     Project,
     StorageGlobalQuota,
     StorageTenantQuota,
@@ -77,6 +78,11 @@ def worker_quota_database(
         worker_tasks,
         "_validate_completion_evidence",
         lambda _session, _organization_id, _job: None,
+    )
+    monkeypatch.setattr(
+        worker_tasks,
+        "_validate_retention_before_generation",
+        lambda _organization_id, _version, *, minimum_valid_until: None,
     )
     _seed_worker_quota_subject(factory)
     yield factory
@@ -297,6 +303,7 @@ def _fast_generation_subject(
         material=material,
         back_material=None,
         parameters=SimpleNamespace(actual_thickness_um=18_000),
+        joint_retention=None,
     )
     monkeypatch.setattr(
         worker_tasks,
@@ -306,7 +313,7 @@ def _fast_generation_subject(
     monkeypatch.setattr(
         worker_tasks,
         "build_bookcase",
-        lambda _spec: SimpleNamespace(design_hash=version.design_hash),
+        lambda _spec: SimpleNamespace(design_hash=version.design_hash, spec=spec),
     )
     rule_report = SimpleNamespace(
         overall_status=RuleStatus.PASS,
@@ -580,10 +587,6 @@ def test_transient_put_failure_delays_retry_until_storage_lease_can_be_taken_ove
     factory = worker_quota_database
     reservation_time = datetime.now(UTC)
     claimed_storage: list[StorageObjectClaim] = []
-    retry_calls: list[dict[str, Any]] = []
-
-    class RetryRequested(Exception):
-        pass
 
     def fail_after_reservation(
         job: GenerationJob,
@@ -591,7 +594,9 @@ def test_transient_put_failure_delays_retry_until_storage_lease_can_be_taken_ove
         *,
         lease_token: str,
         lease_guard: worker_tasks._GenerationLeaseGuard,
+        verified_retention_input: worker_tasks.VerifiedRetentionPackageInput | None = None,
     ) -> dict[str, Any]:
+        assert verified_retention_input is None
         claim = StorageObjectClaim(
             project_id=version.project_id,
             object_key="private/transient-upload.bin",
@@ -614,23 +619,24 @@ def test_transient_put_failure_delays_retry_until_storage_lease_can_be_taken_ove
         claimed_storage.append(claim)
         raise ArtifactStorageUnavailableError("transient PUT failed")
 
-    def capture_retry(*_args: object, **kwargs: Any) -> None:
-        retry_calls.append(kwargs)
-        raise RetryRequested()
-
     monkeypatch.setattr(worker_tasks, "_generate", fail_after_reservation)
-    monkeypatch.setattr(worker_tasks.generate_package, "retry", capture_retry)
+    result = worker_tasks.generate_package.run(
+        job_id=JOB_ID,
+        organization_id=ORGANIZATION_ID,
+    )
 
-    with pytest.raises(RetryRequested):
-        worker_tasks.generate_package.run(job_id=JOB_ID, organization_id=ORGANIZATION_ID)
-
-    assert len(retry_calls) == 1
-    assert isinstance(retry_calls[0]["exc"], ArtifactStorageUnavailableError)
-    assert retry_calls[0]["countdown"] >= int(GENERATION_LEASE_TTL.total_seconds())
+    assert result["state"] == "retry_scheduled"
+    assert result["retry_after_seconds"] >= int(GENERATION_LEASE_TTL.total_seconds())
     with factory() as session:
         failed_attempt = session.get(GenerationJob, JOB_ID)
         assert failed_attempt is not None
         assert failed_attempt.status == JobStatus.queued
+        retry_event = session.scalar(
+            select(OutboxEvent).where(OutboxEvent.event_key == f"generation-retry:{JOB_ID}:1")
+        )
+        assert retry_event is not None
+        assert retry_event.available_at >= (retry_event.created_at + GENERATION_LEASE_TTL)
+        assert failed_attempt.next_attempt_at == retry_event.available_at
         reserved = session.get(
             StoredObject,
             (ORGANIZATION_ID, claimed_storage[0].object_key),
@@ -638,6 +644,13 @@ def test_transient_put_failure_delays_retry_until_storage_lease_can_be_taken_ove
         assert reserved is not None
         assert reserved.state == StoredObjectState.reserved
 
+    assert worker_tasks._claim_job(JOB_ID, ORGANIZATION_ID) is None
+    retry_due = worker_tasks._as_utc(retry_event.available_at)
+    monkeypatch.setattr(
+        worker_tasks,
+        "_database_time",
+        lambda _session, override=None: retry_due,
+    )
     second_claim = worker_tasks._claim_job(JOB_ID, ORGANIZATION_ID)
     assert second_claim is not None
     second_job, _second_version = second_claim

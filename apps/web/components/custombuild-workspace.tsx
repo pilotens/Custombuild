@@ -61,6 +61,7 @@ import {
   type RuleEvaluation,
 } from "@/lib/design-types";
 import {
+  compatibleFurnitureTemplateId,
   FURNITURE_TEMPLATES,
   furnitureTemplate,
   hasCustomInteriorLayout,
@@ -82,6 +83,7 @@ import { ProductionDrawer } from "./production-drawer";
 import { ReferenceImageImporter } from "./reference-image-importer";
 import { SelectedPartInspector } from "./selected-part-inspector";
 import { StudioInspector } from "./studio-inspector";
+import type { WorkshopContextDraftState } from "./workshop-context-editor";
 import { ValidationPanel, type ActiveValidationFixPreview } from "./validation-panel";
 import {
   WorkspaceNavigation,
@@ -200,6 +202,11 @@ const DEFAULT_PROJECT_NAME = "Arkitektväggen";
 const LEGACY_STORED_SPEC_KEY = "custombuild:bookcase:demo";
 const LEGACY_STORED_TEMPLATE_KEY = "custombuild:furniture-template:demo";
 const LEGACY_SUPPORT_AUTOMATION_KEY = "custombuild:bookcase:support-automation:v1";
+const WORKSHOP_DRAFT_BLOCK_MESSAGE = (
+  "Verkstadsprofilen har osparade eller ofullständiga uppgifter. Gå till Underlag och "
+  + "slutför alla fält, eller välj Återgå till lagerobundet paket, innan du byter vy, "
+  + "projekt eller sparar utkastet."
+);
 
 function canonicalSignatureJson(value: unknown): string {
   if (value === undefined) return "undefined";
@@ -409,6 +416,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const [semanticDragKind, setSemanticDragKind] = useState<SemanticComponentKind>();
   const [semanticNotice, setSemanticNotice] = useState<SemanticNotice>();
   const [validationFixPreview, setValidationFixPreview] = useState<ValidationFixPreviewState>();
+  const [workshopContextDraftState, setWorkshopContextDraftState] =
+    useState<WorkshopContextDraftState>();
   const specRef = useRef(spec);
   const resizeSnapshotRef = useRef<DesignSpec | undefined>(undefined);
   const partMoveSnapshotRef = useRef<DesignSpec | undefined>(undefined);
@@ -430,6 +439,21 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       : parseWorkspaceUrl(window.location.search),
   );
   const serverAvailable = api.configured && api.authenticated;
+  const mayManageDesign = !principal
+    || principal.role === "designer"
+    || principal.role === "admin"
+    || principal.role === "owner";
+  const workshopContextDraftBlocked = Boolean(
+    workshopContextDraftState
+    && (workshopContextDraftState.dirty || !workshopContextDraftState.valid),
+  );
+
+  const updateWorkshopContextDraftState = useCallback((state: WorkshopContextDraftState) => {
+    setWorkshopContextDraftState(state);
+    if (!state.dirty && state.valid) {
+      setProjectError((current) => current === WORKSHOP_DRAFT_BLOCK_MESSAGE ? undefined : current);
+    }
+  }, []);
 
   const retryServerPreview = useCallback(() => {
     serverPreviewRetryAttemptRef.current = 0;
@@ -477,6 +501,13 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     stage: WorkspaceStage,
     options: WorkspaceStageChangeOptions = {},
   ) => {
+    if (workshopContextDraftBlocked && stage !== "build") {
+      setProjectError(WORKSHOP_DRAFT_BLOCK_MESSAGE);
+      if ((options.history ?? "push") !== "none") {
+        writeWorkspaceUrl(projectId, "build", "replace");
+      }
+      return "build";
+    }
     const nextStage = principal && !workspaceSelected && stage !== "explore" && !options.allowWithoutStartPoint
       ? "explore"
       : stage;
@@ -490,7 +521,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     const history = options.history ?? "push";
     if (history !== "none") writeWorkspaceUrl(projectId, nextStage, history);
     return nextStage;
-  }, [changeSelectedPart, principal, projectId, workspaceSelected, writeWorkspaceUrl]);
+  }, [changeSelectedPart, principal, projectId, workshopContextDraftBlocked, workspaceSelected, writeWorkspaceUrl]);
 
   useEffect(() => {
     if (modeHeadingFocusRequest === 0) return;
@@ -578,6 +609,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     requestedMode?: WorkspaceStage,
   ) => {
     const restored = normalizeStoredWorkspace(storedSpec);
+    setWorkshopContextDraftState(undefined);
     const nextSpec = restored?.spec ?? normalizedDefaultSpec();
     specRef.current = nextSpec;
     setSpec(nextSpec);
@@ -593,11 +625,10 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     setServerPreview(undefined);
     setWorkspaceSelected(Boolean(restored && selected));
     setPlanningBrief(storedPlanningBrief ?? DEFAULT_PLANNING_BRIEF);
-    setSelectedTemplateId(
-      isFurnitureTemplateId(storedTemplateId)
-        ? storedTemplateId
-        : nextSpec.furniture_type === "wall_library" ? "wall-library" : "shelving",
-    );
+    const storedTemplate = isFurnitureTemplateId(storedTemplateId)
+      ? storedTemplateId
+      : nextSpec.furniture_type === "wall_library" ? "wall-library" : "shelving";
+    setSelectedTemplateId(compatibleFurnitureTemplateId(storedTemplate, nextSpec.furniture_type));
     const nextMode = restored && selected
       ? requestedMode ?? storedUiState.mode
       : principal ? "explore" : requestedMode ?? "explore";
@@ -815,6 +846,27 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         let availableProjects = (await api.listProjects()).filter((project) => !project.archived);
         if (cancelled) return;
         if (availableProjects.length === 0) {
+          if (!mayManageDesign) {
+            setProjects([]);
+            setProjectId(undefined);
+            setActiveProject(undefined);
+            const nextMode = applyHydratedWorkspace(
+              undefined,
+              undefined,
+              false,
+              undefined,
+              DEFAULT_WORKSPACE_UI_STATE,
+              requestedMode,
+            );
+            writeWorkspaceUrl(undefined, nextMode, "replace");
+            setServerDraftReady(true);
+            setHydrated(true);
+            setApiState("synced");
+            setApiMessage(
+              "Inga projekt är tilldelade. En designer, admin eller owner måste skapa ett projekt innan det kan granskas.",
+            );
+            return;
+          }
           const created = await api.createProject(DEFAULT_PROJECT_NAME);
           availableProjects = [created];
         }
@@ -856,10 +908,10 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       cancelled = true;
       workspaceLoadRef.current += 1;
     };
-  }, [api, applyHydratedWorkspace, authReady, loadProjectWorkspace, principal, serverAvailable, writeWorkspaceUrl]);
+  }, [api, applyHydratedWorkspace, authReady, loadProjectWorkspace, mayManageDesign, principal, serverAvailable, writeWorkspaceUrl]);
 
   useEffect(() => {
-    if (!hydrated || hydrationBlocker) return;
+    if (!hydrated || hydrationBlocker || workshopContextDraftBlocked) return;
     const localProjectId = principal ? projectId : ANONYMOUS_PROJECT_ID;
     if (!localProjectId) return;
     const timer = window.setTimeout(() => {
@@ -877,7 +929,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       }
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [currentUiState, hydrated, hydrationBlocker, planningBrief, principal, projectId, selectedTemplateId, serverAvailable, spec, workspaceSelected]);
+  }, [currentUiState, hydrated, hydrationBlocker, planningBrief, principal, projectId, selectedTemplateId, serverAvailable, spec, workshopContextDraftBlocked, workspaceSelected]);
 
   const queueServerDraftSave = useCallback((
     targetProjectId: string,
@@ -944,7 +996,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, [api]);
 
   useEffect(() => {
-    if (!hydrated || hydrationBlocker || !serverDraftReady || !projectId || !workspaceSelected) return;
+    if (!hydrated || hydrationBlocker || workshopContextDraftBlocked || !serverDraftReady || !projectId || !workspaceSelected) return;
+    if (principal && !mayManageDesign) return;
     if (suppressNextServerDraftSaveRef.current) {
       suppressNextServerDraftSaveRef.current = false;
       return;
@@ -963,7 +1016,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         });
     }, 800);
     return () => window.clearTimeout(timer);
-  }, [hydrated, hydrationBlocker, projectId, queueServerDraftSave, selectedTemplateId, serverDraftReady, spec, workspaceSelected]);
+  }, [hydrated, hydrationBlocker, mayManageDesign, principal, projectId, queueServerDraftSave, selectedTemplateId, serverDraftReady, spec, workshopContextDraftBlocked, workspaceSelected]);
 
   const localDesign = useMemo(() => resolveDesign(spec, changeDiff), [changeDiff, spec]);
   const customInterior = hasCustomInteriorLayout(spec);
@@ -1047,12 +1100,16 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     let reconnectTimer: number | undefined;
     const requestHash = localDesignHash(spec);
     const timer = window.setTimeout(() => {
-      const request = spec.reinforcement_mode === "auto"
+      const mayAutofix = principal?.role === "designer"
+        || principal?.role === "admin"
+        || principal?.role === "owner";
+      const shouldAutofix = spec.reinforcement_mode === "auto" && mayAutofix;
+      const request = shouldAutofix
         ? api.autofixDesign(spec, controller.signal, projectId)
         : api.previewDesign(spec, controller.signal, projectId);
       request
         .then((result) => {
-          const authoritativeSpec = spec.reinforcement_mode === "auto"
+          const authoritativeSpec = shouldAutofix
             ? parseLocalDesignSpec(adaptStructuralSupports({
                 ...spec,
                 divider_count: result.spec.divider_count,
@@ -1070,7 +1127,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
           }
           setApiState("synced");
           setApiMessage(
-            spec.reinforcement_mode === "auto"
+            shouldAutofix
               ? "Serverns konstruktionsregler har räknat om stöd, delar och förband."
               : "Serverns auktoritativa preview är synkroniserad.",
           );
@@ -1100,7 +1157,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       if (reconnectTimer !== undefined) window.clearTimeout(reconnectTimer);
       controller.abort();
     };
-  }, [api, hydrated, hydrationBlocker, projectId, serverAvailable, serverPreviewRetryNonce, spec]);
+  }, [api, hydrated, hydrationBlocker, principal?.role, projectId, serverAvailable, serverPreviewRetryNonce, spec]);
 
   const effectiveSelectedPartId = selectedPartId && design.parts.some((part) => part.part_id === selectedPartId)
     ? selectedPartId
@@ -1213,6 +1270,10 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, [activeValidationFixPreview, replaceSpec]);
 
   const restoreLastSaved = useCallback(() => {
+    if (workshopContextDraftBlocked) {
+      setProjectError(WORKSHOP_DRAFT_BLOCK_MESSAGE);
+      return;
+    }
     const localProjectId = principal ? projectId : ANONYMOUS_PROJECT_ID;
     if (!localProjectId) return;
     const snapshot = readWorkspaceDraft(window.localStorage, principal, localProjectId);
@@ -1231,12 +1292,24 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     setProjectError(undefined);
     setSaveState("saved");
     setPartEditNotice("Det senast sparade utkastet återställdes.");
-  }, [applyHydratedWorkspace, principal, projectId, writeWorkspaceUrl]);
+  }, [applyHydratedWorkspace, principal, projectId, workshopContextDraftBlocked, writeWorkspaceUrl]);
 
   const applySemanticDrop = useCallback((request: SemanticDropRequest) => {
     try {
       const outcome = resolveSemanticDrop(spec, request);
       replaceSpec(outcome.spec, outcome.diff);
+      if (outcome.spec.furniture_type !== spec.furniture_type) {
+        const compatibleTemplate = compatibleFurnitureTemplateId(
+          selectedTemplateId,
+          outcome.spec.furniture_type,
+        );
+        setSelectedTemplateId(compatibleTemplate);
+        setPlanningBrief((current) => ({
+          ...current,
+          startMode: "template",
+          selectedTemplateId: compatibleTemplate,
+        }));
+      }
       setSemanticNotice({ title: outcome.message, detail: outcome.detail });
       setSemanticDragKind(undefined);
       changeSelectedPart(undefined);
@@ -1250,7 +1323,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       });
       setSemanticDragKind(undefined);
     }
-  }, [changeSelectedPart, replaceSpec, spec]);
+  }, [changeSelectedPart, replaceSpec, selectedTemplateId, spec]);
 
   const updateSelectedPart = useCallback((partId: string, patch: PartOverride) => {
     const edited = editPartParametrically(spec, partId, patch);
@@ -1516,6 +1589,10 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, [draftConflict]);
 
   const reloadLatestDraft = useCallback(() => {
+    if (workshopContextDraftBlocked) {
+      setProjectError(WORKSHOP_DRAFT_BLOCK_MESSAGE);
+      return;
+    }
     if (!draftConflict || draftConflict.projectId !== projectId || draftConflictBusy) return;
     const targetProjectId = draftConflict.projectId;
     const requestId = ++workspaceLoadRef.current;
@@ -1581,21 +1658,26 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         setDraftConflictBusy(false);
         setHydrated(true);
       });
-  }, [api, applyHydratedWorkspace, draftConflict, draftConflictBusy, planningBrief, projectId, writeWorkspaceUrl]);
+  }, [api, applyHydratedWorkspace, draftConflict, draftConflictBusy, planningBrief, projectId, workshopContextDraftBlocked, writeWorkspaceUrl]);
 
   const persistCurrentWorkspace = useCallback(async () => {
+    if (workshopContextDraftBlocked) {
+      setProjectError(WORKSHOP_DRAFT_BLOCK_MESSAGE);
+      throw new Error(WORKSHOP_DRAFT_BLOCK_MESSAGE);
+    }
     if (hydrationBlocker) {
       throw new DesignHydrationError("INVALID_SERVER_DRAFT", [
         "Det blockerade serverutkastet får inte skrivas över från arbetsytan.",
       ]);
     }
+    if (principal && !mayManageDesign) return;
     const currentSpec = specRef.current;
     persistLocalWorkspace(currentSpec, selectedTemplateId, workspaceSelected, planningBrief);
     if (!serverAvailable || !projectId || !workspaceSelected) return;
     setSaveState("saving");
     await queueServerDraftSave(projectId, selectedTemplateId, currentSpec);
     setSaveState("saved");
-  }, [hydrationBlocker, persistLocalWorkspace, planningBrief, projectId, queueServerDraftSave, selectedTemplateId, serverAvailable, workspaceSelected]);
+  }, [hydrationBlocker, mayManageDesign, persistLocalWorkspace, planningBrief, principal, projectId, queueServerDraftSave, selectedTemplateId, serverAvailable, workshopContextDraftBlocked, workspaceSelected]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1675,6 +1757,10 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const switchProject = useCallback((nextProjectId: string) => {
     const project = projects.find((candidate) => candidate.id === nextProjectId);
     if (!project || project.id === projectId) return;
+    if (workshopContextDraftBlocked) {
+      setProjectError(WORKSHOP_DRAFT_BLOCK_MESSAGE);
+      return;
+    }
     const requestedMode = workspaceStageRef.current;
     const prepareSwitch = hydrationBlocker ? Promise.resolve() : persistCurrentWorkspace();
     void prepareSwitch
@@ -1688,11 +1774,15 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         setSaveState("error");
         setProjectError(`Projektet byttes inte eftersom utkastet inte kunde sparas. ${error instanceof Error ? error.message : "Försök igen."}`);
       });
-  }, [changeSelectedPart, hydrationBlocker, loadProjectWorkspace, persistCurrentWorkspace, projectId, projects, writeWorkspaceUrl]);
+  }, [changeSelectedPart, hydrationBlocker, loadProjectWorkspace, persistCurrentWorkspace, projectId, projects, workshopContextDraftBlocked, writeWorkspaceUrl]);
 
   const createProject = useCallback(() => {
     const name = projectCreateName.trim();
-    if (!hydrated || !name || projectCreateBusy) return;
+    if (!mayManageDesign || !hydrated || !name || projectCreateBusy) return;
+    if (workshopContextDraftBlocked) {
+      setProjectError(WORKSHOP_DRAFT_BLOCK_MESSAGE);
+      return;
+    }
     const lifecycleId = workspaceLoadRef.current;
     setProjectCreateBusy(true);
     setProjectError(undefined);
@@ -1718,7 +1808,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         setProjectCreateBusy(false);
       }
     })();
-  }, [api, hydrated, hydrationBlocker, loadProjectWorkspace, persistCurrentWorkspace, projectCreateBusy, projectCreateName, writeWorkspaceUrl]);
+  }, [api, hydrated, hydrationBlocker, loadProjectWorkspace, mayManageDesign, persistCurrentWorkspace, projectCreateBusy, projectCreateName, workshopContextDraftBlocked, writeWorkspaceUrl]);
 
   const logout = useCallback(() => {
     clearProductionSession(window.sessionStorage, principal);
@@ -1755,10 +1845,16 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
 
   const saveTarget = projectId ? "på servern" : "lokalt";
   const saveLabel = saveState === "saving"
-    ? `Sparar ${saveTarget}…`
+    ? workshopContextDraftBlocked
+      ? "Verkstadsprofilen måste slutföras"
+      : `Sparar ${saveTarget}…`
     : saveState === "error"
-      ? `Kunde inte spara ${saveTarget}`
-      : `Sparad ${saveTarget}`;
+      ? workshopContextDraftBlocked
+        ? "Verkstadsprofilen måste slutföras"
+        : `Kunde inte spara ${saveTarget}`
+      : workshopContextDraftBlocked
+        ? "Verkstadsprofilen måste slutföras"
+        : `Sparad ${saveTarget}`;
 
   const handleWorkspaceStageChange = changeWorkspaceStage;
   const hasCanvasStateBanner = Boolean(
@@ -1792,27 +1888,33 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                   <select
                     aria-label="Aktivt projekt"
                     value={projectId ?? ""}
-                    disabled={(!hydrated && !hydrationBlocker) || projects.length === 0}
+                    disabled={
+                      (!hydrated && !hydrationBlocker)
+                      || projects.length === 0
+                      || workshopContextDraftBlocked
+                    }
                     onChange={(event) => switchProject(event.target.value)}
                   >
                     {!projectId ? <option value="">Hämtar projekt…</option> : null}
                     {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
                   </select>
-                  <button
-                    type="button"
-                    className="new-product-button"
-                    aria-label="Skapa ny produkt"
-                    title="Skapa ny produkt i ett separat projekt"
-                    disabled={!hydrated || projectCreateBusy}
-                    onClick={() => {
-                      if (!hydrated || projectCreateBusy) return;
-                      setProjectCreateOpen((open) => !open);
-                      setProjectError(undefined);
-                    }}
-                  >
-                    <Plus aria-hidden="true" size={13} />
-                    <span>Ny produkt</span>
-                  </button>
+                  {mayManageDesign ? (
+                    <button
+                      type="button"
+                      className="new-product-button"
+                      aria-label="Skapa ny produkt"
+                      title="Skapa ny produkt i ett separat projekt"
+                      disabled={!hydrated || projectCreateBusy || workshopContextDraftBlocked}
+                      onClick={() => {
+                        if (!hydrated || projectCreateBusy) return;
+                        setProjectCreateOpen((open) => !open);
+                        setProjectError(undefined);
+                      }}
+                    >
+                      <Plus aria-hidden="true" size={13} />
+                      <span>Ny produkt</span>
+                    </button>
+                  ) : null}
                 </span>
               ) : <span>Lokalt utkast</span>}
             </div>
@@ -1822,7 +1924,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                 <GitBranch aria-hidden="true" size={13} /> Designutkast
               </span>
             </div>
-            {projectCreateOpen && principal ? (
+            {projectCreateOpen && principal && mayManageDesign ? (
               <form
                 className="project-create-popover"
                 onSubmit={(event) => {
@@ -1854,13 +1956,21 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
           </div>
           <div className="header-actions">
             <div className="save-state" aria-live="polite">
-              {saveState === "saved" ? <Check aria-hidden="true" size={13} /> : <Save aria-hidden="true" size={13} />}
+              {saveState === "saved" && !workshopContextDraftBlocked
+                ? <Check aria-hidden="true" size={13} />
+                : <Save aria-hidden="true" size={13} />}
               {saveLabel}
             </div>
             <button
               type="button"
               className="save-draft-button"
-              disabled={!hydrated || Boolean(hydrationBlocker) || saveState === "saving"}
+              disabled={
+                !mayManageDesign
+                || !hydrated
+                || Boolean(hydrationBlocker)
+                || saveState === "saving"
+                || workshopContextDraftBlocked
+              }
               onClick={() => {
                 void persistCurrentWorkspace().catch((error: unknown) => {
                   setSaveState("error");
@@ -1886,13 +1996,23 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
               className="icon-button"
               aria-label="Återställ senast sparade utkast"
               title="Återställ senast sparade utkast"
-              disabled={!hydrated || Boolean(hydrationBlocker)}
+              disabled={!hydrated || Boolean(hydrationBlocker) || workshopContextDraftBlocked}
               onClick={restoreLastSaved}
             >
               <Cloud aria-hidden="true" size={17} />
             </button>
           </div>
         </header>
+
+        {workshopContextDraftBlocked ? (
+          <section className="offline-banner error" role="alert" data-testid="workshop-draft-blocker">
+            <AlertTriangle aria-hidden="true" size={18} />
+            <span>
+              <strong>Verkstadsprofilen är inte klar.</strong>{" "}
+              {WORKSHOP_DRAFT_BLOCK_MESSAGE}
+            </span>
+          </section>
+        ) : null}
 
         {hydrationBlocker ? (
           <section className="offline-banner error" role="alert" data-testid="server-draft-hydration-blocker">
@@ -1915,6 +2035,11 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
           <section className="viewer-loading" role="status">
             <LoaderCircle aria-hidden="true" className="spin" size={22} />
             Verifierar projektets serverutkast…
+          </section>
+        ) : principal && projects.length === 0 && !mayManageDesign ? (
+          <section className="viewer-loading" role="status">
+            Inga projekt är tilldelade. En designer, admin eller owner måste skapa ett projekt
+            innan det kan granskas.
           </section>
         ) : (
         <>
@@ -2171,6 +2296,12 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                       spec={spec}
                       override={spec.part_overrides[selectedPart.part_id]}
                       onChange={(patch) => updateSelectedPart(selectedPart.part_id, patch)}
+                      onEdgeBandChange={(edge_band_mm) => updateSpec(
+                        { edge_band_mm },
+                        edge_band_mm === 0
+                          ? "Framkantlist togs bort via den valda delen"
+                          : `Framkantlist ändrades till ${edge_band_mm} mm via den valda delen`,
+                      )}
                       onShelfOpeningChange={updateShelfOpening}
                       onRemove={() => removeSelectedPart(selectedPart.part_id)}
                       onReset={() => resetSelectedPart(selectedPart.part_id)}
@@ -2181,6 +2312,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                       spec={spec}
                       status={design.status}
                       partCount={design.parts.length}
+                      templateName={selectedTemplate.name}
+                      productionLevel={selectedTemplate.productionLevel}
                       onChange={updateSpec}
                       onOpenExplore={() => changeWorkspaceStage("explore")}
                       onOpenCheck={() => changeWorkspaceStage("check")}
@@ -2223,6 +2356,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                   projectId={projectId}
                   principal={principal}
                   apiClient={api}
+                  workshopContextDraftState={workshopContextDraftState}
+                  onWorkshopContextDraftStateChange={updateWorkshopContextDraftState}
                 />
               </div>
             ) : null}

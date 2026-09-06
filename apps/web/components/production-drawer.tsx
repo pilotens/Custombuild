@@ -9,6 +9,7 @@ import { hasPartCustomization, isReferenceImageDesign, type FurnitureTemplate } 
 import type { WorkspaceIdentity } from "@/lib/workspace-draft-storage";
 import { ProjectHeader } from "./design-system";
 import { ProductionWorkflow, type ProductionSummary } from "./production-workflow";
+import type { WorkshopContextDraftState } from "./workshop-context-editor";
 
 interface ProductionDrawerProps {
   open: boolean;
@@ -24,6 +25,8 @@ interface ProductionDrawerProps {
   projectName?: string;
   principal?: WorkspaceIdentity;
   apiClient?: CustombuildApiClient;
+  workshopContextDraftState?: WorkshopContextDraftState;
+  onWorkshopContextDraftStateChange?: (state: WorkshopContextDraftState) => void;
 }
 
 function productionStateLabel(summary: ProductionSummary): string {
@@ -62,6 +65,8 @@ export function ProductionDrawer({
   projectName,
   principal,
   apiClient,
+  workshopContextDraftState,
+  onWorkshopContextDraftStateChange,
 }: ProductionDrawerProps) {
   const [summary, setSummary] = useState<ProductionSummary>({ status: "unsaved", stale: false });
   const dialogRef = useRef<HTMLElement>(null);
@@ -146,6 +151,8 @@ export function ProductionDrawer({
               onSummaryChange={updateSummary}
               onApplyDesignChange={onApplyDesignChange}
               onRequestServerPreviewRetry={onRequestServerPreviewRetry}
+              workshopContextDraftState={workshopContextDraftState}
+              onWorkshopContextDraftStateChange={onWorkshopContextDraftStateChange}
               showRevisionHistory={presentation === "embedded"}
             />
           </>

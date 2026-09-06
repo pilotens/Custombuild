@@ -852,8 +852,20 @@ def run_storage_recovery(compose_prefix: list[str], repo: Path) -> None:
     )
 
 
-def _stop_worker(compose_prefix: list[str], repo: Path, *, operation: str) -> None:
+WORKER_SERVICES = ("worker", "maintenance-worker", "storage-reaper-worker")
+
+
+def _stop_worker(
+    compose_prefix: list[str],
+    repo: Path,
+    *,
+    operation: str,
+    service: str = "worker",
+) -> None:
     """Warm-stop Celery with enough time for its longest active task to drain."""
+
+    if service not in WORKER_SERVICES:
+        raise BackupError("Unknown worker service")
 
     run(
         [
@@ -861,7 +873,7 @@ def _stop_worker(compose_prefix: list[str], repo: Path, *, operation: str) -> No
             "stop",
             "--timeout",
             str(WORKER_DRAIN_GRACE_SECONDS),
-            "worker",
+            service,
         ],
         cwd=repo,
         timeout_seconds=WORKER_DRAIN_COMMAND_TIMEOUT_SECONDS,
@@ -872,8 +884,12 @@ def _stop_worker(compose_prefix: list[str], repo: Path, *, operation: str) -> No
 def _worker_container_id(
     compose_prefix: list[str],
     repo: Path,
+    service: str = "worker",
 ) -> str:
     """Resolve one exact existing worker container without starting dependencies."""
+
+    if service not in WORKER_SERVICES:
+        raise BackupError("Unknown worker service")
 
     container_id = run_capture(
         [
@@ -882,14 +898,14 @@ def _worker_container_id(
             "--all",
             "--quiet",
             "--no-trunc",
-            "worker",
+            service,
         ],
         cwd=repo,
         timeout_seconds=SHORT_COMMAND_TIMEOUT_SECONDS,
-        operation="Worker container identity lookup",
+        operation=f"{service} container identity lookup",
     )
     if WORKER_CONTAINER_ID_PATTERN.fullmatch(container_id) is None:
-        raise BackupError("Compose worker container identity is missing or ambiguous")
+        raise BackupError(f"Compose {service} container identity is missing or ambiguous")
     return container_id
 
 
@@ -977,16 +993,18 @@ def _start_exact_worker(
     compose_prefix: list[str],
     repo: Path,
     expected_container_id: str,
+    *,
+    service: str = "worker",
 ) -> None:
-    if _worker_container_id(compose_prefix, repo) != expected_container_id:
+    if _worker_container_id(compose_prefix, repo, service) != expected_container_id:
         raise BackupError(
-            "Compose worker container identity changed while writers were quiesced"
+            f"Compose {service} container identity changed while writers were quiesced"
         )
     run(
         [docker, "container", "start", expected_container_id],
         cwd=repo,
         timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
-        operation="Start worker",
+        operation=f"Start {service}",
     )
     _wait_for_worker_health(
         docker,
@@ -1028,6 +1046,8 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
     required_services = {
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
         "storage-recovery",
         "storage-capacity-attestor",
@@ -1051,8 +1071,8 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
     # not prove what the daemon applied, so a failed gate never permits writers
     # to resume and an attempted resume is rolled back on any later failure.
     pause_attempted_services: list[str] = []
-    worker_stop_attempted = False
-    worker_container_id: str | None = None
+    worker_stop_attempted_services: list[str] = []
+    worker_container_ids: dict[str, str] = {}
     attestor_pause_attempted = False
     storage_recovery_completed = False
     pre_capture_capacity_verified = False
@@ -1079,24 +1099,44 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
                     _fail_closed_service(compose_prefix, repo, service)
                 except BackupError as stop_exc:
                     quiescence_errors.append(f"{service} fail-closed stop failed: {stop_exc}")
-        worker_stop_attempted = True
-        try:
-            worker_container_id = _worker_container_id(compose_prefix, repo)
-        except BackupError as exc:
-            quiescence_errors.append(f"worker identity capture failed: {exc}")
-        try:
-            _stop_worker(compose_prefix, repo, operation="Drain and stop worker")
-        except BackupError as exc:
-            quiescence_errors.append(f"worker drain failed: {exc}")
+        for worker_service in WORKER_SERVICES:
+            worker_stop_attempted_services.append(worker_service)
             try:
-                run(
-                    [*compose_prefix, "kill", "--signal", "SIGKILL", "worker"],
-                    cwd=repo,
-                    timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
-                    operation="Fail-closed kill worker",
+                worker_container_ids[worker_service] = _worker_container_id(
+                    compose_prefix,
+                    repo,
+                    worker_service,
                 )
-            except BackupError as kill_exc:
-                quiescence_errors.append(f"worker fail-closed kill failed: {kill_exc}")
+            except BackupError as exc:
+                quiescence_errors.append(
+                    f"{worker_service} identity capture failed: {exc}"
+                )
+            try:
+                _stop_worker(
+                    compose_prefix,
+                    repo,
+                    operation=f"Drain and stop {worker_service}",
+                    service=worker_service,
+                )
+            except BackupError as exc:
+                quiescence_errors.append(f"{worker_service} drain failed: {exc}")
+                try:
+                    run(
+                        [
+                            *compose_prefix,
+                            "kill",
+                            "--signal",
+                            "SIGKILL",
+                            worker_service,
+                        ],
+                        cwd=repo,
+                        timeout_seconds=RECOVERY_TIMEOUT_SECONDS,
+                        operation=f"Fail-closed kill {worker_service}",
+                    )
+                except BackupError as kill_exc:
+                    quiescence_errors.append(
+                        f"{worker_service} fail-closed kill failed: {kill_exc}"
+                    )
         if quiescence_errors:
             raise BackupError("Writer quiescence failed: " + "; ".join(quiescence_errors))
 
@@ -1237,19 +1277,22 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
         )
         if can_resume_writers:
             resumed_services: list[str] = []
-            worker_start_attempted = False
+            worker_start_attempted_services: list[str] = []
             try:
-                worker_start_attempted = worker_stop_attempted
-                if worker_stop_attempted:
+                for worker_service in worker_stop_attempted_services:
+                    worker_start_attempted_services.append(worker_service)
+                    worker_container_id = worker_container_ids.get(worker_service)
                     if worker_container_id is None:
                         raise BackupError(
-                            "Worker container identity was not captured before quiescence"
+                            f"{worker_service} container identity was not captured "
+                            "before quiescence"
                         )
                     _start_exact_worker(
                         docker,
                         compose_prefix,
                         repo,
                         worker_container_id,
+                        service=worker_service,
                     )
                 for service in ("scheduler", "api"):
                     if service not in pause_attempted_services:
@@ -1275,15 +1318,20 @@ def create_backup(repo: Path, compose: Path, output: Path) -> dict[str, Any]:
                         recovery_errors.append(
                             f"{service} fail-closed re-pause failed: {pause_exc}"
                         )
-                if worker_start_attempted:
+                for worker_service in reversed(worker_start_attempted_services):
                     try:
                         _stop_worker(
                             compose_prefix,
                             repo,
-                            operation="Fail-closed stop worker after recovery failure",
+                            operation=(
+                                f"Fail-closed stop {worker_service} after recovery failure"
+                            ),
+                            service=worker_service,
                         )
                     except BackupError as stop_exc:
-                        recovery_errors.append(f"worker fail-closed stop failed: {stop_exc}")
+                        recovery_errors.append(
+                            f"{worker_service} fail-closed stop failed: {stop_exc}"
+                        )
         else:
             if not storage_recovery_completed:
                 recovery_errors.append(

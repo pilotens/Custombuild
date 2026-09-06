@@ -40,7 +40,9 @@ _CORE_DOCUMENT_KINDS: Final = frozenset(
         "dfm_report",
         "stock_selection",
         "generation_plan",
+        "manufacturing_intent",
         "operations",
+        "supplier_handoff",
         "source_provenance",
     }
 )

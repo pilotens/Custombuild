@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Custombuild joint-retention signing payload v2",
+  "description": "The exact unsigned payload covered by the Ed25519 signature. It is the signed-evidence v2 envelope with signature_base64 omitted and never authorizes physical cutting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "evidence_id",
+    "issuer_id",
+    "key_id",
+    "issued_at",
+    "expires_at",
+    "application_class",
+    "joint_geometry_fingerprint_schema",
+    "engine_version",
+    "template_version",
+    "joint_geometry_sha256",
+    "catalogue_entry",
+    "test_report",
+    "installation_instruction"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "custombuild.joint-retention-signed-evidence.v2"
+    },
+    "evidence_id": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/stableKey"
+    },
+    "issuer_id": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/stableKey"
+    },
+    "key_id": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/stableKey"
+    },
+    "issued_at": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/timestamp"
+    },
+    "expires_at": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/timestamp"
+    },
+    "application_class": {
+      "const": "load_bearing_carcass_dado"
+    },
+    "joint_geometry_fingerprint_schema": {
+      "const": "custombuild.joint-retention-application-geometry.v1"
+    },
+    "engine_version": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/versionKey"
+    },
+    "template_version": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/versionKey"
+    },
+    "joint_geometry_sha256": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/sha256"
+    },
+    "catalogue_entry": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/catalogueEntry"
+    },
+    "test_report": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/embeddedDocument"
+    },
+    "installation_instruction": {
+      "$ref": "./joint-retention-signed-evidence.v2.schema.json#/$defs/embeddedDocument"
+    }
+  }
+}

@@ -38,6 +38,9 @@ API_TABLE_PRIVILEGES: dict[str, tuple[str, ...]] = {
     "storage_global_quotas": ("SELECT",),
     "storage_tenant_quotas": ("SELECT",),
     "stored_objects": ("SELECT",),
+    # Workshop trust persistence is omitted deliberately: neither untrusted
+    # runtime has a reviewed read or write path yet.  Add only narrow access
+    # together with the future verifier/finalizer boundary.
     # Audit rows are append-only for every application runtime.
     "audit_events": ("INSERT",),
 }
@@ -94,9 +97,20 @@ STORAGE_ATTESTOR_SIGNATURES = (
     ),
     "public.custombuild_storage_invalidate_capacity(text)",
 )
+JOINT_RETENTION_RUNTIME_SIGNATURES = (
+    "public.custombuild_joint_retention_assert_registry(text,text)",
+)
 ROLE_FUNCTION_PRIVILEGES: dict[str, tuple[str, ...]] = {
-    "custombuild_api": STORAGE_QUOTA_MUTATOR_SIGNATURES + STORAGE_API_RETRY_SIGNATURES,
-    "custombuild_worker": STORAGE_QUOTA_MUTATOR_SIGNATURES + STORAGE_REAPER_SIGNATURES,
+    "custombuild_api": (
+        STORAGE_QUOTA_MUTATOR_SIGNATURES
+        + STORAGE_API_RETRY_SIGNATURES
+        + JOINT_RETENTION_RUNTIME_SIGNATURES
+    ),
+    "custombuild_worker": (
+        STORAGE_QUOTA_MUTATOR_SIGNATURES
+        + STORAGE_REAPER_SIGNATURES
+        + JOINT_RETENTION_RUNTIME_SIGNATURES
+    ),
 }
 
 

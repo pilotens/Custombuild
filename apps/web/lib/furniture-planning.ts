@@ -94,7 +94,12 @@ export function resolvedPlanningTemplateId(brief: FurniturePlanningBrief): Furni
   return recommendedTemplateId(brief);
 }
 
-function clamp(value: number, min: number, max: number): number {
+function clampMillimetres(value: number, min: number, max: number): number {
+  const clamped = Math.min(max, Math.max(min, value));
+  return Math.round(clamped * 1_000) / 1_000;
+}
+
+function clampInteger(value: number, min: number, max: number): number {
   return Math.round(Math.min(max, Math.max(min, value)));
 }
 
@@ -105,27 +110,27 @@ export function templateWithPlanningBrief(
 ): FurnitureTemplate {
   const scratch = brief.startMode === "scratch";
   const furnitureType = scratch ? "bookcase" : template.patch.furniture_type;
-  const nextWidth = clamp(
+  const nextWidth = clampMillimetres(
     brief.width_mm,
     PLANNING_DIMENSION_LIMITS.width_mm.minimum,
     PLANNING_DIMENSION_LIMITS.width_mm.maximum,
   );
-  const nextHeight = clamp(
+  const nextHeight = clampMillimetres(
     brief.height_mm,
     PLANNING_DIMENSION_LIMITS.height_mm.minimum,
     PLANNING_DIMENSION_LIMITS.height_mm.maximum,
   );
-  const nextDepth = clamp(
+  const nextDepth = clampMillimetres(
     brief.depth_mm,
     PLANNING_DIMENSION_LIMITS.depth_mm.minimum,
     PLANNING_DIMENSION_LIMITS.depth_mm.maximum,
   );
-  const shelfCount = clamp(
+  const shelfCount = clampInteger(
     template.patch.shelf_count ?? DEFAULT_DESIGN_SPEC.shelf_count,
     DESIGN_CONSTRAINTS.shelfCount.minimum,
     DESIGN_CONSTRAINTS.shelfCount.maximum,
   );
-  const dividerCount = clamp(
+  const dividerCount = clampInteger(
     template.patch.divider_count ?? DEFAULT_DESIGN_SPEC.divider_count,
     DESIGN_CONSTRAINTS.dividerCount.minimum,
     DESIGN_CONSTRAINTS.dividerCount.maximum,
@@ -142,14 +147,14 @@ export function templateWithPlanningBrief(
     );
   }
   const baseHeight = furnitureType === "wall_library"
-    ? clamp(
+    ? clampMillimetres(
         template.patch.base_cabinet_height_mm ?? DESIGN_CONSTRAINTS.wallLibraryBaseHeightMinimumMm,
         DESIGN_CONSTRAINTS.wallLibraryBaseHeightMinimumMm,
         maximumBaseHeightMm,
       )
     : 0;
   const baseCount = furnitureType === "wall_library"
-    ? clamp(
+    ? clampInteger(
         template.patch.base_cabinet_count ?? Math.max(1, dividerCount + 1),
         1,
         DESIGN_CONSTRAINTS.baseCabinetModuleCount.maximum,

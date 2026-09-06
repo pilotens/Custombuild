@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Custombuild joint-retention certification request v2",
+  "description": "Server-derived request binding an external retention certification to one exact design geometry, compiler pair, material set and load set. This request is not evidence and never authorizes physical cutting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "signed_evidence_schema_version",
+    "application_class",
+    "joint_geometry_fingerprint_schema",
+    "source_design_hash",
+    "joint_geometry_sha256",
+    "engine_version",
+    "template_version",
+    "eligible_for_current_binding",
+    "blocking_issue",
+    "excluded_applications",
+    "required_materials",
+    "required_load_cases",
+    "minimum_safety_factor_permille"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "custombuild.joint-retention-certification-request.v2"
+    },
+    "signed_evidence_schema_version": {
+      "const": "custombuild.joint-retention-signed-evidence.v2"
+    },
+    "application_class": {
+      "const": "load_bearing_carcass_dado"
+    },
+    "joint_geometry_fingerprint_schema": {
+      "const": "custombuild.joint-retention-application-geometry.v1"
+    },
+    "source_design_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "joint_geometry_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "engine_version": {
+      "$ref": "#/$defs/versionKey"
+    },
+    "template_version": {
+      "$ref": "#/$defs/versionKey"
+    },
+    "eligible_for_current_binding": {
+      "type": "boolean"
+    },
+    "blocking_issue": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "back_panel_capture_not_proven",
+        null
+      ]
+    },
+    "excluded_applications": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/excludedApplication"
+      }
+    },
+    "required_materials": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/material"
+      }
+    },
+    "required_load_cases": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/shearLoad"
+        },
+        {
+          "$ref": "#/$defs/withdrawalLoad"
+        }
+      ],
+      "items": false
+    },
+    "minimum_safety_factor_permille": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 5000
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eligible_for_current_binding": {
+            "const": true
+          }
+        },
+        "required": [
+          "eligible_for_current_binding"
+        ]
+      },
+      "then": {
+        "properties": {
+          "blocking_issue": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "blocking_issue": {
+            "const": "back_panel_capture_not_proven"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "stableKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "versionKey": {
+      "type": "string",
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "material_id",
+        "material_version",
+        "actual_thickness_um"
+      ],
+      "properties": {
+        "material_id": {
+          "$ref": "#/$defs/stableKey"
+        },
+        "material_version": {
+          "$ref": "#/$defs/versionKey"
+        },
+        "actual_thickness_um": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "load": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "rated_design_load_n"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "shear",
+            "withdrawal"
+          ]
+        },
+        "rated_design_load_n": {
+          "type": "integer",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "shearLoad": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/load"
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "shear"
+            }
+          }
+        }
+      ]
+    },
+    "withdrawalLoad": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/load"
+        },
+        {
+          "properties": {
+            "mode": {
+              "const": "withdrawal"
+            }
+          }
+        }
+      ]
+    },
+    "excludedApplication": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "application_class",
+            "joint_count",
+            "retention_basis",
+            "capture_proven"
+          ],
+          "properties": {
+            "application_class": {
+              "const": "captive_inset_back_groove"
+            },
+            "joint_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retention_basis": {
+              "const": "canonical_four_boundary_geometric_capture"
+            },
+            "capture_proven": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "application_class",
+            "joint_count",
+            "retention_basis",
+            "capture_proven"
+          ],
+          "properties": {
+            "application_class": {
+              "const": "surface_mounted_back"
+            },
+            "joint_count": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "retention_basis": {
+              "const": "independent_authenticated_evidence_required"
+            },
+            "capture_proven": {
+              "const": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

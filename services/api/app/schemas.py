@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from custombuild_manufacturing import MAX_ARTIFACT_BYTES, MAX_CATALOG_SOURCE_BYTES
+from custombuild_manufacturing import (
+    CLIENT_DECLARED_AUTHORITY,
+    MAX_ARTIFACT_BYTES,
+    MAX_CATALOG_SOURCE_BYTES,
+    MAX_REGISTRATION_PIN_DIAMETER_UM,
+    MAX_REGISTRATION_POSITION_TOLERANCE_UM,
+    MIN_REGISTRATION_PIN_DIAMETER_UM,
+    MIN_REGISTRATION_POSITION_TOLERANCE_UM,
+    MIN_REGISTRATION_USABLE_BASELINE_UM,
+    MIN_VALIDATION_CONTOUR_KERF_UM,
+)
 from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     StringConstraints,
     field_validator,
     model_validator,
@@ -16,6 +28,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 from .models import DesignStatus, JobStatus
+from .workshop_readiness_service import WorkshopPreparationBlockerCode
 
 
 class ProjectCreate(BaseModel):
@@ -40,6 +53,18 @@ class ProjectRead(BaseModel):
 WORKSPACE_INTENT_SCHEMA_V1 = "custombuild.workspace-intent.v1"
 MAX_WORKSPACE_INTENT_BYTES = 128 * 1024
 MAX_WORKSPACE_CUSTOM_PART_IDS = 1_024
+RATIO_COMPARISON_TOLERANCE = 1e-9
+
+
+def _require_micrometre_precision(value: float) -> float:
+    """Reject lossy float rounding at every public millimetre boundary."""
+
+    decimal_value = Decimal(str(value))
+    scaled = decimal_value * Decimal(1_000)
+    if not decimal_value.is_finite() or scaled != scaled.to_integral_value():
+        raise ValueError("millimetre values must have at most 0.001 mm precision")
+    return value
+
 
 WorkspacePartId = Annotated[
     str,
@@ -58,6 +83,10 @@ WorkspacePartThickness = Annotated[float, Field(strict=True, ge=1, le=100)]
 WorkspacePartPositionX = Annotated[float, Field(strict=True, ge=0, le=6_000)]
 WorkspacePartPositionY = Annotated[float, Field(strict=True, ge=0, le=1_200)]
 WorkspacePartPositionZ = Annotated[float, Field(strict=True, ge=0, le=4_000)]
+ValidationMachineProfileId = Literal[
+    "custombuild-router-1325-linuxcnc",
+    "custombuild-router-5125-linuxcnc",
+]
 
 
 class _StrictWorkspaceModel(BaseModel):
@@ -65,16 +94,33 @@ class _StrictWorkspaceModel(BaseModel):
 
 
 class WorkspaceProductionContext(_StrictWorkspaceModel):
-    stock_width_mm: float = Field(gt=0, le=10_000)
-    stock_height_mm: float = Field(gt=0, le=5_000)
-    stock_count: int = Field(ge=1, le=100)
-    back_stock_width_mm: float = Field(gt=0, le=10_000)
-    back_stock_height_mm: float = Field(gt=0, le=5_000)
-    back_stock_count: int = Field(ge=1, le=100)
-    machine_profile_id: Literal[
-        "custombuild-router-1325-linuxcnc",
-        "custombuild-router-5125-linuxcnc",
-    ]
+    stock_width_mm: float = Field(strict=True, gt=0, le=10_000)
+    stock_height_mm: float = Field(strict=True, gt=0, le=5_000)
+    stock_count: int = Field(strict=True, ge=1, le=100)
+    back_stock_width_mm: float = Field(strict=True, gt=0, le=10_000)
+    back_stock_height_mm: float = Field(strict=True, gt=0, le=5_000)
+    back_stock_count: int = Field(strict=True, ge=1, le=100)
+    machine_profile_id: ValidationMachineProfileId
+    stock_profiles: list[WorkshopStockProfile] | None = Field(default=None, max_length=2)
+    two_sided_registrations: list[WorkshopTwoSidedRegistration] | None = Field(
+        default=None,
+        max_length=200,
+    )
+
+    @field_validator(
+        "stock_width_mm",
+        "stock_height_mm",
+        "back_stock_width_mm",
+        "back_stock_height_mm",
+    )
+    @classmethod
+    def validate_exact_millimetres(cls, value: float) -> float:
+        return _require_micrometre_precision(value)
+
+    @model_validator(mode="after")
+    def validate_workshop_context(self) -> WorkspaceProductionContext:
+        _validate_workshop_stock_context(self)
+        return self
 
 
 class WorkspacePartOverride(_StrictWorkspaceModel):
@@ -167,9 +213,12 @@ def _validate_workspace_ratios(
         if len(shelf_height_ratios) != shelf_count:
             raise ValueError("shelf_height_ratios must match shelf_count")
         if any(
-            value < 0.05
-            or value > 0.95
-            or (index > 0 and value - shelf_height_ratios[index - 1] < 0.05)
+            value < 0.05 - RATIO_COMPARISON_TOLERANCE
+            or value > 0.95 + RATIO_COMPARISON_TOLERANCE
+            or (
+                index > 0
+                and value - shelf_height_ratios[index - 1] < 0.05 - RATIO_COMPARISON_TOLERANCE
+            )
             for index, value in enumerate(shelf_height_ratios)
         ):
             raise ValueError(
@@ -253,6 +302,15 @@ class BookcasePreviewInput(BaseModel):
         le=19,
         description="MVP catalogue range for nominal 18 mm carcass sheet material.",
     )
+    measured_back_thickness_mm: float = Field(
+        default=6,
+        ge=5.5,
+        le=6.5,
+        description=(
+            "Actual measured back-panel batch thickness. The design service accepts "
+            "whole micrometres only and does not round finer measurements."
+        ),
+    )
     shelf_count: int = Field(default=5, ge=0, le=40)
     shelf_mount: Literal["fixed", "adjustable"] = "fixed"
     load_per_shelf_kg: float = Field(default=30, ge=0, le=500)
@@ -265,7 +323,7 @@ class BookcasePreviewInput(BaseModel):
     base_cabinet_height_mm: float = Field(default=0, ge=0, le=2000)
     base_cabinet_depth_mm: float = Field(default=0, ge=0, le=1200)
     base_cabinet_count: int = Field(default=0, ge=0, le=17)
-    edge_band_mm: float = Field(default=1, ge=0, le=5)
+    edge_band_mm: float = Field(default=0, ge=0, le=5)
     joint_system: Literal["dado"] = Field(
         default="dado",
         description=(
@@ -278,10 +336,19 @@ class BookcasePreviewInput(BaseModel):
     wall_anchor_required: bool = False
     wall_anchor_verified: bool = False
 
+    @field_validator("measured_back_thickness_mm", "edge_band_mm")
+    @classmethod
+    def validate_exact_material_thickness(cls, value: float) -> float:
+        return _require_micrometre_precision(value)
+
     @model_validator(mode="after")
     def validate_custom_layout(self) -> BookcasePreviewInput:
         if not _legacy_back_panel_enabled(self.back_panel) and self.back_material_id is not None:
             raise ValueError("back_material_id requires an enabled back panel")
+        if self.plinth_height_mm is not None and (self.plinth != (self.plinth_height_mm > 0)):
+            raise ValueError(
+                "plinth must be true exactly when explicit plinth_height_mm is greater than zero"
+            )
         if self.bay_width_ratios:
             if len(self.bay_width_ratios) != self.divider_count + 1:
                 raise ValueError("bay_width_ratios must match divider_count + 1")
@@ -294,9 +361,13 @@ class BookcasePreviewInput(BaseModel):
             if len(self.shelf_height_ratios) != self.shelf_count:
                 raise ValueError("shelf_height_ratios must match shelf_count")
             if any(
-                value < 0.05
-                or value > 0.95
-                or (index > 0 and value - self.shelf_height_ratios[index - 1] < 0.05)
+                value < 0.05 - RATIO_COMPARISON_TOLERANCE
+                or value > 0.95 + RATIO_COMPARISON_TOLERANCE
+                or (
+                    index > 0
+                    and value - self.shelf_height_ratios[index - 1]
+                    < 0.05 - RATIO_COMPARISON_TOLERANCE
+                )
                 for index, value in enumerate(self.shelf_height_ratios)
             ):
                 raise ValueError(
@@ -319,6 +390,7 @@ class _LegacyWorkspaceSpec(_StrictWorkspaceModel):
     material_name: str = Field(min_length=1, max_length=160)
     nominal_thickness_mm: float = Field(ge=18, le=18)
     measured_thickness_mm: float = Field(ge=17, le=19)
+    measured_back_thickness_mm: float = Field(default=6, ge=5.5, le=6.5)
     shelf_count: int = Field(ge=0, le=40)
     fixed_shelves: bool
     load_per_shelf_kg: float = Field(ge=0, le=500)
@@ -347,10 +419,12 @@ class _LegacyWorkspaceSpec(_StrictWorkspaceModel):
     back_stock_width_mm: float = Field(gt=0, le=10_000)
     back_stock_height_mm: float = Field(gt=0, le=5_000)
     back_stock_count: int = Field(ge=1, le=100)
-    machine_profile_id: Literal[
-        "custombuild-router-1325-linuxcnc",
-        "custombuild-router-5125-linuxcnc",
-    ]
+    machine_profile_id: ValidationMachineProfileId
+
+    @field_validator("measured_back_thickness_mm", "edge_band_mm")
+    @classmethod
+    def validate_exact_material_thickness(cls, value: float) -> float:
+        return _require_micrometre_precision(value)
 
     @model_validator(mode="before")
     @classmethod
@@ -438,6 +512,10 @@ def _legacy_production_mismatches(
         ),
         "nominal_thickness_mm": (legacy.nominal_thickness_mm, spec.nominal_thickness_mm),
         "measured_thickness_mm": (legacy.measured_thickness_mm, spec.measured_thickness_mm),
+        "measured_back_thickness_mm": (
+            legacy.measured_back_thickness_mm,
+            spec.measured_back_thickness_mm,
+        ),
         "shelf_count": (legacy.shelf_count, spec.shelf_count),
         "shelf_mount": (
             "fixed" if legacy.fixed_shelves else "adjustable",
@@ -520,9 +598,7 @@ def _generated_workspace_part_ids(spec: BookcasePreviewInput) -> set[str]:
             part_ids.add(f"cabinet-front-{cabinet}")
     if _legacy_back_panel_enabled(spec.back_panel):
         if spec.back_panel != "surface_mounted" and spec.divider_count > 0:
-            part_ids.update(
-                f"back-panel-bay-{bay}" for bay in range(1, spec.divider_count + 2)
-            )
+            part_ids.update(f"back-panel-bay-{bay}" for bay in range(1, spec.divider_count + 2))
         else:
             part_ids.add("back-panel")
     if spec.plinth:
@@ -629,13 +705,33 @@ class RevisionProductionContext(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    stock_width_mm: float = Field(gt=0, le=10_000)
-    stock_height_mm: float = Field(gt=0, le=5_000)
-    stock_count: int = Field(ge=1, le=100)
-    back_stock_width_mm: float = Field(gt=0, le=10_000)
-    back_stock_height_mm: float = Field(gt=0, le=5_000)
-    back_stock_count: int = Field(ge=1, le=100)
-    machine_profile_id: str = Field(min_length=1, max_length=160)
+    stock_width_mm: float = Field(strict=True, gt=0, le=10_000)
+    stock_height_mm: float = Field(strict=True, gt=0, le=5_000)
+    stock_count: int = Field(strict=True, ge=1, le=100)
+    back_stock_width_mm: float = Field(strict=True, gt=0, le=10_000)
+    back_stock_height_mm: float = Field(strict=True, gt=0, le=5_000)
+    back_stock_count: int = Field(strict=True, ge=1, le=100)
+    machine_profile_id: ValidationMachineProfileId
+    stock_profiles: list[WorkshopStockProfile] | None = Field(default=None, max_length=2)
+    two_sided_registrations: list[WorkshopTwoSidedRegistration] | None = Field(
+        default=None,
+        max_length=200,
+    )
+
+    @field_validator(
+        "stock_width_mm",
+        "stock_height_mm",
+        "back_stock_width_mm",
+        "back_stock_height_mm",
+    )
+    @classmethod
+    def validate_exact_millimetres(cls, value: float) -> float:
+        return _require_micrometre_precision(value)
+
+    @model_validator(mode="after")
+    def validate_frozen_workshop_context(self) -> RevisionProductionContext:
+        _validate_workshop_stock_context(self)
+        return self
 
 
 class DesignVersionCreate(BaseModel):
@@ -646,6 +742,17 @@ class DesignVersionCreate(BaseModel):
     production_context: RevisionProductionContext
     expected_design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     expected_current_revision: int = Field(ge=0)
+    joint_retention_evidence_id: str | None = Field(
+        default=None,
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        ),
+        description=(
+            "Optional immutable signed retention statement. The server verifies and "
+            "injects the resulting contract; clients never submit contract fields."
+        ),
+    )
     source_provenance: ReferenceImageSourceProvenance | None = None
 
 
@@ -671,19 +778,240 @@ class DesignVersionRead(BaseModel):
     created_at: datetime
 
 
+WorkshopIdentity = Annotated[
+    str,
+    StringConstraints(
+        strict=True,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$",
+    ),
+]
+
+
+class _StrictWorkshopModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, allow_inf_nan=False)
+
+
+class WorkshopStockZone(_StrictWorkshopModel):
+    """One caller-declared unusable rectangle in the raw-sheet coordinate frame."""
+
+    x_um: int = Field(ge=0, le=10_000_000)
+    y_um: int = Field(ge=0, le=5_000_000)
+    width_um: int = Field(gt=0, le=10_000_000)
+    height_um: int = Field(gt=0, le=5_000_000)
+
+
+class WorkshopStockProfile(_StrictWorkshopModel):
+    """Exact supplier/raw-sheet declaration; no dimensions are inferred by the server."""
+
+    role: Literal["carcass", "back"]
+    declaration_authority: Literal["CLIENT_DECLARED"]
+    supplier_profile_id: WorkshopIdentity
+    supplier_profile_version: WorkshopIdentity
+    material_id: WorkshopIdentity
+    material_version: WorkshopIdentity
+    sheet_width_um: int = Field(gt=0, le=10_000_000)
+    sheet_height_um: int = Field(gt=0, le=5_000_000)
+    thickness_um: int = Field(gt=0, le=100_000)
+    sheet_count: int = Field(ge=1, le=100)
+    trim_margin_um: int = Field(ge=0, le=500_000)
+    kerf_um: int = Field(ge=MIN_VALIDATION_CONTOUR_KERF_UM, le=100_000)
+    grain_direction: Literal["X", "Y", "NONE"]
+    allow_rotation: bool
+    defect_zones: list[WorkshopStockZone] = Field(max_length=100)
+    fixture_keep_out_zones: list[WorkshopStockZone] = Field(max_length=100)
+
+    @model_validator(mode="after")
+    def validate_sheet_geometry(self) -> WorkshopStockProfile:
+        if self.trim_margin_um * 2 >= min(self.sheet_width_um, self.sheet_height_um):
+            raise ValueError("trim_margin_um consumes the usable raw sheet")
+
+        def zone_key(zone: WorkshopStockZone) -> tuple[int, int, int, int]:
+            return (zone.y_um, zone.x_um, zone.height_um, zone.width_um)
+
+        for zones in (self.defect_zones, self.fixture_keep_out_zones):
+            keys = [zone_key(zone) for zone in zones]
+            if len(keys) != len(set(keys)):
+                raise ValueError("stock zones must be unique within their declared class")
+            zones.sort(key=zone_key)
+        for zone in (*self.defect_zones, *self.fixture_keep_out_zones):
+            if (
+                zone.x_um + zone.width_um > self.sheet_width_um
+                or zone.y_um + zone.height_um > self.sheet_height_um
+            ):
+                raise ValueError("stock zone extends outside the declared raw sheet")
+        return self
+
+
+class WorkshopRegistrationPin(_StrictWorkshopModel):
+    x_um: int = Field(ge=0, le=10_000_000)
+    y_um: int = Field(ge=0, le=5_000_000)
+
+
+class WorkshopTwoSidedRegistration(_StrictWorkshopModel):
+    """Externally specified flip registration for one physical raw sheet."""
+
+    stock_role: Literal["carcass", "back"]
+    sheet_index: int = Field(ge=0, le=99)
+    flip_axis: Literal["X"]
+    declaration_authority: Literal["CLIENT_DECLARED"]
+    fixture_method_id: WorkshopIdentity
+    fixture_method_version: WorkshopIdentity
+    pin_diameter_um: int = Field(
+        ge=MIN_REGISTRATION_PIN_DIAMETER_UM,
+        le=MAX_REGISTRATION_PIN_DIAMETER_UM,
+    )
+    position_tolerance_um: int = Field(
+        ge=MIN_REGISTRATION_POSITION_TOLERANCE_UM,
+        le=MAX_REGISTRATION_POSITION_TOLERANCE_UM,
+    )
+    pins: list[WorkshopRegistrationPin] = Field(min_length=2, max_length=16)
+
+    @model_validator(mode="after")
+    def validate_unique_pins(self) -> WorkshopTwoSidedRegistration:
+        coordinates = [(pin.x_um, pin.y_um) for pin in self.pins]
+        if len(coordinates) != len(set(coordinates)):
+            raise ValueError("two-sided registration pins must be unique")
+        if self.declaration_authority != CLIENT_DECLARED_AUTHORITY:
+            raise ValueError("two-sided registration must remain client-declared")
+        if self.position_tolerance_um * 2 >= self.pin_diameter_um:
+            raise ValueError("position_tolerance_um must be less than the pin radius")
+        footprint_radius_um = (self.pin_diameter_um + 1) // 2 + self.position_tolerance_um
+        minimum_center_distance_um = MIN_REGISTRATION_USABLE_BASELINE_UM + 2 * footprint_radius_um
+        if any(
+            (first.x_um - second.x_um) ** 2 + (first.y_um - second.y_um) ** 2
+            < minimum_center_distance_um**2
+            for index, first in enumerate(self.pins)
+            for second in self.pins[index + 1 :]
+        ):
+            raise ValueError("every registration pin pair must retain a 100000 um usable baseline")
+        return self
+
+
+def _validate_workshop_stock_context(value: Any) -> None:
+    profiles = value.stock_profiles
+    registrations_value = value.two_sided_registrations
+    if profiles is None:
+        if registrations_value is not None:
+            raise ValueError("two_sided_registrations require structured stock_profiles")
+        return
+    profiles_by_role = {profile.role: profile for profile in profiles}
+    if len(profiles_by_role) != len(profiles):
+        raise ValueError("stock_profiles must contain each stock role at most once")
+    if "carcass" not in profiles_by_role:
+        raise ValueError("structured stock_profiles require one carcass profile")
+    identities = {
+        (profile.supplier_profile_id, profile.supplier_profile_version) for profile in profiles
+    }
+    if len(identities) != len(profiles):
+        raise ValueError("supplier stock profile identities must be unique")
+
+    legacy_by_role = {
+        "carcass": (value.stock_width_mm, value.stock_height_mm, value.stock_count),
+        "back": (
+            value.back_stock_width_mm,
+            value.back_stock_height_mm,
+            value.back_stock_count,
+        ),
+    }
+    for role, profile in profiles_by_role.items():
+        width_mm, height_mm, sheet_count = legacy_by_role[role]
+        if (
+            profile.sheet_width_um != int(Decimal(str(width_mm)) * Decimal(1_000))
+            or profile.sheet_height_um != int(Decimal(str(height_mm)) * Decimal(1_000))
+            or profile.sheet_count != sheet_count
+        ):
+            raise ValueError(
+                f"structured {role} stock must exactly match the frozen legacy dimensions"
+            )
+
+    registrations = registrations_value or []
+    registration_keys = [
+        (registration.stock_role, registration.sheet_index) for registration in registrations
+    ]
+    if len(registration_keys) != len(set(registration_keys)):
+        raise ValueError("two-sided registration stock/sheet identities must be unique")
+    for registration in registrations:
+        profile = profiles_by_role.get(registration.stock_role)
+        if profile is None:
+            raise ValueError("two-sided registration references an undeclared stock role")
+        if registration.sheet_index >= profile.sheet_count:
+            raise ValueError("two-sided registration references a sheet outside stock count")
+        footprint_radius_um = (
+            registration.pin_diameter_um + 1
+        ) // 2 + registration.position_tolerance_um
+        existing_zones = (*profile.defect_zones, *profile.fixture_keep_out_zones)
+        for pin in registration.pins:
+            left = pin.x_um - footprint_radius_um
+            bottom = pin.y_um - footprint_radius_um
+            right = pin.x_um + footprint_radius_um
+            top = pin.y_um + footprint_radius_um
+            if (
+                left < 0
+                or bottom < 0
+                or right > profile.sheet_width_um
+                or top > profile.sheet_height_um
+            ):
+                raise ValueError("two-sided registration pin footprint lies outside the raw sheet")
+            if any(
+                not (
+                    right <= zone.x_um
+                    or zone.x_um + zone.width_um <= left
+                    or top <= zone.y_um
+                    or zone.y_um + zone.height_um <= bottom
+                )
+                for zone in existing_zones
+            ):
+                raise ValueError("two-sided registration pin footprint collides with a stock zone")
+    profiles.sort(key=lambda profile: 0 if profile.role == "carcass" else 1)
+    if registrations_value is not None:
+        registrations_value.sort(
+            key=lambda registration: (
+                registration.stock_role,
+                registration.sheet_index,
+            )
+        )
+
+
+RevisionProductionContext.model_rebuild()
+DesignVersionCreate.model_rebuild()
+WorkspaceProductionContext.model_rebuild()
+WorkspaceIntentV1.model_rebuild()
+ProjectDraftUpdate.model_rebuild()
+
+
 class GenerationRequest(BaseModel):
-    stock_width_mm: float = Field(default=2440, gt=0, le=10_000)
-    stock_height_mm: float = Field(default=1220, gt=0, le=5_000)
-    stock_count: int = Field(default=4, ge=1, le=100)
-    back_stock_width_mm: float = Field(default=2440, gt=0, le=10_000)
-    back_stock_height_mm: float = Field(default=1220, gt=0, le=5_000)
-    back_stock_count: int = Field(default=2, ge=1, le=100)
-    machine_profile_id: str = "custombuild-router-1325-linuxcnc"
-    postprocessor_id: str = "linuxcnc-validation-1.0.0"
+    model_config = ConfigDict(extra="forbid")
+
+    stock_width_mm: float = Field(default=2440, strict=True, gt=0, le=10_000)
+    stock_height_mm: float = Field(default=1220, strict=True, gt=0, le=5_000)
+    stock_count: int = Field(default=4, strict=True, ge=1, le=100)
+    back_stock_width_mm: float = Field(default=2440, strict=True, gt=0, le=10_000)
+    back_stock_height_mm: float = Field(default=1220, strict=True, gt=0, le=5_000)
+    back_stock_count: int = Field(default=2, strict=True, ge=1, le=100)
+    machine_profile_id: ValidationMachineProfileId = "custombuild-router-1325-linuxcnc"
+    postprocessor_id: Literal["linuxcnc-validation-1.1.0"] = "linuxcnc-validation-1.1.0"
     include_step: bool = True
     include_freecad_project: bool = False
     include_validation_program: bool = True
+    include_cutting_candidate: bool = False
     external_evidence_ids: list[str] = Field(default_factory=list, max_length=20)
+    stock_profiles: list[WorkshopStockProfile] | None = Field(default=None, max_length=2)
+    two_sided_registrations: list[WorkshopTwoSidedRegistration] | None = Field(
+        default=None,
+        max_length=200,
+    )
+
+    @field_validator(
+        "stock_width_mm",
+        "stock_height_mm",
+        "back_stock_width_mm",
+        "back_stock_height_mm",
+    )
+    @classmethod
+    def validate_exact_millimetres(cls, value: float) -> float:
+        return _require_micrometre_precision(value)
 
     @field_validator("external_evidence_ids")
     @classmethod
@@ -698,6 +1026,9 @@ class GenerationRequest(BaseModel):
     def validate_cad_dependencies(self) -> GenerationRequest:
         if self.include_freecad_project and not self.include_step:
             raise ValueError("include_freecad_project requires include_step")
+        if self.include_cutting_candidate and not self.include_validation_program:
+            raise ValueError("include_cutting_candidate requires include_validation_program")
+        _validate_workshop_stock_context(self)
         return self
 
 
@@ -715,6 +1046,7 @@ class JobRead(BaseModel):
     started_at: datetime | None
     lease_expires_at: datetime | None
     deadline_at: datetime | None
+    next_attempt_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -768,7 +1100,12 @@ class ExternalEvidenceRead(BaseModel):
 
     id: str
     project_id: str
-    evidence_type: Literal["wall_anchor", "hardware", "material_grain"]
+    evidence_type: Literal[
+        "wall_anchor",
+        "hardware",
+        "material_grain",
+        "joint_retention",
+    ]
     rule_id: str = Field(pattern=r"^(CB|DFM)-[A-Z]+-[0-9]{3}$")
     catalog_id: str
     catalog_version: str
@@ -801,13 +1138,161 @@ class ReleaseCreate(BaseModel):
     confirmation: Literal["RELEASE"]
 
 
-class ReleaseRead(BaseModel):
-    release_id: str
-    release_number: str
+class WorkshopRunPrepare(BaseModel):
+    """Non-authoritative request to prepare one server-derived workshop run."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    generation_job_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    confirmation: Literal["PREPARE_WORKSHOP_RUN"]
+
+
+class WorkshopRunBlockerDetail(BaseModel):
+    """Truthful current-state result for the blocker-only workshop endpoint."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    code: WorkshopPreparationBlockerCode
+    message: str = Field(min_length=1, max_length=500)
+    solution: str = Field(min_length=1, max_length=500)
+    workshop_status: Literal["BLOCKED"]
+    release_review_eligible: Literal[False]
+    cutting_blocker_codes: tuple[WorkshopPreparationBlockerCode] = Field(
+        min_length=1,
+        max_length=1,
+    )
+    physical_cutting_authorized: Literal[False]
+
+    @model_validator(mode="after")
+    def blocker_code_is_canonical(self) -> WorkshopRunBlockerDetail:
+        if self.cutting_blocker_codes != (self.code,):
+            raise ValueError("cutting blocker codes must contain the exact primary blocker")
+        return self
+
+
+class WorkshopRunBlockedResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    detail: WorkshopRunBlockerDetail
+
+
+class DesignReviewReleaseRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    release_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    release_number: str = Field(pattern=r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
     status: Literal["released"]
+    bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     release_kind: Literal["design_review"]
     machine_use: Literal["validation_only"]
+    physical_cutting_authorized: Literal[False]
+
+
+class DesignReviewBundleReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class CAMApprovalReleaseBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    schema_version: Literal["custombuild.cam-approval-release-binding.v1"]
+    approval_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    generation_job_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    organization_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    design_version_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    approval_type: Literal["cam"]
+    approved_by: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    reason: str = Field(min_length=5, max_length=2000)
+    production_context_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    candidate_bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    # CAM approvals cannot carry design-warning overrides. Keeping this exact
+    # empty value also makes the release binding byte-identical in Python and
+    # browser JSON canonicalizers.
+    overrides_json: list[dict[str, Any]] = Field(max_length=0)
+    created_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+    updated_at: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$")
+    binding_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class ExecutableCAMReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    candidate_bundle_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    candidate_manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    production_profile_document_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    production_profile_payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    program_inventory_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    cam_approval: CAMApprovalReleaseBinding
+    workshop_acceptance_required: Literal[True]
+
+
+class ExecutableCAMReleaseRead(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    release_id: str = Field(
+        pattern=(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+            r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        )
+    )
+    release_number: str = Field(pattern=r"^[A-Z0-9][A-Z0-9._-]{0,39}$")
+    status: Literal["released"]
+    release_kind: Literal["executable_cam"]
+    machine_use: Literal["executable_cam_candidate"]
+    design_review_bundle: DesignReviewBundleReceipt
+    executable_cam: ExecutableCAMReceipt
+    physical_cutting_authorized: Literal[False]
+
+
+class ReleaseRead(
+    RootModel[
+        Annotated[
+            DesignReviewReleaseRead | ExecutableCAMReleaseRead,
+            Field(discriminator="release_kind"),
+        ]
+    ]
+):
+    """One immutable release receipt, discriminated by its actual release scope."""
 
 
 class ApprovalRead(BaseModel):
@@ -821,6 +1306,10 @@ class ApprovalRead(BaseModel):
     generation_job_id: str | None
     production_context_hash: str | None
     manifest_sha256: str | None
+    cam_candidate_bundle_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+    )
     overrides_json: list[dict[str, Any]]
     created_at: datetime
     updated_at: datetime

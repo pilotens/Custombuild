@@ -27,6 +27,7 @@ from .model import (
     PartInstance,
     PartSpec,
     Point2D,
+    Rect,
     Setup,
     Severity,
     Side,
@@ -35,20 +36,113 @@ from .model import (
 from .profiles import tool_catalog_fingerprint
 
 OPERATIONS_SCHEMA_VERSION = "custombuild.operations.v2"
-OPERATIONS_ENGINE_VERSION = "semantic-operations-1.2.0"
-SETUP_PLAN_ENGINE_VERSION = "setup-plan-1.0.0"
+OPERATIONS_ENGINE_VERSION = "semantic-operations-1.3.0"
+SETUP_PLAN_ENGINE_VERSION = "setup-plan-1.1.0"
+CLIENT_DECLARED_AUTHORITY = "CLIENT_DECLARED"
+MIN_VALIDATION_CONTOUR_KERF_UM = 6_000
+MIN_REGISTRATION_PIN_DIAMETER_UM = 1_000
+MAX_REGISTRATION_PIN_DIAMETER_UM = 50_000
+MIN_REGISTRATION_POSITION_TOLERANCE_UM = 1
+MAX_REGISTRATION_POSITION_TOLERANCE_UM = 10_000
+MIN_REGISTRATION_USABLE_BASELINE_UM = 100_000
+_REGISTRATION_IDENTITY_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class TwoSidedRegistration:
     """Caller-declared stock coordinates for a two-sided validation setup.
 
-    The plan deliberately carries no inferred pin diameter, fixture, WCS or
-    physical approval. Coordinates are micrometres in the stock XY frame.
+    Every value is an unverified client declaration in the stock XY frame. It
+    is sufficient for deterministic validation geometry, never physical setup
+    approval or cutting authorization.
     """
 
+    declaration_authority: str
     method_id: str
+    fixture_method_version: str
+    pin_diameter_um: int
+    position_tolerance_um: int
     points: tuple[Point2D, ...]
+
+    def __post_init__(self) -> None:
+        if self.declaration_authority != CLIENT_DECLARED_AUTHORITY:
+            raise ValueError("registration authority must be CLIENT_DECLARED")
+        for label, value in (
+            ("registration method ID", self.method_id),
+            ("registration method version", self.fixture_method_version),
+        ):
+            if (
+                not isinstance(value, str)
+                or not value
+                or len(value) > 64
+                or value != value.strip()
+                or any(character not in _REGISTRATION_IDENTITY_CHARACTERS for character in value)
+            ):
+                raise ValueError(f"{label} is invalid")
+        if (
+            type(self.pin_diameter_um) is not int
+            or not MIN_REGISTRATION_PIN_DIAMETER_UM
+            <= self.pin_diameter_um
+            <= MAX_REGISTRATION_PIN_DIAMETER_UM
+        ):
+            raise ValueError("registration pin diameter is outside the validation envelope")
+        if (
+            type(self.position_tolerance_um) is not int
+            or not MIN_REGISTRATION_POSITION_TOLERANCE_UM
+            <= self.position_tolerance_um
+            <= MAX_REGISTRATION_POSITION_TOLERANCE_UM
+            or self.position_tolerance_um * 2 >= self.pin_diameter_um
+        ):
+            raise ValueError("registration position tolerance must be less than the pin radius")
+        if not isinstance(self.points, tuple) or not 2 <= len(self.points) <= 16:
+            raise ValueError("registration requires two to sixteen points")
+        if any(not isinstance(point, Point2D) for point in self.points):
+            raise ValueError("registration points must be Point2D values")
+        if any(
+            type(point.x_um) is not int or type(point.y_um) is not int for point in self.points
+        ):
+            raise ValueError("registration point coordinates must be integers")
+        coordinates = tuple((point.x_um, point.y_um) for point in self.points)
+        if len(set(coordinates)) != len(coordinates):
+            raise ValueError("registration points must be unique")
+        minimum_center_distance_um = (
+            MIN_REGISTRATION_USABLE_BASELINE_UM
+            + 2 * registration_pin_keep_out_radius_um(self)
+        )
+        if any(
+            (first.x_um - second.x_um) ** 2 + (first.y_um - second.y_um) ** 2
+            < minimum_center_distance_um**2
+            for index, first in enumerate(self.points)
+            for second in self.points[index + 1 :]
+        ):
+            raise ValueError(
+                "every registration pin pair must retain a 100000 um usable baseline"
+            )
+
+
+def registration_pin_keep_out_radius_um(plan: TwoSidedRegistration) -> int:
+    """Return the conservative integer radius including declared position tolerance."""
+
+    return (plan.pin_diameter_um + 1) // 2 + plan.position_tolerance_um
+
+
+def registration_pin_keep_out_rectangles(
+    plan: TwoSidedRegistration,
+) -> tuple[Rect, ...]:
+    """Return deterministic conservative pin footprints for nesting exclusion."""
+
+    radius_um = registration_pin_keep_out_radius_um(plan)
+    return tuple(
+        Rect(
+            point.x_um - radius_um,
+            point.y_um - radius_um,
+            2 * radius_um,
+            2 * radius_um,
+        )
+        for point in plan.points
+    )
 
 
 def generate_operations_document(
@@ -314,34 +408,24 @@ def _require_two_sided_registration(
             ),
         )
 
-    method_id = plan.method_id.strip()
-    points = plan.points
-    coordinates = {(point.x_um, point.y_um) for point in points}
-    invalid_method = not method_id or any(
-        character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.:"
-        for character in method_id
+    footprints = registration_pin_keep_out_rectangles(plan)
+    sheet_bounds = Rect(0, 0, layout.stock.width_um, layout.stock.height_um)
+    outside_stock = any(not sheet_bounds.contains(footprint) for footprint in footprints)
+    missing_keep_out = any(
+        footprint not in layout.stock.clamp_zones for footprint in footprints
     )
-    outside_stock = any(
-        point.x_um < 0
-        or point.y_um < 0
-        or point.x_um > layout.stock.width_um
-        or point.y_um > layout.stock.height_um
-        for point in points
-    )
-    if invalid_method or len(points) < 2 or len(coordinates) != len(points) or outside_stock:
+    if outside_stock or missing_keep_out:
         _block_setup_plan(
             layout,
             sheet_index,
             code="TWO_SIDED_REGISTRATION_INVALID",
             message=(
-                "Two-sided registration must name a stable method and declare at least "
-                "two unique stock-frame XY points inside the sheet."
+                "Two-sided registration pin footprints must lie inside the sheet and be "
+                "reserved as deterministic nesting keep-outs."
             ),
             inputs={
-                "method_id": method_id,
-                "point_count": len(points),
-                "unique_point_count": len(coordinates),
                 "points_inside_stock": not outside_stock,
+                "pin_keep_outs_reserved": not missing_keep_out,
             },
         )
     return plan
@@ -418,12 +502,20 @@ def _make_setup(
     else:
         coordinates = "|".join(f"{point.x_um},{point.y_um}" for point in registration.points)
         registration_instruction = (
-            f"Use declared registration method {registration.method_id} at the bound "
-            "stock-frame coordinates; verify it during external work preparation."
+            "Use the unverified client-declared registration only as validation input: "
+            f"{registration.method_id}@{registration.fixture_method_version}, "
+            f"pin diameter {registration.pin_diameter_um} um, position tolerance "
+            f"{registration.position_tolerance_um} um. Verify the physical fixture, pins and "
+            "coordinates independently during external work preparation."
         )
         probe_method = (
             "DECLARED_COORDINATE_REGISTRATION;"
-            f"METHOD={registration.method_id};STOCK_XY_UM={coordinates};"
+            f"DECLARATION_AUTHORITY={registration.declaration_authority};"
+            f"METHOD={registration.method_id};"
+            f"METHOD_VERSION={registration.fixture_method_version};"
+            f"PIN_DIAMETER_UM={registration.pin_diameter_um};"
+            f"POSITION_TOLERANCE_UM={registration.position_tolerance_um};"
+            f"STOCK_XY_UM={coordinates};"
             "EXTERNAL_SETUP_VERIFICATION_REQUIRED"
         )
 

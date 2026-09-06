@@ -86,6 +86,22 @@ def _valid_feature_payload() -> dict[str, Any]:
         ),
         (
             {
+                "width_um": mm(500),
+                "vertical_divider_count": 2,
+                "bay_width_ratios_ppm": (80_000, 460_000, 460_000),
+            },
+            "unmanufacturable shelf width",
+        ),
+        (
+            {
+                "height_um": mm(500),
+                "shelf_count": 3,
+                "shelf_height_ratios_ppm": (50_000, 100_000, 950_000),
+            },
+            "unmanufacturable opening height",
+        ),
+        (
+            {
                 "base_cabinet_count": 1,
                 "base_cabinet_height_um": mm(299),
                 "base_cabinet_depth_um": mm(320),
@@ -106,6 +122,17 @@ def _valid_feature_payload() -> dict[str, Any]:
             {
                 "width_um": mm(450),
                 "base_cabinet_count": 2,
+                "base_cabinet_height_um": mm(300),
+                "base_cabinet_depth_um": mm(320),
+            },
+            "unmanufacturable module width",
+        ),
+        (
+            {
+                "width_um": mm(900),
+                "vertical_divider_count": 2,
+                "bay_width_ratios_ppm": (80_000, 460_000, 460_000),
+                "base_cabinet_count": 3,
                 "base_cabinet_height_um": mm(300),
                 "base_cabinet_depth_um": mm(320),
             },
@@ -134,6 +161,78 @@ def test_bookcase_geometry_rejects_unsafe_but_field_valid_combinations(
 
     with pytest.raises(ValidationError, match=message):
         BookcaseParameters.model_validate(payload)
+
+
+def test_bookcase_geometry_accepts_exact_minimum_shelf_width_only() -> None:
+    exact_minimum = BookcaseParameters(
+        width_um=mm(318),
+        vertical_divider_count=4,
+    )
+
+    assert (
+        exact_minimum.width_um
+        - (exact_minimum.vertical_divider_count + 2) * exact_minimum.actual_thickness_um
+    ) // (exact_minimum.vertical_divider_count + 1) == mm(42)
+
+    with pytest.raises(ValidationError, match="unmanufacturable shelf width"):
+        BookcaseParameters(
+            width_um=mm("317.999"),
+            vertical_divider_count=4,
+        )
+
+
+def test_custom_bay_validation_uses_exact_compiler_remainder_boundary() -> None:
+    exact_minimum = BookcaseParameters(
+        width_um=mm("596.992"),
+        vertical_divider_count=2,
+        bay_width_ratios_ppm=(80_000, 460_000, 460_000),
+    )
+
+    assert exact_minimum.width_um == mm("596.992")
+    with pytest.raises(ValidationError, match="unmanufacturable shelf width"):
+        BookcaseParameters(
+            width_um=mm("596.991"),
+            vertical_divider_count=2,
+            bay_width_ratios_ppm=(80_000, 460_000, 460_000),
+        )
+
+
+def test_custom_shelf_validation_uses_exact_compiler_rounding_boundary() -> None:
+    exact_minimum = BookcaseParameters(
+        height_um=mm("311.999"),
+        shelf_count=2,
+        shelf_height_ratios_ppm=(250_000, 750_000),
+    )
+
+    assert exact_minimum.height_um == mm("311.999")
+    with pytest.raises(ValidationError, match="unmanufacturable opening height"):
+        BookcaseParameters(
+            height_um=mm("311.998"),
+            shelf_count=2,
+            shelf_height_ratios_ppm=(250_000, 750_000),
+        )
+
+
+def test_custom_base_module_validation_uses_each_compiled_bay_width() -> None:
+    exact_minimum = BookcaseParameters(
+        width_um=mm("1071.998"),
+        vertical_divider_count=2,
+        bay_width_ratios_ppm=(200_000, 400_000, 400_000),
+        base_cabinet_count=3,
+        base_cabinet_height_um=mm(300),
+        base_cabinet_depth_um=mm(320),
+    )
+
+    assert exact_minimum.width_um == mm("1071.998")
+    with pytest.raises(ValidationError, match="unmanufacturable module width"):
+        BookcaseParameters(
+            width_um=mm("1071.997"),
+            vertical_divider_count=2,
+            bay_width_ratios_ppm=(200_000, 400_000, 400_000),
+            base_cabinet_count=3,
+            base_cabinet_height_um=mm(300),
+            base_cabinet_depth_um=mm(320),
+        )
 
 
 @pytest.mark.parametrize(
@@ -221,7 +320,7 @@ def test_feature_dimension_and_pattern_contracts_fail_closed() -> None:
 
     unversioned_relief = _valid_feature_payload()
     unversioned_relief.update(open_end_reliefs=("u_min",), corner_strategy=None)
-    with pytest.raises(ValidationError, match="require the versioned dogbone-v1"):
+    with pytest.raises(ValidationError, match="require a supported versioned dogbone"):
         ManufacturingFeature.model_validate(unversioned_relief)
 
 

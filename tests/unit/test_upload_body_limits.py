@@ -69,6 +69,7 @@ def _assert_browser_error_headers(messages: list[Message]) -> None:
     headers = _response_headers(messages)
     assert headers[b"access-control-allow-origin"] == settings.allowed_origins[0].encode("ascii")
     assert b"X-Request-ID" in headers[b"access-control-expose-headers"]
+    assert b"X-Content-Type-Options" in headers[b"access-control-expose-headers"]
     assert b"Origin" in headers[b"vary"]
     assert headers[b"x-content-type-options"] == b"nosniff"
     assert headers[b"cache-control"] == b"no-store"

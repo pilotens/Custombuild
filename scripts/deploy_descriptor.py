@@ -16,11 +16,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = "custombuild.deploy-descriptor.v2"
+SCHEMA_VERSION = "custombuild.deploy-descriptor.v3"
 PUBLICATION_SCHEMA_VERSION = "custombuild.published-image.v2"
 RELEASE_EVIDENCE_SCHEMA_VERSION = "custombuild.release-readiness-evidence.v2"
 STATIC_REPORT_SCHEMA_VERSION = "custombuild.release-readiness-static.v3"
-REGISTRY_OVERLAY_SCHEMA_VERSION = "custombuild.compose-registry.v1"
+REGISTRY_OVERLAY_SCHEMA_VERSION = "custombuild.compose-registry.v2"
 PROMOTION_WORKFLOW_PATH = ".github/workflows/cd.yml"
 PROMOTION_SOURCE_REF = "refs/heads/main"
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
@@ -61,6 +61,8 @@ ROLE_COMPONENTS = {
     "storage-recovery": "api",
     "storage-capacity-attestor": "api",
     "worker": "worker",
+    "maintenance-worker": "worker",
+    "storage-reaper-worker": "worker",
     "scheduler": "worker",
     "web": "web",
     "object-storage": "seaweedfs",
@@ -95,6 +97,10 @@ EXPECTED_REGISTRY_OVERLAY = (
     "  api:\n"
     "    image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}\n"
     "  worker:\n"
+    "    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}\n"
+    "  maintenance-worker:\n"
+    "    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}\n"
+    "  storage-reaper-worker:\n"
     "    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}\n"
     "  scheduler:\n"
     "    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}\n"

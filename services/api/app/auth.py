@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
-from typing import Annotated
+from types import MappingProxyType
+from typing import Annotated, Final
 from urllib.parse import urlparse
 
 import httpx2 as httpx
@@ -16,6 +18,7 @@ from sqlalchemy import select
 from .config import get_settings
 from .db import get_session_factory, set_tenant_context
 from .models import Membership, Role, User
+from .oidc_identity import oidc_identity_key, oidc_issuer_sha256
 
 DEV_ORG_NORDIC = "11111111-1111-4111-8111-111111111111"
 DEV_ORG_ATELIER = "22222222-2222-4222-8222-222222222222"
@@ -55,6 +58,83 @@ _DEV_TOKENS: dict[str, Principal] = {
 bearer = HTTPBearer(auto_error=False)
 
 
+class Capability(StrEnum):
+    """One independently grantable API action.
+
+    Capabilities deliberately describe actions rather than a role hierarchy.  In
+    particular, workshop preparation, execution, verification and revocation
+    are separate so a single operational identity cannot silently inherit a
+    maker/checker or administrative action.
+    """
+
+    READ = "read"
+    DESIGN = "design"
+    GENERATE = "generate"
+    REVIEW = "review"
+    JOINT_RETENTION_EVIDENCE_DOWNLOAD = "joint_retention_evidence_download"
+    EXECUTABLE_CAM_DOWNLOAD = "executable_cam_download"
+    PRODUCTION_RELEASE = "production_release"
+    WORKSHOP_PREPARE = "workshop_prepare"
+    WORKSHOP_CHALLENGE = "workshop_challenge"
+    WORKSHOP_EVIDENCE = "workshop_evidence"
+    WORKSHOP_ATTEST = "workshop_attest"
+    WORKSHOP_VERIFY = "workshop_verify"
+    WORKSHOP_REVOKE = "workshop_revoke"
+    ADMINISTER = "administer"
+
+
+_ALL_CAPABILITIES: Final[frozenset[Capability]] = frozenset(Capability)
+
+# This is the authorization policy, not an ordering.  Every non-administrative
+# role has a closed, reviewable allow-list.  Owner and admin intentionally have
+# full access; their distinction remains an organization-governance concern.
+ROLE_CAPABILITIES: Final[Mapping[Role, frozenset[Capability]]] = MappingProxyType(
+    {
+        Role.viewer: frozenset({Capability.READ}),
+        Role.operator: frozenset(
+            {
+                Capability.READ,
+                Capability.EXECUTABLE_CAM_DOWNLOAD,
+                Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
+                Capability.WORKSHOP_CHALLENGE,
+                Capability.WORKSHOP_EVIDENCE,
+                Capability.WORKSHOP_ATTEST,
+            }
+        ),
+        Role.designer: frozenset(
+            {
+                Capability.READ,
+                Capability.DESIGN,
+                Capability.GENERATE,
+            }
+        ),
+        Role.production: frozenset(
+            {
+                Capability.READ,
+                Capability.EXECUTABLE_CAM_DOWNLOAD,
+                Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
+                Capability.PRODUCTION_RELEASE,
+                Capability.WORKSHOP_PREPARE,
+                Capability.WORKSHOP_CHALLENGE,
+                Capability.WORKSHOP_EVIDENCE,
+                Capability.WORKSHOP_ATTEST,
+            }
+        ),
+        Role.reviewer: frozenset(
+            {
+                Capability.READ,
+                Capability.EXECUTABLE_CAM_DOWNLOAD,
+                Capability.REVIEW,
+                Capability.JOINT_RETENTION_EVIDENCE_DOWNLOAD,
+                Capability.WORKSHOP_VERIFY,
+            }
+        ),
+        Role.admin: _ALL_CAPABILITIES,
+        Role.owner: _ALL_CAPABILITIES,
+    }
+)
+
+
 @lru_cache(maxsize=1)
 def _jwk_client() -> PyJWKClient:
     issuer = get_settings().oidc_issuer.rstrip("/")
@@ -85,6 +165,7 @@ def _jwk_client() -> PyJWKClient:
 
 def _resolve_oidc_principal(
     *,
+    issuer: str,
     subject: str,
     organization_id: str,
     claimed_role: Role,
@@ -94,10 +175,35 @@ def _resolve_oidc_principal(
 ) -> Principal:
     """Bind signed OIDC claims to one provisioned internal identity and membership."""
 
+    try:
+        issuer_sha256 = oidc_issuer_sha256(issuer)
+        identity_key = oidc_identity_key(issuer, subject)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Active organization membership required",
+        ) from exc
     factory = get_session_factory()
     with factory.begin() as session:
         set_tenant_context(session, organization_id)
-        user = session.scalar(select(User).where(User.oidc_sub == subject))
+        user = session.scalar(
+            select(User).where(
+                User.oidc_sub == identity_key,
+                User.oidc_issuer_sha256 == issuer_sha256,
+            )
+        )
+        if user is None and session.scalar(
+            select(User.id)
+            .where(
+                User.oidc_sub.in_((subject, identity_key)),
+                User.oidc_issuer_sha256.is_(None),
+            )
+            .limit(1)
+        ) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="OIDC identity requires explicit issuer binding",
+            )
         if user is None or (claimed_user_id is not None and claimed_user_id != user.id):
             raise HTTPException(status_code=403, detail="Active organization membership required")
         membership = session.scalar(
@@ -144,6 +250,7 @@ def _oidc_principal(token: str) -> Principal:
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
     return _resolve_oidc_principal(
+        issuer=settings.oidc_issuer,
         subject=subject,
         organization_id=organization_id,
         claimed_role=claimed_role,
@@ -171,21 +278,21 @@ def get_principal(
     return _oidc_principal(credentials.credentials)
 
 
-ROLE_RANK: dict[Role, int] = {
-    Role.viewer: 0,
-    Role.operator: 1,
-    Role.designer: 2,
-    Role.production: 3,
-    Role.reviewer: 4,
-    Role.admin: 5,
-    Role.owner: 6,
-}
+def capabilities_for_role(role: Role) -> frozenset[Capability]:
+    """Return the immutable capability set assigned to ``role``."""
+
+    return ROLE_CAPABILITIES[role]
 
 
-def require_minimum_role(minimum: Role) -> Callable[[Principal], Principal]:
+def require_capability(capability: Capability) -> Callable[[Principal], Principal]:
+    """Create a FastAPI dependency which enforces one explicit capability."""
+
     def dependency(principal: Annotated[Principal, Depends(get_principal)]) -> Principal:
-        if ROLE_RANK[principal.role] < ROLE_RANK[minimum]:
-            raise HTTPException(status_code=403, detail=f"Role {minimum.value} or higher required")
+        if capability not in capabilities_for_role(principal.role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Capability {capability.value} required",
+            )
         return principal
 
     return dependency

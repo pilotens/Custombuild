@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, text
 
 from scripts.postgres_runtime_privileges import (
     API_TABLE_PRIVILEGES,
+    JOINT_RETENTION_RUNTIME_SIGNATURES,
     ROLE_FUNCTION_PRIVILEGES,
     STORAGE_API_RETRY_SIGNATURES,
     STORAGE_ATTESTOR_SIGNATURES,
@@ -64,12 +65,20 @@ def test_api_readiness_can_only_read_alembic_revision_metadata() -> None:
     assert "alembic_version TO custombuild_worker" not in sql
 
 
-def test_only_public_storage_entry_points_are_granted() -> None:
+def test_only_reviewed_runtime_function_entry_points_are_granted() -> None:
     api_functions = ROLE_FUNCTION_PRIVILEGES["custombuild_api"]
     worker_functions = ROLE_FUNCTION_PRIVILEGES["custombuild_worker"]
 
-    assert api_functions == STORAGE_QUOTA_MUTATOR_SIGNATURES + STORAGE_API_RETRY_SIGNATURES
-    assert worker_functions == STORAGE_QUOTA_MUTATOR_SIGNATURES + STORAGE_REAPER_SIGNATURES
+    assert api_functions == (
+        STORAGE_QUOTA_MUTATOR_SIGNATURES
+        + STORAGE_API_RETRY_SIGNATURES
+        + JOINT_RETENTION_RUNTIME_SIGNATURES
+    )
+    assert worker_functions == (
+        STORAGE_QUOTA_MUTATOR_SIGNATURES
+        + STORAGE_REAPER_SIGNATURES
+        + JOINT_RETENTION_RUNTIME_SIGNATURES
+    )
     assert not any("attest" in signature for signature in api_functions + worker_functions)
     assert not any("invalidate" in signature for signature in api_functions + worker_functions)
     assert not any("._custombuild" in signature for signature in api_functions)
@@ -82,6 +91,7 @@ def test_only_public_storage_entry_points_are_granted() -> None:
             *STORAGE_QUOTA_MUTATOR_SIGNATURES,
             *STORAGE_API_RETRY_SIGNATURES,
             *STORAGE_REAPER_SIGNATURES,
+            *JOINT_RETENTION_RUNTIME_SIGNATURES,
         )
     )
     assert all(

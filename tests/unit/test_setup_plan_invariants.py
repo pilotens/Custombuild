@@ -10,6 +10,7 @@ from custombuild_manufacturing import (
     PartSpec,
     Point2D,
     ProductionBlockedError,
+    Rect,
     Severity,
     Side,
     StockSheet,
@@ -79,13 +80,21 @@ def _two_sided_values(
         height_um=600_000,
         thickness_um=18_000,
         grain_direction="NONE",
+        clamp_zones=(
+            Rect(16_500, 16_500, 7_000, 7_000),
+            Rect(896_500, 16_500, 7_000, 7_000),
+        ),
     )
     return panel, DeterministicNester().nest((panel,), stock)
 
 
 def _registration() -> TwoSidedRegistration:
     return TwoSidedRegistration(
+        declaration_authority="CLIENT_DECLARED",
         method_id="fixture-registration-v1",
+        fixture_method_version="fixture-v1",
+        pin_diameter_um=6_000,
+        position_tolerance_um=500,
         points=(Point2D(20_000, 20_000), Point2D(900_000, 20_000)),
     )
 
@@ -113,23 +122,50 @@ def test_two_sided_sheet_without_coordinate_registration_is_blocked() -> None:
 
 
 @pytest.mark.parametrize(
-    "registration",
+    ("overrides", "message"),
     (
-        TwoSidedRegistration("", (Point2D(20_000, 20_000), Point2D(900_000, 20_000))),
-        TwoSidedRegistration(
-            "fixture-registration-v1",
-            (Point2D(20_000, 20_000), Point2D(20_000, 20_000)),
+        ({"method_id": ""}, "method ID"),
+        (
+            {"points": (Point2D(20_000, 20_000), Point2D(20_000, 20_000))},
+            "unique",
         ),
-        TwoSidedRegistration(
-            "fixture-registration-v1",
-            (Point2D(20_000, 20_000), Point2D(1_100_000, 20_000)),
+        (
+            {"points": (Point2D(20_000, 20_000), Point2D(21_000, 20_000))},
+            "usable baseline",
+        ),
+        (
+            {"points": (Point2D(True, 20_000), Point2D(900_000, 20_000))},
+            "coordinates must be integers",
         ),
     ),
 )
-def test_invalid_two_sided_coordinate_registration_is_blocked(
-    registration: TwoSidedRegistration,
+def test_invalid_two_sided_registration_declaration_is_rejected(
+    overrides: dict[str, object], message: str
 ) -> None:
+    values: dict[str, object] = {
+        "declaration_authority": "CLIENT_DECLARED",
+        "method_id": "fixture-registration-v1",
+        "fixture_method_version": "fixture-v1",
+        "pin_diameter_um": 6_000,
+        "position_tolerance_um": 500,
+        "points": (Point2D(20_000, 20_000), Point2D(900_000, 20_000)),
+    }
+    values.update(overrides)
+
+    with pytest.raises(ValueError, match=message):
+        TwoSidedRegistration(**values)  # type: ignore[arg-type]
+
+
+def test_registration_pin_outside_stock_is_blocked() -> None:
     panel, layout = _two_sided_values()
+    registration = TwoSidedRegistration(
+        declaration_authority="CLIENT_DECLARED",
+        method_id="fixture-registration-v1",
+        fixture_method_version="fixture-v1",
+        pin_diameter_um=6_000,
+        position_tolerance_um=500,
+        points=(Point2D(20_000, 20_000), Point2D(1_100_000, 20_000)),
+    )
 
     with pytest.raises(ProductionBlockedError, match="TWO_SIDED_REGISTRATION_INVALID"):
         generate_operations_document(

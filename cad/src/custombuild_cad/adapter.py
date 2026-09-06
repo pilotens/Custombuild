@@ -15,8 +15,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, cast
 
-CADQUERY_ADAPTER_VERSION = "cadquery-adapter-2.1.0"
-CAD_KERNEL_CONTRACT_VERSION = "cadquery-opencascade-contract-2.1.0"
+CADQUERY_ADAPTER_VERSION = "cadquery-adapter-2.2.0"
+CAD_KERNEL_CONTRACT_VERSION = "cadquery-opencascade-contract-2.2.0"
 CADQUERY_DISTRIBUTION_VERSION = "2.8.0"
 OPENCASCADE_DISTRIBUTION = "cadquery-ocp"
 OPENCASCADE_DISTRIBUTION_VERSION = "7.9.3.1.1"
@@ -29,6 +29,7 @@ CAD_SOURCE_LINEAR_TOLERANCE_MM = 0.001
 CAD_STEP_LINEAR_TOLERANCE_MM = 0.005
 CAD_GLB_LINEAR_TOLERANCE_M = 0.00005
 CAD_STEP_VOLUME_RELATIVE_TOLERANCE = 1e-8
+CAD_STEP_SYMMETRIC_DIFFERENCE_RELATIVE_TOLERANCE = 1e-10
 CAD_GLB_VOLUME_RELATIVE_TOLERANCE = 0.01
 CAD_VOLUME_ABSOLUTE_TOLERANCE_MM3 = 1e-6
 CAD_VOLUME_ABSOLUTE_TOLERANCE_M3 = CAD_VOLUME_ABSOLUTE_TOLERANCE_MM3 / 1_000_000_000
@@ -110,6 +111,7 @@ class _PartGeometry:
     name: str
     bounds_mm: tuple[float, float, float, float, float, float]
     volume_mm3: float
+    solid: Any | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +174,12 @@ class CadQueryAdapter:
                 CAD_SOURCE_LINEAR_TOLERANCE_MM,
                 f"placed part {part.part_id}",
             )
-            expected[name] = _PartGeometry(name, _shape_bounds(shape), float(shape.Volume()))
+            expected[name] = _PartGeometry(
+                name,
+                _shape_bounds(shape),
+                float(shape.Volume()),
+                shape,
+            )
             placed_shapes[str(part.part_id)] = shape
             assembly.add(shape, name=name)
 
@@ -280,7 +287,12 @@ class CadQueryAdapter:
                 CAD_SOURCE_LINEAR_TOLERANCE_MM,
                 f"placed part {part.part_id}",
             )
-            expected[name] = _PartGeometry(name, _shape_bounds(shape), float(shape.Volume()))
+            expected[name] = _PartGeometry(
+                name,
+                _shape_bounds(shape),
+                float(shape.Volume()),
+                shape,
+            )
 
         with tempfile.TemporaryDirectory(prefix="custombuild-cad-verify-") as temporary:
             step_path = Path(temporary) / "design.step"
@@ -369,6 +381,13 @@ class CadQueryAdapter:
                 CAD_STEP_VOLUME_RELATIVE_TOLERANCE,
                 f"STEP round-trip part {name}",
             )
+            if source.solid is not None:
+                _assert_symmetric_solid_difference(
+                    shape,
+                    source.solid,
+                    source.volume_mm3,
+                    f"STEP round-trip part {name}",
+                )
 
     def _apply_feature(
         self,
@@ -483,7 +502,7 @@ class CadQueryAdapter:
                     f"feature {feature.feature_id} requires an explicit internal-corner strategy"
                 )
             if corner_strategy:
-                if corner_strategy != "dogbone-v1":
+                if corner_strategy not in {"dogbone-v1", "dogbone-v2"}:
                     raise UnsupportedCADFeatureError(
                         f"unsupported internal-corner strategy {corner_strategy}: "
                         f"{feature.feature_id}"
@@ -514,6 +533,7 @@ class CadQueryAdapter:
                     depth_um,
                     direction,
                     int(radius_um),
+                    corner_strategy,
                     str(feature.feature_id),
                     open_end_reliefs,
                     tuple(
@@ -682,7 +702,7 @@ def _is_verified_zero_overlap_dado(joint: Any, feature_by_id: dict[str, Any]) ->
         str(getattr(feature, "part_id", "")) == str(cut_member.part_id)
         and str(getattr(feature, "joint_id", "")) == str(joint.joint_id)
         and _value(getattr(feature, "kind", "")) == "GROOVE"
-        and getattr(feature, "corner_strategy", None) == "dogbone-v1"
+        and getattr(feature, "corner_strategy", None) in {"dogbone-v1", "dogbone-v2"}
         and bool(getattr(feature, "requires_square_corners", False))
         and int(getattr(feature, "fit_clearance_um", -1)) == int(joint.tolerance_um)
         and int(getattr(feature, "tolerance_um", 0)) * 2 < int(joint.tolerance_um)
@@ -807,6 +827,7 @@ def _apply_dogbone_relief(
     depth_um: int,
     direction: tuple[int, int, int],
     radius_um: int,
+    corner_strategy: str,
     feature_id: str,
     open_end_reliefs: frozenset[str],
     compatible_cutters: tuple[Any, ...],
@@ -823,9 +844,16 @@ def _apply_dogbone_relief(
         (0, length_um, "u_min", "v_max"),
         (width_um, length_um, "u_max", "v_max"),
     ):
-        # Where two declared cutter exits meet, the nominal rectangle has already
-        # removed every in-stock quadrant. There is no internal corner to relieve.
-        if {u_boundary, v_boundary} <= open_end_reliefs:
+        # V1 suppresses only a corner where two declared exits meet. V2 also
+        # suppresses each mouth corner on a single edge-flush open slot: no
+        # internal corner exists there, so cutting a scallop would remove stock
+        # without helping the square mating part.
+        suppress_relief = (
+            {u_boundary, v_boundary} <= open_end_reliefs
+            if corner_strategy == "dogbone-v1"
+            else bool({u_boundary, v_boundary} & open_end_reliefs)
+        )
+        if suppress_relief:
             continue
         point_um = list(start_um)
         point_um[u_axis] += u_offset
@@ -946,15 +974,25 @@ def _topology_proven_feature_overlaps(
     design: Any | None,
     part_id: str,
 ) -> frozenset[frozenset[str]]:
-    """Return feature pairs backed by all three joints of a carcass corner."""
+    """Return feature pairs backed by all three joints of a carcass corner.
+
+    DADO crossings use the existing three-DADO proof.  A surface-mounted back
+    has two RABBET edges at each rear carcass corner instead.  Those RABBETs
+    participate only when the entire domain result exactly rebuilds from the
+    canonical surface-back spec; arbitrary or partial RABBET declarations never
+    become compatible cutters.  The caller additionally proves exact in-stock
+    relief-volume containment before accepting a covered no-op.
+    """
 
     if design is None:
         return frozenset()
     joints = tuple(getattr(design, "joints", ()))
+    canonical_surface_rabbet_ids = _canonical_surface_back_rabbet_joint_ids(design)
     connections: set[frozenset[str]] = set()
     joint_data: list[tuple[frozenset[str], dict[str, tuple[str, ...]]]] = []
     for joint in joints:
-        if _value(getattr(joint, "joint_type", "")) != "DADO":
+        joint_type = _value(getattr(joint, "joint_type", ""))
+        if joint_type != "DADO" and str(joint.joint_id) not in canonical_surface_rabbet_ids:
             continue
         by_part = {
             str(member.part_id): tuple(str(value) for value in member.feature_ids)
@@ -980,6 +1018,48 @@ def _topology_proven_feature_overlaps(
                     if first_id != second_id:
                         proven.add(frozenset((first_id, second_id)))
     return frozenset(proven)
+
+
+def _canonical_surface_back_rabbet_joint_ids(design: Any) -> frozenset[str]:
+    """Identify only exact compiler-owned surface-back RABBET applications."""
+
+    try:
+        from custombuild_domain import BackPanelType, BookcaseDesignSpec, build_bookcase
+
+        spec = BookcaseDesignSpec.model_validate(getattr(design, "spec", None))
+        if spec.parameters.back_panel != BackPanelType.SURFACE_MOUNTED:
+            return frozenset()
+        canonical = build_bookcase(spec)
+    except (ImportError, TypeError, ValueError):
+        return frozenset()
+    if any(
+        getattr(design, field, None) != getattr(canonical, field)
+        for field in (
+            "design_hash",
+            "engine_version",
+            "template_version",
+            "spec",
+            "parts",
+            "joints",
+            "assembly_graph",
+            "total_weight_g",
+        )
+    ):
+        return frozenset()
+    back_part_ids = {
+        str(part.part_id)
+        for part in canonical.parts
+        if _value(getattr(part, "role", "")) == "BACK"
+    }
+    return frozenset(
+        str(joint.joint_id)
+        for joint in canonical.joints
+        if _value(getattr(joint, "joint_type", "")) == "RABBET"
+        and any(
+            str(getattr(member, "part_id", "")) in back_part_ids
+            for member in getattr(joint, "members", ())
+        )
+    )
 
 
 def _remove_material(
@@ -1158,6 +1238,45 @@ def _assert_volume(
         raise CADExportError(
             f"{label} volume differs from the authoritative solid: "
             f"expected {expected:g} {unit}, got {actual:g} {unit}"
+        )
+
+
+def _assert_symmetric_solid_difference(
+    actual: Any,
+    expected: Any,
+    expected_volume_mm3: float,
+    label: str,
+) -> None:
+    """Reject STEP solids that merely preserve bounds and aggregate volume.
+
+    Bounds and volume alone cannot prove machining geometry: moving a bore or
+    pocket can preserve both.  OpenCascade's two directional boolean cuts form
+    the symmetric difference between the imported and authoritative solids, so
+    any added or missing material is measured directly.  The small relative
+    allowance is only for kernel-level boolean noise; it is substantially below
+    the volume of any supported manufacturing feature.
+    """
+
+    try:
+        missing = expected.cut(actual)
+        added = actual.cut(expected)
+        missing_volume = 0.0 if missing.isNull() else float(missing.Volume())
+        added_volume = 0.0 if added.isNull() else float(added.Volume())
+    except Exception as exc:
+        raise CADExportError(f"{label} solid difference could not be evaluated: {exc}") from exc
+    difference = missing_volume + added_volume
+    tolerance = max(
+        CAD_VOLUME_ABSOLUTE_TOLERANCE_MM3,
+        expected_volume_mm3 * CAD_STEP_SYMMETRIC_DIFFERENCE_RELATIVE_TOLERANCE,
+    )
+    if (
+        not all(math.isfinite(value) and value >= 0 for value in (missing_volume, added_volume))
+        or difference > tolerance
+    ):
+        raise CADExportError(
+            f"{label} solid differs from the authoritative machining geometry: "
+            f"missing {missing_volume:g} mm3, added {added_volume:g} mm3, "
+            f"allowed symmetric difference {tolerance:g} mm3"
         )
 
 

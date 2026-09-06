@@ -9,6 +9,7 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
 import pytest
+from app.models import OutboxEvent
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import DBAPIError
@@ -409,6 +410,32 @@ def test_runtime_roles_have_only_the_declared_table_privileges() -> None:
         bootstrap_engine.dispose()
         api_engine.dispose()
         worker_engine.dispose()
+
+
+@pytest.mark.postgres
+def test_api_can_append_outbox_without_table_read_privilege(
+    storage_probe: _StorageProbe,
+) -> None:
+    """The ORM must not add a SELECT-requiring RETURNING clause to API inserts."""
+
+    connection = storage_probe.connection
+    _set_local_role(connection, "custombuild_api")
+    _set_tenant(connection, storage_probe.organization_id)
+    event = OutboxEvent(
+        organization_id=storage_probe.organization_id,
+        event_key=f"api-outbox-append:{uuid.uuid4()}",
+        topic="generation.requested",
+        payload_json={"job_id": str(uuid.uuid4())},
+    )
+    with Session(
+        bind=connection,
+        autoflush=False,
+        join_transaction_mode="create_savepoint",
+    ) as session:
+        session.add(event)
+        session.flush()
+        assert event.available_at is not None
+        session.rollback()
 
 
 @pytest.mark.postgres

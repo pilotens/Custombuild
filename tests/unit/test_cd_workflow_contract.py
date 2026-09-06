@@ -58,6 +58,7 @@ def test_cd_runs_read_only_pr_evidence_but_privileged_jobs_are_main_push_only() 
     assert set(jobs) == {
         "quality-evidence",
         "build-images",
+        "linuxcnc-interpreter-oracle",
         "test-release-bundle",
         "publish-images",
         "deployment-descriptor",
@@ -85,8 +86,14 @@ def test_cd_jobs_have_exact_least_privilege_and_dependency_boundaries() -> None:
     read_only = {"contents": "read"}
     assert jobs["quality-evidence"]["permissions"] == read_only
     assert jobs["build-images"]["permissions"] == read_only
+    assert jobs["linuxcnc-interpreter-oracle"]["permissions"] == read_only
     assert jobs["test-release-bundle"]["permissions"] == read_only
-    for name in ("quality-evidence", "build-images", "test-release-bundle"):
+    for name in (
+        "quality-evidence",
+        "build-images",
+        "linuxcnc-interpreter-oracle",
+        "test-release-bundle",
+    ):
         assert "secrets." not in str(jobs[name])
     assert jobs["deployment-descriptor"]["permissions"] == read_only
     assert jobs["publish-images"]["permissions"] == {
@@ -98,6 +105,7 @@ def test_cd_jobs_have_exact_least_privilege_and_dependency_boundaries() -> None:
     assert jobs["test-release-bundle"]["needs"] == [
         "quality-evidence",
         "build-images",
+        "linuxcnc-interpreter-oracle",
     ]
     assert jobs["publish-images"]["needs"] == "test-release-bundle"
     assert jobs["deployment-descriptor"]["needs"] == "publish-images"
@@ -119,7 +127,7 @@ def test_every_action_is_immutable_and_the_reviewed_actions_are_exact() -> None:
         for step in steps(job)
         if str(step.get("uses", "")).startswith("actions/checkout@")
     ]
-    assert len(checkouts) == 5
+    assert len(checkouts) == 6
     assert all(
         step["with"] == {"ref": "${{ github.sha }}", "persist-credentials": False}
         for step in checkouts

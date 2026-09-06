@@ -23,7 +23,7 @@ BUILD_IDENTITY = {
 }
 REQUEST = {
     "machine_profile_id": "custombuild-router-1325-linuxcnc",
-    "postprocessor_id": "linuxcnc-validation-1.0.0",
+    "postprocessor_id": "linuxcnc-validation-1.1.0",
     "include_step": False,
     "include_freecad_project": False,
 }

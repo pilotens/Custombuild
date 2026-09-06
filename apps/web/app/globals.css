@@ -6696,6 +6696,152 @@ body {
   font-weight: 550;
 }
 
+.production-release-boundary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.production-release-boundary article {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+}
+
+.production-release-boundary article > span {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.production-release-boundary article > strong {
+  color: var(--ink-900);
+  font-size: 13px;
+}
+
+.production-release-boundary article > small {
+  color: var(--ink-600);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.production-release-boundary .review-ready,
+.production-release-boundary .physical-ready {
+  background: #eef7f2;
+  border-color: #acd3bf;
+}
+
+.production-release-boundary .review-ready > span,
+.production-release-boundary .physical-ready > span {
+  color: #176b4d;
+}
+
+.production-release-boundary .physical-blocked {
+  background: var(--warning-soft);
+  border-color: #ead39f;
+}
+
+.production-release-boundary .physical-blocked > span {
+  color: #8a4f13;
+}
+
+.production-customer-documents,
+.production-artifact-inventory {
+  display: grid;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.production-customer-documents > header,
+.production-artifact-inventory > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.production-customer-documents > header > span,
+.production-artifact-inventory > header > span,
+.production-customer-documents li > span,
+.production-artifact-inventory li > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.production-customer-documents > header strong,
+.production-artifact-inventory > header strong {
+  color: var(--ink-800);
+  font-size: 12px;
+}
+
+.production-customer-documents > header small,
+.production-artifact-inventory > header small,
+.production-customer-documents > p {
+  margin: 0;
+  color: var(--ink-600);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.production-customer-documents > header > b,
+.production-artifact-inventory > header > b {
+  display: inline-flex;
+  min-width: 25px;
+  min-height: 25px;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-700);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+}
+
+.production-customer-documents ul {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.production-customer-documents li {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+
+.production-customer-documents li strong,
+.production-artifact-inventory li strong {
+  color: var(--ink-800);
+  font-size: 11px;
+}
+
+.production-customer-documents li small,
+.production-artifact-inventory li small {
+  color: var(--ink-500);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.production-customer-documents li > b {
+  flex: 0 0 auto;
+  color: var(--ink-600);
+  font-size: 10px;
+}
+
 .production-artifact-inventory {
   display: grid;
   gap: 7px;
@@ -6738,6 +6884,46 @@ body {
   flex: 0 0 auto;
   color: var(--ink-500);
   font-size: 10px;
+}
+
+.production-artifact-inventory ul {
+  grid-template-columns: 1fr;
+}
+
+.production-artifact-inventory li {
+  align-items: flex-start;
+}
+
+.production-artifact-inventory li small {
+  flex: initial;
+}
+
+.production-artifact-inventory li > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 10px;
+  color: var(--ink-700);
+  background: #fff;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.production-artifact-inventory li > button:hover:not(:disabled) {
+  color: var(--ink-900);
+  border-color: var(--ink-500);
+}
+
+.production-artifact-inventory li > button:disabled {
+  cursor: wait;
+  opacity: 0.55;
 }
 
 .production-workshop-requirements {
@@ -6817,8 +7003,18 @@ body {
 }
 
 @media (max-width: 720px) {
-  .production-handoff-options {
+  .production-handoff-options,
+  .production-release-boundary {
     grid-template-columns: 1fr;
+  }
+
+  .production-artifact-inventory li {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .production-artifact-inventory li > button {
+    align-self: stretch;
   }
 }
 

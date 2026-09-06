@@ -78,6 +78,14 @@ VULNERABILITY_EXCEPTION_SCHEMA = "custombuild.vulnerability-exceptions.v2"
 VULNERABILITY_SEVERITIES = frozenset({"Negligible", "Low", "Medium", "High", "Critical"})
 REVIEWED_GRYPE_SCAN_ACTION = "anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3"
 REVIEWED_GRYPE_VERSION = "v0.110.0"
+REVIEWED_GENERATION_WORKER_COMMAND = (
+    "python",
+    "-m",
+    "custombuild_worker.generation_startup",
+    "--loglevel=INFO",
+    "--concurrency=2",
+    "--queues=generation",
+)
 PRODUCTION_SEMANTIC_SOURCE_PATHS = (
     "packages/manufacturing/src/custombuild_manufacturing/package.py",
     "packages/manufacturing/src/custombuild_manufacturing/readiness.py",
@@ -562,9 +570,31 @@ def _package_manifest_emitter_is_safe(tree: ast.Module) -> bool:
     context_index, context_value = context_assignments[0]
     if context_index + 1 != manifest_index or not isinstance(context_value, ast.Dict):
         return False
-    context_items = _dict_literal_items(context_value)
-    if context_items is None:
+    context_parts = _dict_literal_parts(context_value)
+    if context_parts is None:
         return False
+    context_items, context_expansions = context_parts
+    if context_expansions:
+        if (
+            len(context_expansions) != 1
+            or set(context_items) != {"artifacts"}
+            or not isinstance(context_expansions[0], ast.Call)
+            or _call_name(context_expansions[0]) != "supplier_handoff_manifest_context"
+            or len(context_expansions[0].args) != 1
+            or context_expansions[0].keywords
+            or _expression_path(context_expansions[0].args[0]) != ("context",)
+        ):
+            return False
+        context_builder = _simple_function(tree, "supplier_handoff_manifest_context")
+        if context_builder is None:
+            return False
+        context_projection = _returned_dict_literal(context_builder)
+        if context_projection is None:
+            return False
+        projected_items = _dict_literal_items(context_projection)
+        if projected_items is None or set(projected_items) & set(context_items):
+            return False
+        context_items = {**projected_items, **context_items}
 
     assignments = _module_assignments(tree)
     expected_claims: dict[str, object] = {
@@ -589,7 +619,7 @@ def _package_manifest_emitter_is_safe(tree: ast.Module) -> bool:
     return (
         schema_expression is not None
         and _resolved_static_value(schema_expression, assignments)
-        == "custombuild.production-manifest.v4"
+        == "custombuild.production-manifest.v5"
         and context_hash_expression is not None
         and _context_hash_expression_uses(context_hash_expression, context_name)
     )
@@ -601,9 +631,9 @@ def _check_package_semantics(tree: ast.Module, relative: str, issues: list[str])
     if (
         len(schema_values) != 1
         or _resolved_static_value(schema_values[0], assignments)
-        != "custombuild.production-manifest.v4"
+        != "custombuild.production-manifest.v5"
     ):
-        issues.append(f"{relative} does not declare the production manifest v4 schema")
+        issues.append(f"{relative} does not declare the production manifest v5 schema")
 
     field_values = assignments.get("MANIFEST_CONTEXT_HASH_FIELDS", [])
     fields = (
@@ -626,7 +656,7 @@ def _check_package_semantics(tree: ast.Module, relative: str, issues: list[str])
         or not all(isinstance(field, str) for field in fields)
         or not required_fields.issubset(fields)
     ):
-        issues.append(f"{relative} does not bind all v4 safety fields into the context hash")
+        issues.append(f"{relative} does not bind all v5 safety fields into the context hash")
     if not _package_manifest_emitter_is_safe(tree):
         issues.append(f"{relative} build_manifest emitter can output unsafe production claims")
 
@@ -689,6 +719,59 @@ def _worker_stock_projection_is_safe(tree: ast.Module, generate: FunctionNode) -
         for node in ast.walk(generate)
         if isinstance(node, ast.Call) and _call_name(node) == "StockSheet"
     ]
+    if not stock_calls:
+        imported_names = {
+            alias.name
+            for statement in tree.body
+            if isinstance(statement, ast.ImportFrom) and statement.module == "app.design_service"
+            for alias in statement.names
+        }
+        if not {
+            "stock_configuration_for_design",
+            "two_sided_registration_for_design",
+        }.issubset(imported_names):
+            return False
+
+        assignments: dict[str, list[ast.expr]] = {"stocks": [], "registrations": []}
+        for node in ast.walk(generate):
+            if (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id in assignments
+            ):
+                assignments[node.targets[0].id].append(node.value)
+            elif (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id in assignments
+                and node.value is not None
+            ):
+                assignments[node.target.id].append(node.value)
+
+        if any(len(values) != 1 for values in assignments.values()):
+            return False
+        stocks = assignments["stocks"][0]
+        registrations = assignments["registrations"][0]
+        if (
+            not isinstance(stocks, ast.Call)
+            or _call_name(stocks) != "stock_configuration_for_design"
+            or tuple(_expression_path(argument) for argument in stocks.args)
+            != (("design",), ("request",))
+            or stocks.keywords
+            or not isinstance(registrations, ast.Call)
+            or _call_name(registrations) != "two_sided_registration_for_design"
+            or tuple(_expression_path(argument) for argument in registrations.args)
+            != (("design",), ("request",))
+        ):
+            return False
+        registration_keywords = _call_keywords(registrations)
+        return (
+            registration_keywords is not None
+            and set(registration_keywords) == {"stocks"}
+            and _expression_path(registration_keywords["stocks"]) == ("stocks",)
+        )
+
     if len(stock_calls) != 2:
         return False
     roles: set[str] = set()
@@ -902,15 +985,9 @@ def _uuid_incarnation_helpers_are_safe(tree: ast.Module) -> bool:
         if isinstance(node, ast.Return) and node.value is not None
     ]
     attempt_uuid5 = (
-        _str_wrapped_call(attempt_returns[0], "uuid5")
-        if len(attempt_returns) == 1
-        else None
+        _str_wrapped_call(attempt_returns[0], "uuid5") if len(attempt_returns) == 1 else None
     )
-    lease_uuid = (
-        _str_wrapped_call(canonical_lease, "UUID")
-        if canonical_lease is not None
-        else None
-    )
+    lease_uuid = _str_wrapped_call(canonical_lease, "UUID") if canonical_lease is not None else None
     attempt_safe = (
         job_uuid is not None
         and _call_uses_positional_paths(job_uuid, "UUID", (("job_id",),))
@@ -938,9 +1015,7 @@ def _uuid_incarnation_helpers_are_safe(tree: ast.Module) -> bool:
         if isinstance(node, ast.Return) and node.value is not None
     ]
     artifact_uuid5 = (
-        _str_wrapped_call(artifact_returns[0], "uuid5")
-        if len(artifact_returns) == 1
-        else None
+        _str_wrapped_call(artifact_returns[0], "uuid5") if len(artifact_returns) == 1 else None
     )
     artifact_safe = (
         attempt_uuid is not None
@@ -1129,27 +1204,22 @@ def _generation_object_keys_are_attempt_bound(generate: FunctionNode) -> bool:
         and _binding_is_artifact_id_for_static_kind(
             bindings, "bundle_artifact_id", "production_bundle"
         )
-        and _binding_is_artifact_id_for_static_kind(
-            bindings, "manifest_artifact_id", "manifest"
-        )
+        and _binding_is_artifact_id_for_static_kind(bindings, "manifest_artifact_id", "manifest")
     )
 
 
 def _completion_persists_attempt_artifact_id(function: FunctionNode) -> bool:
     bindings = _function_bindings(function)
-    if (
-        not _binding_is_exact_call(
-            bindings,
-            "attempt_id",
-            "_generation_attempt_id",
-            (("job", "id"), ("lease_token",)),
-        )
-        or not _binding_is_exact_call(
-            bindings,
-            "artifact_id",
-            "_generation_artifact_id",
-            (("attempt_id",), ("kind",)),
-        )
+    if not _binding_is_exact_call(
+        bindings,
+        "attempt_id",
+        "_generation_attempt_id",
+        (("job", "id"), ("lease_token",)),
+    ) or not _binding_is_exact_call(
+        bindings,
+        "artifact_id",
+        "_generation_artifact_id",
+        (("attempt_id",), ("kind",)),
     ):
         return False
     constructors = [
@@ -1216,6 +1286,86 @@ def _worker_storage_incarnation_is_safe(tree: ast.Module) -> bool:
     )
 
 
+def _cutting_candidate_is_present(node: ast.expr | None) -> bool:
+    """Recognize only the direct, non-aliased executable-candidate discriminator."""
+
+    return (
+        isinstance(node, ast.Compare)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.IsNot)
+        and len(node.comparators) == 1
+        and _expression_path(node.left) == ("cutting_candidate",)
+        and _static_ast_value(node.comparators[0]) is None
+    )
+
+
+def _legacy_worker_mode_is_bound(
+    mode: ast.expr | None,
+    *,
+    cam_blocked_claim_is_bound: bool,
+    review_status_is_bound: bool,
+) -> bool:
+    return (
+        isinstance(mode, ast.IfExp)
+        and _expression_path(mode.test) == ("cam_blocked",)
+        and _static_ast_value(mode.body) == "CAM_BLOCKED"
+        and _static_ast_value(mode.orelse) == "VALIDATION_DRY_RUN"
+        and cam_blocked_claim_is_bound
+        and review_status_is_bound
+    )
+
+
+def _executable_worker_claims_are_bound(
+    result: dict[str, ast.expr],
+    expansions: list[ast.expr],
+    *,
+    cam_blocked_claim_is_bound: bool,
+    review_status_is_bound: bool,
+) -> bool:
+    """Require one closed conditional expansion for every executable CAM claim."""
+
+    candidate_keys = {
+        "cam_status",
+        "physical_cutting_authorized",
+        "workshop_acceptance_required",
+        "cam_candidate",
+    }
+    if candidate_keys.intersection(result) or len(expansions) != 1:
+        return False
+    expansion = expansions[0]
+    if not isinstance(expansion, ast.IfExp) or not _cutting_candidate_is_present(expansion.test):
+        return False
+    if not isinstance(expansion.body, ast.Dict) or not isinstance(expansion.orelse, ast.Dict):
+        return False
+    body_parts = _dict_literal_parts(expansion.body)
+    empty_parts = _dict_literal_parts(expansion.orelse)
+    if body_parts is None or empty_parts != ({}, []):
+        return False
+    body, body_expansions = body_parts
+    if body_expansions or set(body) != candidate_keys:
+        return False
+    if (
+        _static_ast_value(body["cam_status"]) != "CUTTING_CANDIDATE_GENERATED"
+        or _static_ast_value(body["physical_cutting_authorized"]) is not False
+        or _static_ast_value(body["workshop_acceptance_required"]) is not True
+        or _expression_path(body["cam_candidate"]) != ("cutting_candidate", "result_claims")
+    ):
+        return False
+
+    mode = result.get("machine_program_mode")
+    return (
+        isinstance(mode, ast.IfExp)
+        and _cutting_candidate_is_present(mode.test)
+        and _static_ast_value(mode.body) == "EXECUTABLE_CAM_CANDIDATE"
+        and _legacy_worker_mode_is_bound(
+            mode.orelse,
+            cam_blocked_claim_is_bound=cam_blocked_claim_is_bound,
+            review_status_is_bound=review_status_is_bound,
+        )
+        and _cutting_candidate_is_present(result.get("production_machine_program"))
+    )
+
+
 def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) -> None:
     identity_keys = {
         "bundle_sha256",
@@ -1225,7 +1375,8 @@ def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) 
     }
     generate = _simple_function(tree, "_generate")
     returned_dict = _returned_dict_literal(generate) if generate is not None else None
-    result = _dict_literal_items(returned_dict) if returned_dict is not None else None
+    result_parts = _dict_literal_parts(returned_dict) if returned_dict is not None else None
+    result, expansions = result_parts if result_parts is not None else (None, [])
     if generate is None or result is None or not identity_keys.issubset(result):
         issues.append(f"{relative} has no unique immutable _generate result dictionary")
         return
@@ -1251,20 +1402,32 @@ def _check_worker_semantics(tree: ast.Module, relative: str, issues: list[str]) 
             and _expression_path(expression.left) == ("bundle", "review_status", "cam_status")
             and _expression_path(expression.comparators[0]) == ("CAMStageStatus", "BLOCKED")
         )
-    mode_is_strictly_bound = (
-        isinstance(mode, ast.IfExp)
-        and _expression_path(mode.test) == ("cam_blocked",)
-        and _static_ast_value(mode.body) == "CAM_BLOCKED"
-        and _static_ast_value(mode.orelse) == "VALIDATION_DRY_RUN"
-        and cam_blocked_claim_is_bound
-        and review_status_is_bound
+    executable_claims_are_bound = _executable_worker_claims_are_bound(
+        result,
+        expansions,
+        cam_blocked_claim_is_bound=cam_blocked_claim_is_bound,
+        review_status_is_bound=review_status_is_bound,
     )
+    legacy_mode_is_bound = not expansions and _legacy_worker_mode_is_bound(
+        mode,
+        cam_blocked_claim_is_bound=cam_blocked_claim_is_bound,
+        review_status_is_bound=review_status_is_bound,
+    )
+    mode_is_strictly_bound = legacy_mode_is_bound or executable_claims_are_bound
     if not mode_is_strictly_bound:
         issues.append(
             f"{relative} generation mode is not strictly bound to the checksum-bound review status"
         )
-    if _static_ast_value(result.get("production_machine_program")) is not False:
+    production_program_is_safe = (
+        legacy_mode_is_bound
+        and _static_ast_value(result.get("production_machine_program")) is False
+    ) or executable_claims_are_bound
+    if not production_program_is_safe:
         issues.append(f"{relative} generation result can claim a production machine program")
+    if expansions and not executable_claims_are_bound:
+        issues.append(
+            f"{relative} executable CAM claims are not atomically bound to one exact candidate"
+        )
     if not _worker_stock_projection_is_safe(tree, generate):
         issues.append(
             f"{relative} does not build unique role/thickness stock IDs with UNBOUND grain"
@@ -1457,9 +1620,7 @@ def _check_api_semantics(tree: ast.Module, relative: str, issues: list[str]) -> 
     if not has_exact_geometry_guard or not has_total_predicate_guard:
         issues.append(f"{relative} release path does not fail closed on generation claims")
     if not _release_archive_binds_artifact_id(tree):
-        issues.append(
-            f"{relative} does not bind stored generation idempotency to Artifact.id"
-        )
+        issues.append(f"{relative} does not bind stored generation idempotency to Artifact.id")
     if not _import_asset_uses_uuid_incarnation(tree):
         issues.append(f"{relative} does not give imported objects a UUID key incarnation")
 
@@ -1745,21 +1906,23 @@ def _blocked_cam_negative_release_is_required(function: FunctionNode) -> bool:
 def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: list[str]) -> None:
     assignments = _module_assignments(tree)
     expected_constants = {
-        "PRODUCTION_MANIFEST_SCHEMA_VERSION": "custombuild.production-manifest.v4",
+        "PRODUCTION_MANIFEST_SCHEMA_VERSION": "custombuild.production-manifest.v5",
         "WORKSHOP_READINESS_SCHEMA_VERSION": "custombuild.workshop-readiness.v2",
         "DFM_ENGINE_VERSION": "dfm-1.3.0",
         "STOCK_SELECTION_PATH": "validation/stock-selection.json",
         "STOCK_SELECTION_ROLE": "STOCK_SELECTION_SNAPSHOT",
-        "STOCK_SELECTION_SCHEMA_VERSION": "custombuild.stock-selection.v1",
+        "STOCK_SELECTION_SCHEMA_VERSION": "custombuild.stock-selection.v2",
         "GENERATION_PLAN_PATH": "validation/generation-plan.json",
         "GENERATION_PLAN_ROLE": "GENERATION_PLAN",
-        "GENERATION_PLAN_SCHEMA_VERSION": "custombuild.generation-plan.v1",
-        "PRODUCTION_PIPELINE_VERSION": "production-pipeline-1.10.0",
+        "GENERATION_PLAN_SCHEMA_VERSION": "custombuild.generation-plan.v2",
+        "PRODUCTION_PIPELINE_VERSION": "production-pipeline-1.11.0",
         "OPERATIONS_SCHEMA_VERSION": "custombuild.operations.v2",
-        "OPERATIONS_ENGINE_VERSION": "semantic-operations-1.2.0",
+        "OPERATIONS_ENGINE_VERSION": "semantic-operations-1.3.0",
         "STOCK_PROFILE_MISSING": "STOCK_PROFILE_MISSING",
         "DFM_GRAIN_MISSING": "DFM-GRAIN-001",
+        "TWO_SIDED_REGISTRATION_MISSING": "TWO_SIDED_REGISTRATION_MISSING",
         "DADO_RETENTION_EVIDENCE_MISSING": "DADO_RETENTION_EVIDENCE_MISSING",
+        "BACK_PANEL_RETENTION_EVIDENCE_MISSING": ("BACK_PANEL_RETENTION_EVIDENCE_MISSING"),
     }
     for name, expected in expected_constants.items():
         values = assignments.get(name, [])
@@ -1772,22 +1935,36 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         if len(required_actions) == 1
         else _STATIC_VALUE_MISSING
     )
-    retention_action = (
-        required_action_values.get("DADO_RETENTION_EVIDENCE_MISSING")
-        if isinstance(required_action_values, dict)
-        else None
-    )
-    if retention_action != (
-        "The current MVP cannot resolve this blocker because it has no authenticated "
-        "catalogue/evidence boundary. Such a server-side boundary must bind a versioned, "
-        "checksum-addressed mechanical retention contract to every DADO joint, including "
-        "exact geometry, hardware quantity, material/thickness applicability and separate "
-        "shear/withdrawal capacity data; a review acknowledgement, adhesive or geometric "
-        "bearing check is not retention evidence."
+    expected_blocker_codes = {
+        "STOCK_PROFILE_MISSING",
+        "DFM-GRAIN-001",
+        "TWO_SIDED_REGISTRATION_MISSING",
+        "DADO_RETENTION_EVIDENCE_MISSING",
+        "BACK_PANEL_RETENTION_EVIDENCE_MISSING",
+    }
+    if (
+        not isinstance(required_action_values, dict)
+        or set(required_action_values) != expected_blocker_codes
     ):
-        issues.append(
-            f"{relative} does not bind the DADO retention blocker to its canonical action"
-        )
+        issues.append(f"{relative} does not bind the exact supported blocked-CAM action set")
+    expected_retention_actions = {
+        "DADO_RETENTION_EVIDENCE_MISSING": (
+            "Bind current certifier-signed, checksum-addressed mechanical retention evidence "
+            "to every load-bearing carcass DADO application, including exact geometry, compiler, "
+            "hardware quantity, material/thickness and shear/withdrawal capacity; a review "
+            "acknowledgement, adhesive or geometric bearing check cannot replace that evidence."
+        ),
+        "BACK_PANEL_RETENTION_EVIDENCE_MISSING": (
+            "Use only the canonical inset back whose four boundary grooves and multi-direction "
+            "closing sequence prove mechanical capture, or bind independently authenticated "
+            "back-panel retention evidence when that application class is implemented."
+        ),
+    }
+    if not isinstance(required_action_values, dict) or any(
+        required_action_values.get(code) != action
+        for code, action in expected_retention_actions.items()
+    ):
+        issues.append(f"{relative} does not bind retention blockers to canonical actions")
 
     context_fields = assignments.get("CONTEXT_HASH_FIELDS", [])
     context_field_values = (
@@ -1986,6 +2163,8 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "web",
     ):
         service = services.get(name, {})
@@ -2000,6 +2179,57 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         issues.append("api has no dependency-backed readiness healthcheck")
     if not services.get("worker", {}).get("healthcheck"):
         issues.append("worker has no Celery healthcheck")
+    if not services.get("maintenance-worker", {}).get("healthcheck"):
+        issues.append("maintenance-worker has no Celery healthcheck")
+    if not services.get("storage-reaper-worker", {}).get("healthcheck"):
+        issues.append("storage-reaper-worker has no Celery healthcheck")
+
+    def celery_command(service_name: str) -> str:
+        value = services.get(service_name, {}).get("command", [])
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return " ".join(str(item) for item in value)
+        return ""
+
+    generation_command_value = services.get("worker", {}).get("command", [])
+    maintenance_command = celery_command("maintenance-worker")
+    storage_reaper_command = celery_command("storage-reaper-worker")
+    scheduler_command = celery_command("scheduler")
+    # The reviewed wrapper verifies the activated retention registry before it
+    # execs the fixed Celery generation consumer. A direct Celery invocation,
+    # even on the right queue, bypasses that production startup trust boundary.
+    if generation_command_value != list(REVIEWED_GENERATION_WORKER_COMMAND):
+        issues.append("worker is not isolated to the generation queue")
+    if (
+        " worker " not in f" {maintenance_command} "
+        or "--queues=maintenance" not in maintenance_command
+        or "--queues=generation" in maintenance_command
+        or "--queues=storage-reaper" in maintenance_command
+        or "--concurrency=1" not in maintenance_command
+    ):
+        issues.append("maintenance-worker is not an isolated singleton")
+    if (
+        " worker " not in f" {storage_reaper_command} "
+        or "--queues=storage-reaper" not in storage_reaper_command
+        or "--queues=generation" in storage_reaper_command
+        or "--queues=maintenance" in storage_reaper_command
+        or "--concurrency=1" not in storage_reaper_command
+    ):
+        issues.append("storage-reaper-worker is not an isolated singleton")
+    if " beat " not in f" {scheduler_command} " or " worker " in f" {scheduler_command} ":
+        issues.append("scheduler is not beat-only")
+    for service_name, expected_queue in (
+        ("worker", "generation"),
+        ("maintenance-worker", "maintenance"),
+        ("storage-reaper-worker", "storage-reaper"),
+    ):
+        environment = services.get(service_name, {}).get("environment", {})
+        if (
+            not isinstance(environment, dict)
+            or environment.get("CELERY_EXPECTED_QUEUE") != expected_queue
+        ):
+            issues.append(f"{service_name} health is not bound to its exact Celery queue")
     attestor_healthcheck = services.get("storage-capacity-attestor", {}).get("healthcheck", {})
     attestor_health_test = (
         attestor_healthcheck.get("test", []) if isinstance(attestor_healthcheck, dict) else []
@@ -2014,6 +2244,8 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         "storage-capacity-attestor",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "web",
     ):
         if services.get(name, {}).get("restart") != "unless-stopped":
@@ -2028,6 +2260,8 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         "object-storage",
         "api",
         "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
         "scheduler",
         "storage-recovery",
         "storage-capacity-attestor",
@@ -2059,6 +2293,22 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
     )
     if not redis_url_has_password(worker_redis_url):
         issues.append("worker Redis connection is not password-authenticated")
+    maintenance_environment = services.get("maintenance-worker", {}).get("environment", {})
+    maintenance_redis_url: object = (
+        maintenance_environment.get("REDIS_URL", "")
+        if isinstance(maintenance_environment, dict)
+        else ""
+    )
+    if not redis_url_has_password(maintenance_redis_url):
+        issues.append("maintenance-worker Redis connection is not password-authenticated")
+    storage_reaper_environment = services.get("storage-reaper-worker", {}).get("environment", {})
+    storage_reaper_redis_url: object = (
+        storage_reaper_environment.get("REDIS_URL", "")
+        if isinstance(storage_reaper_environment, dict)
+        else ""
+    )
+    if not redis_url_has_password(storage_reaper_redis_url):
+        issues.append("storage-reaper-worker Redis connection is not password-authenticated")
     redis_service = services.get("redis", {})
     redis_environment = redis_service.get("environment", {})
     redis_command = " ".join(str(item) for item in (redis_service.get("command") or []))
@@ -2133,7 +2383,13 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         )
     if dependency_condition("storage-capacity-attestor", "object-storage") != "service_healthy":
         issues.append("storage-capacity-attestor does not wait for healthy object storage")
-    for name in ("api", "worker", "scheduler"):
+    for name in (
+        "api",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+        "scheduler",
+    ):
         if dependency_condition(name, "storage-capacity-attestor") != "service_healthy":
             issues.append(f"{name} does not wait for healthy storage capacity evidence")
         if not dependency_restarts(name, "storage-capacity-attestor"):
@@ -2174,7 +2430,14 @@ def compose_hardening_issues(config: dict[str, Any]) -> list[str]:
         issues.append("web is not isolated to the edge network")
     if not {"edge", "backend"}.issubset(attached_networks("api")):
         issues.append("api does not bridge edge and backend networks")
-    for name in ("postgres", "redis", "object-storage", "worker"):
+    for name in (
+        "postgres",
+        "redis",
+        "object-storage",
+        "worker",
+        "maintenance-worker",
+        "storage-reaper-worker",
+    ):
         service_networks = attached_networks(name)
         if "backend" not in service_networks or "edge" in service_networks:
             issues.append(f"{name} is not isolated to the backend network")
@@ -2359,18 +2622,22 @@ def supply_chain_issues(repo: Path) -> list[str]:
             "ENV GOTOOLCHAIN=local",
             (
                 "ADD --checksum=sha256:"
-                "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd"
+                "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
             ),
-            "6928236b4703abd0fcb3d1391eeef3045277927ca3e501f4c69adc3306955fbd",
-            "1a96843ba71c16cee5c7e396a3082ab3ae0327ab429956db51d0d1b07f6508e5",
-            "go.etcd.io/etcd/client/pkg/v3@v3.6.14",
+            "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30",
+            "3ae484c86166bb6cd88f24398577d99ed06ea8bf5c9384d5288094d7d7048d05",
+            "github.com/apache/thrift@v0.24.0",
+            "go.etcd.io/etcd/client/pkg/v3@v3.7.1",
+            "golang.org/x/crypto@v0.56.0",
             "golang.org/x/image@v0.45.0",
             "golang.org/x/text@v0.41.0",
             "-mod=readonly",
             "FROM scratch AS runtime",
             'io.custombuild.security-overrides.sha256="${SEAWEEDFS_SECURITY_OVERRIDES_SHA256}"',
             'io.custombuild.go.version="1.26.6"',
-            'io.custombuild.go-etcd-client-pkg.version="3.6.14"',
+            'io.custombuild.go-apache-thrift.version="0.24.0"',
+            'io.custombuild.go-etcd-client-pkg.version="3.7.1"',
+            'io.custombuild.go-x-crypto.version="0.56.0"',
             'io.custombuild.go-x-image.version="0.45.0"',
             'io.custombuild.go-x-text.version="0.41.0"',
             "ENV TMPDIR=/tmp",
@@ -2581,7 +2848,17 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "services/api/alembic/versions/0012_storage_quota_ledger.py",
         "services/api/alembic/versions/0013_storage_quota_security_functions.py",
         "services/api/alembic/versions/0014_release_generation_binding.py",
+        "services/api/alembic/versions/0015_outbox_retry_schedule.py",
+        "services/api/alembic/versions/0016_workshop_trust_persistence.py",
+        "services/api/alembic/versions/0017_oidc_issuer_binding.py",
+        "services/api/alembic/versions/0018_joint_retention_registry_state.py",
+        "services/api/alembic/versions/0019_cam_approval_candidate_sha.py",
+        "services/api/alembic/versions/0020_release_cam_approval_identity.py",
+        "scripts/activate_joint_retention_registry.py",
+        "scripts/bootstrap_production_identity.py",
+        "services/api/app/oidc_identity.py",
         "services/api/app/artifact_operations.py",
+        "services/api/app/joint_retention_registry.py",
         "services/api/app/storage_capacity.py",
         "services/api/app/storage_quota.py",
         "services/api/app/storage_reaper.py",

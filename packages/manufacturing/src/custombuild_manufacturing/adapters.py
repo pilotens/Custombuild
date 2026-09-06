@@ -254,9 +254,9 @@ def adapt_domain_feature(
         raise ValueError(f"unsupported domain feature kind: {kind_name}") from exc
 
     face = _enum_value(feature.face)
-    if face == a_side:
+    if face in {"A", a_side}:
         side = Side.A
-    elif face == b_side:
+    elif face in {"B", b_side}:
         side = Side.B
     else:
         side = _side_from_face(face, mapping)

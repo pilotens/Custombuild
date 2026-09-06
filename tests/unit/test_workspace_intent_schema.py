@@ -54,6 +54,51 @@ def production_context() -> dict[str, Any]:
     }
 
 
+def structured_production_context() -> dict[str, Any]:
+    def profile(role: str, material_id: str, thickness_um: int, count: int) -> dict[str, Any]:
+        return {
+            "role": role,
+            "declaration_authority": "CLIENT_DECLARED",
+            "supplier_profile_id": f"supplier-{material_id}",
+            "supplier_profile_version": "batch-2026-09",
+            "material_id": material_id,
+            "material_version": "screening-2026.1",
+            "sheet_width_um": 2_440_000,
+            "sheet_height_um": 1_220_000,
+            "thickness_um": thickness_um,
+            "sheet_count": count,
+            "trim_margin_um": 10_000,
+            "kerf_um": 6_000,
+            "grain_direction": "NONE",
+            "allow_rotation": True,
+            "defect_zones": [],
+            "fixture_keep_out_zones": [],
+        }
+
+    return production_context() | {
+        "stock_profiles": [
+            profile("carcass", "mdf", 18_000, 4),
+            profile("back", "mdf-6", 6_000, 2),
+        ],
+        "two_sided_registrations": [
+            {
+                "stock_role": "carcass",
+                "sheet_index": 0,
+                "flip_axis": "X",
+                "declaration_authority": "CLIENT_DECLARED",
+                "fixture_method_id": "supplier-pin-fixture-v1",
+                "fixture_method_version": "supplier-fixture-2026.1",
+                "pin_diameter_um": 6_000,
+                "position_tolerance_um": 500,
+                "pins": [
+                    {"x_um": 80_000, "y_um": 30_000},
+                    {"x_um": 2_360_000, "y_um": 30_000},
+                ],
+            }
+        ],
+    }
+
+
 def workspace_intent(**overrides: Any) -> dict[str, Any]:
     return {
         "schema_version": "custombuild.workspace-intent.v1",
@@ -121,6 +166,44 @@ def test_explicit_exact_legacy_workspace_is_migrated_to_v1_only() -> None:
     assert stored == workspace_intent()
     assert "width_mm" not in stored
     assert "design_id" not in stored
+
+
+def test_workspace_accepts_binary_float_five_percent_shelf_spacing() -> None:
+    shelf_ratios = [0.1, 0.15]
+    topology_baseline = {
+        "divider_count": 0,
+        "shelf_count": 2,
+        "base_cabinet_count": 0,
+        "bay_width_ratios": [],
+        "shelf_height_ratios": shelf_ratios,
+        "reinforcement_mode": "manual",
+    }
+
+    parsed = ProjectDraftUpdate.model_validate(
+        draft_payload(
+            workspace_intent(topology_baseline=topology_baseline),
+            shelf_height_ratios=shelf_ratios,
+        )
+    )
+
+    assert parsed.spec.shelf_height_ratios == shelf_ratios
+    assert parsed.workspace_spec.topology_baseline is not None
+    assert parsed.workspace_spec.topology_baseline.shelf_height_ratios == shelf_ratios
+
+
+def test_workspace_roundtrips_revision_frozen_shop_context_losslessly() -> None:
+    context = structured_production_context()
+    parsed = ProjectDraftUpdate.model_validate(
+        draft_payload(workspace_intent(production_context=context))
+    )
+
+    stored = parsed.workspace_spec.model_dump(mode="json", exclude_none=True)
+    assert stored["production_context"] == context
+    assert stored["production_context"]["stock_profiles"][0]["sheet_width_um"] == 2_440_000
+    assert stored["production_context"]["two_sided_registrations"][0]["pins"] == [
+        {"x_um": 80_000, "y_um": 30_000},
+        {"x_um": 2_360_000, "y_um": 30_000},
+    ]
 
 
 def test_explicit_back_material_is_preserved_but_legacy_workspace_must_match() -> None:

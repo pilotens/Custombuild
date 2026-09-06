@@ -10,6 +10,8 @@ permissions:
 
 jobs:
   python:
+    needs: linuxcnc-interpreter-oracle
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -33,6 +35,11 @@ jobs:
       TENANT_GRAPH_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/custombuild
       UV_CACHE_DIR: /tmp/custombuild-uv-cache
     steps:
+      - name: Require LinuxCNC interpreter oracle
+        if: ${{ needs.linuxcnc-interpreter-oracle.result != 'success' }}
+        run: |
+          echo "LinuxCNC interpreter oracle did not pass for this exact commit"
+          exit 1
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Verify immutable repository content root
         run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
@@ -75,6 +82,15 @@ jobs:
           uv run mypy scripts/storage_capacity_preflight.py
           uv run mypy scripts/storage_capacity_refresh.py
           uv run mypy scripts/storage_recovery.py
+          uv run mypy scripts/activate_joint_retention_registry.py
+          uv run mypy scripts/bootstrap_production_identity.py
+          uv run mypy scripts/joint_retention_certifier.py
+          uv run mypy scripts/verify_production_package.py
+          uv run mypy scripts/compile_cam_candidate.py
+          uv run mypy scripts/verify_cam_candidate.py
+          uv run mypy scripts/production_machine_profile.py
+      - name: Verify immutable offline package verifier
+        run: make trusted-package-verifier-sha256
       - name: Test and total coverage gate
         run: |
           uv run coverage erase
@@ -83,6 +99,7 @@ jobs:
         run: |
           uv run coverage erase
           uv run pytest tests/unit -q \
+            --cov-reset \
             --cov=packages/domain/src/custombuild_domain \
             --cov=cad/src/custombuild_cad \
             --cov-fail-under=90
@@ -90,12 +107,14 @@ jobs:
         run: |
           uv run coverage erase
           uv run pytest tests/unit -q \
+            --cov-reset \
             --cov=packages/rule-engine/src/custombuild_rules \
             --cov-fail-under=90
       - name: Manufacturing and CAM 90 percent gate
         run: |
           uv run coverage erase
           uv run pytest tests/unit -q \
+            --cov-reset \
             --cov=packages/manufacturing/src/custombuild_manufacturing \
             --cov=cam/src/custombuild_cam \
             --cov=postprocessors/src/custombuild_postprocessors \
@@ -106,6 +125,52 @@ jobs:
         run: |
           uv run python scripts/export_openapi.py
           git diff --exit-code packages/contracts/openapi.json
+
+  linuxcnc-interpreter-oracle:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    container:
+      image: debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
+    steps:
+      - name: Install pinned LinuxCNC interpreter
+        run: |
+          printf '%s\n' \
+            'Types: deb' \
+            'URIs: http://snapshot.debian.org/archive/debian/20260824T000000Z' \
+            'Suites: trixie trixie-updates' \
+            'Components: main' \
+            'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+            '' \
+            'Types: deb' \
+            'URIs: http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
+            'Suites: trixie-security' \
+            'Components: main' \
+            'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
+            > /etc/apt/sources.list.d/debian.sources
+          printf 'Acquire::Check-Valid-Until "false";\n' \
+            > /etc/apt/apt.conf.d/99snapshot
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates \
+            git \
+            linuxcnc-uspace=1:2.9.4-2+deb13u1 \
+            python3
+          rm -rf /var/lib/apt/lists/*
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
+      - name: Verify G43 machine-coordinate semantics with rs274
+        run: python3 scripts/verify_linuxcnc_interpreter_oracle.py
 
   web:
     runs-on: ubuntu-24.04
@@ -323,9 +388,13 @@ jobs:
           STORAGE_CAPACITY_DEPLOY_DESCRIPTOR_SHA256: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
           DEPLOY_DESCRIPTOR_PATH: /tmp/custombuild-deploy-descriptor.json
           STORAGE_CAPACITY_EVIDENCE_DIRECTORY: /tmp/custombuild-capacity-evidence
+          PRODUCTION_CAM_PROFILE_HOST_PATH: /tmp/custombuild-production-cam-profile.json
+          PRODUCTION_CAM_PROFILE_SHA256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
         run: |
           touch /tmp/custombuild-storage-capacity-operator.json
           touch /tmp/custombuild-deploy-descriptor.json
+          touch "$PRODUCTION_CAM_PROFILE_HOST_PATH"
+          test "$(sha256sum "$PRODUCTION_CAM_PROFILE_HOST_PATH" | awk '{print $1}')" = "$PRODUCTION_CAM_PROFILE_SHA256"
           mkdir -p /tmp/custombuild-capacity-evidence
           python3 scripts/check_external_production.py --repo .
       - name: Verify source freeze before Compose build
@@ -377,17 +446,23 @@ jobs:
           before_attestor_id="$(container_id storage-capacity-attestor)"
           before_api_id="$(container_id api)"
           before_worker_id="$(container_id worker)"
+          before_maintenance_worker_id="$(container_id maintenance-worker)"
+          before_storage_reaper_worker_id="$(container_id storage-reaper-worker)"
           before_scheduler_id="$(container_id scheduler)"
           before_migrate_started="$(started_at migrate)"
           before_recovery_started="$(started_at storage-recovery)"
           before_attestor_started="$(started_at storage-capacity-attestor)"
           before_api_started="$(started_at api)"
           before_worker_started="$(started_at worker)"
+          before_maintenance_worker_started="$(started_at maintenance-worker)"
+          before_storage_reaper_worker_started="$(started_at storage-reaper-worker)"
           before_scheduler_started="$(started_at scheduler)"
 
           database_clients=(
             api
             worker
+            maintenance-worker
+            storage-reaper-worker
             scheduler
             storage-capacity-attestor
           )
@@ -398,6 +473,8 @@ jobs:
           done
           before_api_finished="$(finished_at api)"
           before_worker_finished="$(finished_at worker)"
+          before_maintenance_worker_finished="$(finished_at maintenance-worker)"
+          before_storage_reaper_worker_finished="$(finished_at storage-reaper-worker)"
           before_scheduler_finished="$(finished_at scheduler)"
           before_attestor_finished="$(finished_at storage-capacity-attestor)"
 
@@ -408,6 +485,8 @@ jobs:
             storage-capacity-attestor
             api
             worker
+            maintenance-worker
+            storage-reaper-worker
             scheduler
           )
           "${compose[@]}" up --detach --force-recreate "${replacement_services[@]}"
@@ -425,17 +504,23 @@ jobs:
                 && test "$(container_id storage-capacity-attestor)" != "$before_attestor_id" \
                 && test "$(container_id api)" != "$before_api_id" \
                 && test "$(container_id worker)" != "$before_worker_id" \
+                && test "$(container_id maintenance-worker)" != "$before_maintenance_worker_id" \
+                && test "$(container_id storage-reaper-worker)" != "$before_storage_reaper_worker_id" \
                 && test "$(container_id scheduler)" != "$before_scheduler_id" \
                 && test "$(started_at migrate)" != "$before_migrate_started" \
                 && test "$(started_at storage-recovery)" != "$before_recovery_started" \
                 && test "$(started_at storage-capacity-attestor)" != "$before_attestor_started" \
                 && test "$(started_at api)" != "$before_api_started" \
                 && test "$(started_at worker)" != "$before_worker_started" \
+                && test "$(started_at maintenance-worker)" != "$before_maintenance_worker_started" \
+                && test "$(started_at storage-reaper-worker)" != "$before_storage_reaper_worker_started" \
                 && test "$(started_at scheduler)" != "$before_scheduler_started" \
                 && recovery_completed \
                 && healthy storage-capacity-attestor \
                 && healthy api \
                 && healthy worker \
+                && healthy maintenance-worker \
+                && healthy storage-reaper-worker \
                 && healthy scheduler; then
                 restart_proved=true
                 break
@@ -448,6 +533,8 @@ jobs:
           python3 - \
             "$before_api_finished" \
             "$before_worker_finished" \
+            "$before_maintenance_worker_finished" \
+            "$before_storage_reaper_worker_finished" \
             "$before_scheduler_finished" \
             "$before_attestor_finished" \
             "$(started_at postgres)" \
@@ -455,6 +542,8 @@ jobs:
             "$(started_at storage-capacity-attestor)" \
             "$(started_at api)" \
             "$(started_at worker)" \
+            "$(started_at maintenance-worker)" \
+            "$(started_at storage-reaper-worker)" \
             "$(started_at scheduler)" <<'PY'
           import datetime
           import sys
@@ -462,13 +551,13 @@ jobs:
           def timestamp(value: str) -> datetime.datetime:
               return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
 
-          old_finished = [timestamp(value) for value in sys.argv[1:5]]
-          postgres_started = timestamp(sys.argv[5])
-          completed = timestamp(sys.argv[6])
+          old_finished = [timestamp(value) for value in sys.argv[1:7]]
+          postgres_started = timestamp(sys.argv[7])
+          completed = timestamp(sys.argv[8])
           for finished in old_finished:
               assert finished <= postgres_started, (finished, postgres_started)
           assert postgres_started <= completed, (postgres_started, completed)
-          for started_value in sys.argv[7:]:
+          for started_value in sys.argv[9:]:
               started = timestamp(started_value)
               assert started >= completed, (started, completed)
           PY

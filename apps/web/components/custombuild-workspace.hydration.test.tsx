@@ -7,6 +7,7 @@ const apiMock = vi.hoisted(() => ({
   draftWaits: new Map<string, Promise<void>>(),
   draftErrors: new Map<string, { status?: number; transportFailure?: boolean }>(),
   projects: [] as Array<{ id: string; name: string; archived: boolean }>,
+  principalRole: "owner",
   createProject: vi.fn(),
   updates: vi.fn(),
 }));
@@ -27,7 +28,7 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
       return {
         user_id: "user-1",
         organization_id: "org-1",
-        role: "owner",
+        role: apiMock.principalRole,
         name: "Anders Nilsson",
         email: "anders@example.test",
       };
@@ -99,6 +100,7 @@ describe("fail-closed project hydration", () => {
     apiMock.draftWaits.clear();
     apiMock.draftErrors.clear();
     apiMock.configured = true;
+    apiMock.principalRole = "owner";
     apiMock.projects = [
       { id: "project-good", name: "Giltigt projekt", archived: false },
       { id: "project-corrupt", name: "Korrupt projekt", archived: false },
@@ -339,6 +341,20 @@ describe("fail-closed project hydration", () => {
     expect(screen.getByRole("button", { name: "Skapa" })).toBeEnabled();
   });
 
+  it("keeps an empty reviewer account read-only without creating or autosaving a project", async () => {
+    apiMock.principalRole = "reviewer";
+    apiMock.projects = [];
+    window.history.replaceState({}, "", "/");
+
+    render(<CustombuildWorkspace />);
+
+    expect(await screen.findByText(/Inga projekt är tilldelade/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Skapa ny produkt" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Spara utkast" })).toBeDisabled();
+    expect(apiMock.createProject).not.toHaveBeenCalled();
+    expect(apiMock.updates).not.toHaveBeenCalled();
+  });
+
   it("opens a remembered project at Explore for a bare root URL without showing its model", async () => {
     writeSelectedProject(window.localStorage, principal, {
       id: "project-good",
@@ -438,6 +454,33 @@ describe("fail-closed project hydration", () => {
     for (const [updatedProjectId, , updatedSpec] of apiMock.updates.mock.calls) {
       expect((updatedSpec as { design_id?: string }).design_id).toBe(updatedProjectId);
     }
+  });
+
+  it("switches to a compatible template identity when a semantic edit changes furniture family", async () => {
+    vi.useFakeTimers();
+    render(<CustombuildWorkspace />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId("furniture-viewer")).toBeInTheDocument();
+    apiMock.updates.mockClear();
+
+    fireEvent.click(screen.getByRole("button", { name: /Underskåp/ }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(800);
+    });
+
+    expect(apiMock.updates).toHaveBeenCalledWith(
+      "project-good",
+      "wall-library",
+      expect.objectContaining({
+        furniture_type: "wall_library",
+        base_cabinet_count: 2,
+        base_cabinet_depth_mm: DEFAULT_DESIGN_SPEC.depth_mm,
+      }),
+      1,
+    );
+    expect(screen.getByText("Konceptdesign – underlag spärrat")).toBeVisible();
   });
 
   it("requires another name for project conflicts while preserving generic errors", async () => {

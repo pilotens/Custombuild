@@ -1,8 +1,8 @@
 # Generated image references must come from a verified deploy descriptor.
 # Always invoke this overlay with `docker compose ... up --no-build`.
 x-custombuild-registry-contract:
-  schema-version: custombuild.compose-registry.v1
-  descriptor-schema-version: custombuild.deploy-descriptor.v2
+  schema-version: custombuild.compose-registry.v2
+  descriptor-schema-version: custombuild.deploy-descriptor.v3
   required-up-flag: --no-build
 
 services:
@@ -23,6 +23,10 @@ services:
   api:
     image: ${CUSTOMBUILD_DEPLOY_API_IMAGE:?Set from a verified deploy descriptor}
   worker:
+    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}
+  maintenance-worker:
+    image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}
+  storage-reaper-worker:
     image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}
   scheduler:
     image: ${CUSTOMBUILD_DEPLOY_WORKER_IMAGE:?Set from a verified deploy descriptor}

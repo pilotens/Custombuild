@@ -62,7 +62,7 @@ from .profiles import (
 PRODUCTION_ENGINE_CONTEXT_SCHEMA_VERSION = "custombuild.production-engine-context.v5"
 GENERATION_CONTEXT_SCHEMA_VERSION = "custombuild.generation-context.v1"
 APPLICATION_ARTIFACT_SCHEMA_VERSION = "custombuild.application-artifacts.v1"
-DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.3.0"
+DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.4.0"
 REPORTLAB_DISTRIBUTION_VERSION = "4.4.9"
 REVISION_PRODUCTION_CONTEXT_KEYS = frozenset(
     {
@@ -74,6 +74,9 @@ REVISION_PRODUCTION_CONTEXT_KEYS = frozenset(
         "back_stock_count",
         "machine_profile_id",
     }
+)
+REVISION_WORKSHOP_CONTEXT_KEYS = frozenset(
+    {"stock_profiles", "two_sided_registrations"}
 )
 
 
@@ -321,7 +324,12 @@ def assert_job_matches_frozen_revision_context(
 
     if not isinstance(request, Mapping):
         raise ProductionContextError("generation request is not an object")
-    if not isinstance(frozen, Mapping) or set(frozen) != REVISION_PRODUCTION_CONTEXT_KEYS:
+    if (
+        not isinstance(frozen, Mapping)
+        or not set(frozen) >= REVISION_PRODUCTION_CONTEXT_KEYS
+        or not set(frozen) <= REVISION_PRODUCTION_CONTEXT_KEYS | REVISION_WORKSHOP_CONTEXT_KEYS
+        or ("two_sided_registrations" in frozen and "stock_profiles" not in frozen)
+    ):
         raise ProductionContextError(
             "revision has no exact frozen production context; create a new design revision"
         )
@@ -356,6 +364,17 @@ def assert_job_matches_frozen_revision_context(
         raise ProductionContextError(
             "job machine_profile_id does not match the frozen design revision"
         )
+    for key in REVISION_WORKSHOP_CONTEXT_KEYS:
+        if (key in frozen) != (key in request):
+            raise ProductionContextError(
+                f"job {key} does not match the frozen design revision"
+            )
+        if key in frozen and canonical_json_bytes(frozen[key]) != canonical_json_bytes(
+            request[key]
+        ):
+            raise ProductionContextError(
+                f"job {key} does not match the frozen design revision"
+            )
 
 
 def _require_distribution(distribution: str, expected_version: str) -> None:

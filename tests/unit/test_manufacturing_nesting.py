@@ -8,6 +8,7 @@ from custombuild_manufacturing import (
     NestingLayout,
     PartSpec,
     Placement,
+    Severity,
     StockSheet,
     expand_part_instances,
     validate_layout,
@@ -136,6 +137,50 @@ def test_layout_validation_detects_overlap_including_kerf_clearance() -> None:
     issues = validate_layout(layout, expand_part_instances((first, second)))
 
     assert "NESTING_OVERLAP" in {issue.code for issue in issues}
+
+
+def test_layout_validation_rejects_mutated_part_identity_binding() -> None:
+    source = part("panel", 300_000, 200_000)
+    instances = expand_part_instances((source,))
+    layout = DeterministicNester().nest(instances, stock())
+    mutated_placement = replace(layout.placements[0], part_id="substituted-panel")
+    mutated_layout = replace(layout, placements=(mutated_placement,))
+
+    issues = validate_layout(mutated_layout, instances)
+
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.code == "NESTING_PART_BINDING_MISMATCH"
+    assert issue.message == ("Placement part identity does not match the referenced part instance.")
+    assert issue.severity is Severity.BLOCK
+    assert issue.part_id == "panel"
+    assert issue.inputs == {
+        "instance_id": "panel:001",
+        "expected_part_id": "panel",
+        "actual_part_id": "substituted-panel",
+    }
+
+
+def test_layout_validation_rejects_mutated_stock_identity_binding() -> None:
+    source = part("panel", 300_000, 200_000)
+    instances = expand_part_instances((source,))
+    layout = DeterministicNester().nest(instances, stock())
+    mutated_placement = replace(layout.placements[0], stock_id="substituted-sheet")
+    mutated_layout = replace(layout, placements=(mutated_placement,))
+
+    issues = validate_layout(mutated_layout, instances)
+
+    assert len(issues) == 1
+    issue = issues[0]
+    assert issue.code == "NESTING_STOCK_BINDING_MISMATCH"
+    assert issue.message == ("Placement stock identity does not match the nesting layout stock.")
+    assert issue.severity is Severity.BLOCK
+    assert issue.part_id == "panel"
+    assert issue.inputs == {
+        "instance_id": "panel:001",
+        "expected_stock_id": "sheet",
+        "actual_stock_id": "substituted-sheet",
+    }
 
 
 def test_nesting_accounts_for_every_unplaceable_instance() -> None:

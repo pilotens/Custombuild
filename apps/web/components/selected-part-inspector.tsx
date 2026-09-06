@@ -4,6 +4,7 @@ import { RotateCcw, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { DESIGN_CONSTRAINTS, maximumBaseCabinetHeightMm } from "@/lib/design-constraints";
 import type { DesignSpec, PartOverride, ResolvedPart } from "@/lib/design-types";
 import { shelfOpeningHeights } from "@/lib/design-engine";
+import { DimensionInput } from "./design-system";
 import styles from "./semantic-editor.module.css";
 
 interface SelectedPartInspectorProps {
@@ -11,6 +12,7 @@ interface SelectedPartInspectorProps {
   spec: DesignSpec;
   override?: PartOverride;
   onChange: (patch: PartOverride) => void;
+  onEdgeBandChange?: (edgeBandMm: number) => void;
   onShelfOpeningChange?: (openingIndex: number, valueMm: number) => void;
   onRemove: () => void;
   onReset: () => void;
@@ -125,6 +127,7 @@ export function SelectedPartInspector({
   spec,
   override,
   onChange,
+  onEdgeBandChange,
   onShelfOpeningChange,
   onRemove,
   onReset,
@@ -193,7 +196,41 @@ export function SelectedPartInspector({
               onChange={(depth_mm) => onChange({ depth_mm })}
             />
           ) : null}
-          {part.kind !== "back" ? <PartNumberField label="Materialtjocklek, hela möbeln" value={spec.measured_thickness_mm} min={17} max={19} step={0.1} onChange={(thickness_mm) => onChange({ thickness_mm })} /> : null}
+          {part.kind !== "back" ? (
+            <DimensionInput
+              label="Materialtjocklek, hela möbeln"
+              value={spec.measured_thickness_mm}
+              min={17}
+              max={19}
+              step={0.001}
+              commitMode="reject"
+              hint="Samma uppmätta batchvärde som i materialpanelen; alla förband räknas om."
+              onCommit={(thickness_mm) => onChange({ thickness_mm })}
+            />
+          ) : (
+            <DimensionInput
+              label="Bakstyckets materialtjocklek"
+              value={spec.measured_back_thickness_mm}
+              min={5.5}
+              max={6.5}
+              step={0.001}
+              commitMode="reject"
+              hint="Samma uppmätta batchvärde som i materialpanelen; noter och export räknas om."
+              onCommit={(thickness_mm) => onChange({ thickness_mm })}
+            />
+          )}
+          {(["side", "top", "bottom", "shelf", "divider", "base_side", "base_bottom"] as ResolvedPart["kind"][]).includes(part.kind) ? (
+            <DimensionInput
+              label="Framkantlistens tjocklek"
+              value={spec.edge_band_mm}
+              min={0}
+              max={5}
+              step={0.001}
+              commitMode="reject"
+              hint="Samma kanoniska framkantsval gäller alla bandade stomdelar. Positiva värden kräver fortfarande separat SKU och verifierad infästning."
+              onCommit={(edgeBandMm) => onEdgeBandChange?.(edgeBandMm)}
+            />
+          ) : null}
         </div>
       </fieldset>
 

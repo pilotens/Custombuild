@@ -15,6 +15,14 @@ import {
   EMPTY_REFERENCE_CONFIRMATIONS,
   referenceImageVerificationIsCurrent,
 } from "./reference-image";
+import {
+  exactMillimetreTextToMicrometres,
+  parseWorkshopProductionContext,
+  WorkshopProductionContextError,
+  type WorkshopProductionContext,
+  type WorkshopStockProfile,
+  type WorkshopTwoSidedRegistration,
+} from "./workshop-production-context";
 
 export const WORKSPACE_INTENT_SCHEMA_V1 = "custombuild.workspace-intent.v1" as const;
 export const MAX_WORKSPACE_INTENT_BYTES = 128 * 1024;
@@ -45,6 +53,8 @@ export interface WorkspaceProductionContext {
   back_stock_height_mm: number;
   back_stock_count: number;
   machine_profile_id: string;
+  stock_profiles?: WorkshopStockProfile[];
+  two_sided_registrations?: WorkshopTwoSidedRegistration[];
 }
 
 export interface WorkspaceIntentEnvelopeV1 {
@@ -110,7 +120,7 @@ const V1_REQUIRED_KEYS = [
 
 const V1_OPTIONAL_KEYS = ["reference_image_import", "topology_baseline"] as const;
 
-const PRODUCTION_CONTEXT_KEYS = [
+const PRODUCTION_CONTEXT_REQUIRED_KEYS = [
   "stock_width_mm",
   "stock_height_mm",
   "stock_count",
@@ -118,6 +128,11 @@ const PRODUCTION_CONTEXT_KEYS = [
   "back_stock_height_mm",
   "back_stock_count",
   "machine_profile_id",
+] as const;
+
+const PRODUCTION_CONTEXT_OPTIONAL_KEYS = [
+  "stock_profiles",
+  "two_sided_registrations",
 ] as const;
 
 const PART_OVERRIDE_KEYS = [
@@ -175,12 +190,14 @@ const LOCAL_DESIGN_SPEC_KEYS = [
   "back_material_id",
   "nominal_thickness_mm",
   "measured_thickness_mm",
+  "measured_back_thickness_mm",
   "shelf_count",
   "fixed_shelves",
   "load_per_shelf_kg",
   "back_panel",
   "back_panel_type",
   "plinth",
+  "plinth_height_mm",
   "divider_count",
   "bay_sizing_mode",
   "target_bay_width_mm",
@@ -197,8 +214,10 @@ const LOCAL_DESIGN_SPEC_KEYS = [
   "reinforcement_mode",
   "joint_system",
   "edge_band_mm",
+  "wall_anchor_required",
   "wall_anchor_verified",
-  ...PRODUCTION_CONTEXT_KEYS,
+  ...PRODUCTION_CONTEXT_REQUIRED_KEYS,
+  "workshop_context",
 ] as const;
 
 function fail(code: DesignHydrationErrorCode, issue: string): never {
@@ -239,6 +258,25 @@ function finiteNumber(
     fail(code, `${path} ligger utanför tillåtet intervall.`);
   }
   return value;
+}
+
+function micrometreMillimetres(
+  value: unknown,
+  path: string,
+  minimum: number,
+  maximum: number,
+  code: DesignHydrationErrorCode,
+): number {
+  const parsed = finiteNumber(value, path, minimum, maximum, code);
+  try {
+    exactMillimetreTextToMicrometres(String(parsed), {
+      minimumUm: minimum * 1_000,
+      maximumUm: maximum * 1_000,
+    });
+  } catch {
+    fail(code, `${path} måste anges i hela mikrometer (högst tre decimaler i mm).`);
+  }
+  return parsed;
 }
 
 function integer(
@@ -347,12 +385,20 @@ function parseProductionContext(
   exact: boolean,
 ): WorkspaceProductionContext {
   const context = record(value, path, code);
-  if (exact) exactKeys(context, PRODUCTION_CONTEXT_KEYS, [], path, code);
+  if (exact) {
+    exactKeys(
+      context,
+      PRODUCTION_CONTEXT_REQUIRED_KEYS,
+      PRODUCTION_CONTEXT_OPTIONAL_KEYS,
+      path,
+      code,
+    );
+  }
   const machineProfileId = boundedString(context.machine_profile_id, `${path}.machine_profile_id`, 1, 160, code);
   if (!MACHINES.some((machine) => machine.id === machineProfileId)) {
     fail(code, `${path}.machine_profile_id saknar en känd katalogpost.`);
   }
-  return {
+  const parsed: WorkspaceProductionContext = {
     stock_width_mm: finiteNumber(context.stock_width_mm, `${path}.stock_width_mm`, Number.MIN_VALUE, 10_000, code),
     stock_height_mm: finiteNumber(context.stock_height_mm, `${path}.stock_height_mm`, Number.MIN_VALUE, 5_000, code),
     stock_count: integer(context.stock_count, `${path}.stock_count`, 1, 100, code),
@@ -361,6 +407,65 @@ function parseProductionContext(
     back_stock_count: integer(context.back_stock_count, `${path}.back_stock_count`, 1, 100, code),
     machine_profile_id: machineProfileId,
   };
+  if (context.two_sided_registrations !== undefined && context.stock_profiles === undefined) {
+    fail(code, `${path}.two_sided_registrations kräver stock_profiles.`);
+  }
+  if (context.stock_profiles !== undefined) {
+    try {
+      const workshop = parseWorkshopProductionContext({
+        stock_profiles: context.stock_profiles,
+        ...(context.two_sided_registrations === undefined
+          ? {}
+          : { two_sided_registrations: context.two_sided_registrations }),
+      });
+      if (!workshop) fail(code, `${path}.stock_profiles kunde inte valideras.`);
+      parsed.stock_profiles = workshop.stock_profiles;
+      if (workshop.two_sided_registrations) {
+        parsed.two_sided_registrations = workshop.two_sided_registrations;
+      }
+    } catch (caught) {
+      if (caught instanceof WorkshopProductionContextError) {
+        fail(code, `${path}: ${caught.message}`);
+      }
+      throw caught;
+    }
+  }
+  return parsed;
+}
+
+function legacyProductionContext(
+  context: WorkspaceProductionContext,
+): Omit<WorkspaceProductionContext, "stock_profiles" | "two_sided_registrations"> {
+  return {
+    stock_width_mm: context.stock_width_mm,
+    stock_height_mm: context.stock_height_mm,
+    stock_count: context.stock_count,
+    back_stock_width_mm: context.back_stock_width_mm,
+    back_stock_height_mm: context.back_stock_height_mm,
+    back_stock_count: context.back_stock_count,
+    machine_profile_id: context.machine_profile_id,
+  };
+}
+
+function workshopContextFromWorkspace(
+  context: WorkspaceProductionContext,
+  spec: DesignSpec,
+  code: DesignHydrationErrorCode,
+): WorkshopProductionContext | undefined {
+  if (!context.stock_profiles) return undefined;
+  try {
+    return parseWorkshopProductionContext({
+      stock_profiles: context.stock_profiles,
+      ...(context.two_sided_registrations
+        ? { two_sided_registrations: context.two_sided_registrations }
+        : {}),
+    }, spec);
+  } catch (caught) {
+    if (caught instanceof WorkshopProductionContextError) {
+      fail(code, caught.message);
+    }
+    throw caught;
+  }
 }
 
 function parseConfirmedInputs(
@@ -716,7 +821,7 @@ function parseCanonicalServerSpec(
   exactKeys(
     root,
     CANONICAL_SERVER_KEYS,
-    ["plinth_height_mm", "back_material_id"],
+    ["plinth_height_mm", "back_material_id", "measured_back_thickness_mm"],
     "spec_json",
     code,
   );
@@ -743,6 +848,15 @@ function parseCanonicalServerSpec(
     18,
     code,
   );
+  const measuredBackThickness = root.measured_back_thickness_mm === undefined
+    ? DEFAULT_DESIGN_SPEC.measured_back_thickness_mm
+    : micrometreMillimetres(
+        root.measured_back_thickness_mm,
+        "spec_json.measured_back_thickness_mm",
+        5.5,
+        6.5,
+        code,
+      );
   const canonicalBackPanel = typeof root.back_panel === "boolean"
     ? root.back_panel ? "inset_groove" : "none"
     : oneOf(
@@ -784,10 +898,14 @@ function parseCanonicalServerSpec(
     code,
   );
   const baseCabinetCount = integer(root.base_cabinet_count, "spec_json.base_cabinet_count", 0, 17, code);
-  if (root.plinth_height_mm !== undefined) {
-    finiteNumber(root.plinth_height_mm, "spec_json.plinth_height_mm", 0, 500, code);
+  const plinth = boolean(root.plinth, "spec_json.plinth", code);
+  const plinthHeight = root.plinth_height_mm === undefined
+    ? plinth ? DEFAULT_DESIGN_SPEC.plinth_height_mm : 0
+    : finiteNumber(root.plinth_height_mm, "spec_json.plinth_height_mm", 0, 500, code);
+  if (plinth !== (plinthHeight > 0)) {
+    fail(code, "spec_json.plinth måste motsvara om spec_json.plinth_height_mm är större än noll.");
   }
-  boolean(root.wall_anchor_required, "spec_json.wall_anchor_required", code);
+  const wallAnchorRequired = boolean(root.wall_anchor_required, "spec_json.wall_anchor_required", code);
   const wallAnchorVerified = boolean(root.wall_anchor_verified, "spec_json.wall_anchor_verified", code);
   if (wallAnchorVerified) {
     fail(code, "spec_json.wall_anchor_verified får inte återställa ett produktionsbevis i arbetsytan.");
@@ -810,12 +928,14 @@ function parseCanonicalServerSpec(
     back_material_id: backMaterialId,
     nominal_thickness_mm: nominalThickness,
     measured_thickness_mm: measuredThickness,
+    measured_back_thickness_mm: measuredBackThickness,
     shelf_count: shelfCount,
     fixed_shelves: oneOf(root.shelf_mount, ["fixed", "adjustable"] as const, "spec_json.shelf_mount", code) === "fixed",
     load_per_shelf_kg: finiteNumber(root.load_per_shelf_kg, "spec_json.load_per_shelf_kg", 0, 500, code),
     back_panel: backPanel,
     back_panel_type: backPanelType,
-    plinth: boolean(root.plinth, "spec_json.plinth", code),
+    plinth,
+    plinth_height_mm: plinthHeight,
     divider_count: dividerCount,
     bay_sizing_mode: intent.bay_sizing_mode,
     target_bay_width_mm: intent.target_bay_width_mm,
@@ -835,10 +955,19 @@ function parseCanonicalServerSpec(
       code,
     ),
     joint_system: oneOf(root.joint_system, ["dado"] as const, "spec_json.joint_system", code),
-    edge_band_mm: finiteNumber(root.edge_band_mm, "spec_json.edge_band_mm", 0, 5, code),
+    edge_band_mm: micrometreMillimetres(
+      root.edge_band_mm,
+      "spec_json.edge_band_mm",
+      0,
+      5,
+      code,
+    ),
+    wall_anchor_required: wallAnchorRequired,
     wall_anchor_verified: false,
-    ...intent.production_context,
+    ...legacyProductionContext(intent.production_context),
   };
+  const workshopContext = workshopContextFromWorkspace(intent.production_context, spec, code);
+  if (workshopContext) spec.workshop_context = workshopContext;
   validateFurnitureInvariants(spec, code);
   validateTopologyBaselineInvariants(spec, code);
   assertCustomizationIds(spec, customizations, code);
@@ -848,6 +977,18 @@ function parseCanonicalServerSpec(
 export function workspaceIntentEnvelopeFromSpec(spec: DesignSpec): WorkspaceIntentEnvelopeV1 {
   const provenanceSafeSpec = currentReferenceOrConcept(spec);
   validateTopologyBaselineInvariants(provenanceSafeSpec, "INVALID_WORKSPACE_INTENT");
+  let workshopContext: WorkshopProductionContext | undefined;
+  try {
+    workshopContext = parseWorkshopProductionContext(
+      provenanceSafeSpec.workshop_context,
+      provenanceSafeSpec,
+    );
+  } catch (caught) {
+    if (caught instanceof WorkshopProductionContextError) {
+      fail("INVALID_WORKSPACE_INTENT", caught.message);
+    }
+    throw caught;
+  }
   const envelope: WorkspaceIntentEnvelopeV1 = {
     schema_version: WORKSPACE_INTENT_SCHEMA_V1,
     bay_sizing_mode: provenanceSafeSpec.bay_sizing_mode,
@@ -861,6 +1002,12 @@ export function workspaceIntentEnvelopeFromSpec(spec: DesignSpec): WorkspaceInte
       back_stock_height_mm: provenanceSafeSpec.back_stock_height_mm,
       back_stock_count: provenanceSafeSpec.back_stock_count,
       machine_profile_id: provenanceSafeSpec.machine_profile_id,
+      ...(workshopContext?.stock_profiles
+        ? { stock_profiles: workshopContext.stock_profiles }
+        : {}),
+      ...(workshopContext?.two_sided_registrations
+        ? { two_sided_registrations: workshopContext.two_sided_registrations }
+        : {}),
     },
     part_overrides: provenanceSafeSpec.part_overrides,
     removed_part_ids: provenanceSafeSpec.removed_part_ids,
@@ -919,6 +1066,13 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
         "back_panel_type",
         code,
       );
+  const plinth = boolean(merged.plinth, "plinth", code);
+  const plinthHeight = root.plinth_height_mm === undefined
+    ? plinth ? DEFAULT_DESIGN_SPEC.plinth_height_mm : 0
+    : finiteNumber(merged.plinth_height_mm, "plinth_height_mm", 0, 500, code);
+  if (plinth !== (plinthHeight > 0)) {
+    fail(code, "plinth måste motsvara om plinth_height_mm är större än noll.");
+  }
   const dividerCount = integer(merged.divider_count, "divider_count", 0, 16, code);
   const shelfCount = integer(merged.shelf_count, "shelf_count", 0, 40, code);
   const customizations = parsePartCustomizations(merged.part_overrides, merged.removed_part_ids, code);
@@ -942,13 +1096,21 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
     material_name: material.name,
     back_material_id: backMaterialId,
     nominal_thickness_mm: finiteNumber(merged.nominal_thickness_mm, "nominal_thickness_mm", 18, 18, code),
-    measured_thickness_mm: finiteNumber(merged.measured_thickness_mm, "measured_thickness_mm", 17, 19, code),
+    measured_thickness_mm: micrometreMillimetres(merged.measured_thickness_mm, "measured_thickness_mm", 17, 19, code),
+    measured_back_thickness_mm: micrometreMillimetres(
+      merged.measured_back_thickness_mm,
+      "measured_back_thickness_mm",
+      5.5,
+      6.5,
+      code,
+    ),
     shelf_count: shelfCount,
     fixed_shelves: boolean(merged.fixed_shelves, "fixed_shelves", code),
     load_per_shelf_kg: finiteNumber(merged.load_per_shelf_kg, "load_per_shelf_kg", 0, 500, code),
     back_panel: backPanel,
     back_panel_type: backPanelType,
-    plinth: boolean(merged.plinth, "plinth", code),
+    plinth,
+    plinth_height_mm: plinthHeight,
     divider_count: dividerCount,
     bay_sizing_mode: oneOf(merged.bay_sizing_mode, ["count", "target_width"] as const, "bay_sizing_mode", code),
     target_bay_width_mm: finiteNumber(merged.target_bay_width_mm, "target_bay_width_mm", 50, 2_000, code),
@@ -965,10 +1127,20 @@ export function parseLocalDesignSpec(value: unknown): DesignSpec {
     base_cabinet_count: integer(merged.base_cabinet_count, "base_cabinet_count", 0, 17, code),
     reinforcement_mode: oneOf(merged.reinforcement_mode, ["manual", "auto"] as const, "reinforcement_mode", code),
     joint_system: oneOf(merged.joint_system, ["dado"] as const, "joint_system", code),
-    edge_band_mm: finiteNumber(merged.edge_band_mm, "edge_band_mm", 0, 5, code),
+    edge_band_mm: micrometreMillimetres(merged.edge_band_mm, "edge_band_mm", 0, 5, code),
+    wall_anchor_required: boolean(merged.wall_anchor_required, "wall_anchor_required", code),
     wall_anchor_verified: false,
-    ...productionContext,
+    ...legacyProductionContext(productionContext),
   };
+  if (merged.workshop_context !== undefined) {
+    try {
+      const workshopContext = parseWorkshopProductionContext(merged.workshop_context, spec);
+      if (workshopContext) spec.workshop_context = workshopContext;
+    } catch (caught) {
+      if (caught instanceof WorkshopProductionContextError) fail(code, caught.message);
+      throw caught;
+    }
+  }
   validateFurnitureInvariants(spec, code);
   validateTopologyBaselineInvariants(spec, code);
   assertCustomizationIds(spec, customizations, code);
@@ -985,6 +1157,31 @@ export function parseLocalDesignPatch(
   patch: Partial<DesignSpec>,
 ): DesignSpec {
   const candidate: DesignSpec = { ...spec, ...patch };
+  const workshopBindingFields = [
+    "material_id",
+    "back_material_id",
+    "back_panel",
+    "measured_thickness_mm",
+    "measured_back_thickness_mm",
+    "stock_width_mm",
+    "stock_height_mm",
+    "stock_count",
+    "back_stock_width_mm",
+    "back_stock_height_mm",
+    "back_stock_count",
+  ] as const;
+  if (
+    spec.workshop_context !== undefined
+    && !Object.hasOwn(patch, "workshop_context")
+    && workshopBindingFields.some((field) => Object.hasOwn(patch, field))
+  ) {
+    delete candidate.workshop_context;
+  }
+  if (Object.hasOwn(patch, "plinth") && !Object.hasOwn(patch, "plinth_height_mm")) {
+    candidate.plinth_height_mm = candidate.plinth
+      ? (spec.plinth_height_mm > 0 ? spec.plinth_height_mm : DEFAULT_DESIGN_SPEC.plinth_height_mm)
+      : 0;
+  }
   if (
     Object.hasOwn(patch, "depth_mm")
     && !Object.hasOwn(patch, "base_cabinet_depth_mm")

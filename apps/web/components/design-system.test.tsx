@@ -62,6 +62,38 @@ describe("design system primitives", () => {
     expect(onNudge).toHaveBeenNthCalledWith(2, 10);
   });
 
+  it("can reject out-of-contract dimensions without silently changing them", () => {
+    const onCommit = vi.fn();
+    render(
+      <DimensionInput
+        label="Djup"
+        value={320}
+        min={100}
+        max={1200}
+        step={0.001}
+        commitMode="reject"
+        onCommit={onCommit}
+      />,
+    );
+    const input = screen.getByRole("spinbutton", { name: "Djup" });
+
+    fireEvent.change(input, { target: { value: "397.1255" } });
+    fireEvent.blur(input);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText(/steg om 0,001 mm/i)).toBeVisible();
+    expect(onCommit).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "397.12500000001" } });
+    fireEvent.blur(input);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(onCommit).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "397.125" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveAttribute("aria-invalid", "false");
+    expect(onCommit).toHaveBeenCalledWith(397.125);
+  });
+
   it("uses native choices and explicit selected-card state", () => {
     const onModeChange = vi.fn();
     render(
