@@ -133,6 +133,7 @@ def test_release_download_filename_fails_closed(
 @pytest.mark.parametrize(
     ("kind", "content_type", "expected_suffix"),
     (
+        ("part_drawings", "application/pdf", "part-drawings-rev-7.pdf"),
         ("dfm_report", "application/json", "dfm-report-rev-7.json"),
         (
             "design_review_package_status",

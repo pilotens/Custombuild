@@ -1202,6 +1202,15 @@ describe("designReviewPackageStatusFromJob", () => {
 });
 
 describe("CNC-shop review artifact presentation", () => {
+  it("offers workshop part drawings as a PDF with a revision-bound filename", () => {
+    const artifact = { kind: "part_drawings", content_type: "application/pdf" };
+    expect(artifactRoleLabel(artifact.kind)).toBe("Delritningar med bearbetningsmått");
+    expect(artifactReviewUseLabel(artifact.kind)).toContain("Sida A/B, koordinater, djup och toleranser");
+    expect(artifactFileExtension(artifact)).toBe("pdf");
+    expect(artifactDownloadFileName(artifact, project.id, 12)).toBe(
+      `custombuild-project-${project.id}-part-drawings-rev-12.pdf`,
+    );
+  });
   it.each([
     {
       kind: "supplier_handoff",
@@ -1449,15 +1458,15 @@ describe("review package artifact inventory", () => {
     )).toBe(false);
   });
 
-  it("allows a machine-independent document in a blocked review package", () => {
+  it.each(["assembly_readiness", "part_drawings"])("allows optional %s in a blocked review package", (kind) => {
     expect(reviewPackageArtifactInventoryIsTruthful(
       [
         ...blockedReviewArtifacts,
-        { ...bundle, id: "assembly-readiness", kind: "assembly_readiness" },
+        { ...bundle, id: kind, kind },
       ],
       blockedCamPackageStatusFixture(),
       true,
-      [...blockedArtifactKinds, "assembly_readiness"],
+      [...blockedArtifactKinds, kind],
     )).toBe(true);
   });
 

@@ -73,7 +73,7 @@ class AssemblyManualPlan:
         )
 
 
-DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.4.0"
+DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.5.0"
 ASSEMBLY_READINESS_SCHEMA_VERSION = "custombuild.assembly-readiness.v1"
 RETENTION_TRUST_SCHEMA_VERSION = "custombuild.joint-retention-binding.v2"
 

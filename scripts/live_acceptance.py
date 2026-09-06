@@ -176,6 +176,7 @@ DESIGN_REVIEW_PACKAGE_STATUS_KEYS: Final = frozenset(
 )
 REQUIRED_REVIEW_PACKAGE_PATHS: Final = frozenset(
     {
+        "documents/part-drawings.pdf",
         "assembly/assembly-manual.pdf",
         "bom/bom.csv",
         "bom/bom.pdf",
@@ -230,6 +231,7 @@ FORBIDDEN_BLOCKED_CAM_ROLES: Final = frozenset(
 )
 BLOCKED_CAM_ALLOWED_ARTIFACTS: Final = frozenset(
     {
+        ("documents/part-drawings.pdf", "PART_DRAWING_PDF", "application/pdf"),
         ("START-HERE.md", "PACKAGE_GUIDE", "text/markdown"),
         ("assembly/assembly-manual.pdf", "ASSEMBLY_REVIEW_MANUAL", "application/pdf"),
         ("assembly/assembly-readiness.json", "ASSEMBLY_READINESS", "application/json"),
@@ -309,6 +311,7 @@ BLOCKED_CAM_ALLOWED_ARTIFACTS: Final = frozenset(
 )
 BLOCKED_CAM_ALLOWED_EVIDENCE_KINDS: Final = frozenset(
     {
+        "part_drawings",
         "production_bundle",
         "manifest",
         "manufacturing_intent",
@@ -2066,6 +2069,7 @@ def download_artifact(
     disposition = result.headers.get("content-disposition", "")
     project_prefix = f"custombuild-project-{project_id}-"
     expected_filename = {
+        "part_drawings": f"{project_prefix}part-drawings-rev-{revision}.pdf",
         "production_bundle": f"{project_prefix}design-review-rev-{revision}.zip",
         "manifest": f"{project_prefix}design-review-manifest-rev-{revision}.json",
         "stock_selection": f"{project_prefix}stock-selection-rev-{revision}.json",
@@ -2450,6 +2454,7 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         by_kind[kind] = artifact
     require(
         {
+            "part_drawings",
             "production_bundle",
             "manifest",
             "manufacturing_intent",
@@ -2473,6 +2478,7 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
 
     downloaded: dict[str, bytes] = {}
     downloadable_content_types = {
+        "part_drawings": "application/pdf",
         "production_bundle": "application/zip",
         "manifest": "application/json",
         "stock_selection": "application/json",

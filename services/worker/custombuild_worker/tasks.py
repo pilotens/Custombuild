@@ -124,6 +124,7 @@ from .documents import (
     qa_protocol_pdf,
     validation_report_pdf,
 )
+from .part_drawings import part_drawings_pdf
 
 WORKER_SETTINGS = get_worker_settings()
 logger = logging.getLogger(__name__)
@@ -155,6 +156,7 @@ class VerifiedRetentionPackageInput:
 
 
 _EVIDENCE_ARTIFACT_CONTRACTS: Mapping[str, tuple[str, str, str]] = {
+    "documents/part-drawings.pdf": ("part_drawings", "application/pdf", "PART_DRAWING_PDF"),
     MANUFACTURING_INTENT_PATH: (
         "manufacturing_intent",
         "application/json",
@@ -1461,6 +1463,12 @@ def _generate(
         source_provenance=version.source_provenance_json or None,
     )
     document_files = [
+        ArtifactFile(
+            "documents/part-drawings.pdf",
+            part_drawings_pdf(design),
+            "application/pdf",
+            "PART_DRAWING_PDF",
+        ),
         ArtifactFile(
             "bom/bom.pdf",
             bom_pdf(design, verified_retention_trust),

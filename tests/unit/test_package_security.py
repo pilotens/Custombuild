@@ -815,6 +815,7 @@ def test_reader_rejects_self_consistent_blocked_package_with_cam_artifact(
         ("bom/bom.pdf", "BOM_PDF", "application/pdf"),
         ("bom/hardware-list.csv", "HARDWARE_LIST", "text/csv"),
         ("labels/part-labels.pdf", "PART_LABELS", "application/pdf"),
+        ("documents/part-drawings.pdf", "PART_DRAWING_PDF", "application/pdf"),
         ("qa/measurement-protocol.pdf", "QA_PROTOCOL", "application/pdf"),
         (
             "validation/construction-report.json",

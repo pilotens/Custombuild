@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import zipfile
 from collections.abc import Mapping
 from io import BytesIO
 from types import SimpleNamespace
@@ -200,6 +201,7 @@ def _generation_ready_job_and_version() -> tuple[GenerationJob, DesignVersion]:
 
 
 _EVIDENCE_IDENTITY_CASES = (
+    ("documents/part-drawings.pdf", "part_drawings", "application/pdf", "PART_DRAWING_PDF"),
     (
         "manufacturing/manufacturing-intent.json",
         "manufacturing_intent",
@@ -337,7 +339,7 @@ def test_worker_accepts_only_the_exact_frozen_context() -> None:
         resolved.context.dependency_lock_sha256
         == worker_tasks.WORKER_SETTINGS.dependency_lock_sha256
     )
-    assert DOCUMENT_RENDERER_VERSION == "reportlab-production-documents-1.4.0"
+    assert DOCUMENT_RENDERER_VERSION == "reportlab-production-documents-1.5.0"
     assert production_context_contract.DOCUMENT_RENDERER_VERSION == DOCUMENT_RENDERER_VERSION
     assert resolved.context.document_renderer_version == DOCUMENT_RENDERER_VERSION
 
@@ -543,6 +545,7 @@ def test_worker_returns_review_package_when_two_sided_cam_registration_is_missin
     assert result["nesting_utilization_ppm"] is None
     assert result["nesting_layouts"] == []
     evidence_kinds = {item["kind"] for item in result["evidence_artifacts"]}
+    assert "part_drawings" in evidence_kinds
     assert "manufacturing_intent" in evidence_kinds
     assert "supplier_handoff" in evidence_kinds
     assert "design_review_package_status" in evidence_kinds
@@ -743,7 +746,10 @@ def test_worker_rejects_valid_but_wrong_evidence_media_before_any_object_write(
 ) -> None:
     job, version = _generation_ready_job_and_version()
     writes: list[str] = []
-    artifacts = (ArtifactFile(path, b"{}", "application/pdf", role),)
+    wrong_media = (
+        "application/json" if _expected_media_type == "application/pdf" else "application/pdf"
+    )
+    artifacts = (ArtifactFile(path, b"{}", wrong_media, role),)
     _install_evidence_bundle(monkeypatch, job, artifacts)
     monkeypatch.setattr(
         worker_tasks,
@@ -1114,6 +1120,11 @@ def test_worker_returns_stockless_review_package_when_stock_profile_is_missing(
     assert "/linked-v1/" in bundle_write[0]
     assert bundle_write[2] == {"manifest-sha256": result["manifest_sha256"]}
     manifest = json.loads(written_payloads[result["manifest_object_key"]])
+    drawing = next(item for item in result["evidence_artifacts"] if item["kind"] == "part_drawings")
+    drawing_bytes = written_payloads[drawing["object_key"]]
+    assert drawing_bytes.startswith(b"%PDF-")
+    with zipfile.ZipFile(BytesIO(written_payloads[bundle_write[0]])) as archive:
+        assert archive.read("documents/part-drawings.pdf") == drawing_bytes
     assert (
         manifest["postprocessor_version"]
         == job.production_engine_context_json["postprocessor_version"]
@@ -1501,6 +1512,7 @@ def test_real_worker_emits_bound_machine_neutral_shop_review_package(
     assert manifest["physical_cutting_authorized"] is False
     inventory = {item["path"]: item for item in manifest["artifacts"]}
     for path, kind in (
+        ("documents/part-drawings.pdf", "part_drawings"),
         ("validation/stock-selection.json", "stock_selection"),
         ("validation/generation-plan.json", "generation_plan"),
         ("cam/operations.json", "operations"),
