@@ -1365,6 +1365,10 @@ def _validate_inter_part_collisions(
     outlines: dict[tuple[str, int, str], _PartOutline],
     issues: _Issues,
 ) -> None:
+    if not program.moves:
+        # Entry/motion/coverage checks already block an empty program. Preserve
+        # those diagnostics and let verification continue for the other programs.
+        return
     sheet_outlines = tuple(
         outline
         for outline in outlines.values()

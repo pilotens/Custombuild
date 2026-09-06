@@ -722,6 +722,31 @@ def test_missing_operation_moves_block() -> None:
     assert "OPERATION_MOVE_COVERAGE_INVALID" in _issue_codes(mutated, source)
 
 
+@pytest.mark.parametrize("program_index", (0, 1))
+def test_empty_program_returns_blocking_report(program_index: int) -> None:
+    source, candidate = _candidate()
+    program = candidate.programs[program_index]
+    # The independent verifier must diagnose damaged in-memory documents even
+    # when the normal dataclass constructor would reject them first.
+    object.__setattr__(program, "moves", ())
+
+    verification = verify_production_toolpaths(candidate, source)
+
+    assert verification.report.status == CuttingProgramStatus.BLOCK
+    assert verification.report.physical_cutting_authorized is False
+    assert {"PROGRAM_EMPTY", "PROGRAM_ENTRY_INVALID", "OPERATION_MOVE_COVERAGE_INVALID"} <= {
+        issue.code for issue in verification.report.issues
+    }
+    assert not any(
+        envelope.program_id == program.program_id for envelope in verification.swept_envelopes
+    )
+    assert any(
+        envelope.program_id != program.program_id for envelope in verification.swept_envelopes
+    )
+    assert cutting_program_report_json(candidate, source)
+    assert b"blocked" in cutting_backplot_svg(candidate, source)
+
+
 def test_wrong_operation_block_order_blocks() -> None:
     source, candidate = _candidate()
     program = candidate.programs[0]
