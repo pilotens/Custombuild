@@ -429,11 +429,18 @@ def test_live_acceptance_rejects_generic_blocked_cam_inventory(
     assert blocked_cam_artifact_violation(path, role, media_type) is True
 
 
-def test_live_acceptance_allows_machine_independent_worker_document() -> None:
+@pytest.mark.parametrize(
+    ("path", "role"),
+    (
+        ("assembly/assembly-manual.pdf", "ASSEMBLY_REVIEW_MANUAL"),
+        ("documents/part-drawings.pdf", "PART_DRAWING_PDF"),
+    ),
+)
+def test_live_acceptance_allows_machine_independent_worker_document(path: str, role: str) -> None:
     assert (
         blocked_cam_artifact_violation(
-            "assembly/assembly-manual.pdf",
-            "ASSEMBLY_REVIEW_MANUAL",
+            path,
+            role,
             "application/pdf",
         )
         is False

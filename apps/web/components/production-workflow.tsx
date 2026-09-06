@@ -1365,6 +1365,7 @@ const BLOCKED_CAM_REVIEW_ARTIFACT_KINDS = [
 ] as const;
 
 const BLOCKED_CAM_ALLOWED_ARTIFACT_KINDS = new Set([
+  "part_drawings",
   "production_bundle",
   "manifest",
   "manufacturing_intent",
@@ -1401,6 +1402,7 @@ const REVIEW_EVIDENCE_RESULT_KEYS = [
   "content_type",
 ] as const;
 const REVIEW_ARTIFACT_CONTENT_TYPES: Readonly<Record<string, string>> = {
+  part_drawings: "application/pdf",
   manufacturing_intent: "application/json",
   supplier_handoff: "application/json",
   dfm_report: "application/json",
@@ -1866,6 +1868,7 @@ function formatArtifactSize(sizeBytes: number): string {
 }
 
 export function artifactRoleLabel(kind: string): string {
+  if (kind === "part_drawings") return "Delritningar med bearbetningsmått";
   if (kind === "production_bundle") return "Designgranskningspaket (ZIP)";
   if (kind === "cam_candidate_bundle") return "Körbar CAM-kandidat (ZIP)";
   if (kind === "manifest") return "Manifest";
@@ -1908,6 +1911,7 @@ function artifactFormatLabel(artifact: Pick<ArtifactRead, "kind" | "content_type
 }
 
 export function artifactReviewUseLabel(kind: string): string {
+  if (kind === "part_drawings") return "Sida A/B, koordinater, djup och toleranser för verkstadens granskning";
   if (kind === "production_bundle") return "Samlat underlag för designgranskning";
   if (kind === "cam_candidate_bundle") {
     return "Skärande CAM-kandidat – kräver verkstadsacceptans före maskinstart";
@@ -1972,6 +1976,7 @@ export function artifactDownloadFileName(
     throw new ApiError("Artefaktens revision är ogiltig.");
   }
   const canonicalIdentities: Record<string, readonly [string, string, string]> = {
+    part_drawings: ["part-drawings", "application/pdf", "pdf"],
     production_bundle: ["design-review", "application/zip", "zip"],
     cam_candidate_bundle: ["cam-candidate", "application/zip", "zip"],
     manifest: ["design-review-manifest", "application/json", "json"],

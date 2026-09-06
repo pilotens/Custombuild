@@ -185,6 +185,7 @@ _MANIFEST_ARTIFACT_ENTRY_KEYS = frozenset({"path", "media_type", "role", "size_b
 _PACKAGE_CAD_STATUSES = ("GENERATED", "NOT_REQUESTED")
 _BLOCKED_CAM_ALLOWED_FIXED_ARTIFACTS = frozenset(
     {
+        ("documents/part-drawings.pdf", "PART_DRAWING_PDF", "application/pdf"),
         ("assembly/assembly-manual.pdf", "ASSEMBLY_REVIEW_MANUAL", "application/pdf"),
         ("assembly/assembly-readiness.json", "ASSEMBLY_READINESS", "application/json"),
         ("bom/bom.csv", "BOM", "text/csv"),
@@ -344,6 +345,7 @@ FROZEN_DESIGN_SPEC_SCHEMA_VERSION = "custombuild.frozen-design-spec.v1"
 DESIGN_RESULT_SUMMARY_SCHEMA_VERSION = "custombuild.design-result-summary.v1"
 _SAFE_CALLER_ADDITIONAL_ARTIFACTS = frozenset(
     {
+        ("documents/part-drawings.pdf", "PART_DRAWING_PDF", "application/pdf"),
         ("assembly/assembly-manual.pdf", "ASSEMBLY_REVIEW_MANUAL", "application/pdf"),
         ("assembly/assembly-readiness.json", "ASSEMBLY_READINESS", "application/json"),
         ("bom/bom.pdf", "BOM_PDF", "application/pdf"),

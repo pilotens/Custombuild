@@ -322,6 +322,7 @@ def _fast_generation_subject(
     )
     monkeypatch.setattr(worker_tasks, "evaluate_design", lambda _design: rule_report)
     for document_builder in (
+        "part_drawings_pdf",
         "bom_pdf",
         "hardware_csv",
         "assembly_manual_pdf",

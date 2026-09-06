@@ -4150,14 +4150,29 @@ def test_generation_freezes_public_structured_workshop_context_end_to_end(
         )
 
         downloaded: dict[str, bytes] = {}
-        for kind in ("production_bundle", "manifest", "stock_selection", "generation_plan"):
+        for kind in (
+            "production_bundle",
+            "manifest",
+            "stock_selection",
+            "generation_plan",
+            "part_drawings",
+        ):
             artifact = artifacts[kind]
             download = client.get(artifact["download_path"], headers=HEADERS)
             assert download.status_code == 200, download.text
             assert len(download.content) == artifact["size_bytes"]
             assert hashlib.sha256(download.content).hexdigest() == artifact["sha256"]
             downloaded[kind] = download.content
+            if kind == "part_drawings":
+                assert download.headers["content-type"] == "application/pdf"
+                assert download.content.startswith(b"%PDF-")
+                assert download.headers["content-disposition"] == (
+                    f'attachment; filename="custombuild-project-{version["project_id"]}'
+                    f'-part-drawings-rev-{version["revision"]}.pdf"'
+                )
 
+        with zipfile.ZipFile(io.BytesIO(downloaded["production_bundle"])) as archive:
+            assert archive.read("documents/part-drawings.pdf") == downloaded["part_drawings"]
         assert downloaded["stock_selection"] == expected_stock_snapshot
         assert downloaded["generation_plan"] == expected_plan_snapshot
         selection = json.loads(downloaded["stock_selection"])
@@ -4193,6 +4208,7 @@ def test_generation_freezes_public_structured_workshop_context_end_to_end(
         assert verified_manifest["physical_cutting_authorized"] is False
         inventory = {item["path"]: item for item in verified_manifest["artifacts"]}
         for kind, path in (
+            ("part_drawings", "documents/part-drawings.pdf"),
             ("stock_selection", "validation/stock-selection.json"),
             ("generation_plan", GENERATION_PLAN_ARTIFACT_PATH),
         ):
@@ -9061,6 +9077,7 @@ def test_worker_stock_grain_projection_matches_frozen_api_contract(
 
     monkeypatch.setattr(worker_tasks, "build_production_bundle", capture_worker_stocks)
     for document_builder in (
+        "part_drawings_pdf",
         "assembly_manual_pdf",
         "assembly_readiness_json",
         "bom_pdf",

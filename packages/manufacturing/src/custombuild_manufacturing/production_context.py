@@ -62,7 +62,7 @@ from .profiles import (
 PRODUCTION_ENGINE_CONTEXT_SCHEMA_VERSION = "custombuild.production-engine-context.v5"
 GENERATION_CONTEXT_SCHEMA_VERSION = "custombuild.generation-context.v1"
 APPLICATION_ARTIFACT_SCHEMA_VERSION = "custombuild.application-artifacts.v1"
-DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.4.0"
+DOCUMENT_RENDERER_VERSION = "reportlab-production-documents-1.5.0"
 REPORTLAB_DISTRIBUTION_VERSION = "4.4.9"
 REVISION_PRODUCTION_CONTEXT_KEYS = frozenset(
     {

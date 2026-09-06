@@ -56,6 +56,12 @@ toolpaths, setup instructions, program order and independent verification.
   local datums, face assignments, feature positions, depths, tolerances and fit
   clearances without pretending to choose that shop's fixture, WCS, cutters,
   feeds or executable toolpaths.
+- Worker-generated review packages also include `documents/part-drawings.pdf`,
+  downloadable separately as **Delritningar med bearbetningsmått**. Each part
+  has A/B views of the same geometry as its DXF/SVG, plus exact local coordinates,
+  hole centres, depths, fit clearances and declared tolerances. Missing tolerances
+  remain explicitly unresolved. Both views use unmirrored local U/V coordinates;
+  these drawings support workshop selection and geometry review before CAM setup.
 - A checksum-bound supplier handoff identifies the exact project and revision,
   binds the accepted manifest's canonical non-artifact context and payload
   inventory without a recursive self-hash, separates quote/geometry intake from

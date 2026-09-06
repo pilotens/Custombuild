@@ -308,6 +308,7 @@ _MANIFEST_TOP_LEVEL_KEYS = frozenset(
 )
 _MANIFEST_ARTIFACT_ENTRY_KEYS = frozenset({"path", "media_type", "role", "size_bytes", "sha256"})
 _EVIDENCE_MANIFEST_IDENTITIES: dict[str, tuple[str, str, str]] = {
+    "part_drawings": ("documents/part-drawings.pdf", "PART_DRAWING_PDF", "application/pdf"),
     "manufacturing_intent": (
         MANUFACTURING_INTENT_PATH,
         MANUFACTURING_INTENT_ROLE,
@@ -377,6 +378,7 @@ _EVIDENCE_MANIFEST_IDENTITIES: dict[str, tuple[str, str, str]] = {
 }
 _BLOCKED_CAM_ALLOWED_EVIDENCE_KINDS = frozenset(
     {
+        "part_drawings",
         "production_bundle",
         "manifest",
         "manufacturing_intent",
@@ -1758,6 +1760,7 @@ _ARTIFACT_DOWNLOAD_IDENTITIES: Mapping[str, tuple[str, str]] = {
     "source_provenance": ("source-provenance", "application/json"),
     "workshop_readiness": ("workshop-readiness", "application/json"),
     "assembly_readiness": ("assembly-readiness", "application/json"),
+    "part_drawings": ("part-drawings", "application/pdf"),
     "cutting_toolpaths": ("cutting-toolpaths", "application/json"),
     "machine_program_index": ("machine-program-index", "application/json"),
     "production_setup_instructions": ("production-setup-instructions", "application/json"),
@@ -1769,6 +1772,7 @@ _ARTIFACT_DOWNLOAD_IDENTITIES: Mapping[str, tuple[str, str]] = {
     "production_machine_profile": ("production-machine-profile", "application/json"),
 }
 _ARTIFACT_DOWNLOAD_EXTENSIONS: Mapping[str, str] = {
+    "application/pdf": ".pdf",
     "application/json": ".json",
     "application/vnd.freecad": ".FCStd",
     "application/zip": ".zip",
