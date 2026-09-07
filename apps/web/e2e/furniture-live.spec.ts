@@ -1,7 +1,13 @@
 import { readFile } from "node:fs/promises";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { newFurnitureWorkspace, type FurnitureFamily } from "../lib/furniture-workspace";
 import { provisionLiveProject, selectProjectBeforeNavigation } from "./live-helpers";
+
+async function attachView(page: Page, info: TestInfo, name: string) {
+  const path = info.outputPath(`${name}.png`);
+  await page.screenshot({ path, fullPage: true });
+  await info.attach(name, { path, contentType: "image/png" });
+}
 
 test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () => {
   test.skip(process.env.PLAYWRIGHT_REAL_API !== "1", "Requires the complete Compose stack.");
@@ -42,7 +48,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       await expect(page.getByLabel("Uppmätt skivtjocklek (mm)", { exact: true })).toHaveValue("17.801");
       await expect(page.getByRole("button", { name: /^Revision 1 ·/ })).toBeVisible();
       await expect(page.locator("canvas")).toHaveAttribute("data-custombuild-render-commit", /^[1-9]\d*$/, { timeout: 30_000 });
-      await info.attach(`${family}-assembled`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+      await attachView(page, info, `${family}-assembled`);
       if (family === "chest_of_drawers") {
         await page.getByRole("button", { name: "Öppna lådorna" }).click();
         await expect(page.getByRole("button", { name: "Stäng lådorna" })).toHaveAttribute("aria-pressed", "true");
@@ -58,10 +64,10 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       const bytes = await readFile((await download.path())!);
       expect(bytes.subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
       expect(bytes.length).toBeGreaterThan(1_000);
-      await info.attach(`${family}-studio`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+      await attachView(page, info, `${family}-studio`);
       await page.setViewportSize({ width: 390, height: 844 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-      await info.attach(`${family}-mobile`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
+      await attachView(page, info, `${family}-mobile`);
     });
   }
 });
