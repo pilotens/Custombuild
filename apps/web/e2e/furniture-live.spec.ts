@@ -5,6 +5,11 @@ import { provisionLiveProject, selectProjectBeforeNavigation } from "./live-help
 
 test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () => {
   test.skip(process.env.PLAYWRIGHT_REAL_API !== "1", "Requires the complete Compose stack.");
+  test.afterEach(async ({ page }, info) => {
+    if (info.status !== info.expectedStatus && await page.locator("main").count()) {
+      console.log("Furniture workspace at failure:", await page.locator("main").innerText());
+    }
+  });
   for (const family of ["table", "chest_of_drawers", "shelving"] as FurnitureFamily[]) {
     test(`${family}: spara, byta profil, öppna igen och hämta CAD`, async ({ page, request }, info) => {
       test.setTimeout(240_000);

@@ -217,7 +217,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     <div className={styles.layout}>
       <aside className={styles.controls}>
         <h2>Form och funktion</h2>
-        <label>Möbeltyp<select value={intent.family} disabled={busy || !mayEdit}
+        <label>Möbeltyp<select aria-label="Möbeltyp" value={intent.family} disabled={busy || !mayEdit}
           onChange={e => chooseFamily(e.target.value as FurnitureFamily)}>
           {Object.entries(FURNITURE_FAMILY_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
         </select></label>
