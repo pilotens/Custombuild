@@ -33,7 +33,7 @@ from .models import (
     aggregate_status,
 )
 
-RULES_VERSION = "1.3.0"
+RULES_VERSION = "1.4.0"
 MAX_AUTO_VERTICAL_DIVIDERS = 16
 
 
@@ -907,9 +907,22 @@ class RuleEngine:
             )
         else:
             product_cg_z = Fraction(p.height_um, 2)
-        shelf_rows = p.shelf_count
+        # A row can contain several shelf segments when dividers split the
+        # carcass. The declared load belongs to the complete row, not to every
+        # segment. Use the resolved bearing surfaces so a moved/custom row
+        # changes its actual load moment, including above a base cabinet.
+        shelf_surfaces_z = tuple(sorted({
+            part.placement.z_um + part.finished_size.height_um
+            for part in design.parts
+            if part.role == PartRole.SHELF
+        }))
+        shelf_rows = len(shelf_surfaces_z)
+        if shelf_rows != p.shelf_count:
+            raise ValueError("resolved shelf rows do not match the declared load rows")
         load_force_n = p.shelf_load_n * shelf_rows
-        load_cg_z = Fraction(p.plinth_height_um + p.height_um, 2)
+        load_cg_z = (
+            Fraction(sum(shelf_surfaces_z), shelf_rows) if shelf_rows else Fraction(0)
+        )
         product_weight_n = Fraction(mass_g * 981, 100_000)
         total_vertical_n = product_weight_n + load_force_n
         combined_cg_z = (
@@ -919,7 +932,9 @@ class RuleEngine:
         )
         resisting = total_vertical_n * Fraction(p.depth_um, 2)
         overturning = p.assumed_horizontal_force_n * combined_cg_z
-        factor_permille = _ceil(resisting * 1_000 / overturning) if overturning else 1_000_000
+        # Round down: rounding a deficient factor upwards must never turn a
+        # value just below a safety threshold into a pass/warning.
+        factor_permille = int(resisting * 1_000 / overturning) if overturning else 1_000_000
         geometrically_requires_anchor = p.height_um >= 4 * p.depth_um
         anchor_required = p.wall_anchor.required or geometrically_requires_anchor
         if anchor_required and not p.wall_anchor.verified:
@@ -966,15 +981,21 @@ class RuleEngine:
             applies_to_part_ids=tuple(part.part_id for part in design.parts),
             inputs=(
                 RuleDatum(name="produktvikt", value=mass_g, unit="g"),
+                RuleDatum(name="belastade_hyllrader", value=shelf_rows, unit="st"),
+                RuleDatum(name="total_hyllast", value=load_force_n, unit="N"),
+                RuleDatum(name="hyllastens_lasthöjd", value=_ceil(load_cg_z), unit="µm"),
                 RuleDatum(name="horisontalkraft", value=p.assumed_horizontal_force_n, unit="N"),
                 RuleDatum(name="kombinerad_tyngdpunkthöjd", value=_ceil(combined_cg_z), unit="µm"),
                 RuleDatum(name="väggförankring_krävs", value=anchor_required),
                 RuleDatum(name="väggförankring_verifierad", value=p.wall_anchor.verified),
             ),
             assumptions=(
-                "Last per hyllrad antas verka vid stommens genomsnittliga lastnivå.",
-                "Produktmassan är konservativ bruttomassa för färdigämnen före spår, "
-                "hål och annan materialavverkning.",
+                "Samma angivna last gäller per hel hyllrad och verkar vid den "
+                "genererade hyllans övre yta; avdelare multiplicerar inte radlasten.",
+                "Förvarade föremåls tyngdpunkt ovanför hyllan, ojämn lastfördelning "
+                "och dynamiska laster ingår inte i denna screening.",
+                "Produktmassan är bruttomassa före spår, hål och annan avverkning; "
+                "slutlig massa och tyngdpunkt behöver verifieras för den fysiska möbeln.",
                 "Tippscreening använder angiven horisontalkraft och halv basdjup som hävarm.",
                 "Geometri med höjd minst fyra gånger djup kräver verifierad väggförankring.",
             ),

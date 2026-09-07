@@ -1,5 +1,11 @@
 import { resolveDesign } from "./design-engine";
 import { getStoredAccessToken } from "./auth-client";
+import {
+  assertFurniturePreview,
+  type FurnitureCatalog, type FurnitureDraft, type FurnitureExportResult,
+  type FurnitureHistory, type FurniturePreview, type FurnitureProfileComparison,
+  type FurnitureWorkspace,
+} from "./furniture-workspace";
 import { referenceImageVerificationIsCurrent } from "./reference-image";
 import type { components, paths } from "./api-schema";
 import type {
@@ -1683,6 +1689,52 @@ export class CustombuildApiClient {
 
   async listProjects(): Promise<ProjectRead[]> {
     return this.request<ProjectRead[]>("/v1/projects", { method: "GET" });
+  }
+
+  async furnitureCatalog(): Promise<FurnitureCatalog> {
+    return this.request<FurnitureCatalog>("/v1/furniture/catalog", { method: "GET" });
+  }
+
+  async previewFurniture(workspace: FurnitureWorkspace): Promise<FurniturePreview> {
+    return assertFurniturePreview(await this.request<FurniturePreview>("/v1/furniture/preview", {
+      method: "POST", body: JSON.stringify(workspace),
+    }));
+  }
+
+  async compareFurnitureProfiles(current: FurnitureWorkspace, proposed: FurnitureWorkspace): Promise<FurnitureProfileComparison> {
+    const result = await this.request<FurnitureProfileComparison>("/v1/furniture/profile-change", {
+      method: "POST", body: JSON.stringify({ current, proposed }),
+    });
+    if (result.proposed) assertFurniturePreview(result.proposed);
+    return result;
+  }
+
+  async loadFurnitureDraft(projectId: string): Promise<FurnitureDraft> {
+    const result = await this.request<FurnitureDraft>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/draft`, { method: "GET" });
+    if (result.preview) assertFurniturePreview(result.preview);
+    return result;
+  }
+
+  async saveFurnitureDraft(projectId: string, revision: number, workspace: FurnitureWorkspace): Promise<FurnitureDraft> {
+    const result = await this.request<FurnitureDraft>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/draft`, {
+      method: "PUT", body: JSON.stringify({ expected_revision: revision, workspace }),
+    });
+    if (result.preview) assertFurniturePreview(result.preview);
+    return result;
+  }
+
+  async furnitureHistory(projectId: string, offset = 0): Promise<FurnitureHistory> {
+    return this.request<FurnitureHistory>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/history?offset=${offset}`, { method: "GET" });
+  }
+
+  async requestFurnitureExport(projectId: string, revision: number, designHash: string): Promise<{ job_id: string; state: string }> {
+    return this.request(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports`, {
+      method: "POST", body: JSON.stringify({ expected_revision: revision, expected_design_hash: designHash }),
+    });
+  }
+
+  async furnitureExportResult(projectId: string, jobId: string): Promise<FurnitureExportResult> {
+    return this.request(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}`, { method: "GET" });
   }
 
   async getCurrentPrincipal(): Promise<CurrentPrincipal> {

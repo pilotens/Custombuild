@@ -28,6 +28,9 @@ RUN printf '%s\n' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       > /etc/apt/sources.list.d/debian.sources \
     && printf 'Acquire::Check-Valid-Until "false";\n' > /etc/apt/apt.conf.d/99snapshot \
+    && printf '%s\n' 'Acquire::Retries "5";' \
+      'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+      'APT::Update::Error-Mode "any";' > /etc/apt/apt.conf.d/80custombuild-downloads \
     && apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \

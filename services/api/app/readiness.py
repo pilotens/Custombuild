@@ -29,7 +29,7 @@ DependencyName = Literal[
     "object_storage",
     "rule_engine",
 ]
-REQUIRED_DATABASE_REVISION = "0020_release_cam_approval_identity"
+REQUIRED_DATABASE_REVISION = "0021_furniture_review_reads"
 
 
 @dataclass(frozen=True)

@@ -591,6 +591,61 @@
         "title": "CAMApprovalReleaseBinding",
         "type": "object"
       },
+      "ChestIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_um": {
+            "default": 500000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "drawer_count": {
+            "default": 3,
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Drawer Count",
+            "type": "integer"
+          },
+          "drawer_load_n": {
+            "default": 100,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Drawer Load N",
+            "type": "integer"
+          },
+          "family": {
+            "const": "chest_of_drawers",
+            "default": "chest_of_drawers",
+            "title": "Family",
+            "type": "string"
+          },
+          "front_gap_um": {
+            "default": 3000,
+            "maximum": 10000.0,
+            "minimum": 1000.0,
+            "title": "Front Gap Um",
+            "type": "integer"
+          },
+          "height_um": {
+            "default": 900000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "width_um": {
+            "default": 800000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "title": "ChestIntent",
+        "type": "object"
+      },
       "DesignReviewBundleReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -1041,6 +1096,141 @@
         "title": "ExternalEvidenceRead",
         "type": "object"
       },
+      "FurnitureDesign": {
+        "additionalProperties": false,
+        "properties": {
+          "back_material": {
+            "$ref": "#/components/schemas/MaterialSelection"
+          },
+          "design_id": {
+            "default": "furniture",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Design Id",
+            "type": "string"
+          },
+          "hardware": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HardwareSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intent": {
+            "discriminator": {
+              "mapping": {
+                "chest_of_drawers": "#/components/schemas/ChestIntent",
+                "shelving": "#/components/schemas/ShelvingIntent",
+                "table": "#/components/schemas/TableIntent"
+              },
+              "propertyName": "family"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ShelvingIntent"
+              },
+              {
+                "$ref": "#/components/schemas/TableIntent"
+              },
+              {
+                "$ref": "#/components/schemas/ChestIntent"
+              }
+            ],
+            "title": "Intent"
+          },
+          "material": {
+            "$ref": "#/components/schemas/MaterialSelection"
+          },
+          "revision": {
+            "default": 1,
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "schema_version": {
+            "const": "custombuild.furniture-design.v1",
+            "default": "custombuild.furniture-design.v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "intent"
+        ],
+        "title": "FurnitureDesign",
+        "type": "object"
+      },
+      "FurnitureDraftSave": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "minimum": 0.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "workspace"
+        ],
+        "title": "FurnitureDraftSave",
+        "type": "object"
+      },
+      "FurnitureExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Design Hash",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "expected_design_hash"
+        ],
+        "title": "FurnitureExportRequest",
+        "type": "object"
+      },
+      "FurnitureWorkspace": {
+        "additionalProperties": false,
+        "properties": {
+          "design": {
+            "$ref": "#/components/schemas/FurnitureDesign"
+          },
+          "manufacturing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ManufacturingSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "schema_version": {
+            "const": "custombuild.furniture-workspace.v1",
+            "default": "custombuild.furniture-workspace.v1",
+            "title": "Schema Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "design"
+        ],
+        "title": "FurnitureWorkspace",
+        "type": "object"
+      },
       "GenerationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1174,6 +1364,27 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HardwareSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "version": {
+            "default": "layout-1.0.0",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "catalog_id"
+        ],
+        "title": "HardwareSelection",
         "type": "object"
       },
       "ImportInspection": {
@@ -1406,6 +1617,97 @@
         "title": "JobStatus",
         "type": "string"
       },
+      "ManufacturingSelection": {
+        "additionalProperties": false,
+        "description": "A separate planning profile. It grants no physical machine approval.",
+        "properties": {
+          "machine_profile_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Machine Profile Id",
+            "type": "string"
+          },
+          "machine_profile_version": {
+            "default": "1.0.0-validation",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Machine Profile Version",
+            "type": "string"
+          },
+          "stock_grain_axis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "x",
+                  "y"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Grain Axis"
+          },
+          "stock_height_um": {
+            "default": 1220000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Stock Height Um",
+            "type": "integer"
+          },
+          "stock_width_um": {
+            "default": 2440000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Stock Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "machine_profile_id"
+        ],
+        "title": "ManufacturingSelection",
+        "type": "object"
+      },
+      "MaterialSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_id": {
+            "anyOf": [
+              {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Id"
+          },
+          "material_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "measured_thickness_um": {
+            "maximum": 100000.0,
+            "minimum": 1000.0,
+            "title": "Measured Thickness Um",
+            "type": "integer"
+          },
+          "version": {
+            "default": "screening-2026.1",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "measured_thickness_um"
+        ],
+        "title": "MaterialSelection",
+        "type": "object"
+      },
       "ProductionStateRead": {
         "description": "Complete recoverable state for the current project revision.",
         "properties": {
@@ -1459,6 +1761,24 @@
           "release"
         ],
         "title": "ProductionStateRead",
+        "type": "object"
+      },
+      "ProfileChange": {
+        "additionalProperties": false,
+        "description": "An explicit proposal, leaving the original workspace immutable.",
+        "properties": {
+          "current": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          },
+          "proposed": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "current",
+          "proposed"
+        ],
+        "title": "ProfileChange",
         "type": "object"
       },
       "ProjectCreate": {
@@ -1980,6 +2300,128 @@
           "machine_profile_id"
         ],
         "title": "RevisionProductionContext",
+        "type": "object"
+      },
+      "ShelvingIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_um": {
+            "default": 320000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "divider_count": {
+            "default": 1,
+            "maximum": 16.0,
+            "minimum": 0.0,
+            "title": "Divider Count",
+            "type": "integer"
+          },
+          "family": {
+            "const": "shelving",
+            "default": "shelving",
+            "title": "Family",
+            "type": "string"
+          },
+          "height_um": {
+            "default": 1800000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "shelf_count": {
+            "default": 4,
+            "maximum": 40.0,
+            "minimum": 0.0,
+            "title": "Shelf Count",
+            "type": "integer"
+          },
+          "shelf_height_ratios_ppm": {
+            "default": [],
+            "items": {
+              "maximum": 950000.0,
+              "minimum": 50000.0,
+              "type": "integer"
+            },
+            "maxItems": 40,
+            "title": "Shelf Height Ratios Ppm",
+            "type": "array"
+          },
+          "shelf_load_n": {
+            "default": 200,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Shelf Load N",
+            "type": "integer"
+          },
+          "width_um": {
+            "default": 900000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "title": "ShelvingIntent",
+        "type": "object"
+      },
+      "TableIntent": {
+        "additionalProperties": false,
+        "description": "A panel-end table, with two removable stretchers below the top.",
+        "properties": {
+          "depth_um": {
+            "default": 600000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "end_inset_um": {
+            "default": 60000,
+            "maximum": 500000.0,
+            "minimum": 0.0,
+            "title": "End Inset Um",
+            "type": "integer"
+          },
+          "family": {
+            "const": "table",
+            "default": "table",
+            "title": "Family",
+            "type": "string"
+          },
+          "height_um": {
+            "default": 740000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "stretcher_height_um": {
+            "default": 100000,
+            "maximum": 300000.0,
+            "minimum": 40000.0,
+            "title": "Stretcher Height Um",
+            "type": "integer"
+          },
+          "top_load_n": {
+            "default": 300,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Top Load N",
+            "type": "integer"
+          },
+          "width_um": {
+            "default": 1000000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "title": "TableIntent",
         "type": "object"
       },
       "ValidationError": {
@@ -3140,6 +3582,416 @@
           }
         ],
         "summary": "Preview Design"
+      }
+    },
+    "/v1/furniture/catalog": {
+      "get": {
+        "operationId": "catalog_v1_furniture_catalog_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Catalog V1 Furniture Catalog Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Catalog",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/preview": {
+      "post": {
+        "operationId": "preview_v1_furniture_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FurnitureWorkspace"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview V1 Furniture Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/profile-change": {
+      "post": {
+        "operationId": "profile_change_v1_furniture_profile_change_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Profile Change V1 Furniture Profile Change Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Profile Change",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/projects/{project_id}/draft": {
+      "get": {
+        "operationId": "read_draft_v1_furniture_projects__project_id__draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Read Draft V1 Furniture Projects  Project Id  Draft Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Read Draft",
+        "tags": [
+          "furniture-design"
+        ]
+      },
+      "put": {
+        "operationId": "save_draft_v1_furniture_projects__project_id__draft_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FurnitureDraftSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Save Draft V1 Furniture Projects  Project Id  Draft Put",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save Draft",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/projects/{project_id}/exports": {
+      "post": {
+        "operationId": "request_export_v1_furniture_projects__project_id__exports_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FurnitureExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Request Export V1 Furniture Projects  Project Id  Exports Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Request Export",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/projects/{project_id}/exports/{job_id}": {
+      "get": {
+        "operationId": "export_result_v1_furniture_projects__project_id__exports__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Export Result V1 Furniture Projects  Project Id  Exports  Job Id  Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Result",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/projects/{project_id}/history": {
+      "get": {
+        "operationId": "history_v1_furniture_projects__project_id__history_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "offset",
+            "required": false,
+            "schema": {
+              "default": 0,
+              "maximum": 1000000,
+              "minimum": 0,
+              "title": "Offset",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response History V1 Furniture Projects  Project Id  History Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "History",
+        "tags": [
+          "furniture-design"
+        ]
       }
     },
     "/v1/jobs/{job_id}": {

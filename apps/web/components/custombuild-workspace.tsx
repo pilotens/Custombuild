@@ -2081,6 +2081,9 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
               onUploadImage={openReferenceImporter}
               onClose={() => { if (workspaceSelected) changeWorkspaceStage("studio"); }}
             />
+            <p className="existing-product-explore-notice">
+              <a href="/furniture">Designa bord, byråer och hyllsystem med utbytbara profiler</a>
+            </p>
           </div>
         ) : (
         <div

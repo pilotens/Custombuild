@@ -1,0 +1,44 @@
+.page { min-height: 100vh; background: #f6f5f1; color: #20312d; padding: 0 32px 64px; font-family: Arial, sans-serif; }
+.page * { box-sizing: border-box; }
+.header { display: flex; align-items: center; gap: 28px; min-height: 76px; border-bottom: 1px solid #d4dad5; }
+.header > :last-child { margin-left: auto; }
+.brand { color: #20312d; font-weight: 700; font-size: 22px; text-decoration: none; }
+.page a { color: #235b4f; }
+.titleRow { display: flex; align-items: end; justify-content: space-between; gap: 28px; padding: 34px 0 24px; }
+.page h1 { font-size: clamp(28px, 3vw, 42px); margin: 4px 0 10px; letter-spacing: -.04em; }
+.page h2 { font-size: 18px; margin: 0 0 16px; }
+.page p { font-size: 14px; line-height: 1.6; }
+.eyebrow { text-transform: uppercase; letter-spacing: .11em; font-size: 11px !important; color: #5c6c64; }
+.projectActions { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.page label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; margin: 0 0 14px; }
+.page label span { color: #62746b; font-weight: 400; }
+.page input, .page select { width: 100%; min-width: 0; min-height: 40px; border: 1px solid #bcc8bf; border-radius: 6px; padding: 8px 10px; background: #fff; color: #20312d; font: inherit; }
+.page button { border: 1px solid #a8bbb0; background: #fff; border-radius: 6px; padding: 10px 14px; color: #20312d; cursor: pointer; min-height: 40px; font: inherit; font-size: 13px; }
+.page button:disabled { opacity: .5; cursor: default; }
+.page button:focus-visible, .page a:focus-visible, .page input:focus-visible, .page select:focus-visible { outline: 3px solid #be8c48; outline-offset: 3px; }
+.page button[aria-pressed="true"] { background: #e0ebe3; border-color: #235b4f; }
+.page .primary { background: #235b4f; color: #fff; border-color: #235b4f; }
+.projectActions > button { margin-bottom: 14px; }
+.layout { display: grid; grid-template-columns: minmax(210px, .75fr) minmax(300px, 2fr) minmax(250px, 1fr); gap: 18px; align-items: start; }
+.controls, .profiles, .model, .review, .history { background: #fff; border: 1px solid #d4dad5; border-radius: 10px; padding: 22px; min-width: 0; }
+.page fieldset { border: 0; padding: 0; margin: 20px 0 0; min-width: 0; }
+.page legend { font-size: 12px; font-weight: 700; margin-bottom: 18px; color: #52695c; }
+.model { position: sticky; top: 18px; padding: 0; overflow: hidden; }
+.viewerToolbar { display: flex; gap: 8px; align-items: center; padding: 12px; flex-wrap: wrap; border-bottom: 1px solid #e1e5df; }
+.viewerToolbar strong { font-size: 12px; margin-right: auto; }
+.canvas { height: min(600px, 65vh); min-height: 360px; position: relative; background: #f4f3ef; }
+.canvas > p { padding: 30px; }
+.caption { padding: 0 16px; color: #5c6c64; font-size: 12px !important; }
+.review, .history { margin-top: 22px; }
+.review > .primary { margin: 0 0 10px; }
+.rules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.rules details { border: 1px solid #d9dfd8; border-radius: 6px; padding: 14px; }
+.rules summary { cursor: pointer; font-size: 14px; font-weight: 600; }
+.pass, .requiresReview { display: block; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; margin-bottom: 8px; }
+.pass { color: #235b4f; }.requiresReview { color: #865514; }
+.notice, .proposal { padding: 16px; border: 1px solid #bacdc0; background: #eef4ef; border-radius: 8px; }
+.error { color: #8c332e; background: #fbefed; padding: 12px; border-radius: 6px; overflow-wrap: anywhere; }
+.notice button, .history button { margin: 6px 8px 6px 0; }
+.intro { max-width: 700px; padding: 70px 0; }
+@media (max-width: 1120px) { .page { padding-inline: 20px; }.titleRow { align-items: start; flex-direction: column; }.layout { grid-template-columns: 240px minmax(0, 1fr); }.profiles { grid-column: 1/-1; }.profiles form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }.model { position: static; } }
+@media (max-width: 680px) { .page { padding-inline: 12px; }.header { gap: 16px; }.header > span { display: none; }.titleRow { padding-top: 26px; }.projectActions { width: 100%; }.projectActions > label { flex: 1 1 130px; }.layout { display: flex; flex-direction: column; }.controls, .model, .profiles { width: 100%; }.model { order: -1; }.canvas { height: 390px; min-height: 320px; }.rules { grid-template-columns: 1fr; }.profiles form fieldset { display: block; }.controls, .profiles, .review, .history { padding: 18px; } }

@@ -156,6 +156,9 @@ jobs:
             > /etc/apt/sources.list.d/debian.sources
           printf 'Acquire::Check-Valid-Until "false";\n' \
             > /etc/apt/apt.conf.d/99snapshot
+          printf '%s\n' 'Acquire::Retries "5";' \
+            'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            'APT::Update::Error-Mode "any";' > /etc/apt/apt.conf.d/80custombuild-downloads
           apt-get update
           apt-get install --yes --no-install-recommends \
             ca-certificates \
@@ -576,9 +579,19 @@ jobs:
           PLAYWRIGHT_REAL_API: "1"
           PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          pnpm --dir apps/web exec playwright test --project=chromium-desktop
+          pnpm --dir apps/web exec playwright test --project=chromium-desktop \
+            --output=test-results/chromium-live
           pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
-            --project=firefox-desktop --project=webkit-desktop
+            --project=firefox-desktop --project=webkit-desktop \
+            --output=test-results/crossbrowser-live
+      - name: Preserve furniture workspace visual evidence
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: furniture-workspace-visual-evidence
+          path: apps/web/test-results/chromium-live/furniture-live-*/attachments/*.png
+          if-no-files-found: error
+          retention-days: 14
       - name: Collect Compose diagnostics
         if: failure()
         run: |

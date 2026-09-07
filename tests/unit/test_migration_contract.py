@@ -209,8 +209,8 @@ def test_runtime_role_migration_revokes_blanket_defaults_before_explicit_grants(
     assert "FROM PUBLIC" in privilege_sql
     assert "organizations" not in API_TABLE_PRIVILEGES
     assert API_TABLE_PRIVILEGES["users"] == ("SELECT",)
-    assert API_TABLE_PRIVILEGES["outbox_events"] == ("INSERT",)
-    assert API_TABLE_PRIVILEGES["audit_events"] == ("INSERT",)
+    assert API_TABLE_PRIVILEGES["outbox_events"] == ("SELECT", "INSERT")
+    assert API_TABLE_PRIVILEGES["audit_events"] == ("SELECT", "INSERT")
     assert WORKER_TABLE_PRIVILEGES["generation_jobs"] == (
         "SELECT",
         "UPDATE",

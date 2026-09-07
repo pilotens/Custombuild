@@ -16,6 +16,12 @@ class PartRole(StrEnum):
     BASE_BOTTOM = "base_bottom"
     BASE_TOP = "base_top"
     CABINET_FRONT = "cabinet_front"
+    TABLE_END = "table_end"
+    TABLE_STRETCHER = "table_stretcher"
+    DRAWER_SIDE = "drawer_side"
+    DRAWER_FRONT = "drawer_front"
+    DRAWER_BACK = "drawer_back"
+    DRAWER_BOTTOM = "drawer_bottom"
 
 
 class FeatureKind(StrEnum):

@@ -2854,6 +2854,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "services/api/alembic/versions/0018_joint_retention_registry_state.py",
         "services/api/alembic/versions/0019_cam_approval_candidate_sha.py",
         "services/api/alembic/versions/0020_release_cam_approval_identity.py",
+        "services/api/alembic/versions/0021_furniture_review_reads.py",
         "scripts/activate_joint_retention_registry.py",
         "scripts/bootstrap_production_identity.py",
         "services/api/app/oidc_identity.py",

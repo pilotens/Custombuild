@@ -132,6 +132,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/furniture/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Catalog */
+        get: operations["catalog_v1_furniture_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/furniture/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview */
+        post: operations["preview_v1_furniture_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/furniture/profile-change": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Profile Change */
+        post: operations["profile_change_v1_furniture_profile_change_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/furniture/projects/{project_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Draft */
+        get: operations["read_draft_v1_furniture_projects__project_id__draft_get"];
+        /** Save Draft */
+        put: operations["save_draft_v1_furniture_projects__project_id__draft_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/furniture/projects/{project_id}/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Export */
+        post: operations["request_export_v1_furniture_projects__project_id__exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/furniture/projects/{project_id}/exports/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export Result */
+        get: operations["export_result_v1_furniture_projects__project_id__exports__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/furniture/projects/{project_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** History */
+        get: operations["history_v1_furniture_projects__project_id__history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -754,6 +874,44 @@ export interface components {
             /** Updated At */
             updated_at: string;
         };
+        /** ChestIntent */
+        ChestIntent: {
+            /**
+             * Depth Um
+             * @default 500000
+             */
+            depth_um: number;
+            /**
+             * Drawer Count
+             * @default 3
+             */
+            drawer_count: number;
+            /**
+             * Drawer Load N
+             * @default 100
+             */
+            drawer_load_n: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            family: "chest_of_drawers";
+            /**
+             * Front Gap Um
+             * @default 3000
+             */
+            front_gap_um: number;
+            /**
+             * Height Um
+             * @default 900000
+             */
+            height_um: number;
+            /**
+             * Width Um
+             * @default 800000
+             */
+            width_um: number;
+        };
         /** DesignReviewBundleReceipt */
         DesignReviewBundleReceipt: {
             /** Bundle Sha256 */
@@ -942,6 +1100,54 @@ export interface components {
             /** Size Bytes */
             size_bytes: number;
         };
+        /** FurnitureDesign */
+        FurnitureDesign: {
+            back_material?: components["schemas"]["MaterialSelection"];
+            /**
+             * Design Id
+             * @default furniture
+             */
+            design_id: string;
+            hardware?: components["schemas"]["HardwareSelection"] | null;
+            /** Intent */
+            intent: components["schemas"]["ShelvingIntent"] | components["schemas"]["TableIntent"] | components["schemas"]["ChestIntent"];
+            material?: components["schemas"]["MaterialSelection"];
+            /**
+             * Revision
+             * @default 1
+             */
+            revision: number;
+            /**
+             * Schema Version
+             * @default custombuild.furniture-design.v1
+             * @constant
+             */
+            schema_version: "custombuild.furniture-design.v1";
+        };
+        /** FurnitureDraftSave */
+        FurnitureDraftSave: {
+            /** Expected Revision */
+            expected_revision: number;
+            workspace: components["schemas"]["FurnitureWorkspace"];
+        };
+        /** FurnitureExportRequest */
+        FurnitureExportRequest: {
+            /** Expected Design Hash */
+            expected_design_hash: string;
+            /** Expected Revision */
+            expected_revision: number;
+        };
+        /** FurnitureWorkspace */
+        FurnitureWorkspace: {
+            design: components["schemas"]["FurnitureDesign"];
+            manufacturing?: components["schemas"]["ManufacturingSelection"] | null;
+            /**
+             * Schema Version
+             * @default custombuild.furniture-workspace.v1
+             * @constant
+             */
+            schema_version: "custombuild.furniture-workspace.v1";
+        };
         /** GenerationRequest */
         GenerationRequest: {
             /**
@@ -1017,6 +1223,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HardwareSelection */
+        HardwareSelection: {
+            /** Catalog Id */
+            catalog_id: string;
+            /**
+             * Version
+             * @default layout-1.0.0
+             */
+            version: string;
         };
         /** ImportInspection */
         ImportInspection: {
@@ -1094,6 +1310,45 @@ export interface components {
          */
         JobStatus: "queued" | "running" | "succeeded" | "failed" | "cancelled";
         /**
+         * ManufacturingSelection
+         * @description A separate planning profile. It grants no physical machine approval.
+         */
+        ManufacturingSelection: {
+            /** Machine Profile Id */
+            machine_profile_id: string;
+            /**
+             * Machine Profile Version
+             * @default 1.0.0-validation
+             */
+            machine_profile_version: string;
+            /** Stock Grain Axis */
+            stock_grain_axis?: ("x" | "y") | null;
+            /**
+             * Stock Height Um
+             * @default 1220000
+             */
+            stock_height_um: number;
+            /**
+             * Stock Width Um
+             * @default 2440000
+             */
+            stock_width_um: number;
+        };
+        /** MaterialSelection */
+        MaterialSelection: {
+            /** Batch Id */
+            batch_id?: string | null;
+            /** Material Id */
+            material_id: string;
+            /** Measured Thickness Um */
+            measured_thickness_um: number;
+            /**
+             * Version
+             * @default screening-2026.1
+             */
+            version: string;
+        };
+        /**
          * ProductionStateRead
          * @description Complete recoverable state for the current project revision.
          */
@@ -1105,6 +1360,14 @@ export interface components {
             project_id: string;
             release: components["schemas"]["ReleaseRead"] | null;
             version: components["schemas"]["DesignVersionRead"] | null;
+        };
+        /**
+         * ProfileChange
+         * @description An explicit proposal, leaving the original workspace immutable.
+         */
+        ProfileChange: {
+            current: components["schemas"]["FurnitureWorkspace"];
+            proposed: components["schemas"]["FurnitureWorkspace"];
         };
         /** ProjectCreate */
         ProjectCreate: {
@@ -1313,6 +1576,90 @@ export interface components {
             stock_width_mm: number;
             /** Two Sided Registrations */
             two_sided_registrations?: components["schemas"]["WorkshopTwoSidedRegistration"][] | null;
+        };
+        /** ShelvingIntent */
+        ShelvingIntent: {
+            /**
+             * Depth Um
+             * @default 320000
+             */
+            depth_um: number;
+            /**
+             * Divider Count
+             * @default 1
+             */
+            divider_count: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            family: "shelving";
+            /**
+             * Height Um
+             * @default 1800000
+             */
+            height_um: number;
+            /**
+             * Shelf Count
+             * @default 4
+             */
+            shelf_count: number;
+            /**
+             * Shelf Height Ratios Ppm
+             * @default []
+             */
+            shelf_height_ratios_ppm: number[];
+            /**
+             * Shelf Load N
+             * @default 200
+             */
+            shelf_load_n: number;
+            /**
+             * Width Um
+             * @default 900000
+             */
+            width_um: number;
+        };
+        /**
+         * TableIntent
+         * @description A panel-end table, with two removable stretchers below the top.
+         */
+        TableIntent: {
+            /**
+             * Depth Um
+             * @default 600000
+             */
+            depth_um: number;
+            /**
+             * End Inset Um
+             * @default 60000
+             */
+            end_inset_um: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            family: "table";
+            /**
+             * Height Um
+             * @default 740000
+             */
+            height_um: number;
+            /**
+             * Stretcher Height Um
+             * @default 100000
+             */
+            stretcher_height_um: number;
+            /**
+             * Top Load N
+             * @default 300
+             */
+            top_load_n: number;
+            /**
+             * Width Um
+             * @default 1000000
+             */
+            width_um: number;
         };
         /** ValidationError */
         ValidationError: {
@@ -1804,6 +2151,274 @@ export interface operations {
                 "application/json": components["schemas"]["BookcasePreviewInput"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    catalog_v1_furniture_catalog_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    preview_v1_furniture_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FurnitureWorkspace"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    profile_change_v1_furniture_profile_change_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProfileChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_draft_v1_furniture_projects__project_id__draft_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_draft_v1_furniture_projects__project_id__draft_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FurnitureDraftSave"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_export_v1_furniture_projects__project_id__exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FurnitureExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_result_v1_furniture_projects__project_id__exports__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    history_v1_furniture_projects__project_id__history_get: {
+        parameters: {
+            query?: {
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

@@ -16,13 +16,16 @@ from .model import (
     Side,
 )
 
-MANUFACTURING_ADAPTER_VERSION = "domain-to-manufacturing-adapter-1.3.0"
+MANUFACTURING_ADAPTER_VERSION = "domain-to-manufacturing-adapter-1.4.0"
 
 
 @runtime_checkable
 class DesignResultLike(Protocol):
-    design_hash: str
-    parts: Iterable[Any]
+    @property
+    def design_hash(self) -> str: ...
+
+    @property
+    def parts(self) -> Iterable[Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +54,12 @@ _ROLE_AXES: dict[str, PanelAxisMapping] = {
     "BACK": PanelAxisMapping("x", "z", "y"),
     "BACK_PANEL": PanelAxisMapping("x", "z", "y"),
     "CABINET_FRONT": PanelAxisMapping("x", "z", "y"),
+    "TABLE_END": PanelAxisMapping("y", "z", "x"),
+    "TABLE_STRETCHER": PanelAxisMapping("x", "z", "y"),
+    "DRAWER_SIDE": PanelAxisMapping("y", "z", "x"),
+    "DRAWER_FRONT": PanelAxisMapping("x", "z", "y"),
+    "DRAWER_BACK": PanelAxisMapping("x", "z", "y"),
+    "DRAWER_BOTTOM": PanelAxisMapping("x", "y", "z"),
 }
 
 

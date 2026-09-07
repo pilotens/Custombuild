@@ -236,7 +236,7 @@ def _geometry(
         _text(canvas, MARGIN, label_y - 3, f"F{note.number:02d}", size=9)
 
 
-def part_drawings_pdf(design: Any) -> bytes:
+def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> bytes:
     """Draw every part and face, retaining the exact SVG geometry and feature data."""
 
     adapted = adapt_design_result(design)
@@ -359,7 +359,8 @@ def part_drawings_pdf(design: Any) -> bytes:
                     canvas,
                     MARGIN,
                     24,
-                    "Granskningsunderlag. Tillverkning kräver separat frisläppning.",
+                    qualification_note
+                    or "Granskningsunderlag. Tillverkning kräver separat frisläppning.",
                     size=7,
                 )
                 canvas.showPage()
