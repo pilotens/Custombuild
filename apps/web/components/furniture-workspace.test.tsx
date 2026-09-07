@@ -37,6 +37,30 @@ function setup() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("möbelstudions revisions- och profilflöde", () => {
+  it("återbinder profilförslaget när ett projekt med samma form öppnas", async () => {
+    const api = setup();
+    vi.mocked(api.listProjects).mockResolvedValue([{ id: "saved-table", name: "Sparat bord", furniture_type: "table",
+      current_revision: 0, description: "", archived: false, created_at: "2026-09-07T12:00:00Z",
+      updated_at: "2026-09-07T12:00:00Z" }]);
+    const saved = newFurnitureWorkspace("table");
+    saved.design.design_id = "saved-table"; saved.design.revision = 6;
+    vi.spyOn(api, "loadFurnitureDraft").mockResolvedValue({ project_id: "saved-table", revision: 6,
+      workspace: saved, preview: preview(saved) });
+    const compare = vi.spyOn(api, "compareFurnitureProfiles").mockResolvedValue({ state: "not_qualified",
+      can_apply: false, proposed: null, message: "Granskning krävs.", changed_dependencies: [], invalidated_reviews: [] });
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Öppna möbelprojekt"), { target: { value: "saved-table" } });
+    await screen.findByText(/senast sparad revision 6/);
+    expect(screen.getByRole("button", { name: "Kontrollera profilbyte" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.801" } });
+    fireEvent.click(screen.getByRole("button", { name: "Kontrollera profilbyte" }));
+    await waitFor(() => expect(compare).toHaveBeenCalledOnce());
+    const [current, proposed] = compare.mock.calls[0]!;
+    expect(proposed.design.design_id).toBe(current.design.design_id);
+    expect(proposed.design.revision).toBe(6);
+  });
+
   it("tillämpar uppmätt tjocklek först efter konsekvenskontroll och användarens val", async () => {
     const api = setup();
     const compare = vi.spyOn(api, "compareFurnitureProfiles").mockImplementation(async (current, proposed) => ({

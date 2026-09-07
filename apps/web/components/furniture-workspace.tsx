@@ -266,8 +266,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       <aside className={styles.profiles}>
         <h2>Material, beslag och verkstad</h2>
         <p>Du kan spara designen innan du väljer verkstad.</p>
-        {catalog ? <ProfileEditor key={JSON.stringify([workspace.design.material, workspace.design.back_material,
-          workspace.design.hardware, workspace.manufacturing, workspace.design.intent])}
+        {catalog ? <ProfileEditor key={fingerprint(workspace)}
           api={api} workspace={workspace} catalog={catalog} disabled={busy || !mayEdit} onApply={update} /> : <p>Läser profiler…</p>}
       </aside>
     </div>
