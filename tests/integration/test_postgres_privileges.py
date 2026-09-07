@@ -517,6 +517,15 @@ def test_runtime_roles_cannot_mutate_identity_or_append_only_audit_data() -> Non
 
         # Both runtimes may append tenant audit rows; neither can rewrite or
         # erase the historical record.
+        with api.begin() as connection:
+            _set_tenant(connection, organization_id)
+            assert connection.scalar(
+                text("SELECT id FROM audit_events WHERE id = :id"), {"id": audit_id}
+            ) == audit_id
+            _set_tenant(connection, str(uuid.uuid4()))
+            assert connection.scalar(
+                text("SELECT id FROM audit_events WHERE id = :id"), {"id": audit_id}
+            ) is None
         for engine in (api, worker):
             with engine.connect() as connection:
                 transaction = connection.begin()

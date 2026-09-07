@@ -13,6 +13,7 @@ from .api import router
 from .config import get_settings
 from .db import Base, get_engine, session_scope
 from .design_service import assert_rule_engine_available
+from .furniture_api import router as furniture_router
 from .observability import RequestContextMiddleware, request_id_context
 from .readiness import probe_dependencies
 from .security import (
@@ -117,6 +118,7 @@ app.add_middleware(
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestContextMiddleware)
 app.include_router(router)
+app.include_router(furniture_router)
 
 
 @app.get("/health", tags=["operations"])

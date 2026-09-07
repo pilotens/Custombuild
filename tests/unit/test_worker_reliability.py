@@ -862,6 +862,7 @@ def test_celery_routes_generation_and_maintenance_to_exact_fail_closed_queues() 
     assert worker_tasks.celery_app.conf.task_create_missing_queues is False
     assert worker_tasks.celery_app.conf.task_routes == {
         "custombuild.generate_package": {"queue": worker_tasks.GENERATION_QUEUE},
+        "custombuild.generate_furniture_review": {"queue": worker_tasks.GENERATION_QUEUE},
         "custombuild.dispatch_outbox": {"queue": worker_tasks.MAINTENANCE_QUEUE},
         "custombuild.recover_stale_jobs": {"queue": worker_tasks.MAINTENANCE_QUEUE},
         "custombuild.reap_abandoned_storage": {"queue": worker_tasks.STORAGE_REAPER_QUEUE},

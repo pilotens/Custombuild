@@ -7,6 +7,12 @@ customer can enter exact outer dimensions, bays and shelf levels, then one froze
 drawings, assembly data and a checksummed package for an external CNC shop. CAM
 validation is generated only when every structured CAM prerequisite is present.
 
+The `/furniture` workspace adds panel-end tables, chests with real drawer parts,
+and shelving through a common design model with interchangeable material,
+hardware and manufacturing profiles. It supports revision history and real
+STEP/GLB/DXF/PDF review exports. Table/chest hardware remains unqualified and
+does not unlock cutting CAM. See [scope and verification](docs/MULTI_FURNITURE_V1_IMPLEMENTATION.md).
+
 The supported Hyllsystem/Shelving lane also generates a separate executable
 2.5D LinuxCNC CAM candidate from an accepted workshop profile: cutting programs,
 toolpaths, setup instructions, program order and independent verification.

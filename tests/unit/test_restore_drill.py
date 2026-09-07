@@ -35,7 +35,7 @@ def test_broad_or_unsafe_restore_names_are_rejected(name: str) -> None:
 
 
 def test_restore_drill_resolves_current_repository_alembic_head() -> None:
-    assert current_alembic_heads(Path.cwd()) == ["0020_release_cam_approval_identity"]
+    assert current_alembic_heads(Path.cwd()) == ["0021_furniture_review_reads"]
 
 
 def test_restore_prepares_schema_ownership_and_restores_as_migrator() -> None:

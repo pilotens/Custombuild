@@ -27,7 +27,8 @@ API_TABLE_PRIVILEGES: dict[str, tuple[str, ...]] = {
     "imported_assets": ("SELECT", "INSERT"),
     "external_evidence": ("SELECT", "INSERT"),
     "generation_jobs": ("SELECT", "INSERT", "UPDATE"),
-    "outbox_events": ("INSERT",),
+    # Furniture review polling reads its tenant-bound committed request.
+    "outbox_events": ("SELECT", "INSERT"),
     "approvals": ("SELECT", "INSERT", "UPDATE", "DELETE"),
     "releases": ("SELECT", "INSERT"),
     "artifacts": ("SELECT", "DELETE"),
@@ -42,7 +43,8 @@ API_TABLE_PRIVILEGES: dict[str, tuple[str, ...]] = {
     # runtime has a reviewed read or write path yet.  Add only narrow access
     # together with the future verifier/finalizer boundary.
     # Audit rows are append-only for every application runtime.
-    "audit_events": ("INSERT",),
+    # Immutable furniture revision history is read through the project route.
+    "audit_events": ("SELECT", "INSERT"),
 }
 
 # The worker can claim/complete jobs and publish the transactional outbox. It

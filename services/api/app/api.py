@@ -6118,6 +6118,11 @@ def update_project_draft(
 ) -> dict[str, Any]:
     project = tenant_project(session, principal, project_id)
     session.refresh(project, with_for_update=True)
+    if (project.draft_spec_json or {}).get("schema_version") == "custombuild.furniture-design.v1":
+        raise HTTPException(
+            status_code=409,
+            detail="Projektet använder möbelstudion. Öppna det under /furniture.",
+        )
     if payload.expected_draft_revision != project.draft_revision:
         raise HTTPException(
             status_code=409,

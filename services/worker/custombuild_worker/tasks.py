@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from collections.abc import Iterator, Mapping
@@ -268,6 +269,7 @@ celery_app.conf.update(
     task_create_missing_queues=False,
     task_routes={
         "custombuild.generate_package": {"queue": GENERATION_QUEUE},
+        "custombuild.generate_furniture_review": {"queue": GENERATION_QUEUE},
         "custombuild.dispatch_outbox": {"queue": MAINTENANCE_QUEUE},
         "custombuild.recover_stale_jobs": {"queue": MAINTENANCE_QUEUE},
         "custombuild.reap_abandoned_storage": {"queue": STORAGE_REAPER_QUEUE},
@@ -725,7 +727,7 @@ def _dispatch_tenant_outbox_events(
             raise RuntimeError("tenant-local outbox query returned a cross-tenant row")
         if _as_utc(event.available_at) > now:
             continue
-        if event.topic != "generation.requested":
+        if event.topic not in {"generation.requested", "furniture.review.requested"}:
             _dead_letter(event, "Unsupported outbox topic; event was dead-lettered.")
             continue
         payload = event.payload_json if isinstance(event.payload_json, dict) else {}
@@ -742,15 +744,25 @@ def _dispatch_tenant_outbox_events(
             )
             continue
         try:
-            celery_app.send_task(
-                "custombuild.generate_package",
-                kwargs={
-                    "job_id": job_id,
-                    "organization_id": payload_organization_id,
-                },
-                queue=GENERATION_QUEUE,
-                retry=False,
-            )
+            if event.topic == "furniture.review.requested":
+                celery_app.send_task(
+                    "custombuild.generate_furniture_review",
+                    kwargs={"job_id": job_id, "organization_id": payload_organization_id},
+                    task_id=job_id,
+                    queue=GENERATION_QUEUE,
+                    retry=False,
+                    expires=3_600,
+                )
+            else:
+                celery_app.send_task(
+                    "custombuild.generate_package",
+                    kwargs={
+                        "job_id": job_id,
+                        "organization_id": payload_organization_id,
+                    },
+                    queue=GENERATION_QUEUE,
+                    retry=False,
+                )
         except Exception:
             event.attempts += 1
             event.available_at = now + _outbox_publish_backoff(event.attempts)
@@ -763,6 +775,56 @@ def _dispatch_tenant_outbox_events(
         event.last_error = None
         dispatched += 1
     return dispatched
+
+
+@celery_app.task(  # type: ignore[misc]
+    name="custombuild.generate_furniture_review",
+    soft_time_limit=180,
+    time_limit=210,
+)
+def generate_furniture_review(job_id: str, organization_id: str) -> dict[str, str | int]:
+    """Read one tenant-bound snapshot; never publish production CAM or approval."""
+    import base64
+
+    from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWorkspace
+    from custombuild_domain.furniture_engine import build_furniture
+    from custombuild_domain.identity import content_hash
+
+    from .furniture_review import build_furniture_review
+
+    if not _valid_event_identifier(job_id) or not _valid_event_identifier(organization_id):
+        raise ValueError("invalid furniture review request identity")
+    with _tenant_transaction(organization_id) as session:
+        event = session.scalar(
+            select(OutboxEvent).where(
+                OutboxEvent.organization_id == organization_id,
+                OutboxEvent.event_key == f"furniture-review:{job_id}",
+                OutboxEvent.topic == "furniture.review.requested",
+            )
+        )
+        if event is None:
+            raise ValueError("furniture review request not found")
+        payload = dict(event.payload_json)
+    if payload.get("job_id") != job_id or payload.get("organization_id") != organization_id:
+        raise ValueError("furniture review request identity mismatch")
+    if payload.get("engine_version") != FURNITURE_ENGINE_VERSION:
+        raise ValueError("furniture engine changed; save a new revision")
+    workspace = FurnitureWorkspace.model_validate(payload.get("workspace"))
+    if workspace.design.design_id != payload.get("project_id") or (
+        workspace.design.revision != payload.get("revision")
+    ):
+        raise ValueError("furniture review snapshot does not match its project/revision")
+    design = build_furniture(workspace.design)
+    if design.design_hash != payload.get("design_hash"):
+        raise ValueError("furniture review design changed; save a new revision")
+    result = build_furniture_review(workspace)
+    return {
+        "design_hash": design.design_hash,
+        "revision": workspace.design.revision,
+        "workspace_sha256": content_hash(workspace),
+        "sha256": hashlib.sha256(result).hexdigest(),
+        "content_base64": base64.b64encode(result).decode("ascii"),
+    }
 
 
 @celery_app.task(name="custombuild.recover_stale_jobs")  # type: ignore[misc]

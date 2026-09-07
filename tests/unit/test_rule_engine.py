@@ -42,9 +42,7 @@ def make_spec(design_id: str = "rules-bookcase", **parameter_changes) -> Bookcas
         parameters=parameters,
         material=screening_birch_plywood_18(),
         back_material=(
-            None
-            if parameters.back_panel == BackPanelType.NONE
-            else screening_birch_plywood_6()
+            None if parameters.back_panel == BackPanelType.NONE else screening_birch_plywood_6()
         ),
     )
 
@@ -448,12 +446,91 @@ class StabilityAndTipTests(unittest.TestCase):
 
     def test_rule_report_exposes_version_trace_and_disclaimer(self) -> None:
         report = evaluate_design(build_bookcase(make_spec()))
-        self.assertEqual(report.rules_version, "1.3.0")
+        self.assertEqual(report.rules_version, "1.4.0")
         self.assertIn("inte produktcertifiering", report.disclaimer)
         self.assertTrue(
             all(item.trace and item.inputs and item.assumptions for item in report.evaluations)
         )
         self.assertEqual(report.overall_status, RuleStatus.BLOCK)
+
+    def test_high_custom_shelf_no_longer_passes_tip_screen(self) -> None:
+        # Audit regression: the former assumed mid-height load level could
+        # pass this high shelf. Its actual support surface is 685.4 mm high.
+        spec = make_spec(
+            width_um=mm(800),
+            height_um=mm(800),
+            depth_um=mm(250),
+            plinth_height_um=mm(60),
+            shelf_count=1,
+            shelf_height_ratios_ppm=(850_000,),
+            shelf_load_n=197,
+        )
+        result = evaluation(spec, "CB-TIP-001")
+        inputs = {item.name: item.value for item in result.inputs}
+        self.assertEqual(inputs["hyllastens_lasthöjd"], 685_400)
+        self.assertEqual(inputs["total_hyllast"], 197)
+        self.assertEqual(result.status, RuleStatus.BLOCK)
+        self.assertLess(result.calculated_value, 1_500)
+
+    def test_raising_a_loaded_row_reduces_tip_safety_factor(self) -> None:
+        low = make_spec(
+            width_um=mm(800),
+            height_um=mm(800),
+            depth_um=mm(250),
+            shelf_count=1,
+            shelf_height_ratios_ppm=(150_000,),
+            shelf_load_n=197,
+        )
+        high = make_spec(
+            width_um=mm(800),
+            height_um=mm(800),
+            depth_um=mm(250),
+            shelf_count=1,
+            shelf_height_ratios_ppm=(850_000,),
+            shelf_load_n=197,
+        )
+        low_result = evaluation(low, "CB-TIP-001")
+        high_result = evaluation(high, "CB-TIP-001")
+        self.assertGreater(low_result.calculated_value, high_result.calculated_value)
+        self.assertEqual(low_result.status, RuleStatus.PASS)
+        self.assertEqual(high_result.status, RuleStatus.BLOCK)
+
+    def test_dividers_do_not_multiply_tip_row_load(self) -> None:
+        for count in (0, 1, 3):
+            result = evaluation(
+                make_spec(
+                    vertical_divider_count=count,
+                    shelf_count=2,
+                    shelf_height_ratios_ppm=(200_000, 800_000),
+                    shelf_load_n=123,
+                ),
+                "CB-TIP-001",
+            )
+            inputs = {item.name: item.value for item in result.inputs}
+            self.assertEqual(inputs["belastade_hyllrader"], 2)
+            self.assertEqual(inputs["total_hyllast"], 246)
+            self.assertEqual(inputs["hyllastens_lasthöjd"], 1_049_000)
+
+    def test_base_cabinet_moves_tip_load_to_upper_shelving(self) -> None:
+        result = evaluation(
+            make_spec(
+                base_cabinet_count=1,
+                base_cabinet_height_um=mm(600),
+                base_cabinet_depth_um=mm(320),
+                shelf_count=1,
+                shelf_load_n=100,
+            ),
+            "CB-TIP-001",
+        )
+        inputs = {item.name: item.value for item in result.inputs}
+        self.assertEqual(inputs["hyllastens_lasthöjd"], 1_340_000)
+
+    def test_no_shelves_have_no_phantom_tip_load(self) -> None:
+        result = evaluation(make_spec(shelf_count=0, shelf_load_n=300), "CB-TIP-001")
+        inputs = {item.name: item.value for item in result.inputs}
+        self.assertEqual(inputs["belastade_hyllrader"], 0)
+        self.assertEqual(inputs["total_hyllast"], 0)
+        self.assertEqual(inputs["hyllastens_lasthöjd"], 0)
 
 
 class AutoCorrectionTests(unittest.TestCase):
