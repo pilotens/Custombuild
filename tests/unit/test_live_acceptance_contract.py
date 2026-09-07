@@ -10,6 +10,7 @@ from io import BytesIO
 from threading import Event
 
 import pytest
+from app.design_service import canonical_preview
 from custombuild_manufacturing import MANIFEST_CONTEXT_HASH_FIELDS
 from custombuild_manufacturing.readiness import build_workshop_readiness_report
 from custombuild_manufacturing.review_status import (
@@ -49,6 +50,14 @@ from scripts.live_acceptance import (
     verify_stock_selection,
     verify_workshop_readiness,
 )
+
+
+def test_live_acceptance_warning_matches_current_server_preview() -> None:
+    _, _, preview = canonical_preview(live_acceptance_module.bookcase_spec())
+    evaluations = live_acceptance_module.verify_dry_joining_warning(
+        preview, label="current server preview"
+    )
+    assert any(rule["rule_id"] == "CB-JOINT-001" for rule in evaluations)
 
 
 class _UnexpectedDownloadClient:
