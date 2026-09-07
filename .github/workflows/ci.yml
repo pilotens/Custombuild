@@ -579,9 +579,19 @@ jobs:
           PLAYWRIGHT_REAL_API: "1"
           PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          pnpm --dir apps/web exec playwright test --project=chromium-desktop
+          pnpm --dir apps/web exec playwright test --project=chromium-desktop \
+            --output=test-results/chromium-live
           pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
-            --project=firefox-desktop --project=webkit-desktop
+            --project=firefox-desktop --project=webkit-desktop \
+            --output=test-results/crossbrowser-live
+      - name: Preserve furniture workspace visual evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: furniture-workspace-visual-evidence
+          path: apps/web/test-results/chromium-live/furniture-live-*
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Collect Compose diagnostics
         if: failure()
         run: |

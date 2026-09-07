@@ -41,6 +41,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       await projectSelect.selectOption(provisioned.project.id);
       await expect(page.getByLabel("Uppmätt skivtjocklek (mm)", { exact: true })).toHaveValue("17.801");
       await expect(page.getByRole("button", { name: /^Revision 1 ·/ })).toBeVisible();
+      await expect(page.locator("canvas")).toHaveAttribute("data-custombuild-render-commit", /^[1-9]\d*$/, { timeout: 30_000 });
+      await info.attach(`${family}-assembled`, { body: await page.screenshot({ fullPage: true }), contentType: "image/png" });
       if (family === "chest_of_drawers") {
         await page.getByRole("button", { name: "Öppna lådorna" }).click();
         await expect(page.getByRole("button", { name: "Stäng lådorna" })).toHaveAttribute("aria-pressed", "true");

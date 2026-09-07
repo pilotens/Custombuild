@@ -44,7 +44,7 @@ API-ytan är `/v1/furniture/catalog`, `/preview`, `/profile-change` samt
 prefix. OpenAPI beskriver inmatningens versionsbundna scheman.
 
 Regressionerna omfattar faktisk hyllhöjd vid tippscreening, unika hyllrader,
-familjernas geometri, profilbyten, tillåtna mått, CAD-export, revisionskonflikter,
+familjernas geometri, renderade delmått mot CAD-underlaget, profilbyten, tillåtna mått, CAD-export, revisionskonflikter,
 tenantavgränsning, gamla/nya utkast och exporternas identitet. Webbläsartestet
 `e2e/furniture-live.spec.ts` kör hela kedjan mot Compose: alla tre familjer,
 tjockleksbyte, sparning, återöppning och nedladdning från den riktiga CAD-workern.

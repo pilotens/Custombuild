@@ -157,8 +157,9 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
   return preview.design.parts.map((part): ResolvedPart => {
     const size = part.finished_size;
     const orientation = yz.has(part.role) ? "YZ" : xz.has(part.role) ? "XZ" : "XY";
-    const width = orientation === "YZ" ? size.depth_um : size.width_um;
-    const depth = orientation === "XY" ? size.depth_um : size.height_um;
+    // The viewer's YZ board width runs vertically (world Z); its depth runs along world Y.
+    const width = orientation === "YZ" ? size.height_um : size.width_um;
+    const depth = orientation === "XZ" ? size.height_um : size.depth_um;
     const thickness = orientation === "YZ" ? size.width_um : orientation === "XZ" ? size.depth_um : size.height_um;
     return {
       part_id: part.part_id, name: part.semantic_key,
