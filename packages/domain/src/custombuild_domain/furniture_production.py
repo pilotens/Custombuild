@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from .furniture import FurnitureWorkspace
+from .furniture_dimensions import assert_production_dimensions
 from .furniture_engine import build_furniture
 from .identity import content_hash
 from .models import BookcaseDesignSpec, FrozenModel
@@ -17,6 +18,7 @@ FURNITURE_PRODUCTION_BRIDGE_VERSION: Literal["furniture-production-1.0.0"] = (
 
 
 def shelving_production_spec(workspace: FurnitureWorkspace) -> BookcaseDesignSpec:
+    assert_production_dimensions(workspace.design)
     result = build_furniture(workspace.design)
     if result.shelving_result is None or workspace.design.intent.family != "shelving":
         raise ValueError(
@@ -37,6 +39,7 @@ class FurnitureProductionSource(FrozenModel):
 
     @model_validator(mode="after")
     def verify_source(self) -> FurnitureProductionSource:
+        assert_production_dimensions(self.workspace.design)
         if self.workspace_sha256 != content_hash(self.workspace):
             raise ValueError("furniture source workspace checksum differs")
         result = build_furniture(self.workspace.design)

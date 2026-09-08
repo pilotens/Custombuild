@@ -312,7 +312,7 @@ def dado_retention_evidence_missing(design_result: Any) -> bool:
     ):
         return True
     required_design_load_n = {
-        "shear": max(shelf_load_n, 1),
+        "shear": canonical.minimum_retention_shear_load_n,
         "withdrawal": horizontal_force_n,
     }
     return any(

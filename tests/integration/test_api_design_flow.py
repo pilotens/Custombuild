@@ -2938,7 +2938,7 @@ def test_preview_is_reproducible() -> None:
             item["rule_id"]
             for item in first.json()["rule_evaluations"]
             if item["status"] == "WARNING"
-        ] == ["CB-JOINT-001"]
+        ] == ["CB-DEFLECTION-001", "CB-JOINT-001"]
 
 
 def test_preview_accepts_binary_float_five_percent_shelf_spacing() -> None:
@@ -3977,7 +3977,7 @@ def test_generation_requires_explicit_design_approval_for_reviewed_design() -> N
             for item in version["result_json"]["rule_evaluations"]
             if item["status"] == "WARNING"
         )
-        assert warning_rule_ids == ["CB-JOINT-001"]
+        assert warning_rule_ids == ["CB-DEFLECTION-001", "CB-JOINT-001"]
         base = f"/v1/projects/{project['id']}/versions/{version['revision']}"
         assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
 

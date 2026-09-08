@@ -37,6 +37,120 @@ function setup() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("möbelstudions revisions- och profilflöde", () => {
+  it("sparar en mätbar listprofil och reserverar endast valda väggar innan stommen räknas om", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+    fireEvent.click(screen.getByLabelText("Ange listprofil"));
+    expect(screen.getByLabelText("Listhöjd (mm)")).toHaveValue(null);
+    expect(screen.getByLabelText("Listbredd/utstick (mm)")).toHaveValue(null);
+    fireEvent.change(screen.getByLabelText("Listhöjd (mm)"), { target: { value: "90" } });
+    fireEvent.change(screen.getByLabelText("Listbredd/utstick (mm)"), { target: { value: "20" } });
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1000);
+    fireEvent.change(screen.getByLabelText("Listens funktion"), { target: { value: "existing_room_trim" } });
+    fireEvent.click(screen.getByLabelText("Vänster vägg"));
+    const reserve = screen.getByRole("button", { name: "Reservera frigång för befintlig list", hidden: true });
+    fireEvent.click(reserve); fireEvent.click(reserve);
+    expect(screen.getByLabelText("Vänster · reserverat (mm)")).toHaveValue(20);
+    expect(screen.getByLabelText("Höger · reserverat (mm)")).toHaveValue(null);
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1000);
+    expect(screen.getByRole("button", { name: "Räkna om stommen från kundmåtten", hidden: true })).toBeDisabled();
+  });
+
+  it("skiljer radlast från meterlast och bevarar meterlasten när kundens bredd ändras", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    expect(screen.getByLabelText("Last per hel hyllrad (kg)")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Hur anges hyllasten?"), { target: { value: "per_metre" } });
+    fireEvent.change(screen.getByLabelText("Last per meter hyllrad (kg/m)"), { target: { value: "30.6" } });
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "4340" } });
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent).toMatchObject({
+      width_um: 4_340_000, shelf_load_basis: "per_metre", shelf_load_per_metre_n: 300,
+    }));
+  });
+
+  it("kräver att varje felaktigt indelningsfält rättas även efter en annan giltig måttändring", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("Hyllcentrum från botten (%)"), { target: { value: "10" } });
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText("Höjd (mm)"), { target: { value: "1900" } });
+    await screen.findByText("5 delar");
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "50; 50" } });
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Hyllcentrum från botten (%)"), { target: { value: "20; 40; 60; 80" } });
+    await screen.findByText("5 delar");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent.shelf_height_ratios_ppm).toEqual([200_000, 400_000, 600_000, 800_000]);
+  });
+
+  it("räknar kundmått till stomme först när alla reserverade mått anges och användaren tillämpar dem", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+    fireEvent.change(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)"), { target: { value: "4340.007" } });
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1000);
+    expect(screen.getByRole("button", { name: "Räkna om stommen från kundmåtten", hidden: true })).toBeDisabled();
+    for (const side of ["Vänster", "Höger", "Ovanför", "Under", "Framför", "Bakom"]) {
+      fireEvent.change(screen.getByLabelText(`${side} · reserverat (mm)`), { target: { value: side === "Vänster" ? "50.001" : "0" } });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Räkna om stommen från kundmåtten", hidden: true }));
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(4290.006);
+    expect(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)")).toHaveValue(4340.007);
+  });
+
+  it("serverkontrollerar arbetsfiler och skapar alltid ett nytt osparat projekt", async () => {
+    const api = setup();
+    const create = vi.spyOn(api, "createProject");
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    const imported = newFurnitureWorkspace("shelving");
+    imported.design.design_id = "original-project"; imported.design.revision = 99;
+    imported.design.intent.width_um = 4_340_000;
+    const file = new File([], "kundbokhylla.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify(imported) });
+    fireEvent.change(screen.getByLabelText("Läs arbetsfil (JSON)"), { target: { files: [file] } });
+    await screen.findByText(/Arbetsfilen har kontrollerats/);
+    const checked = vi.mocked(api.previewFurniture).mock.lastCall?.[0];
+    expect(checked?.design.design_id).toBe("furniture");
+    expect(checked?.design.revision).toBe(1);
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(4340);
+    expect(create).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
+  });
+
+  it("ersätter även osparad indelningstext när en kontrollerad arbetsfil med samma grundmått öppnas", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("Hyllcentrum från botten (%)"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.801" } });
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    const file = new File([], "kontrollerad-hylla.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify(newFurnitureWorkspace("shelving")) });
+    fireEvent.change(screen.getByLabelText("Läs arbetsfil (JSON)"), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: "Fortsätt utan att spara" }));
+    await screen.findByText(/Arbetsfilen har kontrollerats/);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("Fackbredder (%)")).toHaveValue("");
+    expect(screen.getByLabelText("Hyllcentrum från botten (%)")).toHaveValue("");
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  });
+
   it("återbinder profilförslaget när ett projekt med samma form öppnas", async () => {
     const api = setup();
     vi.mocked(api.listProjects).mockResolvedValue([{ id: "saved-table", name: "Sparat bord", furniture_type: "table",

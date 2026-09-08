@@ -143,8 +143,8 @@ def _test_only_retention_contract(
         load_cases=(
             JointRetentionLoadCase(
                 mode=JointRetentionLoadMode.SHEAR,
-                rated_design_load_n=300,
-                verified_capacity_n=600,
+                rated_design_load_n=design.minimum_retention_shear_load_n,
+                verified_capacity_n=2 * design.minimum_retention_shear_load_n,
             ),
             JointRetentionLoadCase(
                 mode=JointRetentionLoadMode.WITHDRAWAL,

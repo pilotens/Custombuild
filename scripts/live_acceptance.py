@@ -2180,7 +2180,9 @@ def bookcase_spec(overrides: dict[str, object] | None = None) -> dict[str, objec
         "measured_thickness_mm": 18,
         "shelf_count": 2,
         "shelf_mount": "fixed",
-        "load_per_shelf_kg": 10,
+        # Isolate the one DADO-retention warning with margin after self weight
+        # is included. The overload scenario overrides this test-only payload.
+        "load_per_shelf_kg": 5,
         "back_panel": True,
         "plinth": True,
         "divider_count": 0,
@@ -2208,7 +2210,7 @@ def verify_dry_joining_warning(value: Any, *, label: str) -> list[dict[str, Any]
     require(
         len(warnings) == 1
         and warnings[0].get("rule_id") == "CB-JOINT-001"
-        and warnings[0].get("rule_version") == "1.4.0",
+        and warnings[0].get("rule_version") == "1.5.0",
         f"{label} does not expose the canonical dry-joining warning",
     )
     return evaluations

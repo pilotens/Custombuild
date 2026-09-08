@@ -184,10 +184,7 @@ class JointRetentionContract(FrozenModel):
 
     @model_validator(mode="after")
     def validate_machining_scope(self) -> JointRetentionContract:
-        if (
-            self.application_class
-            != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
-        ):
+        if self.application_class != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO:
             raise ValueError(
                 "the current retention contract only covers load-bearing carcass DADOs"
             )
@@ -195,9 +192,7 @@ class JointRetentionContract(FrozenModel):
             (item.material_id, item.material_version) for item in self.applicable_materials
         )
         if material_keys != tuple(sorted(set(material_keys))):
-            raise ValueError(
-                "joint-retention applicable materials must be sorted and unique"
-            )
+            raise ValueError("joint-retention applicable materials must be sorted and unique")
         if self.minimum_applicable_thickness_um > self.maximum_applicable_thickness_um:
             raise ValueError("joint-retention thickness range is inverted")
         load_modes = tuple(item.mode for item in self.load_cases)
@@ -459,13 +454,8 @@ class BookcaseDesignSpec(FrozenModel):
             return self
         parameters = self.parameters
         if retention.joint_type != JointType.DADO:
-            raise ValueError(
-                "the current bookcase retention contract applies only to DADO joints"
-            )
-        if (
-            retention.application_class
-            != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
-        ):
+            raise ValueError("the current bookcase retention contract applies only to DADO joints")
+        if retention.application_class != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO:
             raise ValueError(
                 "the bookcase retention contract must target load-bearing carcass DADOs"
             )
@@ -476,8 +466,7 @@ class BookcaseDesignSpec(FrozenModel):
             raise ValueError("the design contains no DADO joint requiring retention")
         if (
             retention.method != JointRetentionMethod.MECHANICAL
-            or retention.machining_scope
-            != JointRetentionMachiningScope.NO_ADDITIONAL_CNC
+            or retention.machining_scope != JointRetentionMachiningScope.NO_ADDITIONAL_CNC
         ):
             raise ValueError(
                 "the current bookcase template accepts only mechanical joint retention "
@@ -486,8 +475,7 @@ class BookcaseDesignSpec(FrozenModel):
         applicable_thicknesses = [parameters.actual_thickness_um]
         required_materials = {(self.material.material_id, self.material.version)}
         covered_materials = {
-            (item.material_id, item.material_version)
-            for item in retention.applicable_materials
+            (item.material_id, item.material_version) for item in retention.applicable_materials
         }
         if not required_materials <= covered_materials:
             raise ValueError(
@@ -777,9 +765,7 @@ def dado_joint_geometry_fingerprint(
     """
 
     part_by_id = {part.part_id: part for part in parts}
-    feature_by_id = {
-        feature.feature_id: feature for part in parts for feature in part.features
-    }
+    feature_by_id = {feature.feature_id: feature for part in parts for feature in part.features}
     payload: list[dict[str, object]] = []
     for joint in sorted(
         (
@@ -836,16 +822,12 @@ def captive_inset_back_topology_is_complete(
     """
 
     part_by_id = {part.part_id: part for part in parts}
-    feature_by_id = {
-        feature.feature_id: feature for part in parts for feature in part.features
-    }
+    feature_by_id = {feature.feature_id: feature for part in parts for feature in part.features}
     backs = tuple(part for part in parts if part.role == PartRole.BACK)
     if not backs:
         return False
     step_by_joint_id = {
-        joint_id: step
-        for step in assembly_graph.steps
-        for joint_id in step.joint_ids
+        joint_id: step for step in assembly_graph.steps for joint_id in step.joint_ids
     }
     for back in backs:
         back_joints = tuple(
@@ -879,9 +861,7 @@ def captive_inset_back_topology_is_complete(
             )
             step = step_by_joint_id.get(joint.joint_id)
             boundary_part = (
-                part_by_id.get(boundary_member.part_id)
-                if boundary_member is not None
-                else None
+                part_by_id.get(boundary_member.part_id) if boundary_member is not None else None
             )
             if (
                 back_member is None
@@ -950,6 +930,19 @@ class DesignResult(FrozenModel):
     joints: tuple[Joint, ...]
     assembly_graph: AssemblyGraph
     total_weight_g: PositiveInt
+
+    @property
+    def minimum_retention_shear_load_n(self) -> int:
+        """Conservative gravity envelope for the shared carcass contract.
+
+        Without a qualified joint-by-joint load-path model, require each
+        retained joint to cover the entire structure's weight and all row
+        payloads. Never infer equal sharing between joints or omit self weight.
+        This bound is intentionally stricter than the local shelf support screen.
+        """
+        own_weight_n = (self.total_weight_g * 981 + 99_999) // 100_000
+        p = self.spec.parameters
+        return own_weight_n + p.shelf_count * p.shelf_load_n
 
     @model_validator(mode="after")
     def validate_result_integrity(self) -> DesignResult:
@@ -1058,4 +1051,13 @@ class DesignResult(FrozenModel):
             raise ValueError("captive inset-back grooves require an inset back panel")
         if sum(part.weight_g for part in self.parts) != self.total_weight_g:
             raise ValueError("total design weight does not equal the part weights")
+        if retention is not None:
+            shear = next(
+                case for case in retention.load_cases if case.mode == JointRetentionLoadMode.SHEAR
+            )
+            if shear.rated_design_load_n < self.minimum_retention_shear_load_n:
+                raise ValueError(
+                    "joint-retention shear capacity must cover accumulated row loads and "
+                    "the entire structure's own weight"
+                )
         return self

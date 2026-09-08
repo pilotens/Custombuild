@@ -7,7 +7,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from .engine import build_bookcase
-from .enums import FaceName, GrainDirection, PartRole
+from .enums import BackPanelType, FaceName, GrainDirection, PartRole, ShelfMount
 from .furniture import (
     FURNITURE_ENGINE_VERSION,
     ChestIntent,
@@ -129,18 +129,21 @@ def _carcass(design: FurnitureDesign, *, shelving: bool) -> DesignResult:
             design_id=design.design_id,
             revision=design.revision,
             material=material,
-            back_material=back,
+            back_material=None if shelf and shelf.back_panel == BackPanelType.NONE else back,
             parameters=BookcaseParameters(
                 width_um=p.width_um,
                 height_um=p.height_um,
                 depth_um=p.depth_um,
                 actual_thickness_um=design.material.measured_thickness_um,
                 back_thickness_um=design.back_material.measured_thickness_um,
-                plinth_height_um=0,
+                plinth_height_um=shelf.plinth_height_um if shelf else 0,
+                back_panel=shelf.back_panel if shelf else BackPanelType.INSET_GROOVE,
+                shelf_mount=shelf.shelf_mount if shelf else ShelfMount.FIXED,
                 shelf_count=shelf.shelf_count if shelving and shelf else 0,
-                shelf_load_n=shelf.shelf_load_n if shelving and shelf else 0,
+                shelf_load_n=shelf.resolved_shelf_load_n if shelving and shelf else 0,
                 vertical_divider_count=shelf.divider_count if shelving and shelf else 0,
                 shelf_height_ratios_ppm=shelf.shelf_height_ratios_ppm if shelf else (),
+                bay_width_ratios_ppm=shelf.bay_width_ratios_ppm if shelf else (),
             ),
         )
     )
@@ -340,6 +343,7 @@ def build_furniture(design: FurnitureDesign) -> FurnitureResult:
             {
                 "engine": FURNITURE_ENGINE_VERSION,
                 "intent": design.intent,
+                **({"installation": design.installation} if design.installation else {}),
                 "parts": [p.model_dump(mode="json", exclude={"revision"}) for p in parts],
                 "joints": joints,
                 "groups": groups,
@@ -348,7 +352,11 @@ def build_furniture(design: FurnitureDesign) -> FurnitureResult:
                 "hardware": hardware,
             }
         ),
-        intent_hash=content_hash(design.intent),
+        intent_hash=content_hash(
+            {"intent": design.intent, "installation": design.installation}
+            if design.installation
+            else design.intent
+        ),
         spec=design,
         parts=parts,
         joints=joints,

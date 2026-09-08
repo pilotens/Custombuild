@@ -19,6 +19,36 @@ from custombuild_domain.furniture_production import (
 from tests.unit.test_furniture_families import workspace
 
 
+@pytest.mark.parametrize("width,expected", [(900_000, 270), (4_340_000, 1302), (3_210_007, 964)])
+def test_per_metre_payload_scales_with_customer_width_and_reaches_production_exactly(
+    width, expected
+):
+    selected = workspace(
+        "shelving",
+        width_um=width,
+        shelf_load_basis="per_metre",
+        shelf_load_per_metre_n=300,
+        shelf_load_n=17,
+    )
+    source = furniture_production_source(selected)
+    converted = normalize_preview(
+        furniture_production_input(selected).model_dump(exclude_none=True),
+        design_id=selected.design.design_id,
+    )
+    assert converted.parameters.shelf_load_n == expected
+    assert_furniture_production_spec(source, converted)
+
+
+def test_per_metre_payload_cannot_be_silently_clamped_to_the_production_limit():
+    with pytest.raises(ValueError, match="5000 N"):
+        workspace(
+            "shelving",
+            width_um=4_340_000,
+            shelf_load_basis="per_metre",
+            shelf_load_per_metre_n=2000,
+        )
+
+
 @pytest.mark.parametrize("thickness", [17_001, 17_801, 18_000, 18_999])
 @pytest.mark.parametrize("material,back", [("mdf", "birch-plywood-6"), ("birch-plywood", "mdf-6")])
 @pytest.mark.parametrize("load", [0, 201, 4903])
@@ -59,6 +89,36 @@ def test_bridge_preserves_exact_parts_features_joints_and_loads(thickness, mater
 def test_layout_families_cannot_enter_the_shelving_production_compiler(family):
     with pytest.raises(ValueError, match="endast hyllsystem"):
         shelving_production_spec(workspace(family))
+
+
+@pytest.mark.parametrize("back", ["none", "inset_groove", "surface_mounted"])
+@pytest.mark.parametrize("mount", ["fixed", "adjustable"])
+def test_customer_shelf_layout_reaches_the_compiler_without_any_default_substitution(back, mount):
+    selected = workspace(
+        "shelving",
+        width_um=2_150_003,
+        height_um=2_540_007,
+        depth_um=280_009,
+        divider_count=2,
+        shelf_count=3,
+        bay_width_ratios_ppm=(250_001, 349_999, 400_000),
+        shelf_height_ratios_ppm=(100_001, 450_007, 800_009),
+        back_panel=back,
+        shelf_mount=mount,
+        plinth_height_um=80_003,
+    )
+    source = furniture_production_source(selected)
+    original = build_furniture(selected.design).shelving_result
+    converted = normalize_preview(
+        furniture_production_input(selected).model_dump(exclude_none=True),
+        design_id=selected.design.design_id,
+    )
+    assert_furniture_production_spec(source, converted)
+    rebuilt = build_bookcase(converted)
+    assert original is not None
+    assert rebuilt.parts == original.parts
+    assert rebuilt.joints == original.joints
+    assert rebuilt.assembly_graph == original.assembly_graph
 
 
 @pytest.mark.parametrize("field", ["workspace_sha256", "furniture_design_hash"])

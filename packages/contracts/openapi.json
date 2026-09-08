@@ -189,6 +189,15 @@
         "title": "ArtifactRead",
         "type": "object"
       },
+      "BackPanelType": {
+        "enum": [
+          "none",
+          "surface_mounted",
+          "inset_groove"
+        ],
+        "title": "BackPanelType",
+        "type": "string"
+      },
       "Body_inspect_import_v1_projects__project_id__imports_inspect_post": {
         "properties": {
           "document": {
@@ -1128,6 +1137,16 @@
               }
             ]
           },
+          "installation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstallationSpace"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "intent": {
             "discriminator": {
               "mapping": {
@@ -1546,6 +1565,130 @@
         "title": "ImportInspection",
         "type": "object"
       },
+      "InstallationSpace": {
+        "additionalProperties": false,
+        "description": "Customer measurements, distinct from the generated carcass dimensions.\n\nAllowances reserve space for installation or separately designed trim. None\nmeans unmeasured, never zero. They do not create a trim part or qualify it.",
+        "properties": {
+          "bottom_allowance_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bottom Allowance Um"
+          },
+          "depth_um": {
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "front_allowance_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Front Allowance Um"
+          },
+          "height_um": {
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "left_allowance_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Left Allowance Um"
+          },
+          "rear_allowance_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rear Allowance Um"
+          },
+          "right_allowance_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Right Allowance Um"
+          },
+          "top_allowance_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Top Allowance Um"
+          },
+          "trim_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrimProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "width_includes_trim": {
+            "default": false,
+            "title": "Width Includes Trim",
+            "type": "boolean"
+          },
+          "width_um": {
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width_um",
+          "height_um",
+          "depth_um"
+        ],
+        "title": "InstallationSpace",
+        "type": "object"
+      },
       "JobRead": {
         "properties": {
           "attempts": {
@@ -1701,6 +1844,13 @@
         "additionalProperties": false,
         "description": "A separate planning profile. It grants no physical machine approval.",
         "properties": {
+          "edge_margin_um": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Edge Margin Um",
+            "type": "integer"
+          },
           "machine_profile_id": {
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
             "title": "Machine Profile Id",
@@ -2382,9 +2532,32 @@
         "title": "RevisionProductionContext",
         "type": "object"
       },
+      "ShelfMount": {
+        "enum": [
+          "fixed",
+          "adjustable"
+        ],
+        "title": "ShelfMount",
+        "type": "string"
+      },
       "ShelvingIntent": {
         "additionalProperties": false,
         "properties": {
+          "back_panel": {
+            "$ref": "#/components/schemas/BackPanelType",
+            "default": "inset_groove"
+          },
+          "bay_width_ratios_ppm": {
+            "default": [],
+            "items": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000000.0,
+              "type": "integer"
+            },
+            "maxItems": 17,
+            "title": "Bay Width Ratios Ppm",
+            "type": "array"
+          },
           "depth_um": {
             "default": 320000,
             "maximum": 6000000.0,
@@ -2412,6 +2585,13 @@
             "title": "Height Um",
             "type": "integer"
           },
+          "plinth_height_um": {
+            "default": 0,
+            "maximum": 300000.0,
+            "minimum": 0.0,
+            "title": "Plinth Height Um",
+            "type": "integer"
+          },
           "shelf_count": {
             "default": 4,
             "maximum": 40.0,
@@ -2430,12 +2610,32 @@
             "title": "Shelf Height Ratios Ppm",
             "type": "array"
           },
+          "shelf_load_basis": {
+            "default": "per_row",
+            "enum": [
+              "per_row",
+              "per_metre"
+            ],
+            "title": "Shelf Load Basis",
+            "type": "string"
+          },
           "shelf_load_n": {
             "default": 200,
             "maximum": 5000.0,
             "minimum": 0.0,
             "title": "Shelf Load N",
             "type": "integer"
+          },
+          "shelf_load_per_metre_n": {
+            "default": 0,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Shelf Load Per Metre N",
+            "type": "integer"
+          },
+          "shelf_mount": {
+            "$ref": "#/components/schemas/ShelfMount",
+            "default": "fixed"
           },
           "width_um": {
             "default": 900000,
@@ -2502,6 +2702,63 @@
           }
         },
         "title": "TableIntent",
+        "type": "object"
+      },
+      "TrimProfile": {
+        "additionalProperties": false,
+        "description": "Measured profile; use and placement are explicit customer decisions.",
+        "properties": {
+          "height_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Um"
+          },
+          "use": {
+            "default": "unassigned",
+            "enum": [
+              "unassigned",
+              "existing_room_trim",
+              "furniture_trim"
+            ],
+            "title": "Use",
+            "type": "string"
+          },
+          "walls": {
+            "default": [],
+            "items": {
+              "enum": [
+                "left",
+                "right",
+                "rear"
+              ],
+              "type": "string"
+            },
+            "title": "Walls",
+            "type": "array"
+          },
+          "width_um": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Um"
+          }
+        },
+        "title": "TrimProfile",
         "type": "object"
       },
       "ValidationError": {

@@ -9,12 +9,14 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 | Del | Implementerat beteende |
 | --- | --- |
 | Design | Heltalsmått i µm, stabila delidentiteter, yttermått och familjespecifika konstruktionsparametrar. |
-| Hyllsystem | Befintlig konstruktionsmotor, fogar och regelscreening återanvänds. |
+| Hyllsystem | Befintlig konstruktionsmotor, fogar och regelscreening återanvänds. Olikstora fack, individuella hyllhöjder, fasta/flyttbara hyllor, ryggval och sockel följer med till beredningen. |
+| Kundmått | Separata uppmätta yttermått och sex explicita reserverade utrymmen. Okänt är inte noll. Stommen räknas om efter användarens val. Ofullständig måttkedja eller omodellerad list blockerar beredningen även på servern och i paketläsaren. |
 | Bord | Skiva, två gavlar och två sargar. Separat beräkning av nedböjning och böjspänning. |
 | Byrå | Stomme samt sex trädelar per låda, frontspel, lådsidespel och sammanhängande utdragsgrupper. |
 | Material | Versionsbundna MDF-/björkplywoodprofiler, uppmätt tjocklek och valfri batchidentitet. Inget automatiskt ersättningsmaterial. |
 | Beslag | Utbytbara dimensionsprofiler. Tillverkarens beslag, kapacitet och hålbilder är fortfarande obligatoriska före tillverkning. |
-| Verkstad | Separat profil med råskivemått och fiberriktning; kontroll av maskinområde och varje dels råmått. Referensprofiler är uttryckligen okvalificerade. |
+| Verkstad | Separat profil med råskivemått, kantmarginal och fiberriktning; kontroll av maskinområde och varje dels råmått. Materialgrupperat verkstadsunderlag anger nödvändiga råformat. Referensprofiler är uttryckligen okvalificerade. |
+| Arbetsfil | Export/import av versionsbunden JSON. Import kontrolleras av servern och blir ett nytt osparat projekt; en tidigare projektidentitet återanvänds inte. |
 | Profilbyte | Konsekvensjämförelse före tillämpning. Material/beslag räknar om geometrin. Maskinbyte behåller möbeldesignen och ogiltigförklarar berörd tillverkningsgranskning. |
 | Revisioner | Serverlagring med konfliktkontroll och oföränderlig revisionshistorik. Återöppning av tidigare revision skapar en ny revision vid sparning. |
 | Beredning av hyllsystem | Den sparade möbelrevisionen kan öppnas direkt i det befintliga flödet för råmaterial, foggranskning, nesting, bearbetningsoperationer och maskinbunden CAM-kandidat. |
@@ -25,6 +27,16 @@ delritningar i PDF, BOM, kaplista, rörelsegrupper, modell, profiler och
 kontrollrapport. Ett manifest binder varje fil med SHA-256. Exportstatusen binds
 till organisation, projekt, revision, design och profilval. Paketet är tillgängligt
 i en timme; en sparad revision kan exporteras på nytt.
+
+`manufacturing/workshop-handoff.json` innehåller kundmått, skillnaden mot den
+genererade stommen och råmått för varje CAD-del, grupperat efter material/version
+och faktisk tjocklek. Formatgränser längs/tvärs fibern är nödvändiga villkor för
+enskilda råämnen. Kantmarginal, verktygsutrymme och nestingspill tillkommer;
+råämnenas summerade area är ingen beställningskvantitet. Delar delas eller skarvas
+aldrig utan en ny modellerad konstruktion med verifierade förband.
+
+Det nya kundfallet och kvarvarande konstruktionsbeslut dokumenteras i
+[Kundmått 4340 × 2540 × 280](CUSTOMER_BOOKCASE_4340_2540_280.md).
 
 Paketet har formatet `custombuild.furniture-review.v1`. Det innehåller ingen
 skärande CAM och kan inte användas som en godkänd produktionsversion. Bordets och

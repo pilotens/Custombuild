@@ -11,11 +11,16 @@ from custombuild_domain.identity import content_hash
 from custombuild_rules.furniture import evaluate_furniture
 
 from .adapters import adapt_design_result
+from .furniture_handoff import furniture_workshop_handoff
 from .model import canonical_data
 from .profiles import linuxcnc_reference_router_1325, linuxcnc_reference_router_5125
 
 PROFILE_PLANNING_VERSION = "furniture-profile-planning-1.0.0"
 _MACHINES = (linuxcnc_reference_router_1325(), linuxcnc_reference_router_5125())
+
+
+def _millimetre_text(value_um: int) -> str:
+    return f"{value_um / 1_000:.3f}".rstrip("0").rstrip(".")
 
 
 def furniture_machine_catalog() -> list[dict[str, Any]]:
@@ -55,6 +60,16 @@ def _manufacturing(workspace: FurnitureWorkspace, result: FurnitureResult) -> di
                 "message": "Vald råskiva ryms inte inom maskinens arbetsområde.",
             }
         )
+    usable_width = sw - 2 * selection.edge_margin_um
+    usable_height = sh - 2 * selection.edge_margin_um
+    if min(usable_width, usable_height) <= 0:
+        issues.append(
+            {
+                "code": "STOCK_MARGIN_CONSUMES_SHEET",
+                "message": "Kantmarginalen lämnar inget användbart skivformat.",
+            }
+        )
+    names = {part.part_id: part.semantic_key for part in result.parts}
     for part in adapt_design_result(result).parts:
         directional = part.grain_direction != "NONE"
         if directional and selection.stock_grain_axis is None:
@@ -76,8 +91,8 @@ def _manufacturing(workspace: FurnitureWorkspace, result: FurnitureResult) -> di
             part.raw_height_um or part.height_um,
         )
         fits = any(
-            (raw_height if rotate else raw_width) <= sw
-            and (raw_width if rotate else raw_height) <= sh
+            (raw_height if rotate else raw_width) <= usable_width
+            and (raw_width if rotate else raw_height) <= usable_height
             for rotate in rotations
         )
         if not fits:
@@ -85,7 +100,12 @@ def _manufacturing(workspace: FurnitureWorkspace, result: FurnitureResult) -> di
                 {
                     "code": "PART_EXCEEDS_STOCK",
                     "part_id": part.part_id,
-                    "message": "Delen ryms inte på vald råskiva med angiven fiberriktning.",
+                    "message": f"{names[part.part_id]}: råmått {_millimetre_text(raw_width)} × "
+                    f"{_millimetre_text(raw_height)} mm ryms inte på det användbara skivformatet "
+                    f"{_millimetre_text(max(0, usable_width))} × "
+                    f"{_millimetre_text(max(0, usable_height))} mm "
+                    "med angiven fiberriktning. Välj annat format eller rita om fördelningen "
+                    "i moduler med verifierade förband. Delen skarvas inte automatiskt.",
                 }
             )
     binding = {
@@ -134,6 +154,7 @@ def preview_furniture(workspace: FurnitureWorkspace) -> dict[str, Any]:
         "dependencies": _dependencies(workspace, result, manufacturing),
         "rules": evaluate_furniture(result),
         "manufacturing": manufacturing,
+        "workshop_handoff": furniture_workshop_handoff(result),
         "production_qualified": False,
         "physical_cutting_authorized": False,
     }

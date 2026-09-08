@@ -59,6 +59,37 @@ def test_families_are_available_and_preview_requires_a_valid_session(client):
         assert not response.json()["physical_cutting_authorized"]
 
 
+def test_customer_measurements_survive_save_reload_history_and_cannot_skip_dimension_resolution(
+    client,
+):
+    from pathlib import Path
+
+    project, previous = save(client, "shelving")
+    selected = json.loads(Path("examples/furniture/bookcase-4340x2540x280.json").read_text())
+    path = f"/v1/furniture/projects/{project['id']}"
+    saved = client.put(
+        f"{path}/draft",
+        headers=HEADERS,
+        json={"expected_revision": previous["revision"], "workspace": selected},
+    )
+    assert saved.status_code == 200, saved.text
+    draft = saved.json()
+    assert draft["workspace"]["design"]["installation"] == selected["design"]["installation"]
+    assert client.get(f"{path}/draft", headers=HEADERS).json() == draft
+    history = client.get(f"{path}/history", headers=HEADERS).json()
+    assert history["items"][0]["workspace"] == draft["workspace"]
+    blocked = client.post(
+        f"{path}/production-preview",
+        headers=HEADERS,
+        json={
+            "expected_revision": draft["revision"],
+            "expected_design_hash": draft["preview"]["design"]["design_hash"],
+        },
+    )
+    assert blocked.status_code == 422, blocked.text
+    assert "list" in blocked.text
+
+
 def production_bridge(client, project, draft):
     response = client.post(
         f"/v1/furniture/projects/{project['id']}/production-preview",
@@ -320,15 +351,43 @@ def test_export_uses_transactional_outbox_and_checks_snapshot_and_tenant(client,
 
 
 @pytest.mark.cad
-@pytest.mark.parametrize("family", ["table", "chest_of_drawers", "shelving"])
+@pytest.mark.parametrize("family", ["table", "chest_of_drawers", "shelving", "customer-shelving"])
 def test_real_family_review_exports_match_parts_and_contain_no_machine_programs(family):
+    from pathlib import Path
+
     pytest.importorskip("cadquery")
-    draft = workspace(family)
+    draft = (
+        FurnitureWorkspace.model_validate_json(
+            Path("examples/furniture/bookcase-4340x2540x280.json").read_text()
+        )
+        if family == "customer-shelving"
+        else workspace(family)
+    )
     raw = build_furniture_review(draft)
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         names = archive.namelist()
         manifest = json.loads(archive.read("manifest.json"))
         resolved = json.loads(archive.read("design/resolved.json"))
+        handoff = json.loads(archive.read("manufacturing/workshop-handoff.json"))
+        import csv
+
+        measurements = list(
+            csv.DictReader(
+                io.StringIO(archive.read("inspection/first-article-checks.csv").decode("utf-8-sig"))
+            )
+        )
+        assert {r["part_id"] for r in measurements} == {p["part_id"] for p in resolved["parts"]}
+        assert all(r["design_hash"] == resolved["design_hash"] for r in measurements)
+        assert all(not r["measured"] and not r["result"] for r in measurements)
+        assert handoff["design_hash"] == resolved["design_hash"]
+        assert sum(group["part_count"] for group in handoff["stock_requirements"]) == len(
+            resolved["parts"]
+        )
+        if family == "customer-shelving":
+            assert handoff["dimensions"]["installation"]["width_um"] == 4_340_000
+            assert handoff["dimensions"]["installation"]["trim_profile"]["height_um"] == 90_000
+            assert handoff["dimensions"]["installation"]["trim_profile"]["width_um"] == 20_000
+            assert handoff["dimensions"]["state"] == "requires_resolution"
         assert not manifest["physical_cutting_authorized"]
         assert not any(n.endswith((".ngc", ".nc", ".gcode")) for n in names)
         assert archive.read("design/model.step").startswith(b"ISO-10303-21;")

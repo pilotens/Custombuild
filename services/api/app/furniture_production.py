@@ -42,12 +42,14 @@ def furniture_production_input(workspace: FurnitureWorkspace) -> BookcasePreview
         measured_thickness_mm=p.actual_thickness_um / 1_000,
         measured_back_thickness_mm=p.back_thickness_um / 1_000,
         shelf_count=p.shelf_count,
+        shelf_mount=p.shelf_mount.value,
         divider_count=p.vertical_divider_count,
+        bay_width_ratios=[v / 1_000_000 for v in p.bay_width_ratios_ppm],
         shelf_height_ratios=[v / 1_000_000 for v in p.shelf_height_ratios_ppm],
         load_per_shelf_kg=p.shelf_load_n / 9.80665,
-        back_panel="inset_groove",
-        plinth=False,
-        plinth_height_mm=0,
+        back_panel=p.back_panel.value,
+        plinth=p.plinth_height_um > 0,
+        plinth_height_mm=p.plinth_height_um / 1_000,
     )
     normalized = normalize_preview(
         result.model_dump(exclude_none=True), design_id=spec.design_id, revision=spec.revision
