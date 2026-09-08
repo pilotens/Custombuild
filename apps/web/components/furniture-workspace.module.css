@@ -42,6 +42,23 @@
 .intro { max-width: 700px; padding: 70px 0; }
 @media (max-width: 1120px) { .page { padding-inline: 20px; }.titleRow { align-items: start; flex-direction: column; }.layout { grid-template-columns: 240px minmax(0, 1fr); }.profiles { grid-column: 1/-1; }.profiles form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }.model { position: static; } }
 @media (max-width: 680px) { .page { padding-inline: 12px; }.header { gap: 16px; }.header > span { display: none; }.titleRow { padding-top: 26px; }.projectActions { width: 100%; }.projectActions > label { flex: 1 1 130px; }.layout { display: flex; flex-direction: column; }.controls, .model, .profiles { width: 100%; }.model { order: -1; }.canvas { height: 390px; min-height: 320px; }.rules { grid-template-columns: 1fr; }.profiles form fieldset { display: block; }.controls, .profiles, .review, .history { padding: 18px; } }
-.preparation { max-width: 1400px; margin: 0 auto; padding: 24px; min-width: 0; overflow-wrap: anywhere; }
+.preparation { max-width: 1120px; margin: 0 auto; padding: 24px; min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
 .preparation button { cursor: pointer; }
-@media (max-width: 640px) { .preparation { padding: 12px; } }
+.preparation :global(.production-workflow) { display: flex; flex-direction: column; width: 100%; min-width: 0; gap: 16px; padding: 0; background: transparent; }
+.preparation :global(.production-workflow) > * { min-width: 0; }
+.preparation :global(.production-steps) { grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 16px; padding: 12px; }
+.preparation :global(.production-workflow) label,
+.preparation :global(.production-workflow) small,
+.preparation :global(.production-warning),
+.preparation :global(.production-error),
+.preparation :global(.production-gate-summary),
+.preparation :global(.release-gate-message) { font-size: 12px; }
+.preparation :global(.production-workflow) button,
+.preparation :global(.production-workflow) input:not([type="checkbox"]):not([type="radio"]) { min-height: 40px; font-size: 14px; }
+.preparation :global(.production-download),
+.preparation :global(.production-gate-summary) { flex-wrap: wrap; }
+.preparation :global(.production-state) { white-space: normal; }
+@media (max-width: 640px) {
+  .preparation { padding: 12px; }
+  .preparation :global(.production-steps) { grid-template-columns: minmax(0, 1fr); }
+}
