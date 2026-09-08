@@ -252,6 +252,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/furniture/projects/{project_id}/production-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Furniture Production */
+        post: operations["preview_furniture_production_v1_furniture_projects__project_id__production_preview_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -967,6 +984,7 @@ export interface components {
              */
             joint_retention_evidence_id?: string | null;
             production_context: components["schemas"]["RevisionProductionContext"];
+            source_furniture?: components["schemas"]["FurnitureProductionSource"] | null;
             source_provenance?: components["schemas"]["ReferenceImageSourceProvenance"] | null;
             spec: components["schemas"]["BookcasePreviewInput"];
             /** Template Id */
@@ -1136,6 +1154,35 @@ export interface components {
             expected_design_hash: string;
             /** Expected Revision */
             expected_revision: number;
+        };
+        /** FurnitureProductionPreviewRequest */
+        FurnitureProductionPreviewRequest: {
+            /** Expected Design Hash */
+            expected_design_hash: string;
+            /** Expected Revision */
+            expected_revision: number;
+            /** Joint Retention Evidence Id */
+            joint_retention_evidence_id?: string | null;
+        };
+        /** FurnitureProductionSource */
+        FurnitureProductionSource: {
+            /**
+             * Bridge Version
+             * @default furniture-production-1.0.0
+             * @constant
+             */
+            bridge_version: "furniture-production-1.0.0";
+            /** Furniture Design Hash */
+            furniture_design_hash: string;
+            /**
+             * Schema Version
+             * @default custombuild.furniture-production-source.v1
+             * @constant
+             */
+            schema_version: "custombuild.furniture-production-source.v1";
+            workspace: components["schemas"]["FurnitureWorkspace"];
+            /** Workspace Sha256 */
+            workspace_sha256: string;
         };
         /** FurnitureWorkspace */
         FurnitureWorkspace: {
@@ -2419,6 +2466,43 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_furniture_production_v1_furniture_projects__project_id__production_preview_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FurnitureProductionPreviewRequest"];
+            };
+        };
         responses: {
             /** @description Successful Response */
             200: {

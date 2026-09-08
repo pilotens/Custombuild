@@ -4,6 +4,7 @@ import {
   assertFurniturePreview,
   type FurnitureCatalog, type FurnitureDraft, type FurnitureExportResult,
   type FurnitureHistory, type FurniturePreview, type FurnitureProfileComparison,
+  type FurnitureProductionSource, type FurnitureProductionPreview,
   type FurnitureWorkspace,
 } from "./furniture-workspace";
 import { referenceImageVerificationIsCurrent } from "./reference-image";
@@ -1727,6 +1728,32 @@ export class CustombuildApiClient {
     return this.request<FurnitureHistory>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/history?offset=${offset}`, { method: "GET" });
   }
 
+  async previewFurnitureProduction(
+    projectId: string, revision: number, designHash: string, signal?: AbortSignal,
+  ): Promise<FurnitureProductionPreview> {
+    const evidence = this.jointRetentionEvidence(projectId);
+    const result = await this.request<FurnitureProductionPreview>(
+      `/v1/furniture/projects/${encodeURIComponent(projectId)}/production-preview`, {
+        method: "POST", signal,
+        body: JSON.stringify({ expected_revision: revision, expected_design_hash: designHash,
+          ...(evidence ? { joint_retention_evidence_id: evidence } : {}) }),
+      },
+    );
+    const source = result?.source_furniture;
+    if (result?.physical_cutting_authorized !== false
+      || source?.schema_version !== "custombuild.furniture-production-source.v1"
+      || source.bridge_version !== "furniture-production-1.0.0"
+      || !/^[a-f0-9]{64}$/.test(source.workspace_sha256)
+      || source.furniture_design_hash !== designHash
+      || source.workspace?.design?.design_id !== projectId
+      || source.workspace.design.revision !== revision
+      || source.workspace.design.intent?.family !== "shelving"
+      || !result.preview || typeof result.preview !== "object" || Array.isArray(result.preview)) {
+      throw new ApiError("Beredningen stämmer inte med den sparade möbelrevisionen.");
+    }
+    return result;
+  }
+
   async requestFurnitureExport(projectId: string, revision: number, designHash: string): Promise<{ job_id: string; state: string }> {
     return this.request(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports`, {
       method: "POST", body: JSON.stringify({ expected_revision: revision, expected_design_hash: designHash }),
@@ -1900,6 +1927,7 @@ export class CustombuildApiClient {
     expectedCurrentRevision: number,
     templateId: FurnitureTemplateId,
     jointRetentionEvidenceId = this.jointRetentionEvidence(projectId),
+    sourceFurniture?: FurnitureProductionSource,
   ): Promise<DesignVersionRead> {
     const sourceProvenance = toSourceProvenance(spec, expectedDesignHash);
     return this.request<DesignVersionRead>(
@@ -1916,6 +1944,7 @@ export class CustombuildApiClient {
             ? { joint_retention_evidence_id: jointRetentionEvidenceId }
             : {}),
           ...(sourceProvenance ? { source_provenance: sourceProvenance } : {}),
+          ...(sourceFurniture ? { source_furniture: sourceFurniture } : {}),
         }),
       },
     );

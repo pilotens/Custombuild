@@ -1,0 +1,1746 @@
+{
+  "physical_cutting_authorized": false,
+  "preview": {
+    "assembly_steps": [
+      {
+        "checkpoint": "Sänk ryggens nederkant i bottenspåret innan topp eller gavlar monteras.",
+        "direction": "-z",
+        "joint_ids": [
+          "joi_c1d4254a6cd5590cbd558f9679454c75"
+        ],
+        "motion_path": [
+          "-z"
+        ],
+        "moving_part_ids": [
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "part_ids": [
+          "par_acfdf3811e3955d7b0f7145d6be0bbae",
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "step_id": "ass_e6690fd2b5565a7b8db0848e0a0d742e",
+        "step_number": 1,
+        "tool_ids": []
+      },
+      {
+        "checkpoint": "Sänk toppen över rygg och avdelare och kontrollera alla samtidiga instick.",
+        "direction": "-z",
+        "joint_ids": [
+          "joi_7eb3038264505c31bedfd27e31911f5b"
+        ],
+        "motion_path": [
+          "-z"
+        ],
+        "moving_part_ids": [
+          "par_b86b313ad4735c2c8b1eeb501b79436e"
+        ],
+        "part_ids": [
+          "par_b86b313ad4735c2c8b1eeb501b79436e",
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "step_id": "ass_e8d8c35a0a0e53f3b00aabf7fa8e2f66",
+        "step_number": 2,
+        "tool_ids": []
+      },
+      {
+        "checkpoint": "Säkra samtliga FIX-delar i panelpositioneringsjiggen och för därefter in höger gavel från höger över alla exponerade tappkanter samtidigt.",
+        "direction": "-x",
+        "joint_ids": [
+          "joi_184efdd15c4654a08e9cf9a5614874a7",
+          "joi_1a29d7a2aa6857b893f3000ac6d97202",
+          "joi_749b0c181a3c51de804f3294616c5bcd",
+          "joi_86eff185501f5ec88bc06c2b69e2f01c",
+          "joi_c012eba184a05212a7aa03f3b59647f3"
+        ],
+        "motion_path": [
+          "-x"
+        ],
+        "moving_part_ids": [
+          "par_886411f69d995ba281db25609ea60277"
+        ],
+        "part_ids": [
+          "par_1a534a5b63705ceb94038e3c4abecffb",
+          "par_886411f69d995ba281db25609ea60277",
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+          "par_acfdf3811e3955d7b0f7145d6be0bbae",
+          "par_b86b313ad4735c2c8b1eeb501b79436e",
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "step_id": "ass_fa313694a0a7535a9fee6edca1a295aa",
+        "step_number": 3,
+        "tool_ids": [
+          "panel-positioning-jig"
+        ]
+      },
+      {
+        "checkpoint": "Stäng stommen med vänster gavel och kontrollera varje spåranslutning visuellt. Kontroll av instick verifierar inte permanent hållning.",
+        "direction": "+x",
+        "joint_ids": [
+          "joi_114bfa0e6e77541eab3c795a09bf57c3",
+          "joi_5a4e2eb759b9530c93201adc6ae477b4",
+          "joi_92e43eb3d8ac5c788b64f2e6e12ccac6",
+          "joi_cf46b908a1f95eca9914158daead406f",
+          "joi_de4784a4daf25663a960106f810e9466"
+        ],
+        "motion_path": [
+          "+x"
+        ],
+        "moving_part_ids": [
+          "par_3c03bd1e76675ef788943e6a71d69c26"
+        ],
+        "part_ids": [
+          "par_1a534a5b63705ceb94038e3c4abecffb",
+          "par_3c03bd1e76675ef788943e6a71d69c26",
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+          "par_acfdf3811e3955d7b0f7145d6be0bbae",
+          "par_b86b313ad4735c2c8b1eeb501b79436e",
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "step_id": "ass_6308dce7fb535738a826bafe9c4b20e0",
+        "step_number": 4,
+        "tool_ids": []
+      }
+    ],
+    "change_diff": [],
+    "design_hash": "25da8e05724e5feec068fedd7b001c1bedf0705877ca846172ff1a2570d750cf",
+    "engine_version": "0.9.0",
+    "joints": [
+      {
+        "assembly_direction": "+x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_114bfa0e6e77541eab3c795a09bf57c3",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 17801,
+          "y_um": 0,
+          "z_um": 0
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_194a88cd4681508b9d0fd2ffdb544165"
+            ],
+            "mating_face": "right",
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "left",
+            "part_id": "par_acfdf3811e3955d7b0f7145d6be0bbae"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_c012eba184a05212a7aa03f3b59647f3",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 682200,
+          "y_um": 0,
+          "z_um": 0
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_ff1c920f401d52fcb7f1b92962128475"
+            ],
+            "mating_face": "left",
+            "part_id": "par_886411f69d995ba281db25609ea60277"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "right",
+            "part_id": "par_acfdf3811e3955d7b0f7145d6be0bbae"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "+x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_de4784a4daf25663a960106f810e9466",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 17801,
+          "y_um": 0,
+          "z_um": 982202
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_540920cad61d523ea342f8bdc680a323"
+            ],
+            "mating_face": "right",
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "left",
+            "part_id": "par_b86b313ad4735c2c8b1eeb501b79436e"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_184efdd15c4654a08e9cf9a5614874a7",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 682200,
+          "y_um": 0,
+          "z_um": 982202
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_67b5519b6d005cff8646082d820e2fde"
+            ],
+            "mating_face": "left",
+            "part_id": "par_886411f69d995ba281db25609ea60277"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "right",
+            "part_id": "par_b86b313ad4735c2c8b1eeb501b79436e"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "+x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_5a4e2eb759b9530c93201adc6ae477b4",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 17801,
+          "y_um": 0,
+          "z_um": 327401
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_b32fd90790da5c1597ebd16cc59ac05d"
+            ],
+            "mating_face": "right",
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "left",
+            "part_id": "par_8a7b6c1d2f255fbb9b24f99232a2c998"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_1a29d7a2aa6857b893f3000ac6d97202",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 682200,
+          "y_um": 0,
+          "z_um": 327401
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_c49a174ee03b5d0da83a7bd97d8040c2"
+            ],
+            "mating_face": "left",
+            "part_id": "par_886411f69d995ba281db25609ea60277"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "right",
+            "part_id": "par_8a7b6c1d2f255fbb9b24f99232a2c998"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "+x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_92e43eb3d8ac5c788b64f2e6e12ccac6",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 17801,
+          "y_um": 0,
+          "z_um": 654802
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_229ee0d05936573ca094670dd08aa77c"
+            ],
+            "mating_face": "right",
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "left",
+            "part_id": "par_1a534a5b63705ceb94038e3c4abecffb"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-x",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_86eff185501f5ec88bc06c2b69e2f01c",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 682200,
+          "y_um": 0,
+          "z_um": 654802
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_2ad8cc2fb87e5119aee13bee70bcad11"
+            ],
+            "mating_face": "left",
+            "part_id": "par_886411f69d995ba281db25609ea60277"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "right",
+            "part_id": "par_1a534a5b63705ceb94038e3c4abecffb"
+          }
+        ],
+        "retention_application_class": "load_bearing_carcass_dado",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-y",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_cf46b908a1f95eca9914158daead406f",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 17801,
+          "y_um": 302000,
+          "z_um": 11868
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_9273d12cb9c155a597f27c1ed214e6e2"
+            ],
+            "mating_face": "b",
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "left",
+            "part_id": "par_d5ee142a4fd65acb8b425a506b89a1ce"
+          }
+        ],
+        "retention_application_class": "captive_inset_back_groove",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-y",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_749b0c181a3c51de804f3294616c5bcd",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 682200,
+          "y_um": 302000,
+          "z_um": 11868
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_414396a0b8fe5f99b7a9fc3a23aab433"
+            ],
+            "mating_face": "a",
+            "part_id": "par_886411f69d995ba281db25609ea60277"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "right",
+            "part_id": "par_d5ee142a4fd65acb8b425a506b89a1ce"
+          }
+        ],
+        "retention_application_class": "captive_inset_back_groove",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-y",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_7eb3038264505c31bedfd27e31911f5b",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 11868,
+          "y_um": 302000,
+          "z_um": 982202
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_5665063a94035a12bba0eb38dab706d6"
+            ],
+            "mating_face": "a",
+            "part_id": "par_b86b313ad4735c2c8b1eeb501b79436e"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "top",
+            "part_id": "par_d5ee142a4fd65acb8b425a506b89a1ce"
+          }
+        ],
+        "retention_application_class": "captive_inset_back_groove",
+        "tolerance_um": 500
+      },
+      {
+        "assembly_direction": "-y",
+        "hardware_count": 0,
+        "hardware_sku": null,
+        "joint_id": "joi_c1d4254a6cd5590cbd558f9679454c75",
+        "joint_type": "dado",
+        "mating_origin": {
+          "x_um": 11868,
+          "y_um": 302000,
+          "z_um": 17801
+        },
+        "members": [
+          {
+            "feature_ids": [
+              "fea_61d316449e785c7cad0798544bad9607"
+            ],
+            "mating_face": "b",
+            "part_id": "par_acfdf3811e3955d7b0f7145d6be0bbae"
+          },
+          {
+            "feature_ids": [],
+            "mating_face": "bottom",
+            "part_id": "par_d5ee142a4fd65acb8b425a506b89a1ce"
+          }
+        ],
+        "retention_application_class": "captive_inset_back_groove",
+        "tolerance_um": 500
+      }
+    ],
+    "manufacturing_controls": [
+      {
+        "affected_part_ids": [
+          "par_1a534a5b63705ceb94038e3c4abecffb",
+          "par_3c03bd1e76675ef788943e6a71d69c26",
+          "par_886411f69d995ba281db25609ea60277",
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+          "par_acfdf3811e3955d7b0f7145d6be0bbae",
+          "par_b86b313ad4735c2c8b1eeb501b79436e",
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "assumptions": [
+          "Okänd råskiveaxel får inte behandlas som riktningslöst material."
+        ],
+        "calculation": "Råskiveaxel = ej strukturerat bunden",
+        "issues": [
+          {
+            "affected_part_ids": [
+              "par_1a534a5b63705ceb94038e3c4abecffb",
+              "par_3c03bd1e76675ef788943e6a71d69c26",
+              "par_886411f69d995ba281db25609ea60277",
+              "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+              "par_acfdf3811e3955d7b0f7145d6be0bbae",
+              "par_b86b313ad4735c2c8b1eeb501b79436e"
+            ],
+            "assessment_phase": "STOCK_SELECTION_INCOMPLETE",
+            "binding_status": "MISSING_INFORMATION",
+            "material_id": "birch-plywood",
+            "material_version": "screening-2026.1",
+            "required_part_grain_directions": [
+              "X",
+              "Y"
+            ],
+            "stock_grain_direction": "UNAVAILABLE",
+            "stock_id": null
+          },
+          {
+            "affected_part_ids": [
+              "par_d5ee142a4fd65acb8b425a506b89a1ce"
+            ],
+            "assessment_phase": "STOCK_SELECTION_INCOMPLETE",
+            "binding_status": "MISSING_INFORMATION",
+            "material_id": "birch-plywood-6",
+            "material_version": "screening-2026.1",
+            "required_part_grain_directions": [
+              "Y"
+            ],
+            "stock_grain_direction": "UNAVAILABLE",
+            "stock_id": null
+          }
+        ],
+        "message": "Directional sheet-material parts require an exact X or Y stock-grain axis before nesting or CAM validation.",
+        "required_action": "Bind an exact, structured X or Y stock-grain axis for every directional material stock profile; opaque evidence or acknowledgement cannot resolve this blocker.",
+        "rule_id": "DFM-GRAIN-001",
+        "rule_version": "1.0.0",
+        "status": "WARNING",
+        "summary": "Directional sheet-material parts require an exact X or Y stock-grain axis before nesting or CAM validation.",
+        "title": "Fiberriktning för skivmaterial"
+      }
+    ],
+    "parts": [
+      {
+        "depth_mm": 320.0,
+        "features": [
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 320000
+            },
+            "face": "right",
+            "feature_id": "fea_194a88cd4681508b9d0fd2ffdb544165",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_114bfa0e6e77541eab3c795a09bf57c3",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min",
+              "u_max",
+              "v_min"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 0
+            },
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 320000
+            },
+            "face": "right",
+            "feature_id": "fea_540920cad61d523ea342f8bdc680a323",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_de4784a4daf25663a960106f810e9466",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min",
+              "u_max",
+              "v_max"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 981702
+            },
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 298000
+            },
+            "face": "right",
+            "feature_id": "fea_b32fd90790da5c1597ebd16cc59ac05d",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_5a4e2eb759b9530c93201adc6ae477b4",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 327151
+            },
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 298000
+            },
+            "face": "right",
+            "feature_id": "fea_229ee0d05936573ca094670dd08aa77c",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_92e43eb3d8ac5c788b64f2e6e12ccac6",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 654552
+            },
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 976267,
+              "radius_um": 3000,
+              "width_um": 6500
+            },
+            "face": "b",
+            "feature_id": "fea_9273d12cb9c155a597f27c1ed214e6e2",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_cf46b908a1f95eca9914158daead406f",
+            "kind": "groove",
+            "open_end_reliefs": [],
+            "origin": {
+              "x_um": 0,
+              "y_um": 301750,
+              "z_um": 11868
+            },
+            "part_id": "par_3c03bd1e76675ef788943e6a71d69c26",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          }
+        ],
+        "kind": "side",
+        "material_id": "birch-plywood",
+        "name": "left-side",
+        "orientation": "YZ",
+        "part_id": "par_3c03bd1e76675ef788943e6a71d69c26",
+        "placement_um": {
+          "rotation_x_mdeg": 0,
+          "rotation_y_mdeg": 0,
+          "rotation_z_mdeg": 0,
+          "x_um": 0,
+          "y_um": 0,
+          "z_um": 0
+        },
+        "position_mm": {
+          "x": 8.9,
+          "y": 160.0,
+          "z": 500.001
+        },
+        "size_um": {
+          "depth_um": 320000,
+          "height_um": 1000003,
+          "width_um": 17801
+        },
+        "thickness_mm": 17.801,
+        "weight_basis": "conservative-finished-blank-before-machining-v1",
+        "weight_g": 3874,
+        "weight_kg": 3.874,
+        "width_mm": 1000.003
+      },
+      {
+        "depth_mm": 320.0,
+        "features": [
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 320000
+            },
+            "face": "left",
+            "feature_id": "fea_ff1c920f401d52fcb7f1b92962128475",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_c012eba184a05212a7aa03f3b59647f3",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min",
+              "u_max",
+              "v_min"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 0
+            },
+            "part_id": "par_886411f69d995ba281db25609ea60277",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 320000
+            },
+            "face": "left",
+            "feature_id": "fea_67b5519b6d005cff8646082d820e2fde",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_184efdd15c4654a08e9cf9a5614874a7",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min",
+              "u_max",
+              "v_max"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 981702
+            },
+            "part_id": "par_886411f69d995ba281db25609ea60277",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 298000
+            },
+            "face": "left",
+            "feature_id": "fea_c49a174ee03b5d0da83a7bd97d8040c2",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_1a29d7a2aa6857b893f3000ac6d97202",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 327151
+            },
+            "part_id": "par_886411f69d995ba281db25609ea60277",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 18301,
+              "radius_um": 3000,
+              "width_um": 298000
+            },
+            "face": "left",
+            "feature_id": "fea_2ad8cc2fb87e5119aee13bee70bcad11",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_86eff185501f5ec88bc06c2b69e2f01c",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 0,
+              "z_um": 654552
+            },
+            "part_id": "par_886411f69d995ba281db25609ea60277",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          },
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 976267,
+              "radius_um": 3000,
+              "width_um": 6500
+            },
+            "face": "a",
+            "feature_id": "fea_414396a0b8fe5f99b7a9fc3a23aab433",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_749b0c181a3c51de804f3294616c5bcd",
+            "kind": "groove",
+            "open_end_reliefs": [],
+            "origin": {
+              "x_um": 0,
+              "y_um": 301750,
+              "z_um": 11868
+            },
+            "part_id": "par_886411f69d995ba281db25609ea60277",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          }
+        ],
+        "kind": "side",
+        "material_id": "birch-plywood",
+        "name": "right-side",
+        "orientation": "YZ",
+        "part_id": "par_886411f69d995ba281db25609ea60277",
+        "placement_um": {
+          "rotation_x_mdeg": 0,
+          "rotation_y_mdeg": 0,
+          "rotation_z_mdeg": 0,
+          "x_um": 682200,
+          "y_um": 0,
+          "z_um": 0
+        },
+        "position_mm": {
+          "x": 691.1,
+          "y": 160.0,
+          "z": 500.001
+        },
+        "size_um": {
+          "depth_um": 320000,
+          "height_um": 1000003,
+          "width_um": 17801
+        },
+        "thickness_mm": 17.801,
+        "weight_basis": "conservative-finished-blank-before-machining-v1",
+        "weight_g": 3874,
+        "weight_kg": 3.874,
+        "width_mm": 1000.003
+      },
+      {
+        "depth_mm": 320.0,
+        "features": [
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 6500,
+              "radius_um": 3000,
+              "width_um": 676265
+            },
+            "face": "b",
+            "feature_id": "fea_61d316449e785c7cad0798544bad9607",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_c1d4254a6cd5590cbd558f9679454c75",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min",
+              "u_max"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 301750,
+              "z_um": 0
+            },
+            "part_id": "par_acfdf3811e3955d7b0f7145d6be0bbae",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          }
+        ],
+        "kind": "bottom",
+        "material_id": "birch-plywood",
+        "name": "bottom",
+        "orientation": "XY",
+        "part_id": "par_acfdf3811e3955d7b0f7145d6be0bbae",
+        "placement_um": {
+          "rotation_x_mdeg": 0,
+          "rotation_y_mdeg": 0,
+          "rotation_z_mdeg": 0,
+          "x_um": 11868,
+          "y_um": 0,
+          "z_um": 0
+        },
+        "position_mm": {
+          "x": 350.0,
+          "y": 160.0,
+          "z": 8.9
+        },
+        "size_um": {
+          "depth_um": 320000,
+          "height_um": 17801,
+          "width_um": 676265
+        },
+        "thickness_mm": 17.801,
+        "weight_basis": "conservative-finished-blank-before-machining-v1",
+        "weight_g": 2620,
+        "weight_kg": 2.62,
+        "width_mm": 676.265
+      },
+      {
+        "depth_mm": 320.0,
+        "features": [
+          {
+            "corner_strategy": "dogbone-v2",
+            "dimensions": {
+              "depth_um": 5933,
+              "diameter_um": null,
+              "length_um": 6500,
+              "radius_um": 3000,
+              "width_um": 676265
+            },
+            "face": "a",
+            "feature_id": "fea_5665063a94035a12bba0eb38dab706d6",
+            "fit_clearance_um": 500,
+            "joint_id": "joi_7eb3038264505c31bedfd27e31911f5b",
+            "kind": "groove",
+            "open_end_reliefs": [
+              "u_min",
+              "u_max"
+            ],
+            "origin": {
+              "x_um": 0,
+              "y_um": 301750,
+              "z_um": 0
+            },
+            "part_id": "par_b86b313ad4735c2c8b1eeb501b79436e",
+            "pattern_count": 1,
+            "pitch_um": null,
+            "requires_square_corners": true,
+            "through": false,
+            "tolerance_um": 50
+          }
+        ],
+        "kind": "top",
+        "material_id": "birch-plywood",
+        "name": "top",
+        "orientation": "XY",
+        "part_id": "par_b86b313ad4735c2c8b1eeb501b79436e",
+        "placement_um": {
+          "rotation_x_mdeg": 0,
+          "rotation_y_mdeg": 0,
+          "rotation_z_mdeg": 0,
+          "x_um": 11868,
+          "y_um": 0,
+          "z_um": 982202
+        },
+        "position_mm": {
+          "x": 350.0,
+          "y": 160.0,
+          "z": 991.102
+        },
+        "size_um": {
+          "depth_um": 320000,
+          "height_um": 17801,
+          "width_um": 676265
+        },
+        "thickness_mm": 17.801,
+        "weight_basis": "conservative-finished-blank-before-machining-v1",
+        "weight_g": 2620,
+        "weight_kg": 2.62,
+        "width_mm": 676.265
+      },
+      {
+        "depth_mm": 298.0,
+        "features": [],
+        "kind": "shelf",
+        "material_id": "birch-plywood",
+        "name": "shelf-r0-b0",
+        "orientation": "XY",
+        "part_id": "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+        "placement_um": {
+          "rotation_x_mdeg": 0,
+          "rotation_y_mdeg": 0,
+          "rotation_z_mdeg": 0,
+          "x_um": 11868,
+          "y_um": 0,
+          "z_um": 327401
+        },
+        "position_mm": {
+          "x": 350.0,
+          "y": 149.0,
+          "z": 336.301
+        },
+        "size_um": {
+          "depth_um": 298000,
+          "height_um": 17801,
+          "width_um": 676265
+        },
+        "thickness_mm": 17.801,
+        "weight_basis": "conservative-finished-blank-before-machining-v1",
+        "weight_g": 2440,
+        "weight_kg": 2.44,
+        "width_mm": 676.265
+      },
+      {
+        "depth_mm": 298.0,
+        "features": [],
+        "kind": "shelf",
+        "material_id": "birch-plywood",
+        "name": "shelf-r1-b0",
+        "orientation": "XY",
+        "part_id": "par_1a534a5b63705ceb94038e3c4abecffb",
+        "placement_um": {
+          "rotation_x_mdeg": 0,
+          "rotation_y_mdeg": 0,
+          "rotation_z_mdeg": 0,
+          "x_um": 11868,
+          "y_um": 0,
+          "z_um": 654802
+        },
+        "position_mm": {
+          "x": 350.0,
+          "y": 149.0,
+          "z": 663.702
+        },
+        "size_um": {
+          "depth_um": 298000,
+          "height_um": 17801,
+          "width_um": 676265
+        },
+        "thickness_mm": 17.801,
+        "weight_basis": "conservative-finished-blank-before-machining-v1",
+        "weight_g": 2440,
+        "weight_kg": 2.44,
+        "width_mm": 676.265
+      },
+      {
+        "depth_mm": 976.267,
+        "features": [],
+        "kind": "back",
+        "material_id": "birch-plywood-6",
+        "name": "back",
+        "orientation": "XZ",
+        "part_id": "par_d5ee142a4fd65acb8b425a506b89a1ce",
+        "placement_um": {
+          "rotation_x_mdeg": 0,
+          "rotation_y_mdeg": 0,
+          "rotation_z_mdeg": 0,
+          "x_um": 11868,
+          "y_um": 302000,
+          "z_um": 11868
+        },
+        "position_mm": {
+          "x": 350.0,
+          "y": 305.0,
+          "z": 500.001
+        },
+        "size_um": {
+          "depth_um": 6000,
+          "height_um": 976267,
+          "width_um": 676265
+        },
+        "thickness_mm": 6.0,
+        "weight_basis": "conservative-finished-blank-before-machining-v1",
+        "weight_g": 2694,
+        "weight_kg": 2.694,
+        "width_mm": 676.265
+      }
+    ],
+    "retention_certification_request": {
+      "application_class": "load_bearing_carcass_dado",
+      "blocking_issue": null,
+      "eligible_for_current_binding": true,
+      "engine_version": "0.9.0",
+      "excluded_applications": [
+        {
+          "application_class": "captive_inset_back_groove",
+          "capture_proven": true,
+          "joint_count": 4,
+          "retention_basis": "canonical_four_boundary_geometric_capture"
+        }
+      ],
+      "joint_geometry_fingerprint_schema": "custombuild.joint-retention-application-geometry.v1",
+      "joint_geometry_sha256": "1eee2e4346fbe97f3acdc7eb9f89e7fa593e00512dfd1c7595f1cfa85aa0f3ca",
+      "minimum_safety_factor_permille": 1800,
+      "required_load_cases": [
+        {
+          "mode": "shear",
+          "rated_design_load_n": 200
+        },
+        {
+          "mode": "withdrawal",
+          "rated_design_load_n": 50
+        }
+      ],
+      "required_materials": [
+        {
+          "actual_thickness_um": 17801,
+          "material_id": "birch-plywood",
+          "material_version": "screening-2026.1"
+        }
+      ],
+      "schema_version": "custombuild.joint-retention-certification-request.v2",
+      "signed_evidence_schema_version": "custombuild.joint-retention-signed-evidence.v2",
+      "source_design_hash": "25da8e05724e5feec068fedd7b001c1bedf0705877ca846172ff1a2570d750cf",
+      "template_version": "2.2.0"
+    },
+    "rule_evaluations": [
+      {
+        "allowed_value": 3000,
+        "applies_to_part_ids": [
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+          "par_1a534a5b63705ceb94038e3c4abecffb"
+        ],
+        "assumptions": [
+          "Hyllan screenas som enkelt upplagd balk med jämnt fördelad total last.",
+          "Angiven radlast fördelas lika mellan facken.",
+          "Elasticitetsmodulen reduceras med katalogpostens dokumenterade osäkerhet."
+        ],
+        "calculated_value": 1573,
+        "inputs": [
+          {
+            "name": "fri_spännvidd",
+            "unit": "µm",
+            "value": 664399
+          },
+          {
+            "name": "hylllast_per_rad",
+            "unit": "N",
+            "value": 200
+          },
+          {
+            "name": "dimensionerande_facklast",
+            "unit": "N",
+            "value": 200
+          },
+          {
+            "name": "elasticitetsmodul",
+            "unit": "MPa",
+            "value": 6500
+          },
+          {
+            "name": "materialosäkerhet",
+            "unit": "‰",
+            "value": 200
+          },
+          {
+            "name": "krypfaktor",
+            "unit": "‰",
+            "value": 500
+          }
+        ],
+        "rule_id": "CB-DEFLECTION-001",
+        "rule_version": "1.4.0",
+        "safety_margin_permille": 475,
+        "status": "PASS",
+        "suggested_actions": [],
+        "title": "Långtidsnedböjning för hylla",
+        "trace": [
+          {
+            "expression": "δ = 5·W·L³/(32·E_eff·b·t³) · (1 + creep)",
+            "result": "1573",
+            "unit": "µm"
+          },
+          {
+            "expression": "δ_allow = min(max_deflection, L/span_ratio)",
+            "result": "3000",
+            "unit": "µm"
+          }
+        ],
+        "unit": "µm"
+      },
+      {
+        "allowed_value": 13333,
+        "applies_to_part_ids": [
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+          "par_1a534a5b63705ceb94038e3c4abecffb"
+        ],
+        "assumptions": [
+          "Jämnt fördelad total last och enkelt upplagd hylla.",
+          "Tillåten spänning reduceras för materialosäkerhet och säkerhetsfaktor."
+        ],
+        "calculated_value": 2111,
+        "inputs": [
+          {
+            "name": "fri_spännvidd",
+            "unit": "µm",
+            "value": 664399
+          },
+          {
+            "name": "hyllbredd_i_böjning",
+            "unit": "µm",
+            "value": 298000
+          },
+          {
+            "name": "uppmätt_tjocklek",
+            "unit": "µm",
+            "value": 17801
+          },
+          {
+            "name": "säkerhetsfaktor",
+            "unit": "‰",
+            "value": 1800
+          }
+        ],
+        "rule_id": "CB-BENDING-001",
+        "rule_version": "1.4.0",
+        "safety_margin_permille": 841,
+        "status": "PASS",
+        "suggested_actions": [],
+        "title": "Böjspänning i hylla",
+        "trace": [
+          {
+            "expression": "σ_max = 3·W·L/(2·b·t²)",
+            "result": "2111",
+            "unit": "kPa"
+          },
+          {
+            "expression": "σ_allow = f_b·(1-uncertainty)/safety_factor",
+            "result": "13333",
+            "unit": "kPa"
+          }
+        ],
+        "unit": "kPa"
+      },
+      {
+        "allowed_value": 1571,
+        "applies_to_part_ids": [
+          "par_886411f69d995ba281db25609ea60277",
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998"
+        ],
+        "assumptions": [
+          "Radlasten fördelas efter fackbredd och ger halva facklasten som reaktion i vardera stödfogen.",
+          "Bärande area härleds från den kanoniska fogens verkliga spårdjup gånger hyllans överlappande djup; nominell materialtjocklek används inte som instick.",
+          "Versionspostens skjuvhållfasthet används konservativt som screening för lokal bärning/skjuvning och reduceras för osäkerhet, krypning och strukturell säkerhetsfaktor.",
+          "Screeningen verifierar endast lokalt upplag; ett vanligt DADO-spår är inte självlåsande och verifierar inte permanent hållning.",
+          "Fysisk montering kräver ett verifierat självlåsande torrförband eller en versionslåst mekanisk säkring som hindrar isärdragning i omvänd monteringsriktning.",
+          "Lim, fogmassa, epoxy och annan adhesiv låsning är förbjuden och ingår aldrig som bärande antagande.",
+          "Screeningen verifierar inte kantutbrott, slaglast, utmattning eller materialsats och är inte en certifiering av hela förbandet."
+        ],
+        "calculated_value": 100,
+        "inputs": [
+          {
+            "name": "hylltyp",
+            "unit": null,
+            "value": "fixed"
+          },
+          {
+            "name": "hylllast_per_rad",
+            "unit": "N",
+            "value": 200
+          },
+          {
+            "name": "antal_fack",
+            "unit": "fack",
+            "value": 1
+          },
+          {
+            "name": "dimensionerande_last_per_stöd",
+            "unit": "N",
+            "value": 100
+          },
+          {
+            "name": "dimensionerande_fog_id",
+            "unit": null,
+            "value": "joi_1a29d7a2aa6857b893f3000ac6d97202"
+          },
+          {
+            "name": "permanent_hållning_verifierad",
+            "unit": null,
+            "value": false
+          },
+          {
+            "name": "dado_engagement",
+            "unit": "µm",
+            "value": 5933
+          },
+          {
+            "name": "bärande_längd",
+            "unit": "µm",
+            "value": 298000
+          },
+          {
+            "name": "bärande_area",
+            "unit": "µm²",
+            "value": 1768034000
+          },
+          {
+            "name": "skjuvhållfasthet",
+            "unit": "MPa",
+            "value": 3
+          },
+          {
+            "name": "materialosäkerhet",
+            "unit": "‰",
+            "value": 200
+          },
+          {
+            "name": "krypfaktor",
+            "unit": "‰",
+            "value": 500
+          },
+          {
+            "name": "strukturell_säkerhetsfaktor",
+            "unit": "‰",
+            "value": 1800
+          },
+          {
+            "name": "materialversion",
+            "unit": null,
+            "value": "birch-plywood@screening-2026.1"
+          },
+          {
+            "name": "materialkälla",
+            "unit": null,
+            "value": "screening-library@2026.1"
+          },
+          {
+            "name": "materialkällans_titel",
+            "unit": null,
+            "value": "Custombuild conservative screening fixture; replace with supplier declaration"
+          }
+        ],
+        "rule_id": "CB-JOINT-001",
+        "rule_version": "1.4.0",
+        "safety_margin_permille": 936,
+        "status": "WARNING",
+        "suggested_actions": [
+          {
+            "action_id": "rul_9bac773d6eb45a17905b7aeb4f063666",
+            "action_type": "verify_dry_joining_system",
+            "changes": [],
+            "description": "Välj och versionslås ett självlåsande torrförband eller en demonterbar mekanisk säkring som hindrar isärdragning; adhesiver är förbjudna. Beslutet är endast designgranskning och ger inte fysisk frisläppning.",
+            "requires_user_evidence": true
+          }
+        ],
+        "title": "Lokalt upplag i hyllspår och hyllbärare",
+        "trace": [
+          {
+            "expression": "R_stöd = ceil(W_rad·fackandel/2)",
+            "result": "100",
+            "unit": "N"
+          },
+          {
+            "expression": "A_bär = verkligt dado-insticksdjup · bärande hyllängd",
+            "result": "1768034000",
+            "unit": "µm²"
+          },
+          {
+            "expression": "f_v,eff = f_v·(1-u)/(1+creep)/säkerhetsfaktor",
+            "result": "888",
+            "unit": "kPa"
+          },
+          {
+            "expression": "F_tillåten = f_v,eff·A_bär",
+            "result": "1571",
+            "unit": "N"
+          }
+        ],
+        "unit": "N"
+      },
+      {
+        "allowed_value": 4000,
+        "applies_to_part_ids": [
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "assumptions": [
+          "Regeln är en konservativ slankhetskontroll för MVP-stommen.",
+          "Ryggstyckets stabiliserande verkan förutsätter att alla genererade ryggfogar utförs."
+        ],
+        "calculated_value": 1428,
+        "inputs": [
+          {
+            "name": "höjd",
+            "unit": "µm",
+            "value": 1000003
+          },
+          {
+            "name": "bredd",
+            "unit": "µm",
+            "value": 700001
+          },
+          {
+            "name": "ryggstycke",
+            "unit": null,
+            "value": true
+          }
+        ],
+        "rule_id": "CB-STABILITY-001",
+        "rule_version": "1.4.0",
+        "safety_margin_permille": 643,
+        "status": "PASS",
+        "suggested_actions": [],
+        "title": "Sidostabilitet och skevning",
+        "trace": [
+          {
+            "expression": "slankhetsindex = höjd/bredd · 1000",
+            "result": "1428",
+            "unit": "‰"
+          }
+        ],
+        "unit": "‰"
+      },
+      {
+        "allowed_value": 1500,
+        "applies_to_part_ids": [
+          "par_3c03bd1e76675ef788943e6a71d69c26",
+          "par_886411f69d995ba281db25609ea60277",
+          "par_acfdf3811e3955d7b0f7145d6be0bbae",
+          "par_b86b313ad4735c2c8b1eeb501b79436e",
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+          "par_1a534a5b63705ceb94038e3c4abecffb",
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "assumptions": [
+          "Samma angivna last gäller per hel hyllrad och verkar vid den genererade hyllans övre yta; avdelare multiplicerar inte radlasten.",
+          "Förvarade föremåls tyngdpunkt ovanför hyllan, ojämn lastfördelning och dynamiska laster ingår inte i denna screening.",
+          "Produktmassan är bruttomassa före spår, hål och annan avverkning; slutlig massa och tyngdpunkt behöver verifieras för den fysiska möbeln.",
+          "Tippscreening använder angiven horisontalkraft och halv basdjup som hävarm.",
+          "Geometri med höjd minst fyra gånger djup kräver verifierad väggförankring."
+        ],
+        "calculated_value": 3805,
+        "inputs": [
+          {
+            "name": "produktvikt",
+            "unit": "g",
+            "value": 20562
+          },
+          {
+            "name": "belastade_hyllrader",
+            "unit": "st",
+            "value": 2
+          },
+          {
+            "name": "total_hyllast",
+            "unit": "N",
+            "value": 400
+          },
+          {
+            "name": "hyllastens_lasthöjd",
+            "unit": "µm",
+            "value": 508903
+          },
+          {
+            "name": "horisontalkraft",
+            "unit": "N",
+            "value": 50
+          },
+          {
+            "name": "kombinerad_tyngdpunkthöjd",
+            "unit": "µm",
+            "value": 505919
+          },
+          {
+            "name": "väggförankring_krävs",
+            "unit": null,
+            "value": false
+          },
+          {
+            "name": "väggförankring_verifierad",
+            "unit": null,
+            "value": false
+          }
+        ],
+        "rule_id": "CB-TIP-001",
+        "rule_version": "1.4.0",
+        "safety_margin_permille": 1536,
+        "status": "PASS",
+        "suggested_actions": [],
+        "title": "Tipprisk och krav på väggförankring",
+        "trace": [
+          {
+            "expression": "SF_tip = stabiliserande moment / vältande moment",
+            "result": "3805",
+            "unit": "‰"
+          }
+        ],
+        "unit": "‰ safety factor"
+      },
+      {
+        "allowed_value": 0,
+        "applies_to_part_ids": [
+          "par_1a534a5b63705ceb94038e3c4abecffb",
+          "par_3c03bd1e76675ef788943e6a71d69c26",
+          "par_886411f69d995ba281db25609ea60277",
+          "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+          "par_acfdf3811e3955d7b0f7145d6be0bbae",
+          "par_b86b313ad4735c2c8b1eeb501b79436e",
+          "par_d5ee142a4fd65acb8b425a506b89a1ce"
+        ],
+        "assumptions": [
+          "Okänd råskiveaxel får inte behandlas som riktningslöst material."
+        ],
+        "calculated_value": 7,
+        "inputs": [
+          {
+            "name": "binding_status",
+            "unit": null,
+            "value": "MISSING_INFORMATION"
+          },
+          {
+            "name": "affected_part_count",
+            "unit": "parts",
+            "value": 7
+          },
+          {
+            "name": "stock_ids",
+            "unit": null,
+            "value": ""
+          }
+        ],
+        "manufacturing_control": {
+          "affected_part_ids": [
+            "par_1a534a5b63705ceb94038e3c4abecffb",
+            "par_3c03bd1e76675ef788943e6a71d69c26",
+            "par_886411f69d995ba281db25609ea60277",
+            "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+            "par_acfdf3811e3955d7b0f7145d6be0bbae",
+            "par_b86b313ad4735c2c8b1eeb501b79436e",
+            "par_d5ee142a4fd65acb8b425a506b89a1ce"
+          ],
+          "assumptions": [
+            "Okänd råskiveaxel får inte behandlas som riktningslöst material."
+          ],
+          "calculation": "Råskiveaxel = ej strukturerat bunden",
+          "issues": [
+            {
+              "affected_part_ids": [
+                "par_1a534a5b63705ceb94038e3c4abecffb",
+                "par_3c03bd1e76675ef788943e6a71d69c26",
+                "par_886411f69d995ba281db25609ea60277",
+                "par_8a7b6c1d2f255fbb9b24f99232a2c998",
+                "par_acfdf3811e3955d7b0f7145d6be0bbae",
+                "par_b86b313ad4735c2c8b1eeb501b79436e"
+              ],
+              "assessment_phase": "STOCK_SELECTION_INCOMPLETE",
+              "binding_status": "MISSING_INFORMATION",
+              "material_id": "birch-plywood",
+              "material_version": "screening-2026.1",
+              "required_part_grain_directions": [
+                "X",
+                "Y"
+              ],
+              "stock_grain_direction": "UNAVAILABLE",
+              "stock_id": null
+            },
+            {
+              "affected_part_ids": [
+                "par_d5ee142a4fd65acb8b425a506b89a1ce"
+              ],
+              "assessment_phase": "STOCK_SELECTION_INCOMPLETE",
+              "binding_status": "MISSING_INFORMATION",
+              "material_id": "birch-plywood-6",
+              "material_version": "screening-2026.1",
+              "required_part_grain_directions": [
+                "Y"
+              ],
+              "stock_grain_direction": "UNAVAILABLE",
+              "stock_id": null
+            }
+          ],
+          "message": "Directional sheet-material parts require an exact X or Y stock-grain axis before nesting or CAM validation.",
+          "required_action": "Bind an exact, structured X or Y stock-grain axis for every directional material stock profile; opaque evidence or acknowledgement cannot resolve this blocker.",
+          "rule_id": "DFM-GRAIN-001",
+          "rule_version": "1.0.0",
+          "status": "WARNING",
+          "summary": "Directional sheet-material parts require an exact X or Y stock-grain axis before nesting or CAM validation.",
+          "title": "Fiberriktning för skivmaterial"
+        },
+        "rule_id": "DFM-GRAIN-001",
+        "rule_version": "1.0.0",
+        "safety_margin_permille": -1000,
+        "status": "WARNING",
+        "suggested_actions": [],
+        "title": "Fiberriktning för skivmaterial",
+        "trace": [
+          {
+            "expression": "structured stock-grain axis",
+            "result": "MISSING_INFORMATION",
+            "unit": null
+          }
+        ],
+        "unit": "parts"
+      }
+    ],
+    "spec": {
+      "back_material": {
+        "bending_strength_mpa": 24,
+        "creep_factor_permille": 500,
+        "density_kg_m3": 680,
+        "elastic_modulus_mpa": 5000,
+        "grain_direction": "x",
+        "machining_allowance_um": 0,
+        "material_id": "birch-plywood-6",
+        "material_type": "sheet_good",
+        "max_supported_thickness_um": 6500,
+        "min_supported_thickness_um": 5500,
+        "name": "Björkplywood 6 mm – indikativa screeningvärden",
+        "nominal_thickness_um": 6000,
+        "property_uncertainty_permille": 250,
+        "shear_strength_mpa": 3,
+        "source": {
+          "note": "Not certified material data; batch verification is required before production.",
+          "revision": "2026.1",
+          "source_id": "screening-library",
+          "title": "Custombuild conservative screening fixture; replace with supplier declaration",
+          "uri": null,
+          "valid_from": null
+        },
+        "version": "screening-2026.1"
+      },
+      "design_id": "a826760d-8c3f-4183-a184-5799a00f0e5b",
+      "engine_version": "0.9.0",
+      "material": {
+        "bending_strength_mpa": 30,
+        "creep_factor_permille": 500,
+        "density_kg_m3": 680,
+        "elastic_modulus_mpa": 6500,
+        "grain_direction": "x",
+        "machining_allowance_um": 0,
+        "material_id": "birch-plywood",
+        "material_type": "sheet_good",
+        "max_supported_thickness_um": 19000,
+        "min_supported_thickness_um": 17000,
+        "name": "Björkplywood 18 mm – indikativa screeningvärden",
+        "nominal_thickness_um": 18000,
+        "property_uncertainty_permille": 200,
+        "shear_strength_mpa": 3,
+        "source": {
+          "note": "Not certified material data; batch verification is required before production.",
+          "revision": "2026.1",
+          "source_id": "screening-library",
+          "title": "Custombuild conservative screening fixture; replace with supplier declaration",
+          "uri": null,
+          "valid_from": null
+        },
+        "version": "screening-2026.1"
+      },
+      "parameters": {
+        "actual_thickness_um": 17801,
+        "assumed_horizontal_force_n": 50,
+        "back_panel": "inset_groove",
+        "back_thickness_um": 6000,
+        "base_cabinet_count": 0,
+        "base_cabinet_depth_um": 0,
+        "base_cabinet_height_um": 0,
+        "bay_width_ratios_ppm": [],
+        "deflection_span_ratio": 200,
+        "depth_um": 320000,
+        "edge_band_thickness_um": 0,
+        "height_um": 1000003,
+        "joint_system": "dado",
+        "max_deflection_um": 3000,
+        "nominal_thickness_um": 18000,
+        "plinth_height_um": 0,
+        "reinforcement_mode": "manual",
+        "shelf_count": 2,
+        "shelf_height_ratios_ppm": [],
+        "shelf_load_n": 200,
+        "shelf_mount": "fixed",
+        "shelf_side_clearance_um": 1000,
+        "structural_safety_factor_permille": 1800,
+        "vertical_divider_count": 0,
+        "wall_anchor": {
+          "anchor_system_id": null,
+          "evidence_id": null,
+          "required": false,
+          "verified": false,
+          "wall_substrate": null
+        },
+        "width_um": 700001
+      },
+      "revision": 1,
+      "status": "draft",
+      "template_id": "bookcase",
+      "template_version": "2.2.0"
+    },
+    "status": "WARNING",
+    "template_version": "2.2.0",
+    "total_weight_kg": 20.562,
+    "weight_basis": "conservative-finished-blank-before-machining-v1"
+  },
+  "source_furniture": {
+    "bridge_version": "furniture-production-1.0.0",
+    "furniture_design_hash": "77d510f263a903814b83e5f8395a6e672bdacf00404242d3f19258edb0d59dd5",
+    "schema_version": "custombuild.furniture-production-source.v1",
+    "workspace": {
+      "design": {
+        "back_material": {
+          "batch_id": null,
+          "material_id": "birch-plywood-6",
+          "measured_thickness_um": 6000,
+          "version": "screening-2026.1"
+        },
+        "design_id": "a826760d-8c3f-4183-a184-5799a00f0e5b",
+        "hardware": null,
+        "intent": {
+          "depth_um": 320000,
+          "divider_count": 0,
+          "family": "shelving",
+          "height_um": 1000003,
+          "shelf_count": 2,
+          "shelf_height_ratios_ppm": [],
+          "shelf_load_n": 200,
+          "width_um": 700001
+        },
+        "material": {
+          "batch_id": null,
+          "material_id": "birch-plywood",
+          "measured_thickness_um": 17801,
+          "version": "screening-2026.1"
+        },
+        "revision": 1,
+        "schema_version": "custombuild.furniture-design.v1"
+      },
+      "manufacturing": {
+        "machine_profile_id": "custombuild-router-1325-linuxcnc",
+        "machine_profile_version": "1.0.0-validation",
+        "stock_grain_axis": "x",
+        "stock_height_um": 1220000,
+        "stock_width_um": 2440000
+      },
+      "schema_version": "custombuild.furniture-workspace.v1"
+    },
+    "workspace_sha256": "cb0c7fd1f09200de82dbef637ff42f47d52b8edbd449c1198c5d6c122c0316bc"
+  }
+}

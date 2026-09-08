@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { newFurnitureWorkspace, type FurnitureFamily } from "../lib/furniture-workspace";
 import { provisionLiveProject, selectProjectBeforeNavigation } from "./live-helpers";
@@ -18,13 +19,21 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
   });
   for (const family of ["table", "chest_of_drawers", "shelving"] as FurnitureFamily[]) {
     test(`${family}: spara, byta profil, öppna igen och hämta CAD`, async ({ page, request }, info) => {
-      test.setTimeout(240_000);
+      test.setTimeout(family === "shelving" ? 480_000 : 240_000);
       const provisioned = await provisionLiveProject(request, info, `furniture-${family}`);
       const base = process.env.PLAYWRIGHT_API_URL!.replace(/\/$/, "");
       const headers = { Authorization: `Bearer ${process.env.PLAYWRIGHT_DEMO_TOKEN || "demo-nordic-owner"}` };
       const path = `${base}/v1/furniture/projects/${provisioned.project.id}`;
+      const initial = newFurnitureWorkspace(family);
+      if (family === "shelving") {
+        initial.design.intent = { ...initial.design.intent, width_um: 700_001,
+          height_um: 1_000_003, shelf_count: 2, divider_count: 0 };
+        initial.manufacturing = { machine_profile_id: "custombuild-router-1325-linuxcnc",
+          machine_profile_version: "1.0.0-validation", stock_width_um: 2_440_000,
+          stock_height_um: 1_220_000, stock_grain_axis: "x" };
+      }
       const saved = await request.put(`${path}/draft`, { headers,
-        data: { expected_revision: 0, workspace: newFurnitureWorkspace(family) } });
+        data: { expected_revision: 0, workspace: initial } });
       expect(saved.status(), await saved.text()).toBe(200);
       await selectProjectBeforeNavigation(page, provisioned);
       await page.goto("/furniture");
@@ -68,6 +77,54 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       await page.setViewportSize({ width: 390, height: 844 });
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
       await attachView(page, info, `${family}-mobile`);
+      if (family === "shelving") {
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await page.getByRole("button", { name: "Förbered tillverkning" }).click();
+        await expect(page.getByRole("heading", { name: "Förbered tillverkningen" })).toBeVisible();
+        const savedVersion = page.waitForResponse(r => r.request().method() === "POST"
+          && new URL(r.url()).pathname === `/v1/projects/${provisioned.project.id}/versions`);
+        await page.getByRole("button", { name: "Spara och kontrollera" }).click();
+        const versionResponse = await savedVersion;
+        expect(versionResponse.status(), await versionResponse.text()).toBe(201);
+        const version = await versionResponse.json();
+        expect(version.spec_json.parameters.actual_thickness_um).toBe(17_801);
+        expect(version.spec_json.parameters.width_um).toBe(700_001);
+        expect(version.result_json.source_furniture.workspace.design.revision).toBe(2);
+        await page.getByRole("checkbox", { name: "Jag har läst och kontrollerat varningarna ovan." }).check();
+        await page.getByRole("button", { name: "Godkänn designkontroll", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Skapa underlag", exact: true })).toBeEnabled();
+        await page.getByRole("button", { name: "Skapa underlag", exact: true }).click();
+        const downloadButton = page.getByRole("button", { name: "Ladda ned granskningspaket (.zip)", exact: true });
+        await expect(downloadButton).toBeVisible({ timeout: 200_000 });
+        const fullDownloadEvent = page.waitForEvent("download");
+        await downloadButton.click();
+        const fullDownload = await fullDownloadEvent;
+        expect(await fullDownload.failure()).toBeNull();
+        const productionBytes = await readFile((await fullDownload.path())!);
+        expect(productionBytes.length).toBeGreaterThan(1_000);
+        const exportedSource = JSON.parse(execFileSync("python3", ["-c", [
+          "import hashlib,json,sys,zipfile",
+          "with zipfile.ZipFile(sys.argv[1]) as z:",
+          " data=z.read('design/furniture-source.json')",
+          " manifest=json.loads(z.read('manifest.json'))",
+          " entry=next(e for e in manifest['artifacts'] if e['path']=='design/furniture-source.json')",
+          " assert hashlib.sha256(data).hexdigest()==entry['sha256']",
+          " assert manifest['physical_cutting_authorized'] is False",
+          " print(data.decode())",
+        ].join("\n"), (await fullDownload.path())!], { encoding: "utf8" }));
+        expect(exportedSource).toEqual(version.result_json.source_furniture);
+        await attachView(page, info, "shelving-production");
+        await page.reload();
+        await projectSelect.selectOption(provisioned.project.id);
+        await page.getByRole("button", { name: "Förbered tillverkning" }).click();
+        await expect(downloadButton).toBeVisible({ timeout: 30_000 });
+        const restored = await request.get(`${base}/v1/projects/${provisioned.project.id}/production-state`, { headers });
+        expect(restored.ok()).toBe(true);
+        expect((await restored.json()).version.id).toBe(version.id);
+        await page.setViewportSize({ width: 390, height: 844 });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+        await attachView(page, info, "shelving-production-mobile");
+      }
     });
   }
 });

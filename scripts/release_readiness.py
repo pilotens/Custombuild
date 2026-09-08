@@ -1915,7 +1915,7 @@ def _check_live_acceptance_semantics(tree: ast.Module, relative: str, issues: li
         "GENERATION_PLAN_PATH": "validation/generation-plan.json",
         "GENERATION_PLAN_ROLE": "GENERATION_PLAN",
         "GENERATION_PLAN_SCHEMA_VERSION": "custombuild.generation-plan.v2",
-        "PRODUCTION_PIPELINE_VERSION": "production-pipeline-1.11.0",
+        "PRODUCTION_PIPELINE_VERSION": "production-pipeline-1.12.0",
         "OPERATIONS_SCHEMA_VERSION": "custombuild.operations.v2",
         "OPERATIONS_ENGINE_VERSION": "semantic-operations-1.3.0",
         "STOCK_PROFILE_MISSING": "STOCK_PROFILE_MISSING",

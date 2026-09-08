@@ -42,3 +42,6 @@
 .intro { max-width: 700px; padding: 70px 0; }
 @media (max-width: 1120px) { .page { padding-inline: 20px; }.titleRow { align-items: start; flex-direction: column; }.layout { grid-template-columns: 240px minmax(0, 1fr); }.profiles { grid-column: 1/-1; }.profiles form fieldset { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }.model { position: static; } }
 @media (max-width: 680px) { .page { padding-inline: 12px; }.header { gap: 16px; }.header > span { display: none; }.titleRow { padding-top: 26px; }.projectActions { width: 100%; }.projectActions > label { flex: 1 1 130px; }.layout { display: flex; flex-direction: column; }.controls, .model, .profiles { width: 100%; }.model { order: -1; }.canvas { height: 390px; min-height: 320px; }.rules { grid-template-columns: 1fr; }.profiles form fieldset { display: block; }.controls, .profiles, .review, .history { padding: 18px; } }
+.preparation { max-width: 1400px; margin: 0 auto; padding: 24px; min-width: 0; overflow-wrap: anywhere; }
+.preparation button { cursor: pointer; }
+@media (max-width: 640px) { .preparation { padding: 12px; } }
