@@ -155,6 +155,7 @@ from .design_service import (
 from .furniture_production import (
     bind_saved_furniture_source,
     furniture_production_input,
+    saved_furniture_production_hash,
     saved_furniture_workspace,
 )
 from .job_policy import GENERATION_JOB_TIMEOUT
@@ -5994,6 +5995,8 @@ async def upload_external_evidence(
             DesignVersion.design_hash == design_hash,
         )
     )
+    if not belongs_to_project:
+        belongs_to_project = saved_furniture_production_hash(project) == design_hash
     if not belongs_to_project:
         raise HTTPException(
             status_code=409,

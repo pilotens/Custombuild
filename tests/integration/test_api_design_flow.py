@@ -731,9 +731,11 @@ def test_external_evidence_is_server_hashed_and_bound_to_exact_design(
 
 @pytest.mark.integration
 @pytest.mark.cad
+@pytest.mark.parametrize("furniture_source", [False, True], ids=["legacy", "furniture-studio"])
 def test_signed_retention_executable_cam_release_and_historical_download_are_bound_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
     _restore_real_cam_promotion_gates: None,
+    furniture_source: bool,
 ) -> None:
     object_storage = _MultiObjectImmutableStorage()
     monkeypatch.setattr(worker_tasks, "SessionFactory", get_session_factory())
@@ -805,6 +807,30 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         "measured_back_thickness_mm": 5.8,
         "edge_band_mm": 1.2,
     }
+    furniture_document = None
+    if furniture_source:
+        from app.furniture_production import furniture_production_input
+        from custombuild_domain.furniture import FurnitureWorkspace
+
+        from tests.unit.test_furniture_families import workspace
+
+        furniture_document = workspace(
+            "shelving",
+            width_um=700_001,
+            height_um=1_000_003,
+            depth_um=320_000,
+            shelf_count=2,
+            divider_count=0,
+            shelf_load_n=98,
+        ).model_dump(mode="json")
+        furniture_document["design"]["material"].update(material_id="mdf")
+        furniture_document["design"]["back_material"].update(
+            material_id="mdf-6",
+            measured_thickness_um=5_800,
+        )
+        spec = furniture_production_input(
+            FurnitureWorkspace.model_validate(furniture_document)
+        ).model_dump(mode="json")
     production_context = structured_workshop_context()
     profiles = production_context["stock_profiles"]
     assert isinstance(profiles, list)
@@ -825,11 +851,34 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
     ]
 
     with TestClient(app) as client:
-        project = client.post(
+        project_response = client.post(
             "/v1/projects",
             headers=HEADERS,
-            json={"name": "Signed retention trust binding"},
-        ).json()
+            json={"name": f"Signed retention trust binding {uuid4()}"},
+        )
+        assert project_response.status_code == 201, project_response.text
+        project = project_response.json()
+        source_snapshot = None
+        if furniture_document is not None:
+            saved_furniture = client.put(
+                f"/v1/furniture/projects/{project['id']}/draft",
+                headers=HEADERS,
+                json={"expected_revision": 0, "workspace": furniture_document},
+            )
+            assert saved_furniture.status_code == 200, saved_furniture.text
+            saved = saved_furniture.json()
+            source_preview_request = {
+                "expected_revision": saved["revision"],
+                "expected_design_hash": saved["preview"]["design"]["design_hash"],
+            }
+            source_preview_path = f"/v1/furniture/projects/{project['id']}/production-preview"
+            source_preview = client.post(
+                source_preview_path,
+                headers=HEADERS,
+                json=source_preview_request,
+            )
+            assert source_preview.status_code == 200, source_preview.text
+            source_snapshot = source_preview.json()["source_furniture"]
         certification_preview = client.post(
             "/v1/designs/preview",
             headers=HEADERS,
@@ -838,6 +887,8 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         )
         assert certification_preview.status_code == 200
         request = certification_preview.json()["retention_certification_request"]
+        if source_snapshot is not None:
+            assert source_preview.json()["preview"]["retention_certification_request"] == request
         assert request["eligible_for_current_binding"] is True
         assert request["application_class"] == "load_bearing_carcass_dado"
         assert request["excluded_applications"] == [
@@ -849,18 +900,19 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
             }
         ]
         assert request["joint_geometry_fingerprint_schema"] == (JOINT_GEOMETRY_FINGERPRINT_SCHEMA)
-        draft = client.put(
-            f"/v1/projects/{project['id']}/draft",
-            headers=HEADERS,
-            json={
-                "expected_draft_revision": 0,
-                "template_id": "shelving",
-                "spec": spec,
-                "workspace_spec": valid_workspace_intent(production_context=production_context),
-            },
-        )
-        assert draft.status_code == 200
-        assert draft.json()["design_hash"] == request["source_design_hash"]
+        if source_snapshot is None:
+            draft = client.put(
+                f"/v1/projects/{project['id']}/draft",
+                headers=HEADERS,
+                json={
+                    "expected_draft_revision": 0,
+                    "template_id": "shelving",
+                    "spec": spec,
+                    "workspace_spec": valid_workspace_intent(production_context=production_context),
+                },
+            )
+            assert draft.status_code == 200
+            assert draft.json()["design_hash"] == request["source_design_hash"]
 
         report_bytes = b"independent exact-geometry retention test report"
         instruction_bytes = b"exact mechanical retention installation instruction"
@@ -962,6 +1014,19 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         )
         assert bound_preview.status_code == 200, bound_preview.text
         bound = bound_preview.json()
+        if source_snapshot is not None:
+            source_bound = client.post(
+                source_preview_path,
+                headers=HEADERS,
+                json={
+                    **source_preview_request,
+                    "joint_retention_evidence_id": uploaded.json()["id"],
+                },
+            )
+            assert source_bound.status_code == 200, source_bound.text
+            assert source_bound.json()["source_furniture"] == source_snapshot
+            assert source_bound.json()["preview"]["spec"] == bound["spec"]
+            assert source_bound.json()["preview"]["design_hash"] == bound["design_hash"]
         assert bound["spec"]["parameters"]["back_thickness_um"] == 5_800
         assert (
             next(part for part in bound["parts"] if part["kind"] == "back")["thickness_mm"] == 5.8
@@ -973,6 +1038,8 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         )
         payload["expected_design_hash"] = bound["design_hash"]
         payload["joint_retention_evidence_id"] = uploaded.json()["id"]
+        if source_snapshot is not None:
+            payload["source_furniture"] = source_snapshot
         version = client.post(
             f"/v1/projects/{project['id']}/versions",
             headers=HEADERS,
@@ -1094,7 +1161,9 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         assert package_status["nesting_included"] is True
         assert package_status["physical_cutting_authorized"] is False
         assert result["workshop_readiness"]["physical_cutting_authorized"] is False
-        assert result["workshop_readiness"]["edge_band_selection_required"] is True
+        assert result["workshop_readiness"]["edge_band_selection_required"] is (
+            not furniture_source
+        )
         assert result["production_machine_program"] is False
 
         listing = client.get(
@@ -1152,7 +1221,12 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
             assert operations["mode"] == "VALIDATION"
             frozen_spec = json.loads(archive.read("design/design-spec.json"))
             assert frozen_spec["spec"]["parameters"]["back_thickness_um"] == 5_800
-            assert frozen_spec["spec"]["parameters"]["edge_band_thickness_um"] == 1_200
+            assert frozen_spec["spec"]["parameters"]["edge_band_thickness_um"] == (
+                0 if furniture_source else 1_200
+            )
+            if source_snapshot is not None:
+                assert json.loads(archive.read("design/furniture-source.json")) == source_snapshot
+                assert frozen_spec["spec"]["parameters"]["width_um"] == 700_001
             assert archive.read(JOINT_RETENTION_SIGNED_EVIDENCE_PATH) == evidence_bytes
 
         production_profile_bytes = _accepted_production_profile_for_review_bundle(
@@ -1383,6 +1457,27 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         )
 
         changed_spec = spec | {"width_mm": 710}
+        second_source = {}
+        if source_snapshot is not None:
+            changed_furniture = deepcopy(source_snapshot["workspace"])
+            changed_furniture["design"]["intent"]["width_um"] = 710_000
+            saved_furniture = client.put(
+                f"/v1/furniture/projects/{project['id']}/draft",
+                headers=HEADERS,
+                json={"expected_revision": 1, "workspace": changed_furniture},
+            )
+            assert saved_furniture.status_code == 200, saved_furniture.text
+            saved = saved_furniture.json()
+            second_preview = client.post(
+                source_preview_path,
+                headers=HEADERS,
+                json={
+                    "expected_revision": 2,
+                    "expected_design_hash": saved["preview"]["design"]["design_hash"],
+                },
+            )
+            assert second_preview.status_code == 200, second_preview.text
+            second_source = {"source_furniture": second_preview.json()["source_furniture"]}
         second = client.post(
             f"/v1/projects/{project['id']}/versions",
             headers=HEADERS,
@@ -1391,7 +1486,8 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
                 changed_spec,
                 expected_current_revision=int(version.json()["revision"]),
                 production_context=production_context,
-            ),
+            )
+            | second_source,
         )
         assert second.status_code == 201, second.text
         assert second.json()["revision"] == int(version.json()["revision"]) + 1

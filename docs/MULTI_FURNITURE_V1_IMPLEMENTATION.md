@@ -97,6 +97,12 @@ familjernas geometri, renderade delmått mot CAD-underlaget, profilbyten, tillå
 tenantavgränsning, gamla/nya utkast och exporternas identitet. Webbläsartestet
 `e2e/furniture-live.spec.ts` kör hela kedjan mot Compose: alla tre familjer,
 tjockleksbyte, sparning, återöppning och nedladdning från den riktiga CAD-workern.
+För hyllsystem fortsätter det till en sparad tillverkningsrevision, fullständigt
+CAD-paket med verifierad möbelkälla samt återöppning på dator och mobil.
+Integrationsprovet `test_signed_retention_executable_cam_release_and_historical_download_are_bound_end_to_end`
+kör dessutom båda arbetsytorna genom signerad foggranskning, nesting, operationer,
+maskinbunden CAM-kandidat och oföränderlig historisk nedladdning. Dess intyg,
+maskinprofil och materialunderlag är testdata och kvalificerar ingen verklig verkstad.
 
 ## Återstående villkor för ett kostsamt fysiskt prov
 

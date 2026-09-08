@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from custombuild_domain.furniture import FurnitureWorkspace
+from custombuild_domain.furniture_engine import build_furniture
 from custombuild_domain.furniture_production import (
     FurnitureProductionSource,
     assert_furniture_production_spec,
@@ -54,6 +55,25 @@ def furniture_production_input(workspace: FurnitureWorkspace) -> BookcasePreview
     if normalized != spec:
         raise ValueError("furniture production conversion changed canonical inputs")
     return result
+
+
+def saved_furniture_production_hash(project: Project) -> str | None:
+    """Allow qualification evidence only for the exact currently saved shelving."""
+    if (project.draft_spec_json or {}).get("schema_version") != "custombuild.furniture-design.v1":
+        return None
+    try:
+        workspace = saved_furniture_workspace(project)
+        result = build_furniture(workspace.design)
+    except ValueError:
+        return None
+    if (
+        workspace.design.design_id != project.id
+        or workspace.design.revision != project.draft_revision
+        or result.design_hash != project.draft_design_hash
+        or result.shelving_result is None
+    ):
+        return None
+    return result.shelving_result.design_hash
 
 
 def bind_saved_furniture_source(

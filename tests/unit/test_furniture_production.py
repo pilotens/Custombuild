@@ -4,7 +4,8 @@ from copy import deepcopy
 
 import pytest
 from app.design_service import normalize_preview
-from app.furniture_production import furniture_production_input
+from app.furniture_production import furniture_production_input, saved_furniture_production_hash
+from app.models import Project
 from custombuild_domain import build_bookcase
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
@@ -78,6 +79,30 @@ def test_batch_only_change_preserves_parts_but_changes_production_source():
         furniture_production_source(first).workspace_sha256
         != furniture_production_source(second).workspace_sha256
     )
+
+
+@pytest.mark.parametrize("mismatch", [None, "revision", "identity", "hash", "family"])
+def test_evidence_design_hash_is_derived_only_from_current_saved_shelving(mismatch):
+    selected = workspace("table" if mismatch == "family" else "shelving")
+    result = build_furniture(selected.design)
+    project = Project(
+        id=selected.design.design_id,
+        draft_revision=selected.design.revision,
+        draft_spec_json=selected.design.model_dump(mode="json"),
+        draft_workspace_json={"manufacturing": None},
+        draft_design_hash=result.design_hash,
+    )
+    if mismatch == "revision":
+        project.draft_revision += 1
+    elif mismatch == "identity":
+        project.id = "different-project"
+    elif mismatch == "hash":
+        project.draft_design_hash = "0" * 64
+    if mismatch is not None:
+        assert saved_furniture_production_hash(project) is None
+    else:
+        assert result.shelving_result is not None
+        assert saved_furniture_production_hash(project) == result.shelving_result.design_hash
 
 
 def test_frozen_source_rejects_changed_thickness_or_model_defaults():
