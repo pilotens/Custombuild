@@ -13,6 +13,14 @@
 .page label { display: grid; gap: 7px; font-size: 13px; font-weight: 600; margin: 0 0 14px; }
 .page label span { color: #62746b; font-weight: 400; }
 .page input, .page select { width: 100%; min-width: 0; min-height: 40px; border: 1px solid #bcc8bf; border-radius: 6px; padding: 8px 10px; background: #fff; color: #20312d; font: inherit; }
+.page input[type="checkbox"] { width: 18px; height: 18px; min-height: 18px; padding: 0; accent-color: #235b4f; }
+.page input[type="file"] { max-width: 250px; font-size: 12px; }
+.controls details, .review > details { margin-block: 18px; padding-top: 14px; border-top: 1px solid #d4dad5; }
+.controls summary, .review > details > summary { cursor: pointer; font-size: 14px; font-weight: 600; margin-bottom: 14px; }
+.review > details { overflow-x: auto; }
+.review table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.review th, .review td { text-align: left; padding: 8px; border-bottom: 1px solid #d4dad5; }
+.review td:first-child { overflow-wrap: anywhere; }
 .page button { border: 1px solid #a8bbb0; background: #fff; border-radius: 6px; padding: 10px 14px; color: #20312d; cursor: pointer; min-height: 40px; font: inherit; font-size: 13px; }
 .page button:disabled { opacity: .5; cursor: default; }
 .page button:focus-visible, .page a:focus-visible, .page input:focus-visible, .page select:focus-visible { outline: 3px solid #be8c48; outline-offset: 3px; }

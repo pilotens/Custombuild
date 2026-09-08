@@ -692,6 +692,11 @@ export interface components {
             /** Size Bytes */
             size_bytes: number;
         };
+        /**
+         * BackPanelType
+         * @enum {string}
+         */
+        BackPanelType: "none" | "surface_mounted" | "inset_groove";
         /** Body_inspect_import_v1_projects__project_id__imports_inspect_post */
         Body_inspect_import_v1_projects__project_id__imports_inspect_post: {
             /** Document */
@@ -1127,6 +1132,7 @@ export interface components {
              */
             design_id: string;
             hardware?: components["schemas"]["HardwareSelection"] | null;
+            installation?: components["schemas"]["InstallationSpace"] | null;
             /** Intent */
             intent: components["schemas"]["ShelvingIntent"] | components["schemas"]["TableIntent"] | components["schemas"]["ChestIntent"];
             material?: components["schemas"]["MaterialSelection"];
@@ -1309,6 +1315,38 @@ export interface components {
             /** Unknown Fields */
             unknown_fields: string[];
         };
+        /**
+         * InstallationSpace
+         * @description Customer measurements, distinct from the generated carcass dimensions.
+         *
+         *     Allowances reserve space for installation or separately designed trim. None
+         *     means unmeasured, never zero. They do not create a trim part or qualify it.
+         */
+        InstallationSpace: {
+            /** Bottom Allowance Um */
+            bottom_allowance_um?: number | null;
+            /** Depth Um */
+            depth_um: number;
+            /** Front Allowance Um */
+            front_allowance_um?: number | null;
+            /** Height Um */
+            height_um: number;
+            /** Left Allowance Um */
+            left_allowance_um?: number | null;
+            /** Rear Allowance Um */
+            rear_allowance_um?: number | null;
+            /** Right Allowance Um */
+            right_allowance_um?: number | null;
+            /** Top Allowance Um */
+            top_allowance_um?: number | null;
+            /**
+             * Width Includes Trim
+             * @default false
+             */
+            width_includes_trim: boolean;
+            /** Width Um */
+            width_um: number;
+        };
         /** JobRead */
         JobRead: {
             /** Attempts */
@@ -1361,6 +1399,11 @@ export interface components {
          * @description A separate planning profile. It grants no physical machine approval.
          */
         ManufacturingSelection: {
+            /**
+             * Edge Margin Um
+             * @default 0
+             */
+            edge_margin_um: number;
             /** Machine Profile Id */
             machine_profile_id: string;
             /**
@@ -1624,8 +1667,20 @@ export interface components {
             /** Two Sided Registrations */
             two_sided_registrations?: components["schemas"]["WorkshopTwoSidedRegistration"][] | null;
         };
+        /**
+         * ShelfMount
+         * @enum {string}
+         */
+        ShelfMount: "fixed" | "adjustable";
         /** ShelvingIntent */
         ShelvingIntent: {
+            /** @default inset_groove */
+            back_panel: components["schemas"]["BackPanelType"];
+            /**
+             * Bay Width Ratios Ppm
+             * @default []
+             */
+            bay_width_ratios_ppm: number[];
             /**
              * Depth Um
              * @default 320000
@@ -1647,6 +1702,11 @@ export interface components {
              */
             height_um: number;
             /**
+             * Plinth Height Um
+             * @default 0
+             */
+            plinth_height_um: number;
+            /**
              * Shelf Count
              * @default 4
              */
@@ -1661,6 +1721,8 @@ export interface components {
              * @default 200
              */
             shelf_load_n: number;
+            /** @default fixed */
+            shelf_mount: components["schemas"]["ShelfMount"];
             /**
              * Width Um
              * @default 900000

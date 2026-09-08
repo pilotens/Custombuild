@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { newFurnitureWorkspace, type FurnitureFamily } from "../lib/furniture-workspace";
 import { provisionLiveProject, selectProjectBeforeNavigation } from "./live-helpers";
@@ -16,6 +17,61 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     if (info.status !== info.expectedStatus && await page.locator("main").count()) {
       console.log("Furniture workspace at failure:", await page.locator("main").innerText());
     }
+  });
+  test("kundmått 4340 × 2540 × 280: arbetsfil, återöppning och spårbart CAD-underlag", async ({ page, request }, info) => {
+    test.setTimeout(300_000);
+    const provisioned = await provisionLiveProject(request, info, "customer-bookcase");
+    await selectProjectBeforeNavigation(page, provisioned);
+    await page.goto("/furniture");
+    await expect(page.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    await page.getByLabel("Läs arbetsfil (JSON)").setInputFiles(fileURLToPath(new URL(
+      "../../../examples/furniture/bookcase-4340x2540x280.json", import.meta.url)));
+    await expect(page.getByText(/Arbetsfilen har kontrollerats/)).toBeVisible();
+    await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4340");
+    await expect(page.getByLabel("Höjd (mm)", { exact: true })).toHaveValue("2540");
+    await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("280");
+    const created = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/projects");
+    await page.getByRole("button", { name: "Spara revision" }).click();
+    const response = await created;
+    expect(response.status()).toBe(201);
+    const project = await response.json();
+    await expect(page.getByText("Revision 1 är sparad.")).toBeVisible();
+    await page.reload();
+    const projects = page.getByRole("combobox", { name: "Öppna möbelprojekt" });
+    await expect(projects.locator(`option[value="${project.id}"]`)).toHaveCount(1);
+    await projects.selectOption(project.id);
+    await page.getByText("Kundens yttermått och listutrymme", { exact: true }).click();
+    await expect(page.getByLabel("Kundlängd inklusive reserverat utrymme (mm)")).toHaveValue("4340");
+    await expect(page.getByLabel("Längden inkluderar list", { exact: true })).toBeChecked();
+    await expect(page.getByLabel("Vänster · reserverat (mm)")).toBeEmpty();
+    await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
+    await page.getByText("Råformat att stämma av med verkstaden", { exact: true }).click();
+    await expect(page.getByRole("table")).toHaveCount(2);
+    await page.getByRole("button", { name: "Skapa granskningspaket" }).click();
+    const link = page.getByRole("link", { name: /Hämta STEP, GLB, DXF/ });
+    await expect(link).toBeVisible({ timeout: 200_000 });
+    const downloadEvent = page.waitForEvent("download");
+    await link.click();
+    const download = await downloadEvent;
+    expect(await download.failure()).toBeNull();
+    const exported = JSON.parse(execFileSync("python3", ["-c", [
+      "import hashlib,json,sys,zipfile",
+      "with zipfile.ZipFile(sys.argv[1]) as z:",
+      " manifest=json.loads(z.read('manifest.json'))",
+      " for entry in manifest['files']:",
+      "  assert hashlib.sha256(z.read(entry['path'])).hexdigest()==entry['sha256']",
+      " assert z.read('design/model.step').startswith(b'ISO-10303-21;')",
+      " assert manifest['physical_cutting_authorized'] is False",
+      " print(z.read('manufacturing/workshop-handoff.json').decode())",
+    ].join("\n"), (await download.path())!], { encoding: "utf8" }));
+    expect(exported.dimensions.installation.width_um).toBe(4_340_000);
+    expect(exported.dimensions.installation.height_um).toBe(2_540_000);
+    expect(exported.dimensions.installation.depth_um).toBe(280_000);
+    expect(exported.dimensions.state).toBe("requires_resolution");
+    await attachView(page, info, "customer-bookcase-dimensions");
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await attachView(page, info, "customer-bookcase-mobile");
   });
   for (const family of ["table", "chest_of_drawers", "shelving"] as FurnitureFamily[]) {
     test(`${family}: spara, byta profil, öppna igen och hämta CAD`, async ({ page, request }, info) => {

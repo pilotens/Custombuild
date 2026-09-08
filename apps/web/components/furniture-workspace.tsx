@@ -13,6 +13,7 @@ import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
 import { FurnitureProduction } from "./furniture-production";
+import { FurnitureStockRequirements, InstallationEditor, ShelvingLayoutEditor } from "./furniture-dimensions";
 
 const Viewer = dynamic(() => import("./furniture-viewer"), {
   ssr: false, loading: () => <p>Öppnar 3D-vyn…</p>,
@@ -59,6 +60,8 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
+  const [layoutEpoch, setLayoutEpoch] = useState(0);
   const [productionOpen, setProductionOpen] = useState(false);
   const [selectedPart, setSelectedPart] = useState<string>();
   const [drawersOpen, setDrawersOpen] = useState(false);
@@ -69,13 +72,24 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const [download, setDownload] = useState<{ url: string; name: string; revision: number }>();
   const [exportMessage, setExportMessage] = useState<string>();
   const mutationEpoch = useRef(0);
-  const dirty = fingerprint(workspace) !== baseline;
+  const invalidInput = Object.keys(inputErrors).length > 0;
+  const dirty = fingerprint(workspace) !== baseline || invalidInput;
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
   const update = (next: FurnitureWorkspace) => {
     mutationEpoch.current += 1;
     setWorkspace(next); setPreview(undefined); setError(undefined); setNotice(undefined);
     setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
+  };
+  const inputError = (message: string, field: string) => {
+    mutationEpoch.current += 1; setPreview(undefined); setInputErrors(previous => ({ ...previous, [field]: message }));
+  };
+  const clearInputError = (field: string) => {
+    setInputErrors(previous => Object.fromEntries(Object.entries(previous)
+      .filter(([key]) => key !== field && !key.startsWith(`${field}.`))));
+  };
+  const updateInput = (next: FurnitureWorkspace, field: string) => {
+    clearInputError(field); update(next);
   };
 
   useEffect(() => {
@@ -143,30 +157,33 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   };
   const chooseFamily = (family: FurnitureFamily) => navigate(() => {
     const next = newFurnitureWorkspace(family);
+    setInputErrors({});
     update(next); setBaseline(fingerprint(next)); setProjectId(undefined); setRevision(0);
     setHistory({ items: [], next_offset: null }); setName(`Min ${FURNITURE_FAMILY_LABELS[family].toLowerCase()}`);
     setDrawersOpen(false); setSelectedPart(undefined);
   });
   const changeDimension = (key: string, value: number) => {
     if (!Number.isSafeInteger(value)) return;
+    clearInputError(`carcass.${key}`);
     update({ ...workspace, design: { ...workspace.design, intent: { ...intent, [key]: value } } });
   };
   const changeMillimetres = (key: string, raw: string) => {
     try { changeDimension(key, exactMillimetreTextToMicrometres(raw, { maximumUm: 6_000_000 })); }
-    catch (reason) { mutationEpoch.current += 1; setPreview(undefined); setError(errorText(reason)); }
+    catch (reason) { inputError(errorText(reason), `carcass.${key}`); }
   };
   const openProject = (id: string) => navigate(() => {
     setBusy(true); const epoch = ++mutationEpoch.current;
     void Promise.all([api.loadFurnitureDraft(id), api.furnitureHistory(id)]).then(([draft, history]) => {
       if (epoch !== mutationEpoch.current) return;
       if (!draft.workspace) throw new Error("Projektet saknar ett möbelutkast.");
-      update(draft.workspace); setBaseline(fingerprint(draft.workspace)); setProjectId(id);
+      setInputErrors({}); update(draft.workspace); setBaseline(fingerprint(draft.workspace)); setProjectId(id);
       setRevision(draft.revision); setPreview(draft.preview ?? undefined); setHistory(history);
       setName(projects.find(p => p.id === id)?.name ?? "Min möbel");
       setDrawersOpen(false); setSelectedPart(undefined);
     }).catch(reason => setError(errorText(reason))).finally(() => setBusy(false));
   });
   const save = async () => {
+    if (invalidInput || !preview) return;
     setBusy(true); setError(undefined);
     try {
       let id = projectId;
@@ -192,6 +209,27 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     } catch (reason) { setExportMessage(errorText(reason)); }
     finally { setBusy(false); }
   };
+  const importWorkspace = async (file: File) => {
+    setBusy(true); const epoch = ++mutationEpoch.current;
+    try {
+      if (file.size > 256 * 1024) throw new Error("Arbetsfilen får vara högst 256 kB.");
+      const document = JSON.parse(await file.text()) as FurnitureWorkspace;
+      const proposed = { ...document, design: { ...document.design, design_id: "furniture", revision: 1 } };
+      const checked = await api.previewFurniture(proposed);
+      if (epoch !== mutationEpoch.current) return;
+      setInputErrors({}); update(checked.workspace); setBaseline(""); setProjectId(undefined); setRevision(0);
+      setPreview(checked); setHistory({ items: [], next_offset: null });
+      setName(file.name.replace(/\.json$/i, "").slice(0, 180));
+      setNotice("Arbetsfilen har kontrollerats. Spara som ett nytt projekt för att skapa underlag.");
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setBusy(false); }
+  };
+  const exportWorkspace = () => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(workspace, null, 2)+"\n"], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url;
+    link.download = `custombuild-${intent.family}-revision-${revision || 1}.json`; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  };
   const viewerParts = useMemo(() => preview ? furnitureViewerParts(preview, drawersOpen) : [], [preview, drawersOpen]);
 
   if (productionOpen && preview && projectId && !dirty) {
@@ -204,13 +242,17 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       <div><p className={styles.eyebrow}>Din design · {revision ? `senast sparad revision ${revision}` : "nytt utkast"}</p>
         <h1>{FURNITURE_FAMILY_LABELS[intent.family]}</h1><p>Ändra formen. Välj material och tillverkning separat.</p></div>
       <div className={styles.projectActions}>
+        <label>Läs arbetsfil (JSON)<input type="file" accept=".json,application/json" disabled={busy || !mayEdit}
+          onChange={e => { const file = e.target.files?.[0]; e.target.value = "";
+            if (file) navigate(() => { void importWorkspace(file); }); }} /></label>
+        <button disabled={busy || !preview || invalidInput} onClick={exportWorkspace}>Spara arbetsfil</button>
         <label>Öppna projekt<select aria-label="Öppna möbelprojekt" value={projectId ?? ""}
           disabled={busy} onChange={e => { if (e.target.value) openProject(e.target.value); }}>
           <option value="">Ny design</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select></label>
         <label>Projektnamn<input value={name} maxLength={180} disabled={Boolean(projectId) || busy || !mayEdit}
           onChange={e => setName(e.target.value)} /></label>
-        <button className={styles.primary} disabled={!mayEdit || busy || !preview || !name.trim()}
+        <button className={styles.primary} disabled={!mayEdit || busy || !preview || invalidInput || !name.trim()}
           onClick={() => { void save(); }}>{busy ? "Arbetar…" : "Spara revision"}</button>
       </div>
     </section>
@@ -220,6 +262,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       <button onClick={() => { pendingNavigation(); setPendingNavigation(null); }}>Fortsätt utan att spara</button>
     </section> : null}
     {error ? <p role="alert" className={styles.error}>{error}</p> : null}
+    {Object.entries(inputErrors).map(([field, message]) => <p key={field} role="alert" className={styles.error}>{message}</p>)}
     {notice ? <p role="status" className={styles.notice}>{notice}</p> : null}
     <div className={styles.layout}>
       <aside className={styles.controls}>
@@ -228,7 +271,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
           onChange={e => chooseFamily(e.target.value as FurnitureFamily)}>
           {Object.entries(FURNITURE_FAMILY_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
         </select></label>
-        <fieldset disabled={busy || !mayEdit}><legend>Mått i millimeter</legend>
+        <fieldset disabled={busy || !mayEdit}><legend>Stommått i millimeter</legend>
           {([['width_um', 'Bredd'], ['height_um', 'Höjd'], ['depth_um', 'Djup']] as const).map(([key, label]) =>
             <label key={key}>{label}<input aria-label={`${label} (mm)`} type="number" step="0.001" min="1" max="6000"
               value={intent[key]/1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
@@ -248,7 +291,9 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
             <label>Avdelare<input type="number" min="0" max="16" value={intent.divider_count}
               onChange={e => changeDimension("divider_count", Number(e.target.value))} /></label>
           </>}
-          <label>{intent.family === "table" ? "Last på skivan" : intent.family === "chest_of_drawers" ? "Last per låda" : "Last per hyllrad"} (kg)
+          <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${layoutEpoch}`} workspace={workspace} onChange={updateInput} onError={inputError} />
+          <InstallationEditor workspace={workspace} onChange={updateInput} onError={inputError} />
+          <label>{intent.family === "table" ? "Last på skivan" : intent.family === "chest_of_drawers" ? "Last per låda" : "Last per hyllplan i ett fack"} (kg)
             <input type="number" min="0" max="500" step="0.1"
               value={((intent.top_load_n ?? intent.drawer_load_n ?? intent.shelf_load_n ?? 0)/9.80665).toFixed(1)}
               onChange={e => changeDimension(intent.family === "table" ? "top_load_n" : intent.family === "chest_of_drawers" ? "drawer_load_n" : "shelf_load_n",
@@ -283,11 +328,14 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         {preview ? <p>{(preview.design.total_weight_g/1_000).toFixed(1)} kg beräknad bruttovikt · {dirty ? "Osparade ändringar" : revision ? "Sparad revision" : "Nytt utkast"}</p> : null}
       </div>
       {intent.family === "shelving" ? <div>
-        <button className={styles.primary} disabled={busy || dirty || !projectId || !preview || !workspace.manufacturing}
+        <button className={styles.primary} disabled={busy || dirty || !projectId || !preview || !workspace.manufacturing
+          || preview.workshop_handoff?.dimensions.state === "requires_resolution"}
           onClick={() => setProductionOpen(true)}>Förbered tillverkning</button>
         <p>{dirty || !revision ? "Spara möbeln först." : !workspace.manufacturing
           ? "Välj och spara en planeringsprofil för att börja bereda. Verklig verkstad kan väljas senare."
-          : "Öppna råmaterial, nesting, foggranskning och maskinens CAM-flöde för den sparade möbeln."}</p>
+          : preview?.workshop_handoff?.dimensions.state === "requires_resolution"
+            ? "Kundmått och listkonstruktion behöver lösas innan tillverkningsberedningen öppnas."
+            : "Öppna råmaterial, nesting, foggranskning och maskinens CAM-flöde för den sparade möbeln."}</p>
       </div> : null}
       <button className={styles.primary} disabled={!mayEdit || busy || dirty || !projectId || !preview}
         onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
@@ -299,11 +347,12 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <p>{rule.detail}</p>
       </details>)}</div>
       {preview?.manufacturing.issues.map((issue, index) => <p className={styles.error} key={`${issue.code}-${index}`}>{issue.message}</p>)}
+      {preview ? <FurnitureStockRequirements preview={preview} /> : null}
     </section>
     {history.items.length ? <section className={styles.history}>
       <h2>Sparade revisioner</h2><p>Öppna en tidigare design och spara fortsatta ändringar som en ny revision.</p>
       {history.items.map(item => <button key={item.id} disabled={busy || !mayEdit} onClick={() => navigate(() => {
-        update(item.workspace); setNotice(`Revision ${item.revision} öppnad. Nästa sparning skapar en ny revision.`);
+        setInputErrors({}); setLayoutEpoch(v => v+1); update(item.workspace); setNotice(`Revision ${item.revision} öppnad. Nästa sparning skapar en ny revision.`);
       })}>Revision {item.revision} · {new Date(item.created_at).toLocaleString("sv-SE")}</button>)}
       {history.next_offset !== null && projectId ? <button onClick={() => {
         void api.furnitureHistory(projectId, history.next_offset ?? 0).then(next => setHistory(previous => ({
@@ -379,6 +428,12 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply }: {
           onChange={e => withMillimetres(e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_width_um: value } }))} /></label>
         <label>Råskivans höjd (mm)<input type="number" min="1" step="0.001" value={proposed.manufacturing.stock_height_um/1_000}
           onChange={e => withMillimetres(e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_height_um: value } }))} /></label>
+        <label>Kantmarginal per sida (mm)<input type="number" min="0" max="100" step="0.001" value={(proposed.manufacturing.edge_margin_um ?? 0)/1_000}
+          onChange={e => {
+            try { change({ ...proposed, manufacturing: { ...proposed.manufacturing!,
+              edge_margin_um: exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 0, maximumUm: 100_000 }) } }); }
+            catch (reason) { epoch.current += 1; setComparison(undefined); setError(errorText(reason)); }
+          }} /></label>
         <label>Fiberriktning på råskivan<select value={proposed.manufacturing.stock_grain_axis ?? ""}
           onChange={e => change({ ...proposed, manufacturing: { ...proposed.manufacturing!,
             stock_grain_axis: e.target.value === "x" ? "x" : e.target.value === "y" ? "y" : null } })}>

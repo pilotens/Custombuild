@@ -7,6 +7,7 @@ from typing import Any
 
 from custombuild_domain.furniture import ChestIntent, TableIntent
 from custombuild_domain.furniture_catalog import resolve_material
+from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
 
 from .engine import RuleEngine
@@ -28,6 +29,16 @@ def _rule(code: str, title: str, status: str, detail: str, **values: Any) -> dic
 def evaluate_furniture(result: FurnitureResult) -> dict[str, Any]:
     p = result.spec.intent
     rules: list[dict[str, Any]] = []
+    dimensions = review_furniture_dimensions(result.spec)
+    for issue in dimensions["issues"]:
+        rules.append(
+            _rule(
+                f"CB-{issue['code'].replace('_', '-')}",
+                "Kundmått och listutrymme",
+                "BLOCK",
+                issue["message"],
+            )
+        )
     if result.shelving_result is not None:
         report = RuleEngine().evaluate(result.shelving_result)
         rules.extend(

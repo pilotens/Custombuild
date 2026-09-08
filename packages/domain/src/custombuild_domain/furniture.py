@@ -11,7 +11,8 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from .models import FrozenModel, StableKey
+from .enums import BackPanelType, ShelfMount
+from .models import FrozenModel, RatioPpm, StableKey
 
 Length = Annotated[int, Field(strict=True, ge=1, le=6_000_000)]
 Thickness = Annotated[int, Field(strict=True, ge=1_000, le=100_000)]
@@ -35,6 +36,50 @@ class HardwareSelection(FrozenModel):
     version: StableKey = "layout-1.0.0"
 
 
+class InstallationSpace(FrozenModel):
+    """Customer measurements, distinct from the generated carcass dimensions.
+
+    Allowances reserve space for installation or separately designed trim. None
+    means unmeasured, never zero. They do not create a trim part or qualify it.
+    """
+
+    width_um: Length
+    height_um: Length
+    depth_um: Length
+    width_includes_trim: bool = False
+    left_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+    right_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+    top_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+    bottom_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+    front_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+    rear_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+
+    def carcass_dimensions(self) -> dict[str, int] | None:
+        dimensions: dict[str, int] = {}
+        for axis, sides in (
+            ("width", (self.left_allowance_um, self.right_allowance_um)),
+            ("height", (self.bottom_allowance_um, self.top_allowance_um)),
+            ("depth", (self.front_allowance_um, self.rear_allowance_um)),
+        ):
+            if any(side is None for side in sides):
+                return None
+            dimensions[f"{axis}_um"] = getattr(self, f"{axis}_um") - sum(
+                side for side in sides if side is not None
+            )
+        return dimensions
+
+    @model_validator(mode="after")
+    def positive_remaining_space(self) -> InstallationSpace:
+        for overall, a, b in (
+            (self.width_um, self.left_allowance_um, self.right_allowance_um),
+            (self.height_um, self.top_allowance_um, self.bottom_allowance_um),
+            (self.depth_um, self.front_allowance_um, self.rear_allowance_um),
+        ):
+            if (a or 0) + (b or 0) >= overall:
+                raise ValueError("installation allowances consume the available dimension")
+        return self
+
+
 class ShelvingIntent(FrozenModel):
     family: Literal["shelving"] = "shelving"
     width_um: Length = 900_000
@@ -46,6 +91,25 @@ class ShelvingIntent(FrozenModel):
     shelf_height_ratios_ppm: tuple[
         Annotated[int, Field(strict=True, ge=50_000, le=950_000)], ...
     ] = Field(default=(), max_length=40)
+    bay_width_ratios_ppm: tuple[RatioPpm, ...] = Field(
+        default=(), max_length=17, exclude_if=lambda value: not value
+    )
+    back_panel: BackPanelType = Field(
+        default=BackPanelType.INSET_GROOVE,
+        exclude_if=lambda value: value == BackPanelType.INSET_GROOVE,
+    )
+    shelf_mount: ShelfMount = Field(
+        default=ShelfMount.FIXED, exclude_if=lambda value: value == ShelfMount.FIXED
+    )
+    plinth_height_um: Annotated[int, Field(strict=True, ge=0, le=300_000)] = Field(
+        default=0, exclude_if=lambda value: value == 0
+    )
+
+    @model_validator(mode="after")
+    def canonical_bay_proportions(self) -> ShelvingIntent:
+        if self.bay_width_ratios_ppm and sum(self.bay_width_ratios_ppm) != 1_000_000:
+            raise ValueError("bay width proportions must sum to exactly 100 percent")
+        return self
 
 
 class TableIntent(FrozenModel):
@@ -93,6 +157,9 @@ class FurnitureDesign(FrozenModel):
         )
     )
     hardware: HardwareSelection | None = None
+    installation: InstallationSpace | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def require_family_components(self) -> FurnitureDesign:
@@ -111,6 +178,9 @@ class ManufacturingSelection(FrozenModel):
     stock_width_um: Length = 2_440_000
     stock_height_um: Length = 1_220_000
     stock_grain_axis: Literal["x", "y"] | None = None
+    edge_margin_um: Annotated[int, Field(strict=True, ge=0, le=100_000)] = Field(
+        default=0, exclude_if=lambda value: value == 0
+    )
 
 
 class FurnitureWorkspace(FrozenModel):
@@ -131,6 +201,9 @@ class ProfileChange(FrozenModel):
     def preserve_design_intent(self) -> ProfileChange:
         if self.current.design.design_id != self.proposed.design.design_id:
             raise ValueError("a profile change cannot replace the design identity")
-        if self.current.design.intent != self.proposed.design.intent:
+        if (
+            self.current.design.intent != self.proposed.design.intent
+            or self.current.design.installation != self.proposed.design.installation
+        ):
             raise ValueError("a profile change must preserve locked design intent and dimensions")
         return self

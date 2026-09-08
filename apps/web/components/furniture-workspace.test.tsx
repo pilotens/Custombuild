@@ -37,6 +37,64 @@ function setup() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("möbelstudions revisions- och profilflöde", () => {
+  it("kräver att varje felaktigt indelningsfält rättas även efter en annan giltig måttändring", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("Hyllcentrum från botten (%)"), { target: { value: "10" } });
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    fireEvent.change(screen.getByLabelText("Höjd (mm)"), { target: { value: "1900" } });
+    await screen.findByText("5 delar");
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "50; 50" } });
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Hyllcentrum från botten (%)"), { target: { value: "20; 40; 60; 80" } });
+    await screen.findByText("5 delar");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent.shelf_height_ratios_ppm).toEqual([200_000, 400_000, 600_000, 800_000]);
+  });
+
+  it("räknar kundmått till stomme först när alla reserverade mått anges och användaren tillämpar dem", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+    fireEvent.change(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)"), { target: { value: "4340.007" } });
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1000);
+    expect(screen.getByRole("button", { name: "Räkna om stommen från kundmåtten", hidden: true })).toBeDisabled();
+    for (const side of ["Vänster", "Höger", "Ovanför", "Under", "Framför", "Bakom"]) {
+      fireEvent.change(screen.getByLabelText(`${side} · reserverat (mm)`), { target: { value: side === "Vänster" ? "50.001" : "0" } });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Räkna om stommen från kundmåtten", hidden: true }));
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(4290.006);
+    expect(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)")).toHaveValue(4340.007);
+  });
+
+  it("serverkontrollerar arbetsfiler och skapar alltid ett nytt osparat projekt", async () => {
+    const api = setup();
+    const create = vi.spyOn(api, "createProject");
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    const imported = newFurnitureWorkspace("shelving");
+    imported.design.design_id = "original-project"; imported.design.revision = 99;
+    imported.design.intent.width_um = 4_340_000;
+    const file = new File([], "kundbokhylla.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify(imported) });
+    fireEvent.change(screen.getByLabelText("Läs arbetsfil (JSON)"), { target: { files: [file] } });
+    await screen.findByText(/Arbetsfilen har kontrollerats/);
+    const checked = vi.mocked(api.previewFurniture).mock.lastCall?.[0];
+    expect(checked?.design.design_id).toBe("furniture");
+    expect(checked?.design.revision).toBe(1);
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(4340);
+    expect(create).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
+  });
+
   it("återbinder profilförslaget när ett projekt med samma form öppnas", async () => {
     const api = setup();
     vi.mocked(api.listProjects).mockResolvedValue([{ id: "saved-table", name: "Sparat bord", furniture_type: "table",

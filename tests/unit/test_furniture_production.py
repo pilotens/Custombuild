@@ -61,6 +61,36 @@ def test_layout_families_cannot_enter_the_shelving_production_compiler(family):
         shelving_production_spec(workspace(family))
 
 
+@pytest.mark.parametrize("back", ["none", "inset_groove", "surface_mounted"])
+@pytest.mark.parametrize("mount", ["fixed", "adjustable"])
+def test_customer_shelf_layout_reaches_the_compiler_without_any_default_substitution(back, mount):
+    selected = workspace(
+        "shelving",
+        width_um=2_150_003,
+        height_um=2_540_007,
+        depth_um=280_009,
+        divider_count=2,
+        shelf_count=3,
+        bay_width_ratios_ppm=(250_001, 349_999, 400_000),
+        shelf_height_ratios_ppm=(100_001, 450_007, 800_009),
+        back_panel=back,
+        shelf_mount=mount,
+        plinth_height_um=80_003,
+    )
+    source = furniture_production_source(selected)
+    original = build_furniture(selected.design).shelving_result
+    converted = normalize_preview(
+        furniture_production_input(selected).model_dump(exclude_none=True),
+        design_id=selected.design.design_id,
+    )
+    assert_furniture_production_spec(source, converted)
+    rebuilt = build_bookcase(converted)
+    assert original is not None
+    assert rebuilt.parts == original.parts
+    assert rebuilt.joints == original.joints
+    assert rebuilt.assembly_graph == original.assembly_graph
+
+
 @pytest.mark.parametrize("field", ["workspace_sha256", "furniture_design_hash"])
 def test_source_rejects_changed_identity(field):
     source = furniture_production_source(workspace("shelving")).model_dump(mode="json")

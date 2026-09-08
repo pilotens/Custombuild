@@ -10,6 +10,10 @@ export interface FurnitureIntent {
   divider_count?: number;
   shelf_load_n?: number;
   shelf_height_ratios_ppm?: number[];
+  bay_width_ratios_ppm?: number[];
+  back_panel?: "none" | "surface_mounted" | "inset_groove";
+  shelf_mount?: "fixed" | "adjustable";
+  plinth_height_um?: number;
   end_inset_um?: number;
   stretcher_height_um?: number;
   top_load_n?: number;
@@ -29,6 +33,19 @@ export interface FurnitureManufacturingSelection {
   stock_width_um: number;
   stock_height_um: number;
   stock_grain_axis: "x" | "y" | null;
+  edge_margin_um?: number;
+}
+export interface FurnitureInstallation {
+  width_um: number;
+  height_um: number;
+  depth_um: number;
+  width_includes_trim: boolean;
+  left_allowance_um: number | null;
+  right_allowance_um: number | null;
+  top_allowance_um: number | null;
+  bottom_allowance_um: number | null;
+  front_allowance_um: number | null;
+  rear_allowance_um: number | null;
 }
 export interface FurnitureWorkspace {
   schema_version: "custombuild.furniture-workspace.v1";
@@ -40,6 +57,7 @@ export interface FurnitureWorkspace {
     material: FurnitureMaterialSelection;
     back_material: FurnitureMaterialSelection;
     hardware: { catalog_id: string; version: string } | null;
+    installation?: FurnitureInstallation | null;
   };
   manufacturing: FurnitureManufacturingSelection | null;
 }
@@ -76,6 +94,23 @@ export interface FurniturePreview {
   };
   physical_cutting_authorized: false;
   production_qualified: false;
+  workshop_handoff?: {
+    dimensions: {
+      state: string;
+      carcass_dimensions_um: { width_um: number; height_um: number; depth_um: number };
+      required_carcass_dimensions_um: { width_um: number; height_um: number; depth_um: number } | null;
+      installation: FurnitureInstallation | null;
+      issues: { code: string; message: string }[];
+    };
+    stock_requirements: {
+      material_id: string; material_version: string; measured_thickness_um: number;
+      part_count: number; raw_area_um2: number;
+      minimum_long_edge_um: number; minimum_short_edge_um: number;
+      minimum_along_grain_um: number; minimum_across_grain_um: number;
+      parts: { part_id: string; semantic_key: string; raw_width_um: number; raw_height_um: number;
+        grain_direction: string; along_grain_um: number | null; across_grain_um: number | null }[];
+    }[];
+  };
 }
 export interface FurnitureProfileComparison {
   state: string;

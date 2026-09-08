@@ -1,0 +1,44 @@
+{
+  "schema_version": "custombuild.furniture-workspace.v1",
+  "design": {
+    "schema_version": "custombuild.furniture-design.v1",
+    "design_id": "bookcase-4340x2540x280",
+    "revision": 1,
+    "intent": {
+      "family": "shelving",
+      "width_um": 4340000,
+      "height_um": 2540000,
+      "depth_um": 280000,
+      "shelf_count": 4,
+      "divider_count": 1,
+      "shelf_load_n": 200,
+      "shelf_height_ratios_ppm": []
+    },
+    "installation": {
+      "width_um": 4340000,
+      "height_um": 2540000,
+      "depth_um": 280000,
+      "width_includes_trim": true,
+      "left_allowance_um": null,
+      "right_allowance_um": null,
+      "top_allowance_um": null,
+      "bottom_allowance_um": null,
+      "front_allowance_um": null,
+      "rear_allowance_um": null
+    },
+    "material": {
+      "material_id": "birch-plywood",
+      "version": "screening-2026.1",
+      "measured_thickness_um": 18000,
+      "batch_id": null
+    },
+    "back_material": {
+      "material_id": "birch-plywood-6",
+      "version": "screening-2026.1",
+      "measured_thickness_um": 6000,
+      "batch_id": null
+    },
+    "hardware": null
+  },
+  "manufacturing": null
+}

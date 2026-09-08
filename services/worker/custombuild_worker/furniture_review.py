@@ -43,10 +43,13 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "design/model.step": cad.step,
         "design/model.glb": cad.glb,
         "validation/review.json": _json(preview),
+        "manufacturing/workshop-handoff.json": _json(preview["workshop_handoff"]),
         "documents/part-drawings.pdf": part_drawings_pdf(
             result,
             qualification_note=(
-                "KONCEPT: Beslag, hålbilder och infästningar är inte verifierade."
+                "PRELIMINÄRT: Kundmått/list/montage återstår. Inga listdelar ingår."
+                if preview["workshop_handoff"]["dimensions"]["issues"]
+                else "KONCEPT: Beslag, hålbilder och infästningar är inte verifierade."
                 if result.hardware_profile is not None
                 else "Granskningsunderlag. Tillverkning kräver separat frisläppning."
             ),
@@ -74,6 +77,9 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "Material, förband, stabilitet, lådbottnar, rörelse och montering behöver\n"
         "kvalificeras inom den valda möbelfamiljen. Se validation/review.json.\n"
         "En ny material-, beslags- eller maskinprofil kräver omräkning och ny granskning.\n"
+        "Kundens yttermått, utrymme för list/montage och exakta råformat per material\n"
+        "finns i manufacturing/workshop-handoff.json. Reserverat listutrymme skapar\n"
+        "inga listdelar; ofullständiga listuppgifter blockerar tillverkningsberedning.\n"
     ).encode()
     manifest = {
         "schema_version": "custombuild.furniture-review.v1",
