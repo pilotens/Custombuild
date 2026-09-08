@@ -35,6 +35,18 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       const saved = await request.put(`${path}/draft`, { headers,
         data: { expected_revision: 0, workspace: initial } });
       expect(saved.status(), await saved.text()).toBe(200);
+      const apiFailures: string[] = [];
+      page.on("response", response => {
+        if (new URL(response.url()).pathname.startsWith("/v1/") && response.status() >= 400) {
+          apiFailures.push(`${response.request().method()} ${new URL(response.url()).pathname}: ${response.status()}`);
+        }
+      });
+      page.on("requestfailed", request => {
+        if (new URL(request.url()).pathname.startsWith("/v1/")
+          && !request.failure()?.errorText.includes("ERR_ABORTED")) {
+          apiFailures.push(`${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`);
+        }
+      });
       await selectProjectBeforeNavigation(page, provisioned);
       await page.goto("/furniture");
       const projectSelect = page.getByRole("combobox", { name: "Öppna möbelprojekt" });
@@ -125,6 +137,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await attachView(page, info, "shelving-production-mobile");
       }
+      expect(apiFailures).toEqual([]);
     });
   }
 });

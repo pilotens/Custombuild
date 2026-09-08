@@ -99,6 +99,11 @@ tenantavgränsning, gamla/nya utkast och exporternas identitet. Webbläsartestet
 tjockleksbyte, sparning, återöppning och nedladdning från den riktiga CAD-workern.
 För hyllsystem fortsätter det till en sparad tillverkningsrevision, fullständigt
 CAD-paket med verifierad möbelkälla samt återöppning på dator och mobil.
+Live-proven behåller API:ts ordinarie gräns på 180 anrop per 60 sekunder.
+Inför varje fristående scenario får föregående scenarios anrop löpa ut under
+61 sekunder; själva användarflödet körs utan anropsbroms eller dolda omförsök.
+Det hindrar att testsvitens gemensamma IP-adress gör separata prov beroende av
+varandras anropsbudget. HTTP-fel under möbelflödet underkänner provet.
 Integrationsprovet `test_signed_retention_executable_cam_release_and_historical_download_are_bound_end_to_end`
 kör dessutom båda arbetsytorna genom signerad foggranskning, nesting, operationer,
 maskinbunden CAM-kandidat och oföränderlig historisk nedladdning. Dess intyg,
