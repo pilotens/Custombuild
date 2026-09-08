@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import fixture from "../e2e/fixtures/furniture-production-preview.json";
+import fixture from "./fixtures/furniture-production-preview.json";
 import { ApiError, CustombuildApiClient, type CurrentPrincipal, type DesignVersionRead } from "@/lib/api-client";
 import type { FurnitureProductionPreview } from "@/lib/furniture-workspace";
 import { FurnitureProduction } from "./furniture-production";

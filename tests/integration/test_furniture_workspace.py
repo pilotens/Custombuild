@@ -6,13 +6,14 @@ import io
 import json
 import zipfile
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import app.furniture_api as furniture_api
 import pytest
 from app.db import get_session_factory
 from app.main import app
-from app.models import OutboxEvent
+from app.models import DesignVersion, GenerationJob, JobStatus, OutboxEvent
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.identity import content_hash
 from custombuild_worker import tasks
@@ -144,6 +145,26 @@ def test_stale_batch_or_workshop_snapshot_requires_a_new_production_revision(cli
     path = f"/v1/projects/{project['id']}/versions"
     first = client.post(path, headers=HEADERS, json=body)
     assert first.status_code == 201, first.text
+    jobs = {}
+    with get_session_factory()() as session:
+        version = session.get(DesignVersion, first.json()["id"])
+        assert version is not None
+        for status in (JobStatus.queued, JobStatus.running, JobStatus.succeeded):
+            job = GenerationJob(
+                id=str(uuid4()),
+                organization_id=version.organization_id,
+                design_version_id=version.id,
+                status=status,
+                idempotency_key=uuid4().hex,
+                production_context_hash=version.context_hash,
+                production_engine_context_json={},
+                request_json={},
+                lease_token=str(uuid4()) if status == JobStatus.running else None,
+                lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+            session.add(job)
+            jobs[status] = job.id
+        session.commit()
     changed = json.loads(json.dumps(draft["workspace"]))
     changed["design"]["material"]["batch_id"] = "replacement-batch"
     saved = client.put(
@@ -155,6 +176,18 @@ def test_stale_batch_or_workshop_snapshot_requires_a_new_production_revision(cli
     old = client.get(f"{path}/1", headers=HEADERS).json()
     assert old["status"] == "superseded"
     assert old["immutable"]
+    with get_session_factory()() as session:
+        for status, job_id in jobs.items():
+            job = session.get(GenerationJob, job_id)
+            assert job is not None
+            if status == JobStatus.succeeded:
+                assert job.status == JobStatus.succeeded
+            else:
+                assert job.status == JobStatus.cancelled
+                assert job.lease_token is None
+                assert job.lease_expires_at is None
+                assert job.next_attempt_at is None
+                assert job.finished_at is not None
     assert client.post(path, headers=HEADERS, json=body).status_code == 409
     new_bridge = production_bridge(client, project, saved.json())
     new_body = production_request(new_bridge) | {"expected_current_revision": 1}
