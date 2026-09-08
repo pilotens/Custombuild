@@ -12,6 +12,7 @@ import {
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
+import { FurnitureProduction } from "./furniture-production";
 
 const Viewer = dynamic(() => import("./furniture-viewer"), {
   ssr: false, loading: () => <p>Öppnar 3D-vyn…</p>,
@@ -58,6 +59,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [productionOpen, setProductionOpen] = useState(false);
   const [selectedPart, setSelectedPart] = useState<string>();
   const [drawersOpen, setDrawersOpen] = useState(false);
   const [exploded, setExploded] = useState(false);
@@ -192,6 +194,11 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   };
   const viewerParts = useMemo(() => preview ? furnitureViewerParts(preview, drawersOpen) : [], [preview, drawersOpen]);
 
+  if (productionOpen && preview && projectId && !dirty) {
+    return <FurnitureProduction api={api} principal={principal} workspace={workspace}
+      designHash={preview.design.design_hash} projectName={name} onClose={() => setProductionOpen(false)} />;
+  }
+
   return <>
     <section className={styles.titleRow}>
       <div><p className={styles.eyebrow}>Din design · {revision ? `senast sparad revision ${revision}` : "nytt utkast"}</p>
@@ -275,6 +282,13 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <p>Designunderlag för granskning. Skärande CAM kräver verifierade beslag, konstruktion och maskin.</p>
         {preview ? <p>{(preview.design.total_weight_g/1_000).toFixed(1)} kg beräknad bruttovikt · {dirty ? "Osparade ändringar" : revision ? "Sparad revision" : "Nytt utkast"}</p> : null}
       </div>
+      {intent.family === "shelving" ? <div>
+        <button className={styles.primary} disabled={busy || dirty || !projectId || !preview || !workspace.manufacturing}
+          onClick={() => setProductionOpen(true)}>Förbered tillverkning</button>
+        <p>{dirty || !revision ? "Spara möbeln först." : !workspace.manufacturing
+          ? "Välj och spara en planeringsprofil för att börja bereda. Verklig verkstad kan väljas senare."
+          : "Öppna råmaterial, nesting, foggranskning och maskinens CAM-flöde för den sparade möbeln."}</p>
+      </div> : null}
       <button className={styles.primary} disabled={!mayEdit || busy || dirty || !projectId || !preview}
         onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
       {exportMessage ? <p role="status">{exportMessage}</p> : null}

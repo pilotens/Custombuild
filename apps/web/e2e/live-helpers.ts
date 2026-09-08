@@ -54,6 +54,24 @@ async function responseFailure(response: Awaited<ReturnType<APIRequestContext["g
   return `HTTP ${response.status()} ${response.url()}: ${body.slice(0, 1_000)}`;
 }
 
+const scenarioWindows = new WeakMap<TestInfo, Promise<void>>();
+const LIVE_SCENARIO_IDLE_MS = 61_000;
+
+async function isolateLiveScenario(testInfo: TestInfo): Promise<void> {
+  let window = scenarioWindows.get(testInfo);
+  if (!window) {
+    // Compose keeps the real 180 requests / 60 seconds source-IP limit. The
+    // preceding CLI acceptance and every fresh browser context share that IP,
+    // including CORS preflights. Let their traffic expire before a new scenario;
+    // never throttle, retry or hide failures inside the user journey itself.
+    // Multiple projects in one scenario must share this single setup window.
+    testInfo.setTimeout(testInfo.timeout + LIVE_SCENARIO_IDLE_MS);
+    window = new Promise<void>((resolve) => setTimeout(resolve, LIVE_SCENARIO_IDLE_MS));
+    scenarioWindows.set(testInfo, window);
+  }
+  await window;
+}
+
 export async function provisionLiveProject(
   request: APIRequestContext,
   testInfo: TestInfo,
@@ -61,6 +79,7 @@ export async function provisionLiveProject(
 ): Promise<ProvisionedLiveProject> {
   const settings = liveSettings();
   const headers = { Authorization: `Bearer ${settings.token}` };
+  await isolateLiveScenario(testInfo);
 
   const readiness = await request.get(`${settings.apiUrl}/ready`);
   if (!readiness.ok()) throw new Error(`API is not ready: ${await responseFailure(readiness)}`);

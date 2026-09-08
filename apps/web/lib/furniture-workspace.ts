@@ -115,6 +115,20 @@ export interface FurnitureExportResult {
   design_hash?: string;
 }
 
+export interface FurnitureProductionSource {
+  schema_version: "custombuild.furniture-production-source.v1";
+  bridge_version: "furniture-production-1.0.0";
+  workspace: FurnitureWorkspace;
+  workspace_sha256: string;
+  furniture_design_hash: string;
+}
+
+export interface FurnitureProductionPreview {
+  source_furniture: FurnitureProductionSource;
+  preview: Record<string, unknown>;
+  physical_cutting_authorized: false;
+}
+
 export const FURNITURE_FAMILY_LABELS: Record<FurnitureFamily, string> = {
   shelving: "Hyllsystem", table: "Bord med gavlar", chest_of_drawers: "Byrå",
 };

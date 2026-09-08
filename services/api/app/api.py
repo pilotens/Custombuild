@@ -152,6 +152,12 @@ from .design_service import (
     stock_missing_issues_for_design,
     stock_selection_snapshot_for_design,
 )
+from .furniture_production import (
+    bind_saved_furniture_source,
+    furniture_production_input,
+    saved_furniture_production_hash,
+    saved_furniture_workspace,
+)
 from .job_policy import GENERATION_JOB_TIMEOUT
 from .joint_retention import (
     JOINT_GEOMETRY_FINGERPRINT_SCHEMA,
@@ -188,6 +194,7 @@ from .schemas import (
     DesignVersionCreate,
     DesignVersionRead,
     ExternalEvidenceRead,
+    FurnitureProductionPreviewRequest,
     GenerationRequest,
     ImportInspection,
     JobRead,
@@ -5561,6 +5568,47 @@ def preview_design(
         raise _rule_engine_error(exc) from exc
 
 
+@router.post("/furniture/projects/{project_id}/production-preview")
+def preview_furniture_production(
+    project_id: str,
+    payload: FurnitureProductionPreviewRequest,
+    session: SessionDep,
+    principal: PrincipalDep,
+) -> dict[str, Any]:
+    from custombuild_domain.furniture_production import furniture_production_source
+
+    project = tenant_project(session, principal, project_id)
+    workspace = saved_furniture_workspace(project)
+    if (
+        project.draft_revision != payload.expected_revision
+        or project.draft_design_hash != payload.expected_design_hash
+    ):
+        raise HTTPException(409, detail="Spara och öppna den aktuella möbelrevisionen.")
+    try:
+        source = furniture_production_source(workspace)
+        if source.furniture_design_hash != project.draft_design_hash:
+            raise HTTPException(409, detail="Modellmotorn har ändrats. Spara en ny revision.")
+        preview_input = furniture_production_input(workspace)
+        _, _, presented, _ = _canonical_preview_with_optional_retention(
+            session,
+            principal.organization_id,
+            project,
+            preview_input,
+            design_id=project.id,
+            revision=project.current_revision + 1,
+            evidence_id=payload.joint_retention_evidence_id,
+        )
+    except (ValueError, ValidationError) as exc:
+        raise _validation_error(exc) from exc
+    except RuleEngineUnavailable as exc:
+        raise _rule_engine_error(exc) from exc
+    return {
+        "source_furniture": source.model_dump(mode="json"),
+        "preview": presented,
+        "physical_cutting_authorized": False,
+    }
+
+
 @router.post("/designs/autofix")
 def autofix_design(
     payload: BookcasePreviewInput,
@@ -5948,6 +5996,8 @@ async def upload_external_evidence(
         )
     )
     if not belongs_to_project:
+        belongs_to_project = saved_furniture_production_hash(project) == design_hash
+    if not belongs_to_project:
         raise HTTPException(
             status_code=409,
             detail={
@@ -6233,6 +6283,14 @@ def create_version(
 ) -> DesignVersion:
     project = tenant_project(session, principal, project_id)
     session.refresh(project, with_for_update=True)
+    try:
+        source_furniture = bind_saved_furniture_source(
+            project, payload.source_furniture, payload.spec, payload.template_id
+        )
+    except (ValueError, ValidationError) as exc:
+        raise _validation_error(exc) from exc
+    if source_furniture is not None and payload.source_provenance is not None:
+        raise HTTPException(422, detail="En möbelrevision kan inte ersättas av en bildreferens.")
     revision = project.current_revision + 1
     requested_source_provenance = (
         payload.source_provenance.model_dump(mode="json")
@@ -6312,6 +6370,8 @@ def create_version(
         "production_context": production_context,
         "template_capability": template_capability.snapshot(),
     }
+    if source_furniture is not None:
+        presented["source_furniture"] = source_furniture
 
     materials = [
         {
@@ -6341,6 +6401,8 @@ def create_version(
     }
     if retention_trust is not None:
         context_payload["retention_trust"] = retention_trust
+    if source_furniture is not None:
+        context_payload["source_furniture"] = source_furniture
     context_hash = canonical_hash(context_payload)
 
     existing = session.scalar(
@@ -6442,6 +6504,7 @@ def create_version(
             "production_context": production_context,
             "template_capability": template_capability.snapshot(),
             "retention_trust": retention_trust,
+            **({"source_furniture": source_furniture} if source_furniture is not None else {}),
         },
     )
     return version

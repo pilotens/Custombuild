@@ -136,7 +136,7 @@ PACKAGE_BUILDER_VERSION = "deterministic-package-1.11.0"
 PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 ARTIFACT_SCHEMA_VERSION = "custombuild.production-artifacts.v1"
 GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v2"
-GENERATION_PLAN_PIPELINE_VERSION = "production-pipeline-1.11.0"
+GENERATION_PLAN_PIPELINE_VERSION = "production-pipeline-1.12.0"
 NESTING_ALGORITHM_VERSION = "deterministic-bottom-left-v1"
 MANIFEST_CONTEXT_HASH_FIELDS = (
     "project_id",
@@ -259,6 +259,7 @@ _BLOCKED_CAM_ALLOWED_FIXED_ARTIFACTS = frozenset(
         ),
         ("validation/dfm-report.json", "DFM_VALIDATION_REPORT", "application/json"),
         ("validation/source-provenance.json", "SOURCE_PROVENANCE", "application/json"),
+        ("design/furniture-source.json", "FURNITURE_PRODUCTION_SOURCE", "application/json"),
         (
             "validation/workshop-readiness.json",
             "WORKSHOP_READINESS_REPORT",
@@ -368,6 +369,7 @@ _SAFE_CALLER_ADDITIONAL_ARTIFACTS = frozenset(
             "application/pdf",
         ),
         ("validation/source-provenance.json", "SOURCE_PROVENANCE", "application/json"),
+        ("design/furniture-source.json", "FURNITURE_PRODUCTION_SOURCE", "application/json"),
     }
 )
 
@@ -1072,6 +1074,7 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
             artifact_entries,
             manifest=manifest,
         )
+        _validate_furniture_production_source(archive, artifact_entries, review_core_truth.design)
         _validate_joint_retention_signed_evidence(
             archive,
             artifact_entries,
@@ -1129,6 +1132,37 @@ def read_and_verify_package(payload: bytes) -> dict[str, Any]:
             manifest=manifest,
         )
         return manifest
+
+
+def _validate_furniture_production_source(
+    archive: zipfile.ZipFile, entries: list[dict[str, Any]], design: Any
+) -> None:
+    from custombuild_domain.furniture_production import (
+        FurnitureProductionSource,
+        assert_furniture_production_spec,
+    )
+
+    sources = [
+        e
+        for e in entries
+        if e["path"] == "design/furniture-source.json" or e["role"] == "FURNITURE_PRODUCTION_SOURCE"
+    ]
+    if not sources:
+        return
+    if len(sources) != 1 or (sources[0]["path"], sources[0]["role"], sources[0]["media_type"]) != (
+        "design/furniture-source.json",
+        "FURNITURE_PRODUCTION_SOURCE",
+        "application/json",
+    ):
+        raise ArtifactError("furniture source artifact identity differs")
+    try:
+        data = archive.read("design/furniture-source.json")
+        source = FurnitureProductionSource.model_validate_json(data)
+        if data != canonical_json_bytes(source.model_dump(mode="json")):
+            raise ValueError("furniture source is not canonical")
+        assert_furniture_production_spec(source, design.spec)
+    except (TypeError, ValueError) as exc:
+        raise ArtifactError("furniture source differs from the frozen production design") from exc
 
 
 def _canonical_artifact_entry(

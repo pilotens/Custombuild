@@ -5,6 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
+from custombuild_domain.furniture_production import FurnitureProductionSource
 from custombuild_manufacturing import (
     CLIENT_DECLARED_AUTHORITY,
     MAX_ARTIFACT_BYTES,
@@ -754,6 +755,15 @@ class DesignVersionCreate(BaseModel):
         ),
     )
     source_provenance: ReferenceImageSourceProvenance | None = None
+    source_furniture: FurnitureProductionSource | None = None
+
+
+class FurnitureProductionPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_revision: int = Field(strict=True, ge=1)
+    expected_design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    joint_retention_evidence_id: str | None = Field(default=None, max_length=36)
 
 
 class DesignVersionRead(BaseModel):

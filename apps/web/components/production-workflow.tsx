@@ -27,6 +27,7 @@ import {
   writeProductionSession,
 } from "@/lib/production-session-storage";
 import type { WorkspaceIdentity } from "@/lib/workspace-draft-storage";
+import type { FurnitureProductionSource } from "@/lib/furniture-workspace";
 import {
   hasPartCustomization,
   type FurnitureTemplateId,
@@ -148,6 +149,8 @@ interface ProductionWorkflowProps {
   projectName?: string;
   templateId?: FurnitureTemplateId;
   onApplyDesignChange?: (patch: Partial<DesignSpec>, reason: string) => void;
+  onApplyWorkshopContextChange?: (patch: Partial<DesignSpec>, reason: string) => void;
+  sourceFurniture?: FurnitureProductionSource;
   onRequestServerPreviewRetry?: () => void;
   active?: boolean;
   principal?: WorkspaceIdentity & { role?: string };
@@ -2046,6 +2049,8 @@ export function ProductionWorkflow({
   projectName = PROJECT_NAME,
   templateId = "shelving",
   onApplyDesignChange,
+  onApplyWorkshopContextChange,
+  sourceFurniture,
   onRequestServerPreviewRetry,
   active = true,
   principal,
@@ -2439,6 +2444,10 @@ export function ProductionWorkflow({
   const stale = Boolean(version && (
     version.design_hash !== design.design_hash
     || !versionProductionContextMatches(version, spec)
+    || (sourceFurniture && (
+      (version.result_json.source_furniture as FurnitureProductionSource | undefined)?.workspace_sha256
+        !== sourceFurniture.workspace_sha256
+    ))
   ));
   const mayDesign = hasWorkflowCapability(principal, "design");
   const mayReview = hasWorkflowCapability(principal, "review");
@@ -2894,7 +2903,8 @@ export function ProductionWorkflow({
       | "machine_profile_id"
     >>,
   ) {
-    if (!mayDesign || !onApplyDesignChange) {
+    const applyContext = onApplyWorkshopContextChange ?? onApplyDesignChange;
+    if (!mayDesign || !applyContext) {
       setActionFeedback({
         tone: "error",
         message: "Endast en behörig designer kan ändra den revisionsbundna verkstadsprofilen.",
@@ -2902,7 +2912,7 @@ export function ProductionWorkflow({
       return;
     }
     resetDownstream();
-    onApplyDesignChange(
+    applyContext(
       { ...legacyPatch, workshop_context: context },
       context
         ? "Verkstadsprofilen ändrades. En ny designrevision krävs före nästa generering."
@@ -3049,7 +3059,9 @@ export function ProductionWorkflow({
           version?.revision ?? 0,
           templateId,
         ] as const;
-        saved = selectedRetentionEvidenceId
+        saved = sourceFurniture
+          ? await api.createVersion(...createVersionArguments, selectedRetentionEvidenceId, sourceFurniture)
+          : selectedRetentionEvidenceId
           ? await api.createVersion(...createVersionArguments, selectedRetentionEvidenceId)
           : await api.createVersion(...createVersionArguments);
       } catch (caught) {
@@ -3600,7 +3612,7 @@ export function ProductionWorkflow({
         spec={spec}
         value={spec.workshop_context}
         frozenContext={frozenProductionContext}
-        disabled={Boolean(busy) || !mayDesign || !onApplyDesignChange}
+        disabled={Boolean(busy) || !mayDesign || !(onApplyWorkshopContextChange ?? onApplyDesignChange)}
         onChange={updateWorkshopContext}
         draftState={activeWorkshopContextDraftState}
         onDraftStateChange={updateWorkshopContextDraftState}

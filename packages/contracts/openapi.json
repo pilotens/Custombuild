@@ -767,6 +767,16 @@
           "production_context": {
             "$ref": "#/components/schemas/RevisionProductionContext"
           },
+          "source_furniture": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurnitureProductionSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "source_provenance": {
             "anyOf": [
               {
@@ -1200,6 +1210,76 @@
           "expected_design_hash"
         ],
         "title": "FurnitureExportRequest",
+        "type": "object"
+      },
+      "FurnitureProductionPreviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Design Hash",
+            "type": "string"
+          },
+          "expected_revision": {
+            "minimum": 1.0,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "joint_retention_evidence_id": {
+            "anyOf": [
+              {
+                "maxLength": 36,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joint Retention Evidence Id"
+          }
+        },
+        "required": [
+          "expected_revision",
+          "expected_design_hash"
+        ],
+        "title": "FurnitureProductionPreviewRequest",
+        "type": "object"
+      },
+      "FurnitureProductionSource": {
+        "additionalProperties": false,
+        "properties": {
+          "bridge_version": {
+            "const": "furniture-production-1.0.0",
+            "default": "furniture-production-1.0.0",
+            "title": "Bridge Version",
+            "type": "string"
+          },
+          "furniture_design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Furniture Design Hash",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": "custombuild.furniture-production-source.v1",
+            "default": "custombuild.furniture-production-source.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          },
+          "workspace_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Workspace Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace",
+          "workspace_sha256",
+          "furniture_design_hash"
+        ],
+        "title": "FurnitureProductionSource",
         "type": "object"
       },
       "FurnitureWorkspace": {
@@ -3992,6 +4072,62 @@
         "tags": [
           "furniture-design"
         ]
+      }
+    },
+    "/v1/furniture/projects/{project_id}/production-preview": {
+      "post": {
+        "operationId": "preview_furniture_production_v1_furniture_projects__project_id__production_preview_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FurnitureProductionPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Preview Furniture Production V1 Furniture Projects  Project Id  Production Preview Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Furniture Production"
       }
     },
     "/v1/jobs/{job_id}": {

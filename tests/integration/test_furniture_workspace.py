@@ -6,13 +6,14 @@ import io
 import json
 import zipfile
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import app.furniture_api as furniture_api
 import pytest
 from app.db import get_session_factory
 from app.main import app
-from app.models import OutboxEvent
+from app.models import DesignVersion, GenerationJob, JobStatus, OutboxEvent
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.identity import content_hash
 from custombuild_worker import tasks
@@ -56,6 +57,158 @@ def test_families_are_available_and_preview_requires_a_valid_session(client):
         )
         assert response.status_code == 200, response.text
         assert not response.json()["physical_cutting_authorized"]
+
+
+def production_bridge(client, project, draft):
+    response = client.post(
+        f"/v1/furniture/projects/{project['id']}/production-preview",
+        headers=HEADERS,
+        json={
+            "expected_revision": draft["revision"],
+            "expected_design_hash": draft["preview"]["design"]["design_hash"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def production_request(bridge):
+    from app.furniture_production import furniture_production_input
+
+    from tests.integration.test_api_design_flow import valid_production_context
+
+    source = bridge["source_furniture"]
+    return {
+        "template_id": "shelving",
+        "spec": furniture_production_input(
+            FurnitureWorkspace.model_validate(source["workspace"])
+        ).model_dump(mode="json"),
+        "source_furniture": source,
+        "production_context": valid_production_context(),
+        "expected_design_hash": bridge["preview"]["design_hash"],
+        "expected_current_revision": 0,
+    }
+
+
+def test_shelving_enters_existing_production_chain_without_changing_saved_furniture(client):
+    project, draft = save(client, "shelving")
+    bridge = production_bridge(client, project, draft)
+    assert bridge["source_furniture"]["workspace"] == draft["workspace"]
+    assert "retention_certification_request" in bridge["preview"]
+    assert not bridge["physical_cutting_authorized"]
+    body = production_request(bridge)
+    path = f"/v1/projects/{project['id']}/versions"
+    response = client.post(path, headers=HEADERS, json=body)
+    assert response.status_code == 201, response.text
+    version = response.json()
+    assert version["result_json"]["source_furniture"] == bridge["source_furniture"]
+    assert version["spec_json"] == bridge["preview"]["spec"]
+    assert client.post(path, headers=HEADERS, json=body).json()["id"] == version["id"]
+    assert (
+        client.get(f"/v1/furniture/projects/{project['id']}/draft", headers=HEADERS).json() == draft
+    )
+    validated = client.post(f"{path}/1/validate", headers=HEADERS)
+    assert validated.status_code == 200
+    assert validated.json()["status"] == "design_validated"
+    # Design screening cannot qualify an unresolved joint for machine use.
+    blocked = client.post(
+        f"{path}/1/approve",
+        headers=HEADERS,
+        json={"approval_type": "cam", "reason": "Test verifies the real unresolved joint gate"},
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["detail"]["code"] == "DADO_RETENTION_EVIDENCE_MISSING"
+    assert not version["immutable"]
+
+
+@pytest.mark.parametrize("change", ["omit", "thickness", "load", "template"])
+def test_production_cannot_replace_the_saved_furniture_design(client, change):
+    project, draft = save(client, "shelving")
+    bridge = production_bridge(client, project, draft)
+    body = production_request(bridge)
+    if change == "omit":
+        body.pop("source_furniture")
+    elif change == "thickness":
+        body["spec"]["measured_thickness_mm"] = 17.8
+    elif change == "load":
+        body["spec"]["load_per_shelf_kg"] = 1
+    else:
+        body["template_id"] = "table"
+    response = client.post(f"/v1/projects/{project['id']}/versions", headers=HEADERS, json=body)
+    assert response.status_code == 409, response.text
+
+
+def test_stale_batch_or_workshop_snapshot_requires_a_new_production_revision(client):
+    project, draft = save(client, "shelving")
+    bridge = production_bridge(client, project, draft)
+    body = production_request(bridge)
+    path = f"/v1/projects/{project['id']}/versions"
+    first = client.post(path, headers=HEADERS, json=body)
+    assert first.status_code == 201, first.text
+    jobs = {}
+    with get_session_factory()() as session:
+        version = session.get(DesignVersion, first.json()["id"])
+        assert version is not None
+        for status in (JobStatus.queued, JobStatus.running, JobStatus.succeeded):
+            job = GenerationJob(
+                id=str(uuid4()),
+                organization_id=version.organization_id,
+                design_version_id=version.id,
+                status=status,
+                idempotency_key=uuid4().hex,
+                production_context_hash=version.context_hash,
+                production_engine_context_json={},
+                request_json={},
+                lease_token=str(uuid4()) if status == JobStatus.running else None,
+                lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+            session.add(job)
+            jobs[status] = job.id
+        session.commit()
+    changed = json.loads(json.dumps(draft["workspace"]))
+    changed["design"]["material"]["batch_id"] = "replacement-batch"
+    saved = client.put(
+        f"/v1/furniture/projects/{project['id']}/draft",
+        headers=HEADERS,
+        json={"expected_revision": 1, "workspace": changed},
+    )
+    assert saved.status_code == 200, saved.text
+    old = client.get(f"{path}/1", headers=HEADERS).json()
+    assert old["status"] == "superseded"
+    assert old["immutable"]
+    with get_session_factory()() as session:
+        for status, job_id in jobs.items():
+            job = session.get(GenerationJob, job_id)
+            assert job is not None
+            if status == JobStatus.succeeded:
+                assert job.status == JobStatus.succeeded
+            else:
+                assert job.status == JobStatus.cancelled
+                assert job.lease_token is None
+                assert job.lease_expires_at is None
+                assert job.next_attempt_at is None
+                assert job.finished_at is not None
+    assert client.post(path, headers=HEADERS, json=body).status_code == 409
+    new_bridge = production_bridge(client, project, saved.json())
+    new_body = production_request(new_bridge) | {"expected_current_revision": 1}
+    second = client.post(path, headers=HEADERS, json=new_body)
+    assert second.status_code == 201, second.text
+    assert second.json()["revision"] == 2
+    assert second.json()["context_hash"] != first.json()["context_hash"]
+    assert second.json()["design_hash"] == first.json()["design_hash"]
+    assert client.get(f"{path}/1", headers=HEADERS).json()["status"] == "superseded"
+
+
+@pytest.mark.parametrize("family", ["table", "chest_of_drawers"])
+def test_furniture_production_bridge_rejects_unsupported_families_and_other_tenants(client, family):
+    project, draft = save(client, family)
+    path = f"/v1/furniture/projects/{project['id']}/production-preview"
+    body = {
+        "expected_revision": draft["revision"],
+        "expected_design_hash": draft["preview"]["design"]["design_hash"],
+    }
+    assert client.post(path, headers=OTHER, json=body).status_code == 404
+    assert client.post(path, headers=HEADERS, json=body).status_code == 422
 
 
 def test_profile_change_save_reload_and_history_preserve_old_revision(client):

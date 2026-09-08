@@ -1589,6 +1589,23 @@ def _generate(
                 "SOURCE_PROVENANCE",
             )
         )
+    source_furniture = version.result_json.get("source_furniture")
+    if source_furniture is not None:
+        from custombuild_domain.furniture_production import (
+            FurnitureProductionSource,
+            assert_furniture_production_spec,
+        )
+
+        source = FurnitureProductionSource.model_validate(source_furniture)
+        assert_furniture_production_spec(source, design.spec)
+        document_files.append(
+            ArtifactFile(
+                "design/furniture-source.json",
+                canonical_json_bytes(source.model_dump(mode="json")),
+                "application/json",
+                "FURNITURE_PRODUCTION_SOURCE",
+            )
+        )
     documents = (*document_files, *signed_retention_artifacts)
     bundle = build_production_bundle(
         design,

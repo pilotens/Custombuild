@@ -616,7 +616,7 @@ def _stock_rows() -> list[dict[str, object]]:
 def _generation_plan_payload() -> dict[str, object]:
     return {
         "schema_version": "custombuild.generation-plan.v2",
-        "pipeline_version": "production-pipeline-1.11.0",
+        "pipeline_version": "production-pipeline-1.12.0",
         "nesting_algorithm": "deterministic-bottom-left-v1",
         "operations_schema_version": "custombuild.operations.v2",
         "operations_engine_version": "semantic-operations-1.3.0",

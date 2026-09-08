@@ -29,7 +29,15 @@ from sqlalchemy.orm import Session
 
 from .auth import Capability, Principal, get_principal, require_capability
 from .config import get_settings
-from .models import AuditEvent, OutboxEvent, Project
+from .models import (
+    AuditEvent,
+    DesignStatus,
+    DesignVersion,
+    GenerationJob,
+    JobStatus,
+    OutboxEvent,
+    Project,
+)
 from .repository import audit, tenant_project, tenant_session
 
 router = APIRouter(prefix="/v1/furniture", tags=["furniture-design"])
@@ -135,6 +143,51 @@ def save_draft(
     project.draft_workspace_json = {"manufacturing": document["manufacturing"]}
     project.draft_result_json = preview_result
     project.draft_updated_by = principal.user_id
+    # A saved furniture/profile change immediately invalidates derived production
+    # revisions, including batch-only changes that leave all cut geometry intact.
+    derived = list(
+        session.scalars(
+            select(DesignVersion)
+            .where(
+                DesignVersion.organization_id == principal.organization_id,
+                DesignVersion.project_id == project.id,
+                DesignVersion.status.not_in([DesignStatus.superseded, DesignStatus.archived]),
+            )
+            .with_for_update()
+        )
+    )
+    derived_ids = []
+    for version in derived:
+        if version.result_json.get("source_furniture") is None:
+            continue
+        version.status = DesignStatus.superseded
+        version.immutable = True
+        derived_ids.append(version.id)
+        audit(
+            session,
+            principal,
+            "design_version.superseded",
+            "design_version",
+            version.id,
+            {"source_furniture_revision": revision, "reason": "saved_furniture_changed"},
+        )
+    if derived_ids:
+        active_jobs = session.scalars(
+            select(GenerationJob)
+            .where(
+                GenerationJob.organization_id == principal.organization_id,
+                GenerationJob.design_version_id.in_(derived_ids),
+                GenerationJob.status.in_([JobStatus.queued, JobStatus.running]),
+            )
+            .with_for_update()
+        )
+        for job in active_jobs:
+            job.status = JobStatus.cancelled
+            job.lease_token = None
+            job.lease_expires_at = None
+            job.next_attempt_at = None
+            job.finished_at = datetime.now(UTC)
+            job.error = "Cancelled because the saved furniture or profiles changed"
     audit(
         session,
         principal,
