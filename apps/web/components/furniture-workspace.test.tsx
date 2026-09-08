@@ -130,6 +130,27 @@ describe("möbelstudions revisions- och profilflöde", () => {
     expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
   });
 
+  it("ersätter även osparad indelningstext när en kontrollerad arbetsfil med samma grundmått öppnas", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("Hyllcentrum från botten (%)"), { target: { value: "10" } });
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.801" } });
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    const file = new File([], "kontrollerad-hylla.json", { type: "application/json" });
+    Object.defineProperty(file, "text", { value: async () => JSON.stringify(newFurnitureWorkspace("shelving")) });
+    fireEvent.change(screen.getByLabelText("Läs arbetsfil (JSON)"), { target: { files: [file] } });
+    fireEvent.click(screen.getByRole("button", { name: "Fortsätt utan att spara" }));
+    await screen.findByText(/Arbetsfilen har kontrollerats/);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByLabelText("Fackbredder (%)")).toHaveValue("");
+    expect(screen.getByLabelText("Hyllcentrum från botten (%)")).toHaveValue("");
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  });
+
   it("återbinder profilförslaget när ett projekt med samma form öppnas", async () => {
     const api = setup();
     vi.mocked(api.listProjects).mockResolvedValue([{ id: "saved-table", name: "Sparat bord", furniture_type: "table",

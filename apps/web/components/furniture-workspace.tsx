@@ -61,7 +61,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
-  const [layoutEpoch, setLayoutEpoch] = useState(0);
+  const [inputEpoch, setInputEpoch] = useState(0);
   const [productionOpen, setProductionOpen] = useState(false);
   const [selectedPart, setSelectedPart] = useState<string>();
   const [drawersOpen, setDrawersOpen] = useState(false);
@@ -88,6 +88,9 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const clearInputError = (field: string) => {
     setInputErrors(previous => Object.fromEntries(Object.entries(previous)
       .filter(([key]) => key !== field && !key.startsWith(`${field}.`))));
+  };
+  const resetInputDrafts = () => {
+    setInputErrors({}); setInputEpoch(value => value+1);
   };
   const updateInput = (next: FurnitureWorkspace, field: string) => {
     clearInputError(field); update(next);
@@ -158,7 +161,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   };
   const chooseFamily = (family: FurnitureFamily) => navigate(() => {
     const next = newFurnitureWorkspace(family);
-    setInputErrors({});
+    resetInputDrafts();
     update(next); setBaseline(fingerprint(next)); setProjectId(undefined); setRevision(0);
     setHistory({ items: [], next_offset: null }); setName(`Min ${FURNITURE_FAMILY_LABELS[family].toLowerCase()}`);
     setDrawersOpen(false); setSelectedPart(undefined);
@@ -177,7 +180,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     void Promise.all([api.loadFurnitureDraft(id), api.furnitureHistory(id)]).then(([draft, history]) => {
       if (epoch !== mutationEpoch.current) return;
       if (!draft.workspace) throw new Error("Projektet saknar ett möbelutkast.");
-      setInputErrors({}); update(draft.workspace); setBaseline(fingerprint(draft.workspace)); setProjectId(id);
+      resetInputDrafts(); update(draft.workspace); setBaseline(fingerprint(draft.workspace)); setProjectId(id);
       setRevision(draft.revision); setPreview(draft.preview ?? undefined); setHistory(history);
       setName(projects.find(p => p.id === id)?.name ?? "Min möbel");
       setDrawersOpen(false); setSelectedPart(undefined);
@@ -218,7 +221,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       const proposed = { ...document, design: { ...document.design, design_id: "furniture", revision: 1 } };
       const checked = await api.previewFurniture(proposed);
       if (epoch !== mutationEpoch.current) return;
-      setInputErrors({}); update(checked.workspace); setBaseline(""); setProjectId(undefined); setRevision(0);
+      resetInputDrafts(); update(checked.workspace); setBaseline(""); setProjectId(undefined); setRevision(0);
       setPreview(checked); setHistory({ items: [], next_offset: null });
       setName(file.name.replace(/\.json$/i, "").slice(0, 180));
       setNotice("Arbetsfilen har kontrollerats. Spara som ett nytt projekt för att skapa underlag.");
@@ -292,7 +295,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
             <label>Avdelare<input type="number" min="0" max="16" value={intent.divider_count}
               onChange={e => changeDimension("divider_count", Number(e.target.value))} /></label>
           </>}
-          <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${layoutEpoch}`} workspace={workspace} onChange={updateInput} onError={inputError} />
+          <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${inputEpoch}`} workspace={workspace} onChange={updateInput} onError={inputError} />
           <InstallationEditor workspace={workspace} onChange={updateInput} onError={inputError} />
           {intent.family === "shelving" ? <label>Hur anges hyllasten?<select value={intent.shelf_load_basis ?? "per_row"}
             onChange={e => updateInput({ ...workspace, design: { ...workspace.design, intent: {
@@ -332,7 +335,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       <aside className={styles.profiles}>
         <h2>Material, beslag och verkstad</h2>
         <p>Du kan spara designen innan du väljer verkstad.</p>
-        {catalog ? <ProfileEditor key={fingerprint(workspace)}
+        {catalog ? <ProfileEditor key={`${fingerprint(workspace)}-${inputEpoch}`}
           api={api} workspace={workspace} catalog={catalog} disabled={busy || !mayEdit} onApply={update} /> : <p>Läser profiler…</p>}
       </aside>
     </div>
@@ -366,7 +369,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     {history.items.length ? <section className={styles.history}>
       <h2>Sparade revisioner</h2><p>Öppna en tidigare design och spara fortsatta ändringar som en ny revision.</p>
       {history.items.map(item => <button key={item.id} disabled={busy || !mayEdit} onClick={() => navigate(() => {
-        setInputErrors({}); setLayoutEpoch(v => v+1); update(item.workspace); setNotice(`Revision ${item.revision} öppnad. Nästa sparning skapar en ny revision.`);
+        resetInputDrafts(); update(item.workspace); setNotice(`Revision ${item.revision} öppnad. Nästa sparning skapar en ny revision.`);
       })}>Revision {item.revision} · {new Date(item.created_at).toLocaleString("sv-SE")}</button>)}
       {history.next_offset !== null && projectId ? <button onClick={() => {
         void api.furnitureHistory(projectId, history.next_offset ?? 0).then(next => setHistory(previous => ({
