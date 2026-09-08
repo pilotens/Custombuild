@@ -76,6 +76,31 @@
   font-size: 0.84rem;
 }
 
+.grid label.machineChoice {
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 0.65rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border, #d9d4ca);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.machineChoice > span {
+  display: grid;
+  min-width: 0;
+  gap: 0.3rem;
+}
+
+.grid .machineChoice input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 2px 0 0;
+  padding: 0;
+  accent-color: #235b4f;
+}
+
 .actions,
 .rowActions {
   display: flex;
@@ -96,9 +121,16 @@
 
 .summary dl {
   display: grid;
-  grid-template-columns: minmax(9rem, auto) 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.35rem 0.8rem;
   margin: 0;
+}
+
+.summary dl > div {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(9rem, 0.3fr) minmax(0, 1fr);
+  gap: 0.35rem 0.8rem;
 }
 
 .summary dt {
@@ -117,7 +149,7 @@
     grid-template-columns: 1fr;
   }
 
-  .summary dl {
+  .summary dl > div {
     grid-template-columns: 1fr;
   }
 }

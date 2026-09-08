@@ -58,6 +58,7 @@
 .preparation :global(.production-download),
 .preparation :global(.production-gate-summary) { flex-wrap: wrap; }
 .preparation :global(.production-state) { white-space: normal; }
+.preparation input[type="checkbox"], .preparation input[type="radio"] { width: 18px; height: 18px; min-height: 18px; padding: 0; accent-color: #235b4f; }
 @media (max-width: 640px) {
   .preparation { padding: 12px; }
   .preparation :global(.production-steps) { grid-template-columns: minmax(0, 1fr); }

@@ -595,15 +595,7 @@ export function WorkshopContextEditor({
           {MACHINES.map((machine) => {
             const descriptionId = `${machineChoiceName}-${machine.id}`;
             return (
-              <label key={machine.id}>
-                <span>
-                  <strong>{machine.name}</strong>
-                  <small id={descriptionId}>
-                    Versionslåst profil-ID: {machine.id} · katalogversion {machine.version} ·
-                    arbetsområde X {machine.workAreaMm.x} ×
-                    Y {machine.workAreaMm.y} × Z {machine.workAreaMm.z} mm
-                  </small>
-                </span>
+              <label key={machine.id} className={styles.machineChoice}>
                 <input
                   type="radio"
                   name={machineChoiceName}
@@ -613,6 +605,14 @@ export function WorkshopContextEditor({
                   aria-describedby={descriptionId}
                   onChange={() => selectMachine(machine.id)}
                 />
+                <span>
+                  <strong>{machine.name}</strong>
+                  <small id={descriptionId}>
+                    Versionslåst profil-ID: {machine.id} · katalogversion {machine.version} ·
+                    arbetsområde X {machine.workAreaMm.x} ×
+                    Y {machine.workAreaMm.y} × Z {machine.workAreaMm.z} mm
+                  </small>
+                </span>
               </label>
             );
           })}
@@ -831,8 +831,10 @@ export function WorkshopContextEditor({
                 <dd>{profile.supplier_profile_id} @ {profile.supplier_profile_version} · {micrometresToMillimetreText(profile.sheet_width_um)} × {micrometresToMillimetreText(profile.sheet_height_um)} × {profile.sheet_count} · fiber {profile.grain_direction}</dd>
               </div>
             ))}
-            <dt>Tvåsidiga skivor</dt>
-            <dd>{frozenContext.two_sided_registrations?.length ?? 0} deklarerade registreringar</dd>
+            <div>
+              <dt>Tvåsidiga skivor</dt>
+              <dd>{frozenContext.two_sided_registrations?.length ?? 0} deklarerade registreringar</dd>
+            </div>
           </dl>
         </section>
       ) : null}
