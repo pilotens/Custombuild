@@ -2180,7 +2180,9 @@ def bookcase_spec(overrides: dict[str, object] | None = None) -> dict[str, objec
         "measured_thickness_mm": 18,
         "shelf_count": 2,
         "shelf_mount": "fixed",
-        "load_per_shelf_kg": 10,
+        # Isolate the one DADO-retention warning with margin after self weight
+        # is included. The overload scenario overrides this test-only payload.
+        "load_per_shelf_kg": 5,
         "back_panel": True,
         "plinth": True,
         "divider_count": 0,
