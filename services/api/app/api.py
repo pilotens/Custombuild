@@ -1382,7 +1382,7 @@ def _resolve_joint_retention_binding(
             required_loads_n=(
                 (
                     JointRetentionLoadMode.SHEAR,
-                    max(base_spec.parameters.shelf_load_n, 1),
+                    base_result.minimum_retention_shear_load_n,
                 ),
                 (
                     JointRetentionLoadMode.WITHDRAWAL,
@@ -1580,7 +1580,7 @@ def _retention_certification_request(
         "required_load_cases": [
             {
                 "mode": "shear",
-                "rated_design_load_n": max(parameters.shelf_load_n, 1),
+                "rated_design_load_n": result.minimum_retention_shear_load_n,
             },
             {
                 "mode": "withdrawal",

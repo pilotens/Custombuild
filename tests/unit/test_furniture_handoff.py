@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import csv
+import io
+from decimal import Decimal
+
 import pytest
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
-from custombuild_manufacturing.furniture_handoff import furniture_workshop_handoff
+from custombuild_manufacturing.furniture_handoff import (
+    furniture_first_article_checks,
+    furniture_workshop_handoff,
+)
 from custombuild_manufacturing.furniture_profiles import preview_furniture
 
 from tests.unit.test_furniture_families import workspace
@@ -92,3 +99,57 @@ def test_format_error_text_preserves_micrometres_even_for_long_parts():
         "4340.007" in issue["message"] and "4340.006" in issue["message"]
         for issue in preview["manufacturing"]["issues"]
     )
+
+
+@pytest.mark.parametrize("family", ["shelving", "table", "chest_of_drawers"])
+def test_measurement_worksheet_uses_the_same_local_axes_sides_and_features_as_dxf(family):
+    result = build_furniture(workspace(family).design)
+    raw = furniture_first_article_checks(result)
+    rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert {r["design_hash"] for r in rows} == {result.design_hash}
+    assert {r["part_id"] for r in rows} == {p.part_id for p in result.parts}
+    assert all(
+        not r[k]
+        for r in rows
+        for k in ("agreed_tolerance", "measured", "result", "inspector", "notes")
+    )
+    indexed = {(r["part_id"], r["feature_id"], r["check"]): r for r in rows}
+    for part in adapt_design_result(result).parts:
+        for check, expected in (
+            ("finished_local_U", part.width_um),
+            ("finished_local_V", part.height_um),
+            ("actual_thickness", part.thickness_um),
+        ):
+            row = indexed[(part.part_id, "", check)]
+            assert Decimal(row["expected"]) * 1000 == expected
+            assert row["unit"] == "mm"
+            assert row["model_tolerance"] == ""
+        for feature in part.features:
+            for check, expected in (("origin_U", feature.x_um), ("origin_V", feature.y_um)):
+                row = indexed[(part.part_id, feature.feature_id, check)]
+                assert Decimal(row["expected"]) * 1000 == expected
+                assert row["side"] == feature.side.value
+                assert row["model_tolerance"] == (
+                    f"{feature.tolerance_um / 1000:.3f}" if feature.tolerance_um > 0 else ""
+                )
+            count = indexed[(part.part_id, feature.feature_id, "pattern_count")]
+            assert count["unit"] == "count"
+            assert int(count["expected"]) == feature.pattern_count
+            if feature.pitch_um is not None:
+                assert (
+                    Decimal(indexed[(part.part_id, feature.feature_id, "pitch")]["expected"]) * 1000
+                    == feature.pitch_um
+                )
+
+
+def test_handoff_distinguishes_external_row_payload_from_shelf_self_weight():
+    selected = workspace(
+        "shelving", width_um=4_340_000, shelf_load_basis="per_metre", shelf_load_per_metre_n=300
+    )
+    assert furniture_workshop_handoff(build_furniture(selected.design))["shelf_load"] == {
+        "basis": "per_metre",
+        "total_row_load_n": 1302,
+        "load_per_metre_n": 300,
+        "width_um": 4_340_000,
+    }

@@ -90,8 +90,8 @@ def _bind_test_contract(spec: BookcaseDesignSpec) -> DesignResult:
         load_cases=(
             JointRetentionLoadCase(
                 mode=JointRetentionLoadMode.SHEAR,
-                rated_design_load_n=300,
-                verified_capacity_n=600,
+                rated_design_load_n=base.minimum_retention_shear_load_n,
+                verified_capacity_n=2 * base.minimum_retention_shear_load_n,
             ),
             JointRetentionLoadCase(
                 mode=JointRetentionLoadMode.WITHDRAWAL,

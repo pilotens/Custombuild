@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { INSTALLATION_ALLOWANCES, installationCarcassDimensions, parseFurniturePercentages } from "@/lib/furniture-dimensions";
-import type { FurnitureInstallation, FurniturePreview, FurnitureWorkspace } from "@/lib/furniture-workspace";
+import type { FurnitureInstallation, FurniturePreview, FurnitureTrimProfile, FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 
 type EditorProps = {
@@ -40,6 +40,7 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
           value={installation[key]/1_000} onChange={e => changeMm(key, e.target.value)} /></label>)}
       <label><input type="checkbox" checked={installation.width_includes_trim}
         onChange={e => apply({ ...installation, width_includes_trim: e.target.checked })} />Längden inkluderar list</label>
+      <TrimProfileEditor installation={installation} onChange={apply} onError={onError} />
       <p>Reserverat utrymme per sida. Tomt betyder okänt. Ange 0 där inget utrymme ska reserveras.</p>
       {INSTALLATION_ALLOWANCES.map(([key, label]) => <label key={key}>{label} · reserverat (mm)
         <input type="number" min="0" max="500" step="0.001" value={installation[key] === null ? "" : installation[key]/1_000}
@@ -49,9 +50,54 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
           intent: { ...workspace.design.intent, ...dimensions } } }, "carcass");
       }}>Räkna om stommen från kundmåtten</button>
       {dimensions ? <p>Beräknad stomme: {dimensions.width_um/1_000} × {dimensions.height_um/1_000} × {dimensions.depth_um/1_000} mm (längd × höjd × djup).</p> : null}
-      {installation.width_includes_trim ? <p>Listdelar och deras mekaniska infästning saknas ännu i modellen. Reserverat utrymme är inte en listkonstruktion.</p> : null}
+      {installation.trim_profile?.use === "furniture_trim" || (installation.width_includes_trim && !installation.trim_profile)
+        ? <p>Listdelar och deras mekaniska infästning saknas ännu i modellen. Reserverat utrymme är inte en listkonstruktion.</p> : null}
     </> : null}
   </details>;
+}
+
+function TrimProfileEditor({ installation, onChange, onError }: {
+  installation: FurnitureInstallation;
+  onChange: (value: FurnitureInstallation, field: string) => void;
+  onError: (message: string, field: string) => void;
+}) {
+  const profile = installation.trim_profile;
+  const update = (trim_profile: FurnitureTrimProfile | null, field = "installation.trim") =>
+    onChange({ ...installation, trim_profile }, field);
+  return <>
+    <label><input type="checkbox" checked={Boolean(profile)} onChange={e => update(e.target.checked
+      ? { height_um: null, width_um: null, use: "unassigned", walls: [] } : null)} />Ange listprofil</label>
+    {profile ? <>
+      {([['height_um', 'Listhöjd', 500_000], ['width_um', 'Listbredd/utstick', 100_000]] as const).map(([key, label, maximumUm]) =>
+        <label key={key}>{label} (mm)<input type="number" min="0.001" max={maximumUm/1_000} step="0.001"
+          value={profile[key] === null ? "" : profile[key]/1_000} onChange={e => {
+            try { update({ ...profile, [key]: e.target.value.trim() ? exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 1, maximumUm }) : null }, `installation.trim.${key}`); }
+            catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera listmåttet.", `installation.trim.${key}`); }
+          }} /></label>)}
+      <label>Listens funktion<select value={profile.use} onChange={e => update({ ...profile,
+        use: e.target.value as FurnitureTrimProfile["use"], walls: [] })}>
+        <option value="unassigned">Placering och funktion inte valda</option>
+        <option value="existing_room_trim">Befintlig list i rummet</option>
+        <option value="furniture_trim">List som ska ingå i möbeln</option>
+      </select></label>
+      {profile.use === "existing_room_trim" ? <>
+        <p>Välj väggar med befintlig list. Programmet använder frigång över hela stommans höjd; ingen urfräsning eller borttagning av list antas.</p>
+        {([['left', 'Vänster vägg'], ['right', 'Höger vägg'], ['rear', 'Bakom möbeln']] as const).map(([wall, label]) =>
+          <label key={wall}><input type="checkbox" checked={profile.walls.includes(wall)} onChange={e => update({ ...profile,
+            walls: e.target.checked ? [...profile.walls, wall] : profile.walls.filter(v => v !== wall) })} />{label}</label>)}
+        <button type="button" disabled={!profile.walls.length || profile.width_um === null} onClick={() => {
+          if (profile.width_um === null) return;
+          const next = { ...installation };
+          for (const wall of profile.walls) {
+            const key = `${wall}_allowance_um` as "left_allowance_um" | "right_allowance_um" | "rear_allowance_um";
+            next[key] = Math.max(next[key] ?? 0, profile.width_um);
+          }
+          onChange(next, "installation.clearance");
+        }}>Reservera frigång för befintlig list</button>
+        <p>Övriga okända montagemått behöver fortfarande anges. Räkna sedan om stommen.</p>
+      </> : profile.use === "unassigned" ? <p>Listmåtten är sparade. De dras inte från stommen innan funktion, placering och frigång har valts.</p> : null}
+    </> : null}
+  </>;
 }
 
 function PercentageEditor({ label, values, count, kind, onChange, onError }: {

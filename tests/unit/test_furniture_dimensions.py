@@ -127,6 +127,12 @@ def test_new_customer_dimensions_replace_the_old_dimensions_without_selecting_tr
     assert measurement["installation"]["height_um"] == 2_540_000
     assert measurement["installation"]["depth_um"] == 280_000
     assert measurement["installation"]["width_includes_trim"]
+    assert measurement["installation"]["trim_profile"] == {
+        "height_um": 90_000,
+        "width_um": 20_000,
+        "use": "unassigned",
+        "walls": [],
+    }
     assert measurement["required_carcass_dimensions_um"] is None
     assert result["manufacturing"]["state"] == "not_selected"
     with pytest.raises(ValueError):
@@ -139,3 +145,78 @@ def test_new_customer_dimensions_replace_the_old_dimensions_without_selecting_tr
         build_furniture(FurnitureWorkspace.model_validate(different).design).design_hash
         != (result["design"]["design_hash"])
     )
+
+
+@pytest.mark.parametrize("height,width", [(90_000, 20_000), (73_001, 12_003)])
+def test_existing_room_trim_uses_explicit_clearance_without_creating_or_subtracting_parts_twice(
+    height, width
+):
+    value = installed(trim=True).model_dump(mode="json")
+    installation = value["design"]["installation"]
+    installation["trim_profile"] = {
+        "height_um": height,
+        "width_um": width,
+        "use": "existing_room_trim",
+        "walls": ["left", "rear"],
+    }
+    selected = FurnitureWorkspace.model_validate(value)
+    assert "ROOM_TRIM_CLEARANCE_REQUIRED" in {
+        v["code"] for v in review_furniture_dimensions(selected.design)["issues"]
+    }
+    with pytest.raises(ValueError):
+        furniture_production_source(selected)
+    installation.update(left_allowance_um=width, rear_allowance_um=width)
+    value["design"]["intent"]["width_um"] -= width
+    value["design"]["intent"]["depth_um"] -= width
+    selected = FurnitureWorkspace.model_validate(value)
+    review = review_furniture_dimensions(selected.design)
+    assert review["state"] == "reconciled"
+    source = furniture_production_source(selected)
+    assert source.workspace.design.intent.width_um == 900_000 - width
+    assert source.workspace.design.intent.depth_um == 320_000 - width
+    assert source.workspace.design.intent.height_um == 1_800_000
+    assert len(build_furniture(selected.design).parts) == len(
+        build_furniture(installed().design).parts
+    )
+
+
+@pytest.mark.parametrize(
+    "patch,code",
+    [
+        ({"use": "unassigned"}, "TRIM_USE_REQUIRED"),
+        ({"use": "furniture_trim"}, "TRIM_DESIGN_REQUIRED"),
+        ({"use": "existing_room_trim"}, "ROOM_TRIM_LOCATION_REQUIRED"),
+        ({"height_um": None}, "TRIM_DIMENSIONS_REQUIRED"),
+        ({"width_um": None}, "TRIM_DIMENSIONS_REQUIRED"),
+    ],
+)
+def test_profile_measurements_never_guess_function_location_or_missing_dimensions(patch, code):
+    value = installed(trim=True).model_dump(mode="json")
+    value["design"]["installation"]["trim_profile"] = {
+        "height_um": 90_000,
+        "width_um": 20_000,
+        "use": "unassigned",
+        "walls": [],
+        **patch,
+    }
+    selected = FurnitureWorkspace.model_validate(value)
+    assert code in {v["code"] for v in review_furniture_dimensions(selected.design)["issues"]}
+    with pytest.raises(ValueError):
+        furniture_production_source(selected)
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"height_um": True},
+        {"width_um": 20.001},
+        {"height_um": 0},
+        {"use": "existing_room_trim", "walls": ["rear", "rear"]},
+        {"use": "furniture_trim", "walls": ["left"]},
+    ],
+)
+def test_trim_schema_rejects_inexact_or_inconsistent_measurements(patch):
+    from custombuild_domain.furniture import TrimProfile
+
+    with pytest.raises(ValueError):
+        TrimProfile.model_validate({"height_um": 90_000, "width_um": 20_000, **patch})

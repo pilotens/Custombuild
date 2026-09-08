@@ -13,6 +13,7 @@ from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWork
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
 from custombuild_manufacturing.exporters import bom_csv, cut_list_csv, dxf_for_part, svg_for_part
+from custombuild_manufacturing.furniture_handoff import furniture_first_article_checks
 from custombuild_manufacturing.furniture_profiles import preview_furniture
 from custombuild_manufacturing.model import Side
 
@@ -44,6 +45,7 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "design/model.glb": cad.glb,
         "validation/review.json": _json(preview),
         "manufacturing/workshop-handoff.json": _json(preview["workshop_handoff"]),
+        "inspection/first-article-checks.csv": furniture_first_article_checks(result),
         "documents/part-drawings.pdf": part_drawings_pdf(
             result,
             qualification_note=(
@@ -80,6 +82,9 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "Kundens yttermått, utrymme för list/montage och exakta råformat per material\n"
         "finns i manufacturing/workshop-handoff.json. Reserverat listutrymme skapar\n"
         "inga listdelar; ofullständiga listuppgifter blockerar tillverkningsberedning.\n"
+        "inspection/first-article-checks.csv anger CAD-delarnas kontrollmått och\n"
+        "modellens featuretoleranser. Verkstaden fastställer avtalade toleranser och\n"
+        "fyller i mätning och granskare. Tomma resultat är inte godkända mätningar.\n"
     ).encode()
     manifest = {
         "schema_version": "custombuild.furniture-review.v1",

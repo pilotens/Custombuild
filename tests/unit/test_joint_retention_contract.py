@@ -61,6 +61,45 @@ from pydantic import ValidationError
 _SYNTHETIC_SIGNED_RETENTION_BYTES = b'{"fixture":"not-authenticated-test-evidence"}'
 
 
+@pytest.mark.parametrize("rows,payload", [(0, 0), (1, 0), (4, 300), (12, 500)])
+def test_shared_retention_contract_covers_accumulated_payload_and_structure_self_weight(
+    rows, payload
+):
+    from fractions import Fraction
+    from math import ceil
+
+    design = build_bookcase(
+        BookcaseDesignSpec(
+            design_id="retention-gravity-envelope",
+            parameters=BookcaseParameters(
+                shelf_count=rows, shelf_load_n=payload, height_um=mm(2400)
+            ),
+            material=screening_mdf_18(),
+            back_material=screening_mdf_6(),
+        )
+    )
+    own_weight = ceil(Fraction(sum(p.weight_g for p in design.parts) * 981, 100_000))
+    assert design.minimum_retention_shear_load_n == own_weight + rows * payload
+    assert design.minimum_retention_shear_load_n > rows * payload
+
+
+def test_legacy_one_row_retention_capacity_cannot_qualify_the_assembled_design(
+    structured_retention_contract,
+):
+    contract = structured_retention_contract.model_dump(mode="python")
+    contract["load_cases"][0]["rated_design_load_n"] = 300
+    with pytest.raises(ValueError, match="accumulated row loads"):
+        build_bookcase(
+            BookcaseDesignSpec(
+                design_id="test-only-retained-bookcase",
+                parameters=BookcaseParameters(),
+                material=screening_mdf_18(),
+                back_material=screening_mdf_6(),
+                joint_retention=JointRetentionContract.model_validate(contract),
+            )
+        )
+
+
 @pytest.fixture
 def structured_retention_contract() -> JointRetentionContract:
     """Synthetic foundation fixture; it does not authenticate external evidence."""
@@ -102,8 +141,8 @@ def structured_retention_contract() -> JointRetentionContract:
         load_cases=(
             JointRetentionLoadCase(
                 mode=JointRetentionLoadMode.SHEAR,
-                rated_design_load_n=300,
-                verified_capacity_n=600,
+                rated_design_load_n=preview.minimum_retention_shear_load_n,
+                verified_capacity_n=2 * preview.minimum_retention_shear_load_n,
             ),
             JointRetentionLoadCase(
                 mode=JointRetentionLoadMode.WITHDRAWAL,
@@ -195,9 +234,7 @@ def test_synthetic_structurally_complete_contract_exercises_future_path_without_
         for joint in dado_joints
     )
     assert all(
-        joint.retention is None
-        and joint.hardware_sku is None
-        and joint.hardware_count == 0
+        joint.retention is None and joint.hardware_sku is None and joint.hardware_count == 0
         for joint in back_grooves
     )
     assert captive_inset_back_topology_is_complete(
@@ -214,9 +251,7 @@ def test_synthetic_structurally_complete_contract_exercises_future_path_without_
     )
     assert _frozen_dado_retention_is_unresolved(frozen_version) is False
 
-    package_status = generated_design_review_package_status(
-        validation_program_included=True
-    )
+    package_status = generated_design_review_package_status(validation_program_included=True)
     assert package_status.physical_cutting_authorized is False
     readiness = json.loads(assembly_readiness_json(retained_design))
     assert readiness["physical_assembly_authorized"] is False
@@ -224,30 +259,21 @@ def test_synthetic_structurally_complete_contract_exercises_future_path_without_
     assert "verified_adhesive_free_joint_retention" in readiness["missing_requirements"]
     assert "named_assembly_safety_approver" in readiness["missing_requirements"]
 
-    rows = tuple(
-        csv.DictReader(io.StringIO(hardware_csv(retained_design).decode("utf-8")))
-    )
+    rows = tuple(csv.DictReader(io.StringIO(hardware_csv(retained_design).decode("utf-8"))))
     contract_row = next(
-        row
-        for row in rows
-        if row["hardware_sku"] == structured_retention_contract.hardware_sku
+        row for row in rows if row["hardware_sku"] == structured_retention_contract.hardware_sku
     )
-    assert (
-        contract_row["selection_status"]
-        == "STRUCTURALLY_COMPLETE_RETENTION_APPLICATION"
-    )
-    assert (
-        contract_row["catalog_authenticity_status"]
-        == "NOT_ESTABLISHED_BY_CURRENT_MVP"
-    )
+    assert contract_row["selection_status"] == "STRUCTURALLY_COMPLETE_RETENTION_APPLICATION"
+    assert contract_row["catalog_authenticity_status"] == "NOT_ESTABLISHED_BY_CURRENT_MVP"
     assert contract_row["catalog_entry_sha256"] == "1" * 64
     assert contract_row["installation_instruction_sha256"] == "3" * 64
     assert (
-        contract_row["joint_geometry_sha256"]
-        == structured_retention_contract.joint_geometry_sha256
+        contract_row["joint_geometry_sha256"] == structured_retention_contract.joint_geometry_sha256
     )
     assert contract_row["applicable_materials"] == "mdf@screening-2026.1"
-    assert contract_row["rated_shear_design_load_n"] == "300"
+    assert contract_row["rated_shear_design_load_n"] == str(
+        retained_design.minimum_retention_shear_load_n
+    )
     assert contract_row["rated_withdrawal_design_load_n"] == "50"
 
     dado_step = next(
@@ -281,9 +307,7 @@ def test_verified_retention_trust_is_reported_without_authorizing_physical_work(
     assert first_documents == second_documents
     rows = tuple(csv.DictReader(io.StringIO(first_documents[1].decode("utf-8"))))
     contract_row = next(
-        row
-        for row in rows
-        if row["hardware_sku"] == structured_retention_contract.hardware_sku
+        row for row in rows if row["hardware_sku"] == structured_retention_contract.hardware_sku
     )
     assert contract_row["selection_status"] == "SERVER_VERIFIED_RETENTION_APPLICATION"
     assert contract_row["catalog_authenticity_status"] == (
@@ -328,26 +352,22 @@ def test_missing_malformed_or_detached_retention_trust_remains_unverified(
 
     for candidate in (None, detached, {"schema_version": trust.schema_version}):
         rows = tuple(
-            csv.DictReader(
-                io.StringIO(hardware_csv(retained_design, candidate).decode("utf-8"))
-            )
+            csv.DictReader(io.StringIO(hardware_csv(retained_design, candidate).decode("utf-8")))
         )
         contract_row = next(
-            row
-            for row in rows
-            if row["hardware_sku"] == structured_retention_contract.hardware_sku
+            row for row in rows if row["hardware_sku"] == structured_retention_contract.hardware_sku
         )
         assert contract_row["catalog_authenticity_status"] == "NOT_ESTABLISHED_BY_CURRENT_MVP"
         assert contract_row["certifier_issuer_id"] == ""
-        assert contract_row["selection_status"] == (
-            "STRUCTURALLY_COMPLETE_RETENTION_APPLICATION"
-        )
+        assert contract_row["selection_status"] == ("STRUCTURALLY_COMPLETE_RETENTION_APPLICATION")
         readiness = json.loads(assembly_readiness_json(retained_design, candidate))
         assert "verified_adhesive_free_joint_retention" in readiness["missing_requirements"]
 
-    malformed = trust.__dict__ if hasattr(trust, "__dict__") else {
-        field: getattr(trust, field) for field in trust.__dataclass_fields__
-    }
+    malformed = (
+        trust.__dict__
+        if hasattr(trust, "__dict__")
+        else {field: getattr(trust, field) for field in trust.__dataclass_fields__}
+    )
     with pytest.raises(ValueError, match="invalid field set"):
         VerifiedRetentionTrust.from_verified_snapshot({**malformed, "unexpected": "value"})
 
@@ -449,8 +469,7 @@ def test_structurally_complete_retention_reaches_next_gate_without_authorizing_c
     assert bundle.manifest["physical_cutting_authorized"] is False
     with zipfile.ZipFile(io.BytesIO(bundle.zip_bytes)) as archive:
         assert (
-            archive.read(JOINT_RETENTION_SIGNED_EVIDENCE_PATH)
-            == _SYNTHETIC_SIGNED_RETENTION_BYTES
+            archive.read(JOINT_RETENTION_SIGNED_EVIDENCE_PATH) == _SYNTHETIC_SIGNED_RETENTION_BYTES
         )
 
 
@@ -463,12 +482,8 @@ def test_review_status_is_bound_both_ways_to_frozen_retention(retained_design) -
             back_material=screening_mdf_6(),
         )
     )
-    generated = generated_design_review_package_status(
-        validation_program_included=True
-    )
-    blocked = blocked_design_review_package_status(
-        (DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,)
-    )
+    generated = generated_design_review_package_status(validation_program_included=True)
+    blocked = blocked_design_review_package_status((DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,))
 
     with pytest.raises(ValueError, match="generated CAM status contradicts"):
         validate_design_review_status_retention_binding(generated, unresolved_design)
@@ -563,9 +578,7 @@ def test_removed_dado_topology_cannot_resolve_retention_with_the_old_hash(
     tampered_design = retained_design.model_copy(
         update={
             "joints": tuple(
-                joint
-                for joint in retained_design.joints
-                if joint.joint_type != JointType.DADO
+                joint for joint in retained_design.joints if joint.joint_type != JointType.DADO
             )
         }
     )

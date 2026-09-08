@@ -19,6 +19,36 @@ from custombuild_domain.furniture_production import (
 from tests.unit.test_furniture_families import workspace
 
 
+@pytest.mark.parametrize("width,expected", [(900_000, 270), (4_340_000, 1302), (3_210_007, 964)])
+def test_per_metre_payload_scales_with_customer_width_and_reaches_production_exactly(
+    width, expected
+):
+    selected = workspace(
+        "shelving",
+        width_um=width,
+        shelf_load_basis="per_metre",
+        shelf_load_per_metre_n=300,
+        shelf_load_n=17,
+    )
+    source = furniture_production_source(selected)
+    converted = normalize_preview(
+        furniture_production_input(selected).model_dump(exclude_none=True),
+        design_id=selected.design.design_id,
+    )
+    assert converted.parameters.shelf_load_n == expected
+    assert_furniture_production_spec(source, converted)
+
+
+def test_per_metre_payload_cannot_be_silently_clamped_to_the_production_limit():
+    with pytest.raises(ValueError, match="5000 N"):
+        workspace(
+            "shelving",
+            width_um=4_340_000,
+            shelf_load_basis="per_metre",
+            shelf_load_per_metre_n=2000,
+        )
+
+
 @pytest.mark.parametrize("thickness", [17_001, 17_801, 18_000, 18_999])
 @pytest.mark.parametrize("material,back", [("mdf", "birch-plywood-6"), ("birch-plywood", "mdf-6")])
 @pytest.mark.parametrize("load", [0, 201, 4903])

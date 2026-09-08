@@ -12,7 +12,7 @@ from custombuild_domain.furniture_engine import FurnitureResult
 
 from .engine import RuleEngine
 
-FURNITURE_RULES_VERSION = "furniture-rules-1.0.0"
+FURNITURE_RULES_VERSION = "furniture-rules-1.1.0"
 
 
 def _rule(code: str, title: str, status: str, detail: str, **values: Any) -> dict[str, Any]:
@@ -80,7 +80,7 @@ def evaluate_furniture(result: FurnitureResult) -> dict[str, Any]:
             * Fraction(1_000 + material.creep_factor_permille, 1_000)
         )
         limit = min(Fraction(3), length_mm / 200)
-        stress = 3 * load * length_mm / (2 * breadth_mm * thickness_mm**2)
+        stress = 3 * load * length_mm / (4 * breadth_mm * thickness_mm**2)
         stress_limit = Fraction(
             material.bending_strength_mpa * (1_000 - material.property_uncertainty_permille), 1_800
         )

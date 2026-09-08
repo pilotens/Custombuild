@@ -146,7 +146,7 @@
         "part_count": 8,
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
-          "CB-DEFLECTION-001": "PASS",
+          "CB-DEFLECTION-001": "WARNING",
           "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
@@ -184,12 +184,12 @@
         "part_count": 10,
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
-          "CB-DEFLECTION-001": "PASS",
+          "CB-DEFLECTION-001": "BLOCK",
           "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS"
         },
-        "status": "WARNING"
+        "status": "BLOCK"
       },
       "name": "zero-load"
     },
@@ -203,7 +203,7 @@
         "part_count": 9,
         "rule_statuses": {
           "CB-BENDING-001": "PASS",
-          "CB-DEFLECTION-001": "PASS",
+          "CB-DEFLECTION-001": "WARNING",
           "CB-JOINT-001": "WARNING",
           "CB-STABILITY-001": "PASS",
           "CB-TIP-001": "PASS",

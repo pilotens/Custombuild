@@ -16,7 +16,7 @@ import { chooseTemplateAndCreate } from "./planning-helpers";
 
 const PLAIN_DADO_RULE = {
   ruleId: "CB-JOINT-001",
-  ruleVersion: "1.4.0",
+  ruleVersion: "1.5.0",
   title: "Lokalt upplag i hyllspår och hyllbärare",
 } as const;
 
@@ -24,7 +24,7 @@ const SERVER_WARNING_PATHS = [
   PLAIN_DADO_RULE,
   {
     ruleId: "CB-TIP-001",
-    ruleVersion: "1.4.0",
+    ruleVersion: "1.5.0",
     title: "Tipprisk och krav på väggförankring",
   },
   {

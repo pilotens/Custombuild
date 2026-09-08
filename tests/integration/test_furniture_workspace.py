@@ -369,12 +369,24 @@ def test_real_family_review_exports_match_parts_and_contain_no_machine_programs(
         manifest = json.loads(archive.read("manifest.json"))
         resolved = json.loads(archive.read("design/resolved.json"))
         handoff = json.loads(archive.read("manufacturing/workshop-handoff.json"))
+        import csv
+
+        measurements = list(
+            csv.DictReader(
+                io.StringIO(archive.read("inspection/first-article-checks.csv").decode("utf-8-sig"))
+            )
+        )
+        assert {r["part_id"] for r in measurements} == {p["part_id"] for p in resolved["parts"]}
+        assert all(r["design_hash"] == resolved["design_hash"] for r in measurements)
+        assert all(not r["measured"] and not r["result"] for r in measurements)
         assert handoff["design_hash"] == resolved["design_hash"]
         assert sum(group["part_count"] for group in handoff["stock_requirements"]) == len(
             resolved["parts"]
         )
         if family == "customer-shelving":
             assert handoff["dimensions"]["installation"]["width_um"] == 4_340_000
+            assert handoff["dimensions"]["installation"]["trim_profile"]["height_um"] == 90_000
+            assert handoff["dimensions"]["installation"]["trim_profile"]["width_um"] == 20_000
             assert handoff["dimensions"]["state"] == "requires_resolution"
         assert not manifest["physical_cutting_authorized"]
         assert not any(n.endswith((".ngc", ".nc", ".gcode")) for n in names)

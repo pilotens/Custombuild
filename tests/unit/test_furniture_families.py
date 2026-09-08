@@ -174,6 +174,29 @@ def test_reference_profiles_never_claim_physical_qualification():
         assert result["rules"]["evaluations"]
 
 
+def test_table_uniform_load_bending_matches_moment_and_section_inertia():
+    from fractions import Fraction
+
+    selected = workspace("table", top_load_n=0)
+    result = build_furniture(selected.design)
+    p = selected.design.intent
+    top = next(part for part in result.parts if part.semantic_key == "table-top")
+    t = selected.design.material.measured_thickness_um
+    length = Fraction(p.width_um - 2 * (p.end_inset_um + t), 1000)
+    breadth, thickness = Fraction(p.depth_um, 1000), Fraction(t, 1000)
+    load = Fraction(top.weight_g * 981, 100_000)
+    moment = load * length / 8
+    inertia = breadth * thickness**3 / 12
+    expected_mpa = float(moment * (thickness / 2) / inertia)
+    rule = next(
+        r
+        for r in preview_furniture(selected)["rules"]["evaluations"]
+        if r["rule_id"] == "CB-TABLE-BENDING-001"
+    )
+    assert rule["values"]["calculated_mpa"] == round(expected_mpa, 3)
+    assert rule["values"]["calculated_mpa"] > 0
+
+
 def test_narrow_stock_is_an_explicit_profile_incompatibility():
     payload = workspace().model_dump(mode="json")
     payload["manufacturing"] = {

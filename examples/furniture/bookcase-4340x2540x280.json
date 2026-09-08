@@ -19,6 +19,12 @@
       "height_um": 2540000,
       "depth_um": 280000,
       "width_includes_trim": true,
+      "trim_profile": {
+        "height_um": 90000,
+        "width_um": 20000,
+        "use": "unassigned",
+        "walls": []
+      },
       "left_allowance_um": null,
       "right_allowance_um": null,
       "top_allowance_um": null,

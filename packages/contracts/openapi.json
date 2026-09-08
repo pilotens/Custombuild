@@ -1659,6 +1659,16 @@
             ],
             "title": "Top Allowance Um"
           },
+          "trim_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TrimProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "width_includes_trim": {
             "default": false,
             "title": "Width Includes Trim",
@@ -2600,11 +2610,27 @@
             "title": "Shelf Height Ratios Ppm",
             "type": "array"
           },
+          "shelf_load_basis": {
+            "default": "per_row",
+            "enum": [
+              "per_row",
+              "per_metre"
+            ],
+            "title": "Shelf Load Basis",
+            "type": "string"
+          },
           "shelf_load_n": {
             "default": 200,
             "maximum": 5000.0,
             "minimum": 0.0,
             "title": "Shelf Load N",
+            "type": "integer"
+          },
+          "shelf_load_per_metre_n": {
+            "default": 0,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Shelf Load Per Metre N",
             "type": "integer"
           },
           "shelf_mount": {
@@ -2676,6 +2702,63 @@
           }
         },
         "title": "TableIntent",
+        "type": "object"
+      },
+      "TrimProfile": {
+        "additionalProperties": false,
+        "description": "Measured profile; use and placement are explicit customer decisions.",
+        "properties": {
+          "height_um": {
+            "anyOf": [
+              {
+                "maximum": 500000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Um"
+          },
+          "use": {
+            "default": "unassigned",
+            "enum": [
+              "unassigned",
+              "existing_room_trim",
+              "furniture_trim"
+            ],
+            "title": "Use",
+            "type": "string"
+          },
+          "walls": {
+            "default": [],
+            "items": {
+              "enum": [
+                "left",
+                "right",
+                "rear"
+              ],
+              "type": "string"
+            },
+            "title": "Walls",
+            "type": "array"
+          },
+          "width_um": {
+            "anyOf": [
+              {
+                "maximum": 100000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Um"
+          }
+        },
+        "title": "TrimProfile",
         "type": "object"
       },
       "ValidationError": {

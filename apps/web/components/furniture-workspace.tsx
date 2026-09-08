@@ -76,6 +76,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const dirty = fingerprint(workspace) !== baseline || invalidInput;
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
+  const linearShelfLoad = intent.family === "shelving" && intent.shelf_load_basis === "per_metre";
   const update = (next: FurnitureWorkspace) => {
     mutationEpoch.current += 1;
     setWorkspace(next); setPreview(undefined); setError(undefined); setNotice(undefined);
@@ -293,11 +294,24 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
           </>}
           <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${layoutEpoch}`} workspace={workspace} onChange={updateInput} onError={inputError} />
           <InstallationEditor workspace={workspace} onChange={updateInput} onError={inputError} />
-          <label>{intent.family === "table" ? "Last på skivan" : intent.family === "chest_of_drawers" ? "Last per låda" : "Last per hyllplan i ett fack"} (kg)
+          {intent.family === "shelving" ? <label>Hur anges hyllasten?<select value={intent.shelf_load_basis ?? "per_row"}
+            onChange={e => updateInput({ ...workspace, design: { ...workspace.design, intent: {
+              ...intent, shelf_load_basis: e.target.value as "per_row" | "per_metre",
+              shelf_load_per_metre_n: intent.shelf_load_per_metre_n ?? Math.ceil((intent.shelf_load_n ?? 0)*1_000_000/intent.width_um),
+            } } }, "shelf-load")}>
+            <option value="per_row">Total last per hel hyllrad</option>
+            <option value="per_metre">Last per meter hyllrad</option>
+          </select></label> : null}
+          <label>{intent.family === "table" ? "Last på skivan" : intent.family === "chest_of_drawers" ? "Last per låda"
+            : linearShelfLoad ? "Last per meter hyllrad" : "Last per hel hyllrad"} ({linearShelfLoad ? "kg/m" : "kg"})
             <input type="number" min="0" max="500" step="0.1"
-              value={((intent.top_load_n ?? intent.drawer_load_n ?? intent.shelf_load_n ?? 0)/9.80665).toFixed(1)}
-              onChange={e => changeDimension(intent.family === "table" ? "top_load_n" : intent.family === "chest_of_drawers" ? "drawer_load_n" : "shelf_load_n",
+              value={((intent.top_load_n ?? intent.drawer_load_n ?? (linearShelfLoad ? intent.shelf_load_per_metre_n : intent.shelf_load_n) ?? 0)/9.80665).toFixed(1)}
+              onChange={e => changeDimension(intent.family === "table" ? "top_load_n" : intent.family === "chest_of_drawers" ? "drawer_load_n"
+                : linearShelfLoad ? "shelf_load_per_metre_n" : "shelf_load_n",
                 Math.round(Number(e.target.value)*9.80665))} /></label>
+          {intent.family === "shelving" ? <p>Ange jämnt fördelad nyttig last. Radens last fördelas mellan facken efter deras bredd. Hyllornas egenvikt räknas till separat.
+            {preview?.workshop_handoff?.shelf_load ? ` Beräknad last per hel rad: ${(preview.workshop_handoff.shelf_load.total_row_load_n/9.80665).toFixed(1)} kg.` : ""}
+            {linearShelfLoad ? " Lasten räknas om när stommens bredd ändras." : " Angiven vikt gäller hela raden, inte varje fack."}</p> : null}
         </fieldset>
       </aside>
       <section className={styles.model} aria-label="Möbelns förhandsvisning">

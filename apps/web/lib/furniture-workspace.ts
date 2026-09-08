@@ -9,6 +9,8 @@ export interface FurnitureIntent {
   shelf_count?: number;
   divider_count?: number;
   shelf_load_n?: number;
+  shelf_load_basis?: "per_row" | "per_metre";
+  shelf_load_per_metre_n?: number;
   shelf_height_ratios_ppm?: number[];
   bay_width_ratios_ppm?: number[];
   back_panel?: "none" | "surface_mounted" | "inset_groove";
@@ -35,11 +37,18 @@ export interface FurnitureManufacturingSelection {
   stock_grain_axis: "x" | "y" | null;
   edge_margin_um?: number;
 }
+export interface FurnitureTrimProfile {
+  height_um: number | null;
+  width_um: number | null;
+  use: "unassigned" | "existing_room_trim" | "furniture_trim";
+  walls: ("left" | "right" | "rear")[];
+}
 export interface FurnitureInstallation {
   width_um: number;
   height_um: number;
   depth_um: number;
   width_includes_trim: boolean;
+  trim_profile?: FurnitureTrimProfile | null;
   left_allowance_um: number | null;
   right_allowance_um: number | null;
   top_allowance_um: number | null;
@@ -95,6 +104,8 @@ export interface FurniturePreview {
   physical_cutting_authorized: false;
   production_qualified: false;
   workshop_handoff?: {
+    shelf_load?: { basis: "per_row" | "per_metre"; total_row_load_n: number;
+      load_per_metre_n: number | null; width_um: number } | null;
     dimensions: {
       state: string;
       carcass_dimensions_um: { width_um: number; height_um: number; depth_um: number };

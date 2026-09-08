@@ -33,7 +33,7 @@ from .models import (
     aggregate_status,
 )
 
-RULES_VERSION = "1.4.0"
+RULES_VERSION = "1.5.0"
 MAX_AUTO_VERTICAL_DIVIDERS = 16
 
 
@@ -244,18 +244,27 @@ class RuleEngine:
         shelf_depth = min(part.finished_size.depth_um for part in shelves)
         thickness = design.spec.parameters.actual_thickness_um
         affected = tuple(part.part_id for part in shelves if spans[part.part_id] == worst_span)
+        share, dead_weight_n = self._shelf_load_components(design)
+        design_load_n = _ceil(design.spec.parameters.shelf_load_n * share) + dead_weight_n
+        return worst_span, shelf_depth, thickness, design_load_n, affected
+
+    @staticmethod
+    def _shelf_load_components(design: DesignResult) -> tuple[Fraction, int]:
+        """Worst segment's external row-load share and conservative own weight.
+
+        Shelf rows repeat the same geometry. The full rectangular part mass
+        includes insertion tongues and material later removed by machining.
+        Neither zero payload nor a proposed load reduction removes this mass.
+        """
+        shelves = tuple(part for part in design.parts if part.role == PartRole.SHELF)
+        if not shelves:
+            return Fraction(0), 0
         bay_count = design.spec.parameters.vertical_divider_count + 1
         representative_row = sorted(shelves, key=lambda part: part.instance_index)[:bay_count]
         row_width = sum(part.finished_size.width_um for part in representative_row)
-        affected_width = max(
-            part.finished_size.width_um for part in shelves if part.part_id in affected
-        )
-        design_load_n = (
-            _ceil(Fraction(design.spec.parameters.shelf_load_n * affected_width, row_width))
-            if row_width
-            else 0
-        )
-        return worst_span, shelf_depth, thickness, design_load_n, affected
+        widest = max(part.finished_size.width_um for part in shelves)
+        dead_weight_n = _ceil(Fraction(max(part.weight_g for part in shelves) * 981, 100_000))
+        return Fraction(widest, row_width), dead_weight_n
 
     @staticmethod
     def _shelf_clear_span(
@@ -301,7 +310,7 @@ class RuleEngine:
     def _shelf_deflection(self, design: DesignResult) -> RuleEvaluation:
         p, material = design.spec.parameters, design.spec.material
         span, depth, thickness, design_load_n, affected = self._shelf_geometry(design)
-        if not affected or p.shelf_load_n == 0:
+        if not affected:
             calculated = 0
         else:
             # δ = 5*W*L³/(32*E*b*t³), using conservative E and creep.
@@ -352,6 +361,11 @@ class RuleEngine:
                 RuleDatum(name="fri_spännvidd", value=span, unit="µm"),
                 RuleDatum(name="hylllast_per_rad", value=p.shelf_load_n, unit="N"),
                 RuleDatum(name="dimensionerande_facklast", value=design_load_n, unit="N"),
+                RuleDatum(
+                    name="hyllans_egentyngd",
+                    value=self._shelf_load_components(design)[1],
+                    unit="N",
+                ),
                 RuleDatum(name="elasticitetsmodul", value=material.elastic_modulus_mpa, unit="MPa"),
                 RuleDatum(
                     name="materialosäkerhet", value=material.property_uncertainty_permille, unit="‰"
@@ -360,7 +374,10 @@ class RuleEngine:
             ),
             assumptions=(
                 "Hyllan screenas som enkelt upplagd balk med jämnt fördelad total last.",
-                "Angiven radlast fördelas lika mellan facken.",
+                "Angiven nyttig radlast fördelas efter fackbredd. Hyllsegmentets egenvikt "
+                "tillkommer, även när den angivna lasten är noll.",
+                "Egenvikten beräknas konservativt från den obearbetade rektangulära delen "
+                "med g = 9,81 m/s² och avrundas uppåt till hela N.",
                 "Elasticitetsmodulen reduceras med katalogpostens dokumenterade osäkerhet.",
             ),
             trace=(
@@ -430,7 +447,7 @@ class RuleEngine:
                 ),
                 assumptions=(
                     "Radlasten fördelas efter respektive facks bredd och reaktionen lika mellan "
-                    "två stöd per hyllsegment.",
+                    "två stöd per hyllsegment. Hyllans egenvikt tillkommer.",
                     "Ingen leverantörskapacitet, materialkompatibilitet eller borrbild för "
                     "hyllbäraren finns i den versionshanterade katalogen.",
                     "Systemet antar därför inte ett beslagstal, inte ens vid noll angiven last.",
@@ -439,7 +456,7 @@ class RuleEngine:
                 ),
                 trace=(
                     CalculationStep(
-                        expression="R_stöd = ceil(W_rad·fackandel/2)",
+                        expression="R_stöd = ceil((ceil(W_rad·fackandel) + W_egen)/2)",
                         result=str(demand_n),
                         unit="N",
                     ),
@@ -552,13 +569,10 @@ class RuleEngine:
         actions: tuple[SuggestedAction, ...] = (self._dry_joining_action(design),)
         if capacity_status != RuleStatus.PASS:
             pass_demand_n = max(0, (allowed_n * 800 - 1) // 1_000)
+            share, dead_weight_n = self._shelf_load_components(design)
+            payload_capacity_n = max(0, 2 * pass_demand_n - dead_weight_n)
             recommended_row_load_n = min(
-                p.shelf_load_n,
-                (
-                    2 * pass_demand_n * p.shelf_load_n // design_load_n
-                    if design_load_n
-                    else p.shelf_load_n
-                ),
+                p.shelf_load_n, int(payload_capacity_n // share) if share else p.shelf_load_n
             )
             actions = (
                 *self._divider_actions(design),
@@ -627,7 +641,7 @@ class RuleEngine:
             ),
             assumptions=(
                 "Radlasten fördelas efter fackbredd och ger halva "
-                "facklasten som reaktion i vardera stödfogen.",
+                "facklasten inklusive hyllans egenvikt som reaktion i vardera stödfogen.",
                 "Bärande area härleds från den kanoniska fogens verkliga spårdjup gånger "
                 "hyllans överlappande djup; nominell materialtjocklek används inte som instick.",
                 "Versionspostens skjuvhållfasthet används konservativt som screening för "
@@ -645,7 +659,7 @@ class RuleEngine:
             ),
             trace=(
                 CalculationStep(
-                    expression="R_stöd = ceil(W_rad·fackandel/2)",
+                    expression="R_stöd = ceil((ceil(W_rad·fackandel) + W_egen)/2)",
                     result=str(demand_n),
                     unit="N",
                 ),
@@ -758,14 +772,15 @@ class RuleEngine:
     def _shelf_bending(self, design: DesignResult) -> RuleEvaluation:
         p, material = design.spec.parameters, design.spec.material
         span, depth, thickness, design_load_n, affected = self._shelf_geometry(design)
-        if not affected or p.shelf_load_n == 0:
+        if not affected:
             calculated_kpa = 0
         else:
-            # sigma = 3*W*L/(2*b*t²); factor 1e9 converts the µm expression to kPa.
+            # Uniform load: M_max=W*L/8, I=b*t³/12, sigma=M*(t/2)/I.
+            # The factor 1e9 converts the µm expression to kPa.
             calculated_kpa = _ceil(
                 Fraction(
                     3 * design_load_n * span * 1_000_000_000,
-                    2 * depth * thickness**2,
+                    4 * depth * thickness**2,
                 )
             )
         allowed_kpa = (
@@ -801,17 +816,23 @@ class RuleEngine:
                 RuleDatum(name="fri_spännvidd", value=span, unit="µm"),
                 RuleDatum(name="hyllbredd_i_böjning", value=depth, unit="µm"),
                 RuleDatum(name="uppmätt_tjocklek", value=thickness, unit="µm"),
+                RuleDatum(name="dimensionerande_facklast", value=design_load_n, unit="N"),
+                RuleDatum(
+                    name="hyllans_egentyngd",
+                    value=self._shelf_load_components(design)[1],
+                    unit="N",
+                ),
                 RuleDatum(
                     name="säkerhetsfaktor", value=p.structural_safety_factor_permille, unit="‰"
                 ),
             ),
             assumptions=(
-                "Jämnt fördelad total last och enkelt upplagd hylla.",
+                "Jämnt fördelad nyttig last plus hyllans egenvikt och enkelt upplagd hylla.",
                 "Tillåten spänning reduceras för materialosäkerhet och säkerhetsfaktor.",
             ),
             trace=(
                 CalculationStep(
-                    expression="σ_max = 3·W·L/(2·b·t²)",
+                    expression="σ_max = 3·W·L/(4·b·t²)",
                     result=str(calculated_kpa),
                     unit="kPa",
                 ),
@@ -911,18 +932,20 @@ class RuleEngine:
         # carcass. The declared load belongs to the complete row, not to every
         # segment. Use the resolved bearing surfaces so a moved/custom row
         # changes its actual load moment, including above a base cabinet.
-        shelf_surfaces_z = tuple(sorted({
-            part.placement.z_um + part.finished_size.height_um
-            for part in design.parts
-            if part.role == PartRole.SHELF
-        }))
+        shelf_surfaces_z = tuple(
+            sorted(
+                {
+                    part.placement.z_um + part.finished_size.height_um
+                    for part in design.parts
+                    if part.role == PartRole.SHELF
+                }
+            )
+        )
         shelf_rows = len(shelf_surfaces_z)
         if shelf_rows != p.shelf_count:
             raise ValueError("resolved shelf rows do not match the declared load rows")
         load_force_n = p.shelf_load_n * shelf_rows
-        load_cg_z = (
-            Fraction(sum(shelf_surfaces_z), shelf_rows) if shelf_rows else Fraction(0)
-        )
+        load_cg_z = Fraction(sum(shelf_surfaces_z), shelf_rows) if shelf_rows else Fraction(0)
         product_weight_n = Fraction(mass_g * 981, 100_000)
         total_vertical_n = product_weight_n + load_force_n
         combined_cg_z = (

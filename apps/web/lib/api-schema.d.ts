@@ -1339,6 +1339,7 @@ export interface components {
             right_allowance_um?: number | null;
             /** Top Allowance Um */
             top_allowance_um?: number | null;
+            trim_profile?: components["schemas"]["TrimProfile"] | null;
             /**
              * Width Includes Trim
              * @default false
@@ -1717,10 +1718,21 @@ export interface components {
              */
             shelf_height_ratios_ppm: number[];
             /**
+             * Shelf Load Basis
+             * @default per_row
+             * @enum {string}
+             */
+            shelf_load_basis: "per_row" | "per_metre";
+            /**
              * Shelf Load N
              * @default 200
              */
             shelf_load_n: number;
+            /**
+             * Shelf Load Per Metre N
+             * @default 0
+             */
+            shelf_load_per_metre_n: number;
             /** @default fixed */
             shelf_mount: components["schemas"]["ShelfMount"];
             /**
@@ -1769,6 +1781,27 @@ export interface components {
              * @default 1000000
              */
             width_um: number;
+        };
+        /**
+         * TrimProfile
+         * @description Measured profile; use and placement are explicit customer decisions.
+         */
+        TrimProfile: {
+            /** Height Um */
+            height_um?: number | null;
+            /**
+             * Use
+             * @default unassigned
+             * @enum {string}
+             */
+            use: "unassigned" | "existing_room_trim" | "furniture_trim";
+            /**
+             * Walls
+             * @default []
+             */
+            walls: ("left" | "right" | "rear")[];
+            /** Width Um */
+            width_um?: number | null;
         };
         /** ValidationError */
         ValidationError: {

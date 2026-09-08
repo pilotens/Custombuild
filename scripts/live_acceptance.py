@@ -2208,7 +2208,7 @@ def verify_dry_joining_warning(value: Any, *, label: str) -> list[dict[str, Any]
     require(
         len(warnings) == 1
         and warnings[0].get("rule_id") == "CB-JOINT-001"
-        and warnings[0].get("rule_version") == "1.4.0",
+        and warnings[0].get("rule_version") == "1.5.0",
         f"{label} does not expose the canonical dry-joining warning",
     )
     return evaluations

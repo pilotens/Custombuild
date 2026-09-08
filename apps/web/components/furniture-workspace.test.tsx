@@ -37,6 +37,41 @@ function setup() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("möbelstudions revisions- och profilflöde", () => {
+  it("sparar en mätbar listprofil och reserverar endast valda väggar innan stommen räknas om", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+    fireEvent.click(screen.getByLabelText("Ange listprofil"));
+    expect(screen.getByLabelText("Listhöjd (mm)")).toHaveValue(null);
+    expect(screen.getByLabelText("Listbredd/utstick (mm)")).toHaveValue(null);
+    fireEvent.change(screen.getByLabelText("Listhöjd (mm)"), { target: { value: "90" } });
+    fireEvent.change(screen.getByLabelText("Listbredd/utstick (mm)"), { target: { value: "20" } });
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1000);
+    fireEvent.change(screen.getByLabelText("Listens funktion"), { target: { value: "existing_room_trim" } });
+    fireEvent.click(screen.getByLabelText("Vänster vägg"));
+    const reserve = screen.getByRole("button", { name: "Reservera frigång för befintlig list", hidden: true });
+    fireEvent.click(reserve); fireEvent.click(reserve);
+    expect(screen.getByLabelText("Vänster · reserverat (mm)")).toHaveValue(20);
+    expect(screen.getByLabelText("Höger · reserverat (mm)")).toHaveValue(null);
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1000);
+    expect(screen.getByRole("button", { name: "Räkna om stommen från kundmåtten", hidden: true })).toBeDisabled();
+  });
+
+  it("skiljer radlast från meterlast och bevarar meterlasten när kundens bredd ändras", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    expect(screen.getByLabelText("Last per hel hyllrad (kg)")).toBeVisible();
+    fireEvent.change(screen.getByLabelText("Hur anges hyllasten?"), { target: { value: "per_metre" } });
+    fireEvent.change(screen.getByLabelText("Last per meter hyllrad (kg/m)"), { target: { value: "30.6" } });
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "4340" } });
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent).toMatchObject({
+      width_um: 4_340_000, shelf_load_basis: "per_metre", shelf_load_per_metre_n: 300,
+    }));
+  });
+
   it("kräver att varje felaktigt indelningsfält rättas även efter en annan giltig måttändring", async () => {
     const api = setup();
     render(<FurnitureStudio api={api} principal={principal} />);

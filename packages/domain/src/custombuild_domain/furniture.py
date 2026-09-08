@@ -36,6 +36,23 @@ class HardwareSelection(FrozenModel):
     version: StableKey = "layout-1.0.0"
 
 
+class TrimProfile(FrozenModel):
+    """Measured profile; use and placement are explicit customer decisions."""
+
+    height_um: Annotated[int, Field(strict=True, ge=1, le=500_000)] | None = None
+    width_um: Annotated[int, Field(strict=True, ge=1, le=100_000)] | None = None
+    use: Literal["unassigned", "existing_room_trim", "furniture_trim"] = "unassigned"
+    walls: tuple[Literal["left", "right", "rear"], ...] = ()
+
+    @model_validator(mode="after")
+    def validate_placement(self) -> TrimProfile:
+        if len(set(self.walls)) != len(self.walls):
+            raise ValueError("trim walls must be unique")
+        if self.walls and self.use != "existing_room_trim":
+            raise ValueError("wall placement only applies to existing room trim")
+        return self
+
+
 class InstallationSpace(FrozenModel):
     """Customer measurements, distinct from the generated carcass dimensions.
 
@@ -47,6 +64,7 @@ class InstallationSpace(FrozenModel):
     height_um: Length
     depth_um: Length
     width_includes_trim: bool = False
+    trim_profile: TrimProfile | None = Field(default=None, exclude_if=lambda value: value is None)
     left_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
     right_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
     top_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
@@ -88,6 +106,12 @@ class ShelvingIntent(FrozenModel):
     shelf_count: Annotated[int, Field(strict=True, ge=0, le=40)] = 4
     divider_count: Annotated[int, Field(strict=True, ge=0, le=16)] = 1
     shelf_load_n: Load = 200
+    shelf_load_basis: Literal["per_row", "per_metre"] = Field(
+        default="per_row", exclude_if=lambda value: value == "per_row"
+    )
+    shelf_load_per_metre_n: Annotated[int, Field(strict=True, ge=0, le=5_000)] = Field(
+        default=0, exclude_if=lambda value: value == 0
+    )
     shelf_height_ratios_ppm: tuple[
         Annotated[int, Field(strict=True, ge=50_000, le=950_000)], ...
     ] = Field(default=(), max_length=40)
@@ -109,7 +133,17 @@ class ShelvingIntent(FrozenModel):
     def canonical_bay_proportions(self) -> ShelvingIntent:
         if self.bay_width_ratios_ppm and sum(self.bay_width_ratios_ppm) != 1_000_000:
             raise ValueError("bay width proportions must sum to exactly 100 percent")
+        if self.resolved_shelf_load_n > 5_000:
+            raise ValueError("lasten per hel hyllrad överskrider modellens gräns på 5000 N")
         return self
+
+    @property
+    def resolved_shelf_load_n(self) -> int:
+        if self.shelf_load_basis == "per_metre":
+            # Include the full carcass width rather than subtracting dividers:
+            # this does not understate a uniformly loaded row. Round upwards.
+            return (self.width_um * self.shelf_load_per_metre_n + 999_999) // 1_000_000
+        return self.shelf_load_n
 
 
 class TableIntent(FrozenModel):

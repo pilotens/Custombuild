@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import csv
+import io
 from collections import defaultdict
 from typing import Any
 
+from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
 
 from .adapters import adapt_design_result
+from .model import FeatureKind
 
 HANDOFF_VERSION = "furniture-workshop-handoff-1.0.0"
 
@@ -54,6 +58,7 @@ def furniture_stock_requirements(result: FurnitureResult) -> list[dict[str, Any]
 
 def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
     hardware = result.hardware_profile
+    intent = result.spec.intent
     return {
         "schema_version": "custombuild.furniture-workshop-handoff.v1",
         "version": HANDOFF_VERSION,
@@ -61,6 +66,16 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         "family": result.spec.intent.family,
         "dimensions": review_furniture_dimensions(result.spec),
         "stock_requirements": furniture_stock_requirements(result),
+        "shelf_load": {
+            "basis": intent.shelf_load_basis,
+            "total_row_load_n": intent.resolved_shelf_load_n,
+            "load_per_metre_n": intent.shelf_load_per_metre_n
+            if intent.shelf_load_basis == "per_metre"
+            else None,
+            "width_um": intent.width_um,
+        }
+        if isinstance(intent, ShelvingIntent)
+        else None,
         "hardware_requirements": list(hardware.required_evidence) if hardware else [],
         "required_workshop_inputs": [
             "material_batches_and_actual_thickness",
@@ -78,3 +93,113 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         "production_qualified": False,
         "physical_cutting_authorized": False,
     }
+
+
+def furniture_first_article_checks(result: FurnitureResult) -> bytes:
+    """An unfilled measurement worksheet, not a manufactured or approved result."""
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(
+        (
+            "design_hash",
+            "part_id",
+            "part_name",
+            "feature_id",
+            "side",
+            "origin_semantics",
+            "check",
+            "expected",
+            "unit",
+            "model_tolerance",
+            "agreed_tolerance",
+            "measured",
+            "result",
+            "inspector",
+            "notes",
+        )
+    )
+    names = {part.part_id: part.semantic_key for part in result.parts}
+
+    def mm_text(value: int | None) -> str:
+        return "" if value is None else f"{value / 1_000:.3f}"
+
+    def row(
+        part_id: str,
+        feature_id: str,
+        check: str,
+        value: int,
+        tolerance: int | None = None,
+        *,
+        unit: str = "mm",
+        side: str = "",
+        origin_semantics: str = "",
+    ) -> None:
+        writer.writerow(
+            (
+                result.design_hash,
+                part_id,
+                names[part_id],
+                feature_id,
+                side,
+                origin_semantics,
+                check,
+                str(value) if unit == "count" else mm_text(value),
+                unit,
+                mm_text(tolerance) if tolerance is not None and tolerance > 0 else "",
+                "",
+                "",
+                "",
+                "",
+                "",
+            )
+        )
+
+    for part in adapt_design_result(result).parts:
+        row(part.part_id, "", "finished_local_U", part.width_um)
+        row(part.part_id, "", "finished_local_V", part.height_um)
+        row(part.part_id, "", "actual_thickness", part.thickness_um)
+        for feature in part.features:
+            semantics = (
+                "FIRST_CENTRE"
+                if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}
+                else "LOWER_LEFT"
+            )
+            row(
+                part.part_id,
+                feature.feature_id,
+                "pattern_count",
+                feature.pattern_count,
+                unit="count",
+                side=feature.side.value,
+                origin_semantics=semantics,
+            )
+            for check, value in (("origin_U", feature.x_um), ("origin_V", feature.y_um)):
+                row(
+                    part.part_id,
+                    feature.feature_id,
+                    check,
+                    value,
+                    feature.tolerance_um,
+                    side=feature.side.value,
+                    origin_semantics=semantics,
+                )
+            for field in (
+                "diameter_um",
+                "depth_um",
+                "width_um",
+                "length_um",
+                "radius_um",
+                "pitch_um",
+            ):
+                value = getattr(feature, field)
+                if value is not None:
+                    row(
+                        part.part_id,
+                        feature.feature_id,
+                        field.removesuffix("_um"),
+                        value,
+                        feature.tolerance_um,
+                        side=feature.side.value,
+                        origin_semantics=semantics,
+                    )
+    return output.getvalue().encode("utf-8-sig")

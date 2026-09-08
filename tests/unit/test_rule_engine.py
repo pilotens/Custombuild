@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from fractions import Fraction
+from math import ceil
 
 from custombuild_domain import (
     BackPanelType,
@@ -227,6 +229,56 @@ class StructuralRuleTests(unittest.TestCase):
         self.assertEqual(by_id["CB-DEFLECTION-001"].status, RuleStatus.PASS)
         self.assertEqual(by_id["CB-BENDING-001"].status, RuleStatus.PASS)
 
+    def test_empty_shelf_still_has_self_weight_deflection_bending_and_support_reactions(self):
+        spec = make_spec(width_um=mm(900), shelf_count=1, shelf_load_n=0)
+        design = build_bookcase(spec)
+        shelf = next(part for part in design.parts if part.role.value == "shelf")
+        rules = {r.rule_id: r for r in evaluate_design(design).evaluations}
+        own_weight = ceil(Fraction(shelf.weight_g * 981, 100_000))
+        self.assertGreater(own_weight, 0)
+        for rule_id in ("CB-DEFLECTION-001", "CB-BENDING-001"):
+            rule = rules[rule_id]
+            inputs = {v.name: v.value for v in rule.inputs}
+            self.assertEqual(inputs["hyllans_egentyngd"], own_weight)
+            self.assertEqual(inputs["dimensionerande_facklast"], own_weight)
+            self.assertGreater(rule.calculated_value, 0)
+        self.assertEqual(rules["CB-JOINT-001"].calculated_value, ceil(Fraction(own_weight, 2)))
+        # Independently evaluate the rectangular beam equations in SI units.
+        length = Fraction(864, 1000)
+        depth = Fraction(shelf.finished_size.depth_um, 1_000_000)
+        thick = Fraction(18, 1000)
+        material = spec.material
+        modulus = (
+            material.elastic_modulus_mpa
+            * 1_000_000
+            * Fraction(1000 - material.property_uncertainty_permille, 1000)
+        )
+        inertia = depth * thick**3 / 12
+        deflection_m = Fraction(5, 384) * own_weight * length**3 / (modulus * inertia)
+        deflection_m *= Fraction(1000 + material.creep_factor_permille, 1000)
+        self.assertEqual(
+            rules["CB-DEFLECTION-001"].calculated_value, ceil(deflection_m * 1_000_000)
+        )
+        stress_pa = (own_weight * length / 8) * (thick / 2) / inertia
+        self.assertEqual(rules["CB-BENDING-001"].calculated_value, ceil(stress_pa / 1000))
+
+    def test_joint_load_reduction_reserves_capacity_for_the_shelf_itself(self):
+        spec = make_spec(shelf_load_n=3300)
+        joint = evaluation(spec, "CB-JOINT-001")
+        change = next(a for a in joint.suggested_actions if a.action_type == ActionType.REDUCE_LOAD)
+        reduced = evaluation(make_spec(shelf_load_n=change.changes[0].after), "CB-JOINT-001")
+        self.assertLess(reduced.calculated_value * 1000, reduced.allowed_value * 800)
+        own_weight = ceil(
+            Fraction(
+                next(p.weight_g for p in build_bookcase(spec).parts if p.role.value == "shelf")
+                * 981,
+                100_000,
+            )
+        )
+        self.assertEqual(
+            reduced.calculated_value, ceil(Fraction(change.changes[0].after + own_weight, 2))
+        )
+
     def test_bending_trace_uses_kpa_and_positive_margin(self) -> None:
         result = evaluation(make_spec(shelf_load_n=300), "CB-BENDING-001")
         self.assertEqual(result.unit, "kPa")
@@ -245,7 +297,7 @@ class StructuralRuleTests(unittest.TestCase):
         inputs = {item.name: item.value for item in result.inputs}
 
         self.assertEqual(result.status, RuleStatus.WARNING)
-        self.assertEqual(result.calculated_value, 150)
+        self.assertEqual(result.calculated_value, 166)  # 300 N payload + 31 N shelf / two supports
         self.assertEqual(result.allowed_value, 1_589)
         self.assertEqual(inputs["dado_engagement"], mm(6))
         self.assertEqual(inputs["bärande_längd"], mm(298))
@@ -286,7 +338,7 @@ class StructuralRuleTests(unittest.TestCase):
 
         self.assertEqual(warning.status, RuleStatus.WARNING)
         self.assertEqual(blocking.status, RuleStatus.BLOCK)
-        self.assertEqual(blocking.calculated_value, 1_650)
+        self.assertEqual(blocking.calculated_value, 1_666)
         self.assertEqual(blocking.allowed_value, 1_589)
         self.assertEqual(
             {action.action_type for action in blocking.suggested_actions},
@@ -316,7 +368,7 @@ class StructuralRuleTests(unittest.TestCase):
 
         self.assertEqual(unsupported.status, RuleStatus.BLOCK)
         self.assertEqual(supported.status, RuleStatus.WARNING)
-        self.assertEqual(supported.calculated_value, 825)
+        self.assertEqual(supported.calculated_value, 833)
         self.assertEqual(supported.allowed_value, unsupported.allowed_value)
 
     def test_adjustable_shelf_pins_block_without_versioned_hardware_capacity(self) -> None:
@@ -446,7 +498,7 @@ class StabilityAndTipTests(unittest.TestCase):
 
     def test_rule_report_exposes_version_trace_and_disclaimer(self) -> None:
         report = evaluate_design(build_bookcase(make_spec()))
-        self.assertEqual(report.rules_version, "1.4.0")
+        self.assertEqual(report.rules_version, "1.5.0")
         self.assertIn("inte produktcertifiering", report.disclaimer)
         self.assertTrue(
             all(item.trace and item.inputs and item.assumptions for item in report.evaluations)

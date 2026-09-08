@@ -140,7 +140,7 @@ def _carcass(design: FurnitureDesign, *, shelving: bool) -> DesignResult:
                 back_panel=shelf.back_panel if shelf else BackPanelType.INSET_GROOVE,
                 shelf_mount=shelf.shelf_mount if shelf else ShelfMount.FIXED,
                 shelf_count=shelf.shelf_count if shelving and shelf else 0,
-                shelf_load_n=shelf.shelf_load_n if shelving and shelf else 0,
+                shelf_load_n=shelf.resolved_shelf_load_n if shelving and shelf else 0,
                 vertical_divider_count=shelf.divider_count if shelving and shelf else 0,
                 shelf_height_ratios_ppm=shelf.shelf_height_ratios_ppm if shelf else (),
                 bay_width_ratios_ppm=shelf.bay_width_ratios_ppm if shelf else (),

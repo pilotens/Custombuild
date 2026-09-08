@@ -43,6 +43,9 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.getByText("Kundens yttermått och listutrymme", { exact: true }).click();
     await expect(page.getByLabel("Kundlängd inklusive reserverat utrymme (mm)")).toHaveValue("4340");
     await expect(page.getByLabel("Längden inkluderar list", { exact: true })).toBeChecked();
+    await expect(page.getByLabel("Listhöjd (mm)", { exact: true })).toHaveValue("90");
+    await expect(page.getByLabel("Listbredd/utstick (mm)", { exact: true })).toHaveValue("20");
+    await expect(page.getByLabel("Listens funktion", { exact: true })).toHaveValue("unassigned");
     await expect(page.getByLabel("Vänster · reserverat (mm)")).toBeEmpty();
     await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
     await page.getByText("Råformat att stämma av med verkstaden", { exact: true }).click();
@@ -55,18 +58,23 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     const download = await downloadEvent;
     expect(await download.failure()).toBeNull();
     const exported = JSON.parse(execFileSync("python3", ["-c", [
-      "import hashlib,json,sys,zipfile",
+      "import csv,hashlib,io,json,sys,zipfile",
       "with zipfile.ZipFile(sys.argv[1]) as z:",
       " manifest=json.loads(z.read('manifest.json'))",
       " for entry in manifest['files']:",
       "  assert hashlib.sha256(z.read(entry['path'])).hexdigest()==entry['sha256']",
       " assert z.read('design/model.step').startswith(b'ISO-10303-21;')",
       " assert manifest['physical_cutting_authorized'] is False",
+      " rows=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
+      " assert rows and all(not r['measured'] and not r['result'] for r in rows)",
       " print(z.read('manufacturing/workshop-handoff.json').decode())",
     ].join("\n"), (await download.path())!], { encoding: "utf8" }));
     expect(exported.dimensions.installation.width_um).toBe(4_340_000);
     expect(exported.dimensions.installation.height_um).toBe(2_540_000);
     expect(exported.dimensions.installation.depth_um).toBe(280_000);
+    expect(exported.dimensions.installation.trim_profile).toEqual({
+      height_um: 90_000, width_um: 20_000, use: "unassigned", walls: [],
+    });
     expect(exported.dimensions.state).toBe("requires_resolution");
     await attachView(page, info, "customer-bookcase-dimensions");
     await page.setViewportSize({ width: 390, height: 844 });
