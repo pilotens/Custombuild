@@ -30,6 +30,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4340");
     await expect(page.getByLabel("Höjd (mm)", { exact: true })).toHaveValue("2540");
     await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("280");
+    await page.getByLabel("Projektnamn", { exact: true }).fill(`${provisioned.project.name}-import`);
     const created = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/projects");
     await page.getByRole("button", { name: "Spara revision" }).click();
     const response = await created;

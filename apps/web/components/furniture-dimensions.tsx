@@ -74,7 +74,7 @@ function TrimProfileEditor({ installation, onChange, onError }: {
             try { update({ ...profile, [key]: e.target.value.trim() ? exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 1, maximumUm }) : null }, `installation.trim.${key}`); }
             catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera listmåttet.", `installation.trim.${key}`); }
           }} /></label>)}
-      <label>Listens funktion<select value={profile.use} onChange={e => update({ ...profile,
+      <label>Listens funktion<select aria-label="Listens funktion" value={profile.use} onChange={e => update({ ...profile,
         use: e.target.value as FurnitureTrimProfile["use"], walls: [] })}>
         <option value="unassigned">Placering och funktion inte valda</option>
         <option value="existing_room_trim">Befintlig list i rummet</option>
