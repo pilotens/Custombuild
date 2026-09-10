@@ -207,7 +207,7 @@ jobs:
           grpc_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-grpc.version" }}')"
           image_id="$(docker image inspect "$image" --format '{{.Id}}')"
           test "$source_sha256" = "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
-          test "$security_overrides_sha256" = "dbbe6202180abc2a97035b1704d02bd439e683a0f71138706bc084dc31ed7eac"
+          test "$security_overrides_sha256" = "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f"
           test "$go_version" = "1.26.6"
           test "$apache_thrift_version" = "0.24.0"
           test "$etcd_client_pkg_version" = "3.7.1"

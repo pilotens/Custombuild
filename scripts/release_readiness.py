@@ -2625,7 +2625,7 @@ def supply_chain_issues(repo: Path) -> list[str]:
                 "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
             ),
             "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30",
-            "dbbe6202180abc2a97035b1704d02bd439e683a0f71138706bc084dc31ed7eac",
+            "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f",
             "github.com/apache/thrift@v0.24.0",
             "go.etcd.io/etcd/client/pkg/v3@v3.7.1",
             "golang.org/x/crypto@v0.56.0",
