@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { CustombuildApiClient, type CurrentPrincipal, type ProjectRead } from "@/lib/api-client";
 import {
   FURNITURE_FAMILY_LABELS, furnitureViewerParts, newFurnitureWorkspace, verifiedFurnitureDownload,
@@ -14,6 +14,8 @@ import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-cont
 import styles from "./furniture-workspace.module.css";
 import { FurnitureProduction } from "./furniture-production";
 import { FurnitureStockRequirements, InstallationEditor, ShelvingLayoutEditor } from "./furniture-dimensions";
+import { FurnitureRuleValues } from "./furniture-rule-values";
+import { FurnitureShelfSuggestionPanel } from "./furniture-shelf-suggestion";
 
 const Viewer = dynamic(() => import("./furniture-viewer"), {
   ssr: false, loading: () => <p>Öppnar 3D-vyn…</p>,
@@ -62,6 +64,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const [busy, setBusy] = useState(false);
   const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
   const [inputEpoch, setInputEpoch] = useState(0);
+  const [profileDirty, setProfileDirty] = useState(false);
   const [productionOpen, setProductionOpen] = useState(false);
   const [selectedPart, setSelectedPart] = useState<string>();
   const [drawersOpen, setDrawersOpen] = useState(false);
@@ -73,13 +76,15 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const [exportMessage, setExportMessage] = useState<string>();
   const mutationEpoch = useRef(0);
   const invalidInput = Object.keys(inputErrors).length > 0;
-  const dirty = fingerprint(workspace) !== baseline || invalidInput;
+  const dirty = fingerprint(workspace) !== baseline || invalidInput || profileDirty;
+  const profileDirtyChanged = useCallback((value: boolean) => setProfileDirty(value), []);
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
   const linearShelfLoad = intent.family === "shelving" && intent.shelf_load_basis === "per_metre";
   const update = (next: FurnitureWorkspace) => {
     mutationEpoch.current += 1;
     setWorkspace(next); setPreview(undefined); setError(undefined); setNotice(undefined);
+    setProfileDirty(false);
     setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
   };
   const inputError = (message: string, field: string) => {
@@ -187,7 +192,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     }).catch(reason => setError(errorText(reason))).finally(() => setBusy(false));
   });
   const save = async () => {
-    if (invalidInput || !preview) return;
+    if (invalidInput || profileDirty || !preview) return;
     setBusy(true); setError(undefined);
     try {
       let id = projectId;
@@ -229,6 +234,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     finally { setBusy(false); }
   };
   const exportWorkspace = () => {
+    if (profileDirty || invalidInput || !preview) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(workspace, null, 2)+"\n"], { type: "application/json" }));
     const link = document.createElement("a"); link.href = url;
     link.download = `custombuild-${intent.family}-revision-${revision || 1}.json`; link.click();
@@ -249,25 +255,30 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <label>Läs arbetsfil (JSON)<input type="file" accept=".json,application/json" disabled={busy || !mayEdit}
           onChange={e => { const file = e.target.files?.[0]; e.target.value = "";
             if (file) navigate(() => { void importWorkspace(file); }); }} /></label>
-        <button disabled={busy || !preview || invalidInput} onClick={exportWorkspace}>Spara arbetsfil</button>
+        <button disabled={busy || !preview || invalidInput || profileDirty} onClick={exportWorkspace}>Spara arbetsfil</button>
         <label>Öppna projekt<select aria-label="Öppna möbelprojekt" value={projectId ?? ""}
           disabled={busy} onChange={e => { if (e.target.value) openProject(e.target.value); }}>
           <option value="">Ny design</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select></label>
         <label>Projektnamn<input value={name} maxLength={180} disabled={Boolean(projectId) || busy || !mayEdit}
           onChange={e => setName(e.target.value)} /></label>
-        <button className={styles.primary} disabled={!mayEdit || busy || !preview || invalidInput || !name.trim()}
+        <button className={styles.primary} disabled={!mayEdit || busy || !preview || invalidInput || profileDirty || !name.trim()}
           onClick={() => { void save(); }}>{busy ? "Arbetar…" : "Spara revision"}</button>
       </div>
     </section>
     {pendingNavigation ? <section role="alertdialog" aria-label="Osparad design" className={styles.notice}>
-      <p>Du har osparade ändringar. Spara revisionen för att behålla dem.</p>
+      <p>{profileDirty
+        ? "Du har ett profilförslag som inte är tillämpat. Gå tillbaka, använd profilbytet och spara revisionen för att behålla det."
+        : "Du har osparade ändringar. Spara revisionen för att behålla dem."}</p>
       <button onClick={() => setPendingNavigation(null)}>Tillbaka</button>
       <button onClick={() => { pendingNavigation(); setPendingNavigation(null); }}>Fortsätt utan att spara</button>
     </section> : null}
     {error ? <p role="alert" className={styles.error}>{error}</p> : null}
     {Object.entries(inputErrors).map(([field, message]) => <p key={field} role="alert" className={styles.error}>{message}</p>)}
     {notice ? <p role="status" className={styles.notice}>{notice}</p> : null}
+    {profileDirty ? <p role="status" className={styles.notice}>
+      Kontrollera och använd profilbytet, eller återställ profilförslaget, innan du ändrar formen, sparar eller skapar underlag.
+    </p> : null}
     <div className={styles.layout}>
       <aside className={styles.controls}>
         <h2>Form och funktion</h2>
@@ -275,7 +286,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
           onChange={e => chooseFamily(e.target.value as FurnitureFamily)}>
           {Object.entries(FURNITURE_FAMILY_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
         </select></label>
-        <fieldset disabled={busy || !mayEdit}><legend>Stommått i millimeter</legend>
+        <fieldset disabled={busy || !mayEdit || profileDirty}><legend>Stommått i millimeter</legend>
           {([['width_um', 'Bredd'], ['height_um', 'Höjd'], ['depth_um', 'Djup']] as const).map(([key, label]) =>
             <label key={key}>{label}<input aria-label={`${label} (mm)`} type="number" step="0.001" min="1" max="6000"
               value={intent[key]/1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
@@ -336,7 +347,8 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <h2>Material, beslag och verkstad</h2>
         <p>Du kan spara designen innan du väljer verkstad.</p>
         {catalog ? <ProfileEditor key={`${fingerprint(workspace)}-${inputEpoch}`}
-          api={api} workspace={workspace} catalog={catalog} disabled={busy || !mayEdit} onApply={update} /> : <p>Läser profiler…</p>}
+          api={api} workspace={workspace} catalog={catalog} disabled={busy || !mayEdit}
+          onApply={update} onDirtyChange={profileDirtyChanged} /> : <p>Läser profiler…</p>}
       </aside>
     </div>
     <section className={styles.review}>
@@ -348,7 +360,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <button className={styles.primary} disabled={busy || dirty || !projectId || !preview || !workspace.manufacturing
           || preview.workshop_handoff?.dimensions.state === "requires_resolution"}
           onClick={() => setProductionOpen(true)}>Förbered tillverkning</button>
-        <p>{dirty || !revision ? "Spara möbeln först." : !workspace.manufacturing
+        <p>{profileDirty ? "Använd eller återställ profilförslaget först." : dirty || !revision ? "Spara möbeln först." : !workspace.manufacturing
           ? "Välj och spara en planeringsprofil för att börja bereda. Verklig verkstad kan väljas senare."
           : preview?.workshop_handoff?.dimensions.state === "requires_resolution"
             ? "Kundmått och listkonstruktion behöver lösas innan tillverkningsberedningen öppnas."
@@ -357,10 +369,15 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       <button className={styles.primary} disabled={!mayEdit || busy || dirty || !projectId || !preview}
         onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
       {exportMessage ? <p role="status">{exportMessage}</p> : null}
-      {download ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
+      {download && !profileDirty ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
+      {intent.family === "shelving" && preview ? <FurnitureShelfSuggestionPanel
+        key={`${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}
+        designHash={preview.design.design_hash} disabled={busy || invalidInput || profileDirty || !mayEdit}
+        onApply={next => { update(next); setNotice("Fackindelningen är ändrad. Granska möbeln och spara en ny revision."); }} /> : null}
       <div className={styles.rules}>{preview?.rules.evaluations.map(rule => <details key={rule.rule_id}>
-        <summary><span className={rule.status === "PASS" ? styles.pass : styles.requiresReview}>
-          {rule.status === "PASS" ? "Kontrollerat" : "Behöver granskas"}</span>{rule.title}</summary>
+        <summary><span className={rule.status === "PASS" ? styles.pass : rule.status === "BLOCK" ? styles.blocked : styles.requiresReview}>
+          {rule.status === "PASS" ? "Kontrollerat" : rule.status === "BLOCK" ? "Blockerar tillverkning" : "Behöver granskas"}</span>{rule.title}</summary>
+        <FurnitureRuleValues rule={rule} />
         <p>{rule.detail}</p>
       </details>)}</div>
       {preview?.manufacturing.issues.map((issue, index) => <p className={styles.error} key={`${issue.code}-${index}`}>{issue.message}</p>)}
@@ -380,24 +397,42 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   </>;
 }
 
-function ProfileEditor({ api, workspace, catalog, disabled, onApply }: {
+function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChange }: {
   api: CustombuildApiClient; workspace: FurnitureWorkspace; catalog: FurnitureCatalog;
-  disabled: boolean; onApply: (next: FurnitureWorkspace) => void;
+  disabled: boolean; onApply: (next: FurnitureWorkspace) => void; onDirtyChange: (dirty: boolean) => void;
 }) {
   const [proposed, setProposed] = useState(workspace);
   const [comparison, setComparison] = useState<FurnitureProfileComparison>();
   const [error, setError] = useState<string>();
+  const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
+  const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const epoch = useRef(0);
-  const change = (next: FurnitureWorkspace) => {
+  const invalidInput = Object.keys(inputErrors).length > 0;
+  const changed = fingerprint(workspace) !== fingerprint(proposed);
+  const dirty = changed || invalidInput;
+  useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
+  const change = (next: FurnitureWorkspace, field?: string) => {
     epoch.current += 1; setProposed(next); setComparison(undefined); setError(undefined); setBusy(false);
+    if (field) {
+      const keepOtherFields = (previous: Record<string, string>) => Object.fromEntries(Object.entries(previous)
+        .filter(([key]) => key !== field && !key.startsWith(`${field}.`)));
+      setInputErrors(keepOtherFields); setInputDrafts(keepOtherFields);
+    }
   };
-  const withMillimetres = (raw: string, apply: (value: number) => FurnitureWorkspace) => {
-    try { change(apply(exactMillimetreTextToMicrometres(raw, { minimumUm: 1, maximumUm: 6_000_000 }))); }
-    catch (reason) { epoch.current += 1; setBusy(false); setComparison(undefined); setError(errorText(reason)); }
+  const inputError = (field: string, reason: unknown, raw: string) => {
+    epoch.current += 1; setBusy(false); setComparison(undefined);
+    setInputErrors(previous => ({ ...previous, [field]: errorText(reason) }));
+    setInputDrafts(previous => ({ ...previous, [field]: raw }));
+  };
+  const withMillimetres = (field: string, raw: string, apply: (value: number) => FurnitureWorkspace) => {
+    try { change(apply(exactMillimetreTextToMicrometres(raw, { minimumUm: 1, maximumUm: 6_000_000 })), field); }
+    catch (reason) { inputError(field, reason, raw); }
   };
   const check = async (event: FormEvent) => {
-    event.preventDefault(); const currentEpoch = ++epoch.current;
+    event.preventDefault();
+    if (invalidInput || !changed || disabled || busy) return;
+    const currentEpoch = ++epoch.current;
     setBusy(true); setError(undefined);
     try {
       const result = await api.compareFurnitureProfiles(workspace, proposed);
@@ -414,12 +449,12 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply }: {
             if (!material) return;
             change({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
               material_id: material.material_id, version: material.version,
-              measured_thickness_um: material.nominal_thickness_um, batch_id: null } } });
+              measured_thickness_um: material.nominal_thickness_um, batch_id: null } } }, key);
           }}>{catalog.materials.filter(m => m.nominal_thickness_um === (key === "material" ? 18_000 : 6_000))
             .map(m => <option key={m.material_id} value={m.material_id}>{m.name}</option>)}</select></label>
         <label>{key === "material" ? "Uppmätt skivtjocklek (mm)" : "Uppmätt rygg-/bottentjocklek (mm)"}
-          <input type="number" min="1" step="0.001" value={proposed.design[key].measured_thickness_um/1_000}
-            onChange={e => withMillimetres(e.target.value, value => ({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
+          <input type="number" min="1" step="0.001" value={inputDrafts[`${key}.thickness`] ?? proposed.design[key].measured_thickness_um/1_000}
+            onChange={e => withMillimetres(`${key}.thickness`, e.target.value, value => ({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
               measured_thickness_um: value } } }))} /></label>
         <label>Batch-ID <span>(valfritt)</span><input maxLength={80} value={proposed.design[key].batch_id ?? ""}
           onChange={e => change({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
@@ -437,19 +472,19 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply }: {
           const machine = catalog.machines.find(m => m.profile_id === e.target.value);
           change({ ...proposed, manufacturing: machine ? { machine_profile_id: machine.profile_id,
             machine_profile_version: machine.version, stock_width_um: 1_220_000,
-            stock_height_um: 2_440_000, stock_grain_axis: null } : null });
+            stock_height_um: 2_440_000, stock_grain_axis: null } : null }, "manufacturing");
         }}><option value="">Välj verkstad senare</option>{catalog.machines.map(m =>
           <option key={m.profile_id} value={m.profile_id}>{m.name} · referensprofil</option>)}</select></label>
       {proposed.manufacturing ? <>
-        <label>Råskivans bredd (mm)<input type="number" min="1" step="0.001" value={proposed.manufacturing.stock_width_um/1_000}
-          onChange={e => withMillimetres(e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_width_um: value } }))} /></label>
-        <label>Råskivans höjd (mm)<input type="number" min="1" step="0.001" value={proposed.manufacturing.stock_height_um/1_000}
-          onChange={e => withMillimetres(e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_height_um: value } }))} /></label>
-        <label>Kantmarginal per sida (mm)<input type="number" min="0" max="100" step="0.001" value={(proposed.manufacturing.edge_margin_um ?? 0)/1_000}
+        <label>Råskivans bredd (mm)<input type="number" min="1" step="0.001" value={inputDrafts["manufacturing.width"] ?? proposed.manufacturing.stock_width_um/1_000}
+          onChange={e => withMillimetres("manufacturing.width", e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_width_um: value } }))} /></label>
+        <label>Råskivans höjd (mm)<input type="number" min="1" step="0.001" value={inputDrafts["manufacturing.height"] ?? proposed.manufacturing.stock_height_um/1_000}
+          onChange={e => withMillimetres("manufacturing.height", e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_height_um: value } }))} /></label>
+        <label>Kantmarginal per sida (mm)<input type="number" min="0" max="100" step="0.001" value={inputDrafts["manufacturing.margin"] ?? (proposed.manufacturing.edge_margin_um ?? 0)/1_000}
           onChange={e => {
             try { change({ ...proposed, manufacturing: { ...proposed.manufacturing!,
-              edge_margin_um: exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 0, maximumUm: 100_000 }) } }); }
-            catch (reason) { epoch.current += 1; setComparison(undefined); setError(errorText(reason)); }
+              edge_margin_um: exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 0, maximumUm: 100_000 }) } }, "manufacturing.margin"); }
+            catch (reason) { inputError("manufacturing.margin", reason, e.target.value); }
           }} /></label>
         <label>Fiberriktning på råskivan<select value={proposed.manufacturing.stock_grain_axis ?? ""}
           onChange={e => change({ ...proposed, manufacturing: { ...proposed.manufacturing!,
@@ -457,9 +492,13 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply }: {
           <option value="">Inte angiven</option><option value="x">Längs bredden</option><option value="y">Längs höjden</option>
         </select></label>
       </> : null}
-      <button type="submit" disabled={busy || fingerprint(workspace) === fingerprint(proposed)}>
+      <button type="submit" disabled={busy || invalidInput || !changed}>
         {busy ? "Kontrollerar…" : "Kontrollera profilbyte"}</button>
     </fieldset>
+    {dirty ? <button type="button" disabled={disabled} onClick={() => {
+      change(workspace); setInputErrors({}); setInputDrafts({});
+    }}>Återställ profilförslag</button> : null}
+    {Object.entries(inputErrors).map(([field, message]) => <p key={field} role="alert" className={styles.error}>{message}</p>)}
     {error ? <p role="alert" className={styles.error}>{error}</p> : null}
     {comparison ? <div className={styles.proposal} aria-live="polite">
       <strong>{comparison.can_apply ? "Konsekvenser av profilbytet" : "Profilen fungerar inte med designen"}</strong>
@@ -469,7 +508,12 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply }: {
           : comparison.invalidated_reviews.length ? "Tillverkningen behöver beredas och granskas på nytt." : "Inga tillverkningsberoenden ändras."}</p>
         {comparison.proposed?.manufacturing.issues.map((issue, i) => <p key={i}>{issue.message}</p>)}
         <button type="button" className={styles.primary} disabled={disabled}
-          onClick={() => { if (comparison.proposed) onApply(comparison.proposed.workspace); }}>Använd profilbytet i designen</button>
+          onClick={() => {
+            if (comparison.proposed) {
+              change(comparison.proposed.workspace); setInputErrors({}); setInputDrafts({});
+              onApply(comparison.proposed.workspace);
+            }
+          }}>Använd profilbytet i designen</button>
       </> : null}
     </div> : null}
   </form>;

@@ -617,7 +617,7 @@ def _generation_plan_payload() -> dict[str, object]:
     return {
         "schema_version": "custombuild.generation-plan.v2",
         "pipeline_version": "production-pipeline-1.12.0",
-        "nesting_algorithm": "deterministic-bottom-left-v1",
+        "nesting_algorithm": "deterministic-bottom-left-v2",
         "operations_schema_version": "custombuild.operations.v2",
         "operations_engine_version": "semantic-operations-1.3.0",
         "machine_profile": {

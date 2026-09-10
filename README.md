@@ -13,6 +13,12 @@ hardware and manufacturing profiles. It supports revision history and real
 STEP/GLB/DXF/PDF review exports. Table/chest hardware remains unqualified and
 does not unlock cutting CAM. See [scope and verification](docs/MULTI_FURNITURE_V1_IMPLEMENTATION.md).
 
+Shelving can request a server-calculated equal-bay proposal at the customer's
+exact dimensions and useful load. It shows calculated values against limits,
+clear bay widths, furniture weight and remaining construction/workshop issues
+before explicit application. Unchanged saves preserve existing preparation;
+pending profile edits must be applied or discarded before saving or exporting.
+
 The supported Hyllsystem/Shelving lane also generates a separate executable
 2.5D LinuxCNC CAM candidate from an accepted workshop profile: cutting programs,
 toolpaths, setup instructions, program order and independent verification.

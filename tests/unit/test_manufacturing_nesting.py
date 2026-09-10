@@ -89,6 +89,48 @@ def test_nesting_does_not_rotate_a_grain_bound_part_onto_same_grain_stock() -> N
     assert {issue.code for issue in issues} == {"NESTING_UNPLACED"}
 
 
+@pytest.mark.parametrize("part_grain,stock_grain", (("X", "Y"), ("Y", "X")))
+def test_square_panel_rotates_to_align_grain(part_grain: str, stock_grain: str) -> None:
+    source = replace(part("square-panel", 300_000, 300_000), grain_direction=part_grain)
+    source_stock = replace(stock(), grain_direction=stock_grain)
+
+    layout = DeterministicNester().nest((source,), source_stock)
+
+    assert layout.is_complete
+    assert len(layout.placements) == 1
+    placement = layout.placements[0]
+    assert placement.rotated_90 is True
+    assert (placement.width_um, placement.height_um) == (300_000, 300_000)
+    assert validate_layout(layout, expand_part_instances((source,))) == ()
+    assert DeterministicNester().nest((source,), source_stock) == layout
+
+
+@pytest.mark.parametrize("grain", ("X", "Y", "NONE"))
+def test_square_panel_keeps_local_axes_when_rotation_is_unnecessary(grain: str) -> None:
+    source = replace(part("square-panel", 300_000, 300_000), grain_direction=grain)
+    source_stock = replace(stock(), grain_direction=grain)
+
+    layout = DeterministicNester().nest((source,), source_stock)
+
+    assert layout.is_complete
+    assert layout.placements[0].rotated_90 is False
+
+
+@pytest.mark.parametrize("part_rotation,stock_rotation", ((False, True), (True, False)))
+def test_square_panel_grain_alignment_respects_rotation_permissions(
+    part_rotation: bool, stock_rotation: bool
+) -> None:
+    source = replace(
+        part("square-panel", 300_000, 300_000), grain_direction="X", allow_rotation=part_rotation
+    )
+    source_stock = replace(stock(), grain_direction="Y", allow_rotation=stock_rotation)
+
+    layout = DeterministicNester().nest((source,), source_stock)
+
+    assert layout.placements == ()
+    assert layout.unplaced_instance_ids == ("square-panel:001",)
+
+
 @pytest.mark.parametrize(
     "unbound_stock_axis",
     ("NONE", "ANY", "UNSPECIFIED", "UNKNOWN", "", "LENGTH"),

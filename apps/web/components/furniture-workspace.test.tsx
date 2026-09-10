@@ -185,6 +185,8 @@ describe("möbelstudions revisions- och profilflöde", () => {
     render(<FurnitureStudio api={api} principal={principal} />);
     await screen.findByText("5 delar");
     fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.801" } });
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    expect(screen.getByLabelText("Bredd (mm)")).toBeDisabled();
     expect(api.previewFurniture).toHaveBeenLastCalledWith(newFurnitureWorkspace("table"));
     fireEvent.click(screen.getByRole("button", { name: "Kontrollera profilbyte" }));
     await screen.findByText("Konsekvenser av profilbytet");
@@ -193,7 +195,111 @@ describe("möbelstudions revisions- och profilflöde", () => {
     fireEvent.click(screen.getByRole("button", { name: "Använd profilbytet i designen" }));
     await waitFor(() => expect(api.previewFurniture).toHaveBeenCalledTimes(2));
     expect(vi.mocked(api.previewFurniture).mock.calls[1]![0].design.material.measured_thickness_um).toBe(17_801);
+    expect(screen.getByLabelText("Bredd (mm)")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Återställ profilförslag" })).toBeNull();
     expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
+  });
+
+  it("bevarar ett väntande profilförslag och blockerar sparning, formändring och tillverkning tills det återställs", async () => {
+    const api = setup();
+    const saved = newFurnitureWorkspace("shelving");
+    saved.design.design_id = "saved-shelf"; saved.design.revision = 2;
+    saved.manufacturing = { machine_profile_id: "reference-router", machine_profile_version: "1.0.0-validation",
+      stock_width_um: 1_220_000, stock_height_um: 2_440_000, stock_grain_axis: "y" };
+    vi.mocked(api.listProjects).mockResolvedValue([{ id: "saved-shelf", name: "Sparad hylla", furniture_type: "shelving",
+      current_revision: 0, description: "", archived: false, created_at: "2026-09-07T12:00:00Z",
+      updated_at: "2026-09-07T12:00:00Z" }]);
+    vi.spyOn(api, "loadFurnitureDraft").mockResolvedValue({ project_id: "saved-shelf", revision: 2,
+      workspace: saved, preview: preview(saved) });
+    const save = vi.spyOn(api, "saveFurnitureDraft");
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Öppna möbelprojekt"), { target: { value: "saved-shelf" } });
+    await screen.findByText(/senast sparad revision 2/);
+    expect(screen.getByRole("button", { name: "Förbered tillverkning" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.801" } });
+    expect(screen.getByLabelText("Bredd (mm)")).toBeDisabled();
+    for (const name of ["Spara revision", "Spara arbetsfil", "Skapa granskningspaket", "Förbered tillverkning", "Föreslå fackindelning"]) {
+      expect(screen.getByRole("button", { name })).toBeDisabled();
+    }
+    const leaving = new Event("beforeunload", { cancelable: true });
+    fireEvent(window, leaving);
+    expect(leaving.defaultPrevented).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Spara revision" }));
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "table" } });
+    expect(screen.getByRole("alertdialog", { name: "Osparad design" })).toHaveTextContent("profilförslag som inte är tillämpat");
+    fireEvent.click(screen.getByRole("button", { name: "Tillbaka" }));
+    expect(screen.getByLabelText("Möbeltyp")).toHaveValue("shelving");
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(17.801);
+    fireEvent.click(screen.getByRole("button", { name: "Återställ profilförslag" }));
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18);
+    expect(screen.getByLabelText("Bredd (mm)")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Förbered tillverkning" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeEnabled();
+    const cleanLeaving = new Event("beforeunload", { cancelable: true });
+    fireEvent(window, cleanLeaving);
+    expect(cleanLeaving.defaultPrevented).toBe(false);
+    expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.material.measured_thickness_um).toBe(18_000);
+  });
+
+  it("byter möbeltyp först efter att användaren valt att lämna profilförslaget", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.801" } });
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    expect(screen.getByLabelText("Möbeltyp")).toHaveValue("table");
+    fireEvent.click(screen.getByRole("button", { name: "Fortsätt utan att spara" }));
+    await screen.findByText("5 delar");
+    expect(screen.getByLabelText("Möbeltyp")).toHaveValue("shelving");
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18);
+    expect(screen.getByLabelText("Bredd (mm)")).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Återställ profilförslag" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  });
+
+  it("behåller ogiltiga profilfält som väntande ändringar även när ett annat fält ändras", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "18.0001" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("högst tre decimaler");
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18.0001);
+    expect(screen.getByLabelText("Bredd (mm)")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText(/Batch-ID/), { target: { value: "ny-batch" } });
+    expect(screen.getByRole("button", { name: "Kontrollera profilbyte" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent("högst tre decimaler");
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "18" } });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Kontrollera profilbyte" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Återställ profilförslag" }));
+    expect(screen.getByLabelText(/Batch-ID/)).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  });
+
+  it("ignorerar ett sent profilkontrollsvar efter att förslaget återställts", async () => {
+    const api = setup();
+    let finish!: (value: Awaited<ReturnType<CustombuildApiClient["compareFurnitureProfiles"]>>) => void;
+    vi.spyOn(api, "compareFurnitureProfiles").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.801" } });
+    fireEvent.click(screen.getByRole("button", { name: "Kontrollera profilbyte" }));
+    expect(screen.getByRole("button", { name: "Kontrollerar…" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Återställ profilförslag" }));
+    const proposed = newFurnitureWorkspace("table"); proposed.design.material.measured_thickness_um = 17_801;
+    await act(async () => finish({ state: "not_qualified", can_apply: true, intent_preserved: true,
+      message: "Sent förslag", proposed: preview(proposed), changed_part_ids: [], changed_dependencies: ["material"],
+      invalidated_reviews: ["construction", "cam"] }));
+    expect(screen.queryByRole("button", { name: "Använd profilbytet i designen" })).toBeNull();
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18);
+    expect(screen.getByLabelText("Bredd (mm)")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
   });
 
   it("låter aldrig ett sent beräkningssvar ersätta en nyare design", async () => {

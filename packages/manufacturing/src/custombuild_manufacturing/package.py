@@ -137,7 +137,7 @@ PRODUCTION_MANIFEST_SCHEMA_VERSION = "custombuild.production-manifest.v5"
 ARTIFACT_SCHEMA_VERSION = "custombuild.production-artifacts.v1"
 GENERATION_PLAN_SCHEMA_VERSION = "custombuild.generation-plan.v2"
 GENERATION_PLAN_PIPELINE_VERSION = "production-pipeline-1.12.0"
-NESTING_ALGORITHM_VERSION = "deterministic-bottom-left-v1"
+NESTING_ALGORITHM_VERSION = "deterministic-bottom-left-v2"
 MANIFEST_CONTEXT_HASH_FIELDS = (
     "project_id",
     "revision",

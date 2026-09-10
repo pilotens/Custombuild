@@ -19,6 +19,7 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 | Arbetsfil | Export/import av versionsbunden JSON. Import kontrolleras av servern och blir ett nytt osparat projekt; en tidigare projektidentitet återanvänds inte. |
 | Profilbyte | Konsekvensjämförelse före tillämpning. Material/beslag räknar om geometrin. Maskinbyte behåller möbeldesignen och ogiltigförklarar berörd tillverkningsgranskning. |
 | Revisioner | Serverlagring med konfliktkontroll och oföränderlig revisionshistorik. Återöppning av tidigare revision skapar en ny revision vid sparning. |
+| Hyllbärighet | **Föreslå fackindelning** prövar fler jämnt fördelade fack i den ordinarie beräkningsmotorn. Samma yttermått, material och angivna nyttiga last behålls. Förslaget visar före/efter, fri fackbredd, ändrad egenvikt och kvarstående krav; det tillämpas först efter användarens val. |
 | Beredning av hyllsystem | Den sparade möbelrevisionen kan öppnas direkt i det befintliga flödet för råmaterial, foggranskning, nesting, bearbetningsoperationer och maskinbunden CAM-kandidat. |
 | Export | Beställning av exakt sparad revision via transaktionell kö. CAD-kärnan kontrollerar verkliga solider, kollisioner och formatåterläsning. |
 
@@ -78,6 +79,27 @@ och avbryter deras köade/pågående jobb. Det gäller även ett rent batchbyte.
 Historiska revisioner skrivs inte över. Vid återöppning återställs den senast
 sparade beredningen endast när den hör till exakt samma möbel och profiler.
 Osparade beredningsändringar varnas för när man återgår till möbeln.
+
+En oförändrad sparning behåller den befintliga revisionen, historiken och
+tillverkningsberedningen när även den aktuella regel-/profilbedömningen är
+oförändrad. Konfliktkontrollen gäller fortfarande. Ändrade indata eller ändrad
+beräkningsbedömning skapar en ny revision och gör tidigare beredning inaktuell.
+Påbörjade profilbyten behöver tillämpas eller återställas före sparning och
+export. Navigation varnar innan ett ej tillämpat profilförslag lämnas.
+
+Fackförslaget hämtas med `POST /v1/furniture/shelf-bay-suggestion`. Det är en
+läsande beräkning och sparar inte projektet. Sökningen är deterministisk och
+begränsad till 16 avdelare. Numerisk PASS för nedböjning, böjspänning och lokal
+upplagsbärighet följer den ordinarie regelmotorns varningsreserv. DADO-fogens
+retentionsvarning finns kvar även när den numeriska upplagskontrollen passerar.
+Egenvikten räknas om efter varje konstruktionsändring. Egna fackproportioner
+ersätts inte; de måste först ändras till jämn fördelning av användaren.
+Genomgående topp-, botten- och ryggdelar delas inte i moduler av fackförslaget.
+
+Nesting använder nu `deterministic-bottom-left-v2`. Kvadratiska delar kan vridas
+90° för att följa råskivans fiberriktning, och rotationen följer med till
+operationernas koordinater. Tidigare frysta generationsunderlag måste räknas om
+mot den nya algoritmidentiteten; den tidigare versionens resultat omtolkas inte.
 
 Bord och byråer kan fortsatt formges och CAD-exporteras, men kan inte skickas
 genom hyllsystemets produktionsmotor. De saknar ännu sina egna kvalificerade
