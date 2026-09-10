@@ -36,9 +36,15 @@ test("fackförslag: granska, tillämpa, spara och behåll revision vid oföränd
   await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
   await page.getByRole("button", { name: "Spara revision" }).click();
   await expect(page.getByText("Revision 2 är sparad.")).toBeVisible();
-  const repeat = page.waitForResponse(r => r.request().method() === "PUT" && r.url() === `${path}/draft`);
+  // The browser uses the public API host; the test client uses the runner host.
+  const repeat = page.waitForResponse(response =>
+    response.request().method() === "PUT" &&
+    new URL(response.url()).pathname === `/v1/furniture/projects/${project.project.id}/draft`,
+  );
   await page.getByRole("button", { name: "Spara revision" }).click();
-  expect((await (await repeat).json()).revision).toBe(2);
+  const repeatedSave = await repeat;
+  expect(repeatedSave.status()).toBe(200);
+  expect((await repeatedSave.json()).revision).toBe(2);
   expect((await (await request.get(`${path}/history`, { headers })).json()).items).toHaveLength(2);
   for (const name of ["shelf-proposal-desktop", "shelf-proposal-mobile"]) {
     await info.attach(name, { path: info.outputPath(`${name}.png`), contentType: "image/png" });
