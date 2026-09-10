@@ -22,6 +22,7 @@ from custombuild_manufacturing.furniture_profiles import (
     furniture_machine_catalog,
     preview_furniture,
 )
+from custombuild_manufacturing.furniture_suggestions import suggest_shelf_bays
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -104,6 +105,16 @@ def profile_change(
         raise HTTPException(422, detail=str(exc)) from exc
 
 
+@router.post("/shelf-bay-suggestion")
+def shelf_bay_suggestion(
+    payload: FurnitureWorkspace, principal: ReaderDep, session: SessionDep
+) -> dict[str, Any]:
+    try:
+        return suggest_shelf_bays(payload)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+
+
 @router.get("/projects/{project_id}/draft")
 def read_draft(project_id: str, principal: ReaderDep, session: SessionDep) -> dict[str, Any]:
     project = tenant_project(session, principal, project_id)
@@ -125,13 +136,32 @@ def save_draft(
 ) -> dict[str, Any]:
     project = tenant_project(session, principal, project_id)
     session.refresh(project, with_for_update=True)
-    _workspace(project)  # Protect an existing legacy draft from accidental replacement.
+    current = _workspace(project)  # Protect an existing legacy draft from replacement.
     if project.draft_revision != payload.expected_revision:
         raise HTTPException(
             409, detail="Utkastet har ändrats. Hämta aktuell revision före nästa sparning."
         )
-    revision = project.draft_revision + 1
     document = payload.workspace.model_dump(mode="json")
+    if current is not None:
+        # Project identity and revision belong to the server, including when a
+        # client retries an unchanged draft with its original local identity.
+        document["design"].update(design_id=project.id, revision=project.draft_revision)
+        candidate = FurnitureWorkspace.model_validate(document)
+        if candidate == current:
+            current_preview = _preview(current)
+            # Re-saving unchanged inputs must still create a new revision when
+            # engine, rule or profile changes alter the committed assessment.
+            if (
+                current_preview["design"]["design_hash"] == project.draft_design_hash
+                and current_preview == project.draft_result_json
+            ):
+                return {
+                    "project_id": project.id,
+                    "revision": project.draft_revision,
+                    "workspace": current.model_dump(mode="json"),
+                    "preview": current_preview,
+                }
+    revision = project.draft_revision + 1
     document["design"].update(design_id=project.id, revision=revision)
     workspace = FurnitureWorkspace.model_validate(document)
     preview_result = _preview(workspace)

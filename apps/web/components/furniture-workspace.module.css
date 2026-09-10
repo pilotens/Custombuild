@@ -44,6 +44,15 @@
 .rules summary { cursor: pointer; font-size: 14px; font-weight: 600; }
 .pass, .requiresReview { display: block; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; margin-bottom: 8px; }
 .pass { color: #235b4f; }.requiresReview { color: #865514; }
+.blocked { display: block; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; margin-bottom: 8px; color: #8c332e; }
+.shelfSuggestion { margin-top: 20px; padding: 18px; border: 1px solid #bacdc0; border-radius: 8px; }
+.shelfSuggestion h3 { margin-top: 0; }
+.shelfSuggestion .proposal { margin-top: 14px; }
+.tableScroll { overflow-x: auto; max-width: 100%; }
+.comparisonTable { width: 100%; border-collapse: collapse; font-size: 13px; text-align: left; }
+.comparisonTable caption { text-align: left; font-weight: 600; padding: 12px 0; }
+.comparisonTable th, .comparisonTable td { padding: 10px 8px; border-bottom: 1px solid #cad8cb; }
+.comparisonTable tbody th { font-weight: 500; }
 .notice, .proposal { padding: 16px; border: 1px solid #bacdc0; background: #eef4ef; border-radius: 8px; }
 .error { color: #8c332e; background: #fbefed; padding: 12px; border-radius: 6px; overflow-wrap: anywhere; }
 .notice button, .history button { margin: 6px 8px 6px 0; }

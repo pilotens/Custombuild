@@ -133,6 +133,28 @@ export interface FurnitureProfileComparison {
   changed_dependencies: string[];
   invalidated_reviews: string[];
 }
+export interface FurnitureShelfSuggestion {
+  schema_version: "custombuild.furniture-shelf-suggestion.v1";
+  state: "available" | "already_pass" | "unavailable";
+  code: string;
+  message: string;
+  scope: string;
+  current: FurniturePreview;
+  proposed: FurniturePreview | null;
+  changed_fields: { field: string; before: number; after: number }[];
+  current_bays: { divider_count: number; bay_count: number; clear_widths_um: number[] } | null;
+  proposed_bays: { divider_count: number; bay_count: number; clear_widths_um: number[] } | null;
+  screening_checks: {
+    current: { rule_id: string; status: string; numeric_status: string; calculated: number | null;
+      allowed: number | null; unit: string | null }[];
+    proposed: FurnitureShelfSuggestion["screening_checks"]["current"] | null;
+  };
+  search: { max_divider_count: number; attempted_candidate_count: number; evaluated_candidate_count: number };
+  remaining_issues: { rules: FurniturePreview["rules"]["evaluations"]; manufacturing: FurniturePreview["manufacturing"]["issues"] };
+  can_apply: boolean;
+  production_qualified: false;
+  physical_cutting_authorized: false;
+}
 export interface FurnitureDraft {
   project_id: string;
   revision: number;

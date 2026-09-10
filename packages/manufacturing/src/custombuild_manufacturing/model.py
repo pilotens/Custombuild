@@ -512,7 +512,7 @@ class NestingLayout:
     unplaced_instance_ids: tuple[str, ...]
     used_sheet_count: int
     utilization_ppm: int
-    algorithm: str = "deterministic-bottom-left-v1"
+    algorithm: str = "deterministic-bottom-left-v2"
 
     @property
     def is_complete(self) -> bool:

@@ -232,6 +232,27 @@ jobs:
           severity-cutoff: high
           output-format: json
           output-file: artifacts/release-images/scan-${{ matrix.component }}.json
+      - name: Report image vulnerability findings
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          report = Path("artifacts/release-images/scan-${{ matrix.component }}.json")
+          if report.is_file():
+              for match in json.loads(report.read_text()).get("matches", []):
+                  vulnerability = match["vulnerability"]
+                  artifact = match["artifact"]
+                  print(json.dumps({
+                      "package": artifact["name"],
+                      "installed": artifact["version"],
+                      "vulnerability": vulnerability["id"],
+                      "severity": vulnerability["severity"],
+                      "fix": vulnerability.get("fix", {}),
+                  }))
+          PYTHON
       - name: Save the exact tested image object
         shell: bash
         run: |

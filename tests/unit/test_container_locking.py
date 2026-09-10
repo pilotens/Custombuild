@@ -463,18 +463,19 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
         "ADD --checksum=sha256:800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
     ) in dockerfile
     overrides_sha256 = hashlib.sha256(overrides).hexdigest()
-    assert overrides_sha256 == "3ae484c86166bb6cd88f24398577d99ed06ea8bf5c9384d5288094d7d7048d05"
+    assert overrides_sha256 == "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f"
     assert f"ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256={overrides_sha256}" in dockerfile
     assert "github.com/apache/thrift@v0.24.0" in dockerfile
     assert "go.etcd.io/etcd/client/pkg/v3@v3.7.1" in dockerfile
     assert "golang.org/x/crypto@v0.56.0" in dockerfile
     assert "golang.org/x/image@v0.45.0" in dockerfile
     assert "golang.org/x/text@v0.41.0" in dockerfile
+    assert "google.golang.org/grpc@v1.85.0-dev.0.20260825072537-93e31b48545e" in dockerfile
     assert "go mod edit -dropreplace=github.com/apache/thrift" in dockerfile
     assert 'go.etcd.io/etcd/client/pkg/v3)" = "v3.7.1"' in dockerfile
     assert 'golang.org/x/crypto)" = "v0.55.0"' in dockerfile
     assert 'golang.org/x/image)" = "v0.44.0"' in dockerfile
-    assert dockerfile.count("-mod=readonly") == 11
+    assert dockerfile.count("-mod=readonly") == 12
     assert "go mod verify" in dockerfile
     assert "FROM scratch AS runtime" in dockerfile
     assert "USER 1000:1000" in dockerfile
@@ -493,6 +494,7 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
         'test "$x_crypto_version" = "0.56.0"',
         'test "$x_image_version" = "0.45.0"',
         'test "$x_text_version" = "0.41.0"',
+        'test "$grpc_version" = "v1.85.0-dev.0.20260825072537-93e31b48545e"',
         f'test "$security_overrides_sha256" = "{overrides_sha256}"',
         "custombuild.seaweedfs-release.v2",
     ):

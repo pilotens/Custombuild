@@ -152,6 +152,100 @@ def test_shelving_enters_existing_production_chain_without_changing_saved_furnit
     assert not version["immutable"]
 
 
+def test_unchanged_furniture_save_preserves_revision_production_and_active_jobs(client):
+    project, draft = save(client, "shelving")
+    bridge = production_bridge(client, project, draft)
+    version_path = f"/v1/projects/{project['id']}/versions"
+    created = client.post(version_path, headers=HEADERS, json=production_request(bridge))
+    assert created.status_code == 201, created.text
+    version = client.get(f"{version_path}/1", headers=HEADERS).json()
+    path = f"/v1/furniture/projects/{project['id']}"
+    history = client.get(f"{path}/history", headers=HEADERS).json()
+    jobs = {}
+    with get_session_factory()() as session:
+        stored_version = session.get(DesignVersion, version["id"])
+        assert stored_version is not None
+        for status in (JobStatus.queued, JobStatus.running):
+            job = GenerationJob(
+                id=str(uuid4()),
+                organization_id=stored_version.organization_id,
+                design_version_id=version["id"],
+                status=status,
+                idempotency_key=uuid4().hex,
+                production_context_hash=version["context_hash"],
+                production_engine_context_json={},
+                request_json={},
+                lease_token=str(uuid4()) if status == JobStatus.running else None,
+                lease_expires_at=datetime.now(UTC) + timedelta(minutes=5),
+            )
+            session.add(job)
+            jobs[status] = (job.id, job.lease_token)
+        session.commit()
+
+    # Local identity and default omission are not furniture changes. They must
+    # not supersede a workshop's preparation or cancel its generation work.
+    local_identity = json.loads(json.dumps(draft["workspace"]))
+    local_identity["design"].update(design_id="furniture", revision=99)
+    explicit_defaults = json.loads(json.dumps(draft["workspace"]))
+    explicit_defaults["design"]["intent"].update(shelf_load_basis="per_row", plinth_height_um=0)
+    for unchanged in (draft["workspace"], local_identity, explicit_defaults):
+        response = client.put(
+            f"{path}/draft",
+            headers=HEADERS,
+            json={"expected_revision": draft["revision"], "workspace": unchanged},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == draft
+    assert client.get(f"{path}/history", headers=HEADERS).json() == history
+    assert client.get(f"{version_path}/1", headers=HEADERS).json() == version
+    reopened = production_bridge(client, project, draft)
+    assert reopened["source_furniture"] == bridge["source_furniture"]
+    assert reopened["preview"]["design_hash"] == bridge["preview"]["design_hash"]
+    with get_session_factory()() as session:
+        for status, (job_id, lease_token) in jobs.items():
+            job = session.get(GenerationJob, job_id)
+            assert job is not None
+            assert job.status == status
+            assert job.lease_token == lease_token
+            assert job.lease_expires_at is not None
+            assert job.finished_at is None
+    stale = client.put(
+        f"{path}/draft",
+        headers=HEADERS,
+        json={"expected_revision": 0, "workspace": draft["workspace"]},
+    )
+    assert stale.status_code == 409, stale.text
+
+
+def test_unchanged_inputs_still_create_revision_when_the_assessment_changes(client, monkeypatch):
+    project, draft = save(client, "shelving")
+    bridge = production_bridge(client, project, draft)
+    version_path = f"/v1/projects/{project['id']}/versions"
+    created = client.post(version_path, headers=HEADERS, json=production_request(bridge))
+    assert created.status_code == 201, created.text
+    original_preview = furniture_api.preview_furniture
+
+    def changed_assessment(workspace):
+        result = original_preview(workspace)
+        result["rules"]["rules_version"] = "furniture-rules-updated"
+        return result
+
+    monkeypatch.setattr(furniture_api, "preview_furniture", changed_assessment)
+    response = client.put(
+        f"/v1/furniture/projects/{project['id']}/draft",
+        headers=HEADERS,
+        json={"expected_revision": draft["revision"], "workspace": draft["workspace"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["revision"] == 2
+    assert (
+        response.json()["preview"]["design"]["design_hash"]
+        == draft["preview"]["design"]["design_hash"]
+    )
+    assert response.json()["preview"]["rules"]["rules_version"] == "furniture-rules-updated"
+    assert client.get(f"{version_path}/1", headers=HEADERS).json()["status"] == "superseded"
+
+
 @pytest.mark.parametrize("change", ["omit", "thickness", "load", "template"])
 def test_production_cannot_replace_the_saved_furniture_design(client, change):
     project, draft = save(client, "shelving")

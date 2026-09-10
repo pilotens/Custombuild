@@ -5,6 +5,7 @@ import {
   type FurnitureCatalog, type FurnitureDraft, type FurnitureExportResult,
   type FurnitureHistory, type FurniturePreview, type FurnitureProfileComparison,
   type FurnitureProductionSource, type FurnitureProductionPreview,
+  type FurnitureShelfSuggestion,
   type FurnitureWorkspace,
 } from "./furniture-workspace";
 import { referenceImageVerificationIsCurrent } from "./reference-image";
@@ -1706,6 +1707,15 @@ export class CustombuildApiClient {
     const result = await this.request<FurnitureProfileComparison>("/v1/furniture/profile-change", {
       method: "POST", body: JSON.stringify({ current, proposed }),
     });
+    if (result.proposed) assertFurniturePreview(result.proposed);
+    return result;
+  }
+
+  async suggestFurnitureShelfBays(workspace: FurnitureWorkspace): Promise<FurnitureShelfSuggestion> {
+    const result = await this.request<FurnitureShelfSuggestion>("/v1/furniture/shelf-bay-suggestion", {
+      method: "POST", body: JSON.stringify(workspace),
+    });
+    assertFurniturePreview(result.current);
     if (result.proposed) assertFurniturePreview(result.proposed);
     return result;
   }

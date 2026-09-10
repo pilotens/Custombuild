@@ -2625,12 +2625,13 @@ def supply_chain_issues(repo: Path) -> list[str]:
                 "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
             ),
             "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30",
-            "3ae484c86166bb6cd88f24398577d99ed06ea8bf5c9384d5288094d7d7048d05",
+            "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f",
             "github.com/apache/thrift@v0.24.0",
             "go.etcd.io/etcd/client/pkg/v3@v3.7.1",
             "golang.org/x/crypto@v0.56.0",
             "golang.org/x/image@v0.45.0",
             "golang.org/x/text@v0.41.0",
+            "google.golang.org/grpc@v1.85.0-dev.0.20260825072537-93e31b48545e",
             "-mod=readonly",
             "FROM scratch AS runtime",
             'io.custombuild.security-overrides.sha256="${SEAWEEDFS_SECURITY_OVERRIDES_SHA256}"',
@@ -2640,6 +2641,7 @@ def supply_chain_issues(repo: Path) -> list[str]:
             'io.custombuild.go-x-crypto.version="0.56.0"',
             'io.custombuild.go-x-image.version="0.45.0"',
             'io.custombuild.go-x-text.version="0.41.0"',
+            'io.custombuild.go-grpc.version="v1.85.0-dev.0.20260825072537-93e31b48545e"',
             "ENV TMPDIR=/tmp",
         )
         if any(value not in seaweed_source for value in required_seaweed_contract):
