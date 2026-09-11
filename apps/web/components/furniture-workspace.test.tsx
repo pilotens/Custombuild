@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustombuildApiClient, type CurrentPrincipal } from "@/lib/api-client";
 import { newFurnitureWorkspace, type FurniturePreview, type FurnitureWorkspace } from "@/lib/furniture-workspace";
@@ -37,6 +37,43 @@ function setup() {
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("möbelstudions revisions- och profilflöde", () => {
+  it("behåller materialens råformat och ogiltiga måttfält vid maskinbyte tills profilen granskas", async () => {
+    const api = setup();
+    const catalog = await api.furnitureCatalog();
+    vi.mocked(api.furnitureCatalog).mockResolvedValue({ ...catalog, machines: [
+      { profile_id: "small", version: "1.0.0-validation", name: "Liten", production_qualified: false },
+      { profile_id: "large", version: "1.0.0-validation", name: "Stor", production_qualified: false },
+    ] });
+    const compare = vi.spyOn(api, "compareFurnitureProfiles").mockImplementation(async (_before, proposed) => ({
+      state: "not_qualified", message: "Granska format", can_apply: true, changed_dependencies: ["manufacturing"],
+      invalidated_reviews: ["cam"], proposed: preview(proposed),
+    }));
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Tillverkningsprofil"), { target: { value: "small" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Eget råformat för birch-plywood · 18 mm" }));
+    const own = within(screen.getByRole("group", { name: "birch-plywood · 18 mm" }));
+    fireEvent.change(own.getByLabelText("Råskivans bredd (mm)"), { target: { value: "1100.001" } });
+    fireEvent.change(own.getByLabelText("Fiberriktning på råskivan"), { target: { value: "x" } });
+    fireEvent.change(own.getByLabelText("Kantmarginal per sida (mm)"), { target: { value: "5.0001" } });
+    fireEvent.change(screen.getByLabelText("Tillverkningsprofil"), { target: { value: "large" } });
+    expect(own.getByLabelText("Råskivans bredd (mm)")).toHaveValue(1100.001);
+    expect(own.getByLabelText("Kantmarginal per sida (mm)")).toHaveValue(5.0001);
+    expect(screen.getByRole("button", { name: "Kontrollera profilbyte" })).toBeDisabled();
+    fireEvent.change(own.getByLabelText("Kantmarginal per sida (mm)"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "Kontrollera profilbyte" }));
+    await screen.findByText("Konsekvenser av profilbytet");
+    expect(compare.mock.lastCall?.[1].manufacturing).toMatchObject({ machine_profile_id: "large",
+      material_stocks: [{ material_id: "birch-plywood", measured_thickness_um: 18_000,
+        stock_width_um: 1_100_001, stock_grain_axis: "x", edge_margin_um: 5_000 }] });
+    expect(api.previewFurniture).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Använd profilbytet i designen" }));
+    await waitFor(() => expect(api.previewFurniture).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design).toEqual(newFurnitureWorkspace("table").design);
+    expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].manufacturing).toEqual(compare.mock.lastCall?.[1].manufacturing);
+  });
+
   it("sparar en mätbar listprofil och reserverar endast valda väggar innan stommen räknas om", async () => {
     const api = setup();
     render(<FurnitureStudio api={api} principal={principal} />);

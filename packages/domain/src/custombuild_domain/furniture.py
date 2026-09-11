@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .enums import BackPanelType, ShelfMount
 from .models import FrozenModel, RatioPpm, StableKey
@@ -204,17 +204,45 @@ class FurnitureDesign(FrozenModel):
         return self
 
 
-class ManufacturingSelection(FrozenModel):
-    """A separate planning profile. It grants no physical machine approval."""
+class FurnitureStockFormat(FrozenModel):
+    """Sheet axes are machine X/Y, before nesting or fixture allowance."""
 
-    machine_profile_id: StableKey
-    machine_profile_version: StableKey = "1.0.0-validation"
     stock_width_um: Length = 2_440_000
     stock_height_um: Length = 1_220_000
     stock_grain_axis: Literal["x", "y"] | None = None
     edge_margin_um: Annotated[int, Field(strict=True, ge=0, le=100_000)] = Field(
         default=0, exclude_if=lambda value: value == 0
     )
+
+
+class FurnitureMaterialStock(FurnitureStockFormat):
+    material_id: StableKey
+    material_version: StableKey
+    measured_thickness_um: Thickness
+
+    @property
+    def material_key(self) -> tuple[str, str, int]:
+        return self.material_id, self.material_version, self.measured_thickness_um
+
+
+class ManufacturingSelection(FurnitureStockFormat):
+    """A separate planning profile. It grants no physical machine approval."""
+
+    machine_profile_id: StableKey
+    machine_profile_version: StableKey = "1.0.0-validation"
+    material_stocks: tuple[FurnitureMaterialStock, ...] = Field(
+        default=(), max_length=16, exclude_if=lambda value: not value
+    )
+
+    @field_validator("material_stocks")
+    @classmethod
+    def canonical_material_stocks(
+        cls, stocks: tuple[FurnitureMaterialStock, ...]
+    ) -> tuple[FurnitureMaterialStock, ...]:
+        keys = [stock.material_key for stock in stocks]
+        if len(set(keys)) != len(keys):
+            raise ValueError("only one stock format per material, version and thickness is allowed")
+        return tuple(sorted(stocks, key=lambda stock: stock.material_key))
 
 
 class FurnitureWorkspace(FrozenModel):

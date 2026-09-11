@@ -96,6 +96,38 @@ Egenvikten räknas om efter varje konstruktionsändring. Egna fackproportioner
 ersätts inte; de måste först ändras till jämn fördelning av användaren.
 Genomgående topp-, botten- och ryggdelar delas inte i moduler av fackförslaget.
 
+### Råformat per material och tjocklek
+
+**Eget råformat** låter stomme, rygg och lådbottnar ha olika skivformat,
+fiberriktning och kantmarginal. Ett format binds till exakt material-ID,
+katalogversion och uppmätt tjocklek. Material som saknar eget format använder
+det gemensamma formatet. Tom fiberaxel i ett eget format betyder okänd; den
+ärvs inte från det gemensamma formatet. Byte av maskin behåller råformaten.
+
+**Råformat per material** visar tillåtna delrotationer, minsta skivformat och
+hur många millimeter som saknas i X respektive Y. Bredd är maskinens X-led och
+höjd är Y-led. Minsta format inkluderar kantmarginalen och beräknas så att varje
+del ryms **enskilt**. Flera alternativ kan visas för riktningslöst material.
+Det är inte ett nestingresultat, antal skivor eller en beställningskvantitet.
+Verktygsutrymme och uppspänning tillkommer. En vald skiva som överskrider
+maskinens arbetsområde markeras även om alla delar ryms på skivan.
+
+Arbetsfilens `manufacturing.material_stocks` innehåller de separata formaten.
+Varje rad anger `material_id`, `material_version`, `measured_thickness_um`,
+`stock_width_um`, `stock_height_um`, `stock_grain_axis` och `edge_margin_um`.
+Dubbla bindningar avvisas. Ett format som inte längre motsvarar någon genererad
+del markeras med `MATERIAL_STOCK_NOT_USED` och behöver tas bort eller väljas om.
+Det återanvänds inte för en annan tjocklek eller materialversion.
+
+Planen sparas i revisionen och följer med i `stock_plan` i
+`manufacturing/workshop-handoff.json`, bunden till samma CAD-design och manifest.
+Ändrade format gör tidigare tillverkningsberedning inaktuell. Äldre arbetsfiler
+utan `material_stocks` behåller sina gemensamma val och kan fortfarande läsas.
+Planeringsversion `furniture-profile-planning-1.1.0` räknar om tidigare bedömningar;
+en ny bedömning kan kräva en ny revision även när själva råmåtten är oförändrade.
+Inga skivantal, lagerposter eller kvalificerade maskininställningar skapas från
+planen när hyllsystemet öppnas i produktionsberedningen.
+
 Nesting använder nu `deterministic-bottom-left-v2`. Kvadratiska delar kan vridas
 90° för att följa råskivans fiberriktning, och rotationen följer med till
 operationernas koordinater. Tidigare frysta generationsunderlag måste räknas om

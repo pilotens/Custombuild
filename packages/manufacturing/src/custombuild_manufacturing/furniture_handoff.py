@@ -14,7 +14,7 @@ from custombuild_domain.furniture_engine import FurnitureResult
 from .adapters import adapt_design_result
 from .model import FeatureKind
 
-HANDOFF_VERSION = "furniture-workshop-handoff-1.0.0"
+HANDOFF_VERSION = "furniture-workshop-handoff-1.1.0"
 
 
 def furniture_stock_requirements(result: FurnitureResult) -> list[dict[str, Any]]:

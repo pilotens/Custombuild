@@ -445,16 +445,31 @@ def test_export_uses_transactional_outbox_and_checks_snapshot_and_tenant(client,
 
 
 @pytest.mark.cad
-@pytest.mark.parametrize("family", ["table", "chest_of_drawers", "shelving", "customer-shelving"])
+@pytest.mark.parametrize(
+    "family",
+    [
+        "table",
+        "chest_of_drawers",
+        "shelving",
+        "customer-shelving",
+        "material-stock-shelving",
+    ],
+)
 def test_real_family_review_exports_match_parts_and_contain_no_machine_programs(family):
     from pathlib import Path
 
+    from tests.unit.test_furniture_stock_planning import back_stock, selected
+
     pytest.importorskip("cadquery")
+    stock_document = selected()
+    stock_document["manufacturing"]["material_stocks"] = [back_stock()]
     draft = (
         FurnitureWorkspace.model_validate_json(
             Path("examples/furniture/bookcase-4340x2540x280.json").read_text()
         )
         if family == "customer-shelving"
+        else FurnitureWorkspace.model_validate(stock_document)
+        if family == "material-stock-shelving"
         else workspace(family)
     )
     raw = build_furniture_review(draft)
@@ -477,6 +492,19 @@ def test_real_family_review_exports_match_parts_and_contain_no_machine_programs(
         assert sum(group["part_count"] for group in handoff["stock_requirements"]) == len(
             resolved["parts"]
         )
+        if family == "material-stock-shelving":
+            assert handoff["stock_plan"]["geometry_compatible"]
+            assert handoff["stock_plan"]["stock_groups"][1]["selection_source"] == "material"
+            assert (
+                handoff["stock_plan"]
+                == json.loads(archive.read("validation/review.json"))["manufacturing"]
+            )
+            assert (
+                json.loads(archive.read("design/workspace.json"))["manufacturing"][
+                    "material_stocks"
+                ]
+                == stock_document["manufacturing"]["material_stocks"]
+            )
         if family == "customer-shelving":
             assert handoff["dimensions"]["installation"]["width_um"] == 4_340_000
             assert handoff["dimensions"]["installation"]["trim_profile"]["height_um"] == 90_000
@@ -523,3 +551,47 @@ def test_worker_review_loads_only_the_committed_tenant_snapshot(client, monkeypa
     )
     with pytest.raises(ValueError, match="not found"):
         tasks.generate_furniture_review.run(job_id, "22222222-2222-4222-8222-222222222222")
+
+
+def test_material_stock_choices_survive_revisions_and_production_source_without_inventing_stock(
+    client,
+):
+    from tests.unit.test_furniture_stock_planning import back_stock, selected
+
+    project, previous = save(client, "shelving")
+    document = selected()
+    document["manufacturing"]["material_stocks"] = [back_stock()]
+    path = f"/v1/furniture/projects/{project['id']}"
+    response = client.put(
+        f"{path}/draft",
+        headers=HEADERS,
+        json={
+            "expected_revision": previous["revision"],
+            "workspace": document,
+        },
+    )
+    assert response.status_code == 200, response.text
+    saved = response.json()
+    assert saved["workspace"]["manufacturing"]["material_stocks"] == [back_stock()]
+    assert client.get(f"{path}/draft", headers=HEADERS).json() == saved
+    assert (
+        client.get(f"{path}/history", headers=HEADERS).json()["items"][0]["workspace"]
+        == saved["workspace"]
+    )
+    assert client.get(f"{path}/draft", headers=OTHER).status_code == 404
+    bridge = production_bridge(client, project, saved)
+    assert bridge["source_furniture"]["workspace"]["manufacturing"]["material_stocks"] == [
+        back_stock()
+    ]
+    # A planning format is not an inventory or an accepted production setup.
+    assert "production_context" not in bridge["preview"]
+    unchanged = client.put(
+        f"{path}/draft",
+        headers=HEADERS,
+        json={
+            "expected_revision": saved["revision"],
+            "workspace": saved["workspace"],
+        },
+    )
+    assert unchanged.status_code == 200, unchanged.text
+    assert unchanged.json()["revision"] == saved["revision"]

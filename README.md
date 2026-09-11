@@ -19,6 +19,13 @@ clear bay widths, furniture weight and remaining construction/workshop issues
 before explicit application. Unchanged saves preserve existing preparation;
 pending profile edits must be applied or discarded before saving or exporting.
 
+Stock planning accepts separate sheet formats, grain axes and margins for each
+material/version/measured thickness. The workspace and exported workshop handoff
+show each blank's permitted rotation, exact format shortfall and minimum sheet
+envelopes against the selected machine area. A machine change preserves these
+stock choices; changed materials expose obsolete bindings for explicit removal.
+These are individual-blank fit checks, not nesting yield or accepted production stock.
+
 The supported Hyllsystem/Shelving lane also generates a separate executable
 2.5D LinuxCNC CAM candidate from an accepted workshop profile: cutting programs,
 toolpaths, setup instructions, program order and independent verification.
