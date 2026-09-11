@@ -1178,6 +1178,32 @@ export interface components {
             /** Expected Revision */
             expected_revision: number;
         };
+        /** FurnitureMaterialStock */
+        FurnitureMaterialStock: {
+            /**
+             * Edge Margin Um
+             * @default 0
+             */
+            edge_margin_um: number;
+            /** Material Id */
+            material_id: string;
+            /** Material Version */
+            material_version: string;
+            /** Measured Thickness Um */
+            measured_thickness_um: number;
+            /** Stock Grain Axis */
+            stock_grain_axis?: ("x" | "y") | null;
+            /**
+             * Stock Height Um
+             * @default 1220000
+             */
+            stock_height_um: number;
+            /**
+             * Stock Width Um
+             * @default 2440000
+             */
+            stock_width_um: number;
+        };
         /** FurnitureProductionPreviewRequest */
         FurnitureProductionPreviewRequest: {
             /** Expected Design Hash */
@@ -1429,6 +1455,11 @@ export interface components {
              * @default 1.0.0-validation
              */
             machine_profile_version: string;
+            /**
+             * Material Stocks
+             * @default []
+             */
+            material_stocks: components["schemas"]["FurnitureMaterialStock"][];
             /** Stock Grain Axis */
             stock_grain_axis?: ("x" | "y") | null;
             /**

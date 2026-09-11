@@ -29,13 +29,33 @@ export interface FurnitureMaterialSelection {
   measured_thickness_um: number;
   batch_id: string | null;
 }
-export interface FurnitureManufacturingSelection {
-  machine_profile_id: string;
-  machine_profile_version: string;
+export interface FurnitureStockFormat {
   stock_width_um: number;
   stock_height_um: number;
   stock_grain_axis: "x" | "y" | null;
   edge_margin_um?: number;
+}
+export interface FurnitureMaterialStock extends FurnitureStockFormat {
+  material_id: string;
+  material_version: string;
+  measured_thickness_um: number;
+}
+export interface FurnitureManufacturingSelection extends FurnitureStockFormat {
+  machine_profile_id: string;
+  machine_profile_version: string;
+  material_stocks?: FurnitureMaterialStock[];
+}
+export interface FurnitureStockGroup {
+  material_id: string;
+  material_version: string;
+  measured_thickness_um: number;
+  selection_source: "default" | "material";
+  stock: FurnitureStockFormat;
+  geometry_compatible: boolean;
+  required_formats: { stock_width_um: number; stock_height_um: number; fits_machine: boolean }[];
+  parts: { part_id: string; semantic_key: string; fits_stock: boolean | null;
+    orientations: { rotation_deg: number; required_stock_width_um: number; required_stock_height_um: number;
+      width_shortfall_um: number; height_shortfall_um: number; fits_stock: boolean; fits_machine: boolean }[] }[];
 }
 export interface FurnitureTrimProfile {
   height_um: number | null;
@@ -100,10 +120,13 @@ export interface FurniturePreview {
     geometry_compatible: boolean | null;
     issues: { code: string; message: string; part_id?: string }[];
     detail?: string;
+    stock_groups?: FurnitureStockGroup[];
+    format_scope?: string;
   };
   physical_cutting_authorized: false;
   production_qualified: false;
   workshop_handoff?: {
+    stock_plan?: FurniturePreview["manufacturing"];
     shelf_load?: { basis: "per_row" | "per_metre"; total_row_load_n: number;
       load_per_metre_n: number | null; width_um: number } | null;
     dimensions: {

@@ -1231,6 +1231,70 @@
         "title": "FurnitureExportRequest",
         "type": "object"
       },
+      "FurnitureMaterialStock": {
+        "additionalProperties": false,
+        "properties": {
+          "edge_margin_um": {
+            "default": 0,
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Edge Margin Um",
+            "type": "integer"
+          },
+          "material_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Version",
+            "type": "string"
+          },
+          "measured_thickness_um": {
+            "maximum": 100000.0,
+            "minimum": 1000.0,
+            "title": "Measured Thickness Um",
+            "type": "integer"
+          },
+          "stock_grain_axis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "x",
+                  "y"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Grain Axis"
+          },
+          "stock_height_um": {
+            "default": 1220000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Stock Height Um",
+            "type": "integer"
+          },
+          "stock_width_um": {
+            "default": 2440000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Stock Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "material_id",
+          "material_version",
+          "measured_thickness_um"
+        ],
+        "title": "FurnitureMaterialStock",
+        "type": "object"
+      },
       "FurnitureProductionPreviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1861,6 +1925,15 @@
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
             "title": "Machine Profile Version",
             "type": "string"
+          },
+          "material_stocks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FurnitureMaterialStock"
+            },
+            "maxItems": 16,
+            "title": "Material Stocks",
+            "type": "array"
           },
           "stock_grain_axis": {
             "anyOf": [

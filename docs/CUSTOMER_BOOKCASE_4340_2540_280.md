@@ -77,6 +77,13 @@ den verkliga beredningen. En modulindelning är en ändring av konstruktionen oc
 kräver modellerade fogar, montering och bärighetskontroll; appen lägger inte in
 dolda skarvar för att få nesting att gå igenom.
 
+Arbetsytans profiljämförelse kan nu ange separata råformat för stomme och rygg,
+inklusive olika fiberriktningar och kantmarginaler. Formatplanen visar exakta
+minimiformat och varje överstor dels underskott i X/Y mot valt format och
+maskinområde. Samma plan finns i granskningspaketets verkstadsunderlag. Det gör
+verkstadsalternativ jämförbara utan ändrade kundmått; tillgängliga råskivor,
+uppspänning och eventuella nya modulfogar behöver fortfarande fastställas.
+
 ## Kvar innan just denna möbel kan frisläppas
 
 | Saknad uppgift eller funktion | Vad som behöver fastställas |

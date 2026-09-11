@@ -10,17 +10,13 @@ from custombuild_domain.furniture_engine import FurnitureResult, build_furniture
 from custombuild_domain.identity import content_hash
 from custombuild_rules.furniture import evaluate_furniture
 
-from .adapters import adapt_design_result
 from .furniture_handoff import furniture_workshop_handoff
+from .furniture_stock_planning import plan_furniture_stock
 from .model import canonical_data
 from .profiles import linuxcnc_reference_router_1325, linuxcnc_reference_router_5125
 
-PROFILE_PLANNING_VERSION = "furniture-profile-planning-1.0.0"
+PROFILE_PLANNING_VERSION = "furniture-profile-planning-1.1.0"
 _MACHINES = (linuxcnc_reference_router_1325(), linuxcnc_reference_router_5125())
-
-
-def _millimetre_text(value_um: int) -> str:
-    return f"{value_um / 1_000:.3f}".rstrip("0").rstrip(".")
 
 
 def furniture_machine_catalog() -> list[dict[str, Any]]:
@@ -51,73 +47,16 @@ def _manufacturing(workspace: FurnitureWorkspace, result: FurnitureResult) -> di
     machine = next((m for m in _MACHINES if m.profile_id == selection.machine_profile_id), None)
     if machine is None or selection.machine_profile_version != machine.version:
         raise ValueError("unknown machine profile or retired machine version")
-    issues: list[dict[str, str]] = []
-    sw, sh = selection.stock_width_um, selection.stock_height_um
-    if sw > machine.work_width_um or sh > machine.work_height_um:
-        issues.append(
-            {
-                "code": "STOCK_EXCEEDS_MACHINE",
-                "message": "Vald råskiva ryms inte inom maskinens arbetsområde.",
-            }
-        )
-    usable_width = sw - 2 * selection.edge_margin_um
-    usable_height = sh - 2 * selection.edge_margin_um
-    if min(usable_width, usable_height) <= 0:
-        issues.append(
-            {
-                "code": "STOCK_MARGIN_CONSUMES_SHEET",
-                "message": "Kantmarginalen lämnar inget användbart skivformat.",
-            }
-        )
-    names = {part.part_id: part.semantic_key for part in result.parts}
-    for part in adapt_design_result(result).parts:
-        directional = part.grain_direction != "NONE"
-        if directional and selection.stock_grain_axis is None:
-            issues.append(
-                {
-                    "code": "GRAIN_AXIS_REQUIRED",
-                    "part_id": part.part_id,
-                    "message": "Råskivans fiberriktning måste anges.",
-                }
-            )
-            continue
-        rotations = (
-            (False, True)
-            if not directional
-            else (part.grain_direction.lower() != selection.stock_grain_axis,)
-        )
-        raw_width, raw_height = (
-            part.raw_width_um or part.width_um,
-            part.raw_height_um or part.height_um,
-        )
-        fits = any(
-            (raw_height if rotate else raw_width) <= usable_width
-            and (raw_width if rotate else raw_height) <= usable_height
-            for rotate in rotations
-        )
-        if not fits:
-            issues.append(
-                {
-                    "code": "PART_EXCEEDS_STOCK",
-                    "part_id": part.part_id,
-                    "message": f"{names[part.part_id]}: råmått {_millimetre_text(raw_width)} × "
-                    f"{_millimetre_text(raw_height)} mm ryms inte på det användbara skivformatet "
-                    f"{_millimetre_text(max(0, usable_width))} × "
-                    f"{_millimetre_text(max(0, usable_height))} mm "
-                    "med angiven fiberriktning. Välj annat format eller rita om fördelningen "
-                    "i moduler med verifierade förband. Delen skarvas inte automatiskt.",
-                }
-            )
+    plan = plan_furniture_stock(selection, result, machine)
     binding = {
         "selection": selection.model_dump(mode="json"),
         "machine": canonical_data(machine),
         "planning_version": PROFILE_PLANNING_VERSION,
     }
     return {
-        "state": "requires_change" if issues else "not_qualified",
-        "geometry_compatible": not issues,
+        "state": "requires_change" if plan["issues"] else "not_qualified",
+        **plan,
         "fingerprint": content_hash(binding),
-        "issues": issues,
         "production_qualified": False,
         "detail": "Referensprofil för planering. Nesting, verktygsåtkomst, uppspänning, "
         "postprocessor och skärande CAM måste verifieras för den verkliga maskinen.",
@@ -154,7 +93,7 @@ def preview_furniture(workspace: FurnitureWorkspace) -> dict[str, Any]:
         "dependencies": _dependencies(workspace, result, manufacturing),
         "rules": evaluate_furniture(result),
         "manufacturing": manufacturing,
-        "workshop_handoff": furniture_workshop_handoff(result),
+        "workshop_handoff": {**furniture_workshop_handoff(result), "stock_plan": manufacturing},
         "production_qualified": False,
         "physical_cutting_authorized": False,
     }

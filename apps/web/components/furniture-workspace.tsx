@@ -16,6 +16,7 @@ import { FurnitureProduction } from "./furniture-production";
 import { FurnitureStockRequirements, InstallationEditor, ShelvingLayoutEditor } from "./furniture-dimensions";
 import { FurnitureRuleValues } from "./furniture-rule-values";
 import { FurnitureShelfSuggestionPanel } from "./furniture-shelf-suggestion";
+import { FurnitureStockEditor, FurnitureStockPlan } from "./furniture-stock-planning";
 
 const Viewer = dynamic(() => import("./furniture-viewer"), {
   ssr: false, loading: () => <p>Öppnar 3D-vyn…</p>,
@@ -381,7 +382,8 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <p>{rule.detail}</p>
       </details>)}</div>
       {preview?.manufacturing.issues.map((issue, index) => <p className={styles.error} key={`${issue.code}-${index}`}>{issue.message}</p>)}
-      {preview ? <FurnitureStockRequirements preview={preview} /> : null}
+      {preview ? <><FurnitureStockPlan manufacturing={preview.manufacturing} />
+        <FurnitureStockRequirements preview={preview} /></> : null}
     </section>
     {history.items.length ? <section className={styles.history}>
       <h2>Sparade revisioner</h2><p>Öppna en tidigare design och spara fortsatta ändringar som en ny revision.</p>
@@ -470,28 +472,15 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChan
       <label>Tillverkningsprofil<select value={proposed.manufacturing?.machine_profile_id ?? ""}
         onChange={e => {
           const machine = catalog.machines.find(m => m.profile_id === e.target.value);
-          change({ ...proposed, manufacturing: machine ? { machine_profile_id: machine.profile_id,
-            machine_profile_version: machine.version, stock_width_um: 1_220_000,
-            stock_height_um: 2_440_000, stock_grain_axis: null } : null }, "manufacturing");
+          change({ ...proposed, manufacturing: machine ? { ...(proposed.manufacturing ?? {
+            stock_width_um: 1_220_000, stock_height_um: 2_440_000, stock_grain_axis: null }),
+            machine_profile_id: machine.profile_id, machine_profile_version: machine.version } : null },
+          machine && proposed.manufacturing ? undefined : "manufacturing");
         }}><option value="">Välj verkstad senare</option>{catalog.machines.map(m =>
           <option key={m.profile_id} value={m.profile_id}>{m.name} · referensprofil</option>)}</select></label>
-      {proposed.manufacturing ? <>
-        <label>Råskivans bredd (mm)<input type="number" min="1" step="0.001" value={inputDrafts["manufacturing.width"] ?? proposed.manufacturing.stock_width_um/1_000}
-          onChange={e => withMillimetres("manufacturing.width", e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_width_um: value } }))} /></label>
-        <label>Råskivans höjd (mm)<input type="number" min="1" step="0.001" value={inputDrafts["manufacturing.height"] ?? proposed.manufacturing.stock_height_um/1_000}
-          onChange={e => withMillimetres("manufacturing.height", e.target.value, value => ({ ...proposed, manufacturing: { ...proposed.manufacturing!, stock_height_um: value } }))} /></label>
-        <label>Kantmarginal per sida (mm)<input type="number" min="0" max="100" step="0.001" value={inputDrafts["manufacturing.margin"] ?? (proposed.manufacturing.edge_margin_um ?? 0)/1_000}
-          onChange={e => {
-            try { change({ ...proposed, manufacturing: { ...proposed.manufacturing!,
-              edge_margin_um: exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 0, maximumUm: 100_000 }) } }, "manufacturing.margin"); }
-            catch (reason) { inputError("manufacturing.margin", reason, e.target.value); }
-          }} /></label>
-        <label>Fiberriktning på råskivan<select value={proposed.manufacturing.stock_grain_axis ?? ""}
-          onChange={e => change({ ...proposed, manufacturing: { ...proposed.manufacturing!,
-            stock_grain_axis: e.target.value === "x" ? "x" : e.target.value === "y" ? "y" : null } })}>
-          <option value="">Inte angiven</option><option value="x">Längs bredden</option><option value="y">Längs höjden</option>
-        </select></label>
-      </> : null}
+      <FurnitureStockEditor workspace={proposed} inputDrafts={inputDrafts}
+        onChange={(manufacturing, field) => change({ ...proposed, manufacturing }, field)}
+        onInputError={inputError} />
       <button type="submit" disabled={busy || invalidInput || !changed}>
         {busy ? "Kontrollerar…" : "Kontrollera profilbyte"}</button>
     </fieldset>
@@ -507,6 +496,7 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChan
         <p>{comparison.invalidated_reviews.includes("construction") ? "Konstruktion och tillverkning behöver granskas på nytt."
           : comparison.invalidated_reviews.length ? "Tillverkningen behöver beredas och granskas på nytt." : "Inga tillverkningsberoenden ändras."}</p>
         {comparison.proposed?.manufacturing.issues.map((issue, i) => <p key={i}>{issue.message}</p>)}
+        {comparison.proposed ? <FurnitureStockPlan manufacturing={comparison.proposed.manufacturing} /> : null}
         <button type="button" className={styles.primary} disabled={disabled}
           onClick={() => {
             if (comparison.proposed) {

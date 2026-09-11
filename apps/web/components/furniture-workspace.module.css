@@ -80,3 +80,10 @@
   .preparation { padding: 12px; }
   .preparation :global(.production-steps) { grid-template-columns: minmax(0, 1fr); }
 }
+
+.stockEditor { grid-column: 1/-1; min-width: 0; }
+.stockFormat { border-top: 1px solid #dddcd6; margin-top: 16px; padding-top: 12px; }
+.stockPlan { min-width: 0; margin: 20px 0; }
+.stockPlan details { border: 1px solid #dddcd6; padding: 12px; margin-top: 8px; border-radius: 8px; overflow-wrap: anywhere; }
+.stockPlan summary { cursor: pointer; font-weight: 600; }
+.stockPlan li { margin: 6px 0; }
