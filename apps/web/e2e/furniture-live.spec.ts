@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { newFurnitureWorkspace, type FurnitureFamily } from "../lib/furniture-workspace";
+import type { FurnitureModulePlan } from "../lib/furniture-module-plan";
 import { provisionLiveProject, selectProjectBeforeNavigation } from "./live-helpers";
 
 async function attachView(page: Page, info: TestInfo, name: string) {
@@ -81,6 +82,71 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await attachView(page, info, "customer-bookcase-mobile");
+  });
+  test("stommoduler: granska kundplan, hämta exakta arbetsfiler och bevara källrevision", async ({ page, request }, info) => {
+    test.setTimeout(120_000);
+    const provisioned = await provisionLiveProject(request, info, "customer-modules");
+    const base = process.env.PLAYWRIGHT_API_URL!.replace(/\/$/, "");
+    const headers = { Authorization: `Bearer ${process.env.PLAYWRIGHT_DEMO_TOKEN || "demo-nordic-owner"}` };
+    const path = `${base}/v1/furniture/projects/${provisioned.project.id}`;
+    const workspace = JSON.parse(await readFile(new URL(
+      "../../../examples/furniture/bookcase-4340x2540x280.json", import.meta.url), "utf8"));
+    const saved = await request.put(`${path}/draft`, { headers, data: { expected_revision: 0, workspace } });
+    expect(saved.status(), await saved.text()).toBe(200);
+    const source = await saved.json();
+    await page.goto("/furniture");
+    await page.getByRole("combobox", { name: "Öppna möbelprojekt" }).selectOption(provisioned.project.id);
+    await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4340");
+    const panel = page.getByRole("region", { name: "Planera stommoduler" });
+    await panel.getByLabel("Kolumner, från vänster").fill("5");
+    await panel.getByLabel("Rader, nerifrån och upp").fill("2");
+    await panel.getByLabel("Hyllplan per modul, rad 1 (nederst)").fill("2");
+    await panel.getByLabel("Hyllplan per modul, rad 2").fill("2");
+    await expect(panel.getByRole("button", { name: "Beräkna modulplan", exact: true })).toBeDisabled();
+    await panel.getByLabel("Mellanrum mellan moduler (mm)").fill("0");
+    const responseEvent = page.waitForResponse(response =>
+      response.request().method() === "POST" && new URL(response.url()).pathname === "/v1/furniture/module-plan");
+    await panel.getByRole("button", { name: "Beräkna modulplan", exact: true }).click();
+    const response = await responseEvent;
+    expect(response.status()).toBe(200);
+    const plan = await response.json() as FurnitureModulePlan;
+    expect(plan.modules).toHaveLength(10);
+    expect(plan.source.workspace).toEqual(source.workspace);
+    expect(plan.physical_cutting_authorized).toBe(false);
+    await expect(panel.getByRole("button", { name: "Hämta hela modulplanen" })).toBeEnabled();
+    await expect(panel.getByRole("button", { name: /Hämta arbetsfil för rad/ })).toHaveCount(10);
+    await expect(panel.getByRole("img", { name: /Modulindelning sedd framifrån/ })).toBeVisible();
+    const planEvent = page.waitForEvent("download");
+    await panel.getByRole("button", { name: "Hämta hela modulplanen" }).click();
+    const planDownload = await planEvent;
+    expect(await planDownload.failure()).toBeNull();
+    expect(JSON.parse(await readFile((await planDownload.path())!, "utf8"))).toEqual(plan);
+    const moduleEvent = page.waitForEvent("download");
+    await panel.getByRole("button", { name: "Hämta arbetsfil för rad 1, kolumn 1", exact: true }).click();
+    const moduleDownload = await moduleEvent;
+    expect(await moduleDownload.failure()).toBeNull();
+    const child = JSON.parse(await readFile((await moduleDownload.path())!, "utf8"));
+    expect(child).toEqual(plan.modules[0]!.workspace);
+    expect(child.design.installation).toEqual(source.workspace.design.installation);
+    expect(child.design.material).toEqual(source.workspace.design.material);
+    expect(child.design.intent.width_um).toBe(868_000);
+    expect(child.design.intent.height_um).toBe(1_270_000);
+    expect(await (await request.get(`${path}/draft`, { headers })).json()).toEqual(source);
+    expect((await (await request.get(`${path}/history`, { headers })).json()).items).toHaveLength(1);
+    for (const [name, width, height] of [["module-plan-desktop", 1440, 960], ["module-plan-mobile", 390, 844]] as const) {
+      await page.setViewportSize({ width, height });
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      const screenshot = info.outputPath(`${name}.png`);
+      await panel.screenshot({ path: screenshot });
+      await info.attach(name, { path: screenshot, contentType: "image/png" });
+    }
+    await panel.getByLabel("Mellanrum mellan moduler (mm)").fill("1");
+    await expect(panel.getByRole("button", { name: "Hämta hela modulplanen" })).toHaveCount(0);
+    await page.getByLabel("Läs arbetsfil (JSON)").setInputFiles((await moduleDownload.path())!);
+    await expect(page.getByText(/Arbetsfilen har kontrollerats/)).toBeVisible();
+    await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("868");
+    await expect(page.getByLabel("Höjd (mm)", { exact: true })).toHaveValue("1270");
+    await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
   });
   for (const family of ["table", "chest_of_drawers", "shelving"] as FurnitureFamily[]) {
     test(`${family}: spara, byta profil, öppna igen och hämta CAD`, async ({ page, request }, info) => {

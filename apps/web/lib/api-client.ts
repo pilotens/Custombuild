@@ -1,5 +1,6 @@
 import { resolveDesign } from "./design-engine";
 import { getStoredAccessToken } from "./auth-client";
+import type { FurnitureModuleGrid, FurnitureModulePlan } from "./furniture-module-plan";
 import {
   assertFurniturePreview,
   type FurnitureCatalog, type FurnitureDraft, type FurnitureExportResult,
@@ -1717,6 +1718,23 @@ export class CustombuildApiClient {
     });
     assertFurniturePreview(result.current);
     if (result.proposed) assertFurniturePreview(result.proposed);
+    return result;
+  }
+
+  async planFurnitureModules(workspace: FurnitureWorkspace, grid: FurnitureModuleGrid): Promise<FurnitureModulePlan> {
+    const result = await this.request<FurnitureModulePlan>("/v1/furniture/module-plan", {
+      method: "POST", body: JSON.stringify({ workspace, grid }),
+    });
+    if (result.schema_version !== "custombuild.furniture-module-plan.v1"
+      || result.production_qualified !== false || result.physical_cutting_authorized !== false
+      || result.can_apply !== false || !Array.isArray(result.modules)
+      || result.modules.length > 16) throw new Error("Modulplanen har ett ogiltigt format.");
+    for (const draft of result.modules) {
+      assertFurniturePreview(draft.preview);
+      if (draft.design_hash !== draft.preview.design.design_hash) {
+        throw new Error("Modulens beräkning gäller en annan design.");
+      }
+    }
     return result;
   }
 

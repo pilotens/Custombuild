@@ -586,9 +586,9 @@ def test_custom_shelving_compiles_to_a_complete_linuxcnc_candidate() -> None:
     assert len(candidate.programs) == len(candidate.toolpaths.programs) == 9
     assert sum(len(program.moves) for program in candidate.toolpaths.programs) > 7_000
     assert candidate.cutting_program_report["result"] == "PASS"
-    # Independently sample the finished straight edges of every real groove.
-    # A PASS label alone missed the old raster-end scallops. Compute the
-    # distance to actual cutter centre segments, without generator helpers.
+    # Independently sample straight edges AND square mouth corners at every
+    # depth. Points closer than one radius to the corners catch inset-only
+    # open mouths, which can pass a raster-only geometric contract.
     for operation in source.operations:
         if operation.kind.value != "GROOVE":
             continue
@@ -598,18 +598,29 @@ def test_custom_shelving_compiles_to_a_complete_linuxcnc_candidate() -> None:
         binding = next(t for t in candidate.toolpaths.execution_context.tool_bindings
                        if t.source_tool_id == operation.tool_id)
         radius = binding.effective_diameter_um / 2
-        segments = [
-            (a, b) for a, b in zip(program.moves, program.moves[1:], strict=False)
-            if a.operation_id == b.operation_id == operation.operation_id
-            and a.kind.value == b.kind.value == "LINEAR"
-            and a.z_um == b.z_um == -operation.depth_um
-        ]
-        assert segments
+        points = []
         for fraction in (i / 16 for i in range(17)):
             x = operation.x_um + radius + (operation.width_um - 2 * radius) * fraction
             y = operation.y_um + radius + (operation.length_um - 2 * radius) * fraction
-            for px, py in ((x, operation.y_um), (x, operation.y_um + operation.length_um),
-                           (operation.x_um, y), (operation.x_um + operation.width_um, y)):
+            points.extend(((x, operation.y_um), (x, operation.y_um + operation.length_um),
+                           (operation.x_um, y), (operation.x_um + operation.width_um, y)))
+        for corner_x, sign_x in ((operation.x_um, 1),
+                                  (operation.x_um + operation.width_um, -1)):
+            for corner_y, sign_y in ((operation.y_um, 1),
+                                     (operation.y_um + operation.length_um, -1)):
+                points.extend((corner_x + sign_x * dx, corner_y + sign_y * dy)
+                              for dx, dy in ((0, 0), (50, 700), (700, 50)))
+        # This fixture explicitly qualifies 3 mm stepdowns in its shop recipe.
+        for depth in (-min(value, operation.depth_um)
+                      for value in range(3_000, operation.depth_um + 3_000, 3_000)):
+            segments = [
+                (a, b) for a, b in zip(program.moves, program.moves[1:], strict=False)
+                if a.operation_id == b.operation_id == operation.operation_id
+                and b.kind.value == "LINEAR" and b.z_um == depth
+                and (a.z_um == b.z_um or (a.x_um, a.y_um) == (b.x_um, b.y_um))
+            ]
+            assert segments
+            for px, py in points:
                 distances = []
                 for a, b in segments:
                     dx, dy = b.x_um - a.x_um, b.y_um - a.y_um

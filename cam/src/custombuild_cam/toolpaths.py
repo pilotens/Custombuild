@@ -663,6 +663,14 @@ def _validate_part_outline_binding(
         raise ProductionCAMError(
             f"release contour differs from its part-instance outline: {operation.operation_id}"
         )
+    if operation.open_end_reliefs:
+        local_outline = _rect_to_physical_stock(outline.rect, setup)
+        allowed_edges = _declared_open_finished_part_edges(operation, setup, local_outline)
+        if len(allowed_edges) != len(set(operation.open_end_reliefs)):
+            raise ProductionCAMError(
+                "every declared open end must be a groove at its finished part boundary: "
+                f"{operation.operation_id}"
+            )
 
 
 def _operation_nominal_footprint(operation: CAMOperation) -> Rect:
@@ -1103,10 +1111,7 @@ def _generate_raster_moves(
     assert operation.width_um is not None
     assert operation.length_um is not None
     radius_um = builder.tool.effective_diameter_um // 2
-    left_um = operation.x_um + radius_um
-    right_um = operation.x_um + operation.width_um - radius_um
-    bottom_um = operation.y_um + radius_um
-    top_um = operation.y_um + operation.length_um - radius_um
+    left_um, right_um, bottom_um, top_um = _area_raster_bounds(operation, radius_um)
     stepover_um = builder.tool.effective_diameter_um * recipe.stepover_ppm // 1_000_000
     if stepover_um <= 0:
         raise ProductionCAMError(f"recipe stepover rounds to zero: {operation.operation_id}")
@@ -1154,7 +1159,8 @@ def _generate_raster_moves(
                 recipe.process_accuracy_um,
             )
         # Raster end caps leave scallops between adjacent lanes. Sweep the
-        # entire inset boundary at every depth to finish the rounded rectangle.
+        # entire cutter-centre boundary at every depth, reaching declared open
+        # mouths while staying one cutter radius inside every closed edge.
         # The separate dogbone cycles below clear the declared corner reliefs.
         boundary = (
             (left_um, bottom_um),
@@ -1551,13 +1557,31 @@ def _validate_corner_contract(
 
 def _dogbone_envelope(operation: CAMOperation, nominal: Rect, radius_um: int) -> Rect:
     centres = _dogbone_centres(operation)
-    if not centres:
-        return nominal
-    left = min(nominal.x_um, *(x_um - radius_um for x_um, _ in centres))
-    right = max(nominal.right_um, *(x_um + radius_um for x_um, _ in centres))
-    bottom = min(nominal.y_um, *(y_um - radius_um for _, y_um in centres))
-    top = max(nominal.top_um, *(y_um + radius_um for _, y_um in centres))
+    raster_left, raster_right, raster_bottom, raster_top = _area_raster_bounds(operation, radius_um)
+    left = min([raster_left - radius_um, *(x_um - radius_um for x_um, _ in centres)])
+    right = max([raster_right + radius_um, *(x_um + radius_um for x_um, _ in centres)])
+    bottom = min([raster_bottom - radius_um, *(y_um - radius_um for _, y_um in centres)])
+    top = max([raster_top + radius_um, *(y_um + radius_um for _, y_um in centres)])
     return Rect(left, bottom, right - left, top - bottom)
+
+
+def _area_raster_bounds(operation: CAMOperation, radius_um: int) -> tuple[int, int, int, int]:
+    """Reach each declared open mouth without cutting reliefs in its side walls."""
+
+    assert operation.width_um is not None
+    assert operation.length_um is not None
+    opened = {
+        _source_edge_machine_boundary(
+            edge, rotated_90=operation.source_rotation_90, side=operation.side
+        )
+        for edge in operation.open_end_reliefs
+    }
+    return (
+        operation.x_um + (0 if "x_min" in opened else radius_um),
+        operation.x_um + operation.width_um - (0 if "x_max" in opened else radius_um),
+        operation.y_um + (0 if "y_min" in opened else radius_um),
+        operation.y_um + operation.length_um - (0 if "y_max" in opened else radius_um),
+    )
 
 
 def _source_corner_machine_boundaries(
@@ -1724,7 +1748,7 @@ def _require_accuracy_expanded_segment_within_own_part(
 
 def _declared_open_finished_part_edges(
     operation: CAMOperation,
-    setup: BoundSetup,
+    setup: Setup | BoundSetup,
     outline: Rect,
 ) -> frozenset[str]:
     if operation.kind != OperationKind.GROOVE or not operation.open_end_reliefs:

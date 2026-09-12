@@ -17,6 +17,13 @@ Implemented:
   The old path leaves more than 0.20 mm at the sample; the new path clears it.
 - The complete shelving integration case samples all 45 grooves' straight edges
   against actual toolpath segments, independently of the PASS label.
+- Open groove mouths extend cutter centres to the actual part edge. Independent
+  samples include the mouth corners in both orientations, and the verifier
+  rejects the former inset-only path that left approximately 0.70 mm there.
+- An open-edge declaration must correspond to a real boundary of its source
+  part. Generator, source validation and verifier reject false internal openings.
+  Stock, neighbours and fixtures include the cutter's overhang; DXF extents
+  continue to describe the actual drawn geometry.
 
 Recompile and reverify any existing area-cutting candidate using this version.
 Old review results do not establish correct removal. The existing source and
@@ -37,6 +44,14 @@ The current 4340 × 2540 × 280 mm example is an unapproved envelope, not a
 manufacturing design. Preserve its explicit unknowns. Do not silently replace
 material, choose installation allowances, reduce book loading, add hidden
 splices, or treat a stock-fit result as structural qualification.
+
+Implemented: [explicit module planning](MODULE_PLANNING.md) produces bounded,
+separate carcass drafts with canonical geometry, exact overall dimensions,
+preserved material/installation requirements and load accounting. The complete
+plan and individual workspaces can be downloaded without changing the source
+project. Their stock fit, rules and unresolved assembly requirements remain
+visible. This supports design review; it does not qualify intermodule joints,
+stacking loads, anchoring or production.
 
 Required decisions and evidence, in order:
 

@@ -1295,6 +1295,73 @@
         "title": "FurnitureMaterialStock",
         "type": "object"
       },
+      "FurnitureModuleGrid": {
+        "additionalProperties": false,
+        "description": "Equal outer widths/heights, with explicit gaps and shelf counts.\n\nRows run from floor to ceiling; columns from left to right. Integer\nremainders go to the first rows/columns. Shelf positions inside each new\ncarcass are evenly distributed by the ordinary geometry compiler.",
+        "properties": {
+          "columns": {
+            "maximum": 8.0,
+            "minimum": 1.0,
+            "title": "Columns",
+            "type": "integer"
+          },
+          "divider_count_per_module": {
+            "default": 0,
+            "maximum": 16.0,
+            "minimum": 0.0,
+            "title": "Divider Count Per Module",
+            "type": "integer"
+          },
+          "gap_um": {
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Gap Um",
+            "type": "integer"
+          },
+          "rows": {
+            "maximum": 4.0,
+            "minimum": 1.0,
+            "title": "Rows",
+            "type": "integer"
+          },
+          "shelf_count_per_row": {
+            "items": {
+              "maximum": 40.0,
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "maxItems": 4,
+            "minItems": 1,
+            "title": "Shelf Count Per Row",
+            "type": "array"
+          }
+        },
+        "required": [
+          "columns",
+          "rows",
+          "gap_um",
+          "shelf_count_per_row"
+        ],
+        "title": "FurnitureModuleGrid",
+        "type": "object"
+      },
+      "FurnitureModulePlanRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "grid": {
+            "$ref": "#/components/schemas/FurnitureModuleGrid"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "workspace",
+          "grid"
+        ],
+        "title": "FurnitureModulePlanRequest",
+        "type": "object"
+      },
       "FurnitureProductionPreviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4017,6 +4084,54 @@
           }
         ],
         "summary": "Catalog",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/module-plan": {
+      "post": {
+        "operationId": "module_plan_v1_furniture_module_plan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FurnitureModulePlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Module Plan V1 Furniture Module Plan Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Module Plan",
         "tags": [
           "furniture-design"
         ]

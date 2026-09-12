@@ -17,6 +17,10 @@ from custombuild_domain.furniture import (
 )
 from custombuild_domain.furniture_catalog import furniture_catalog
 from custombuild_domain.identity import content_hash
+from custombuild_manufacturing.furniture_module_planning import (
+    FurnitureModuleGrid,
+    plan_furniture_modules,
+)
 from custombuild_manufacturing.furniture_profiles import (
     compare_furniture_profiles,
     furniture_machine_catalog,
@@ -59,6 +63,12 @@ class FurnitureExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=1)
     expected_design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class FurnitureModulePlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace: FurnitureWorkspace
+    grid: FurnitureModuleGrid
 
 
 def _workspace(project: Project) -> FurnitureWorkspace | None:
@@ -111,6 +121,16 @@ def shelf_bay_suggestion(
 ) -> dict[str, Any]:
     try:
         return suggest_shelf_bays(payload)
+    except ValueError as exc:
+        raise HTTPException(422, detail=str(exc)) from exc
+
+
+@router.post("/module-plan")
+def module_plan(
+    payload: FurnitureModulePlanRequest, principal: ReaderDep, session: SessionDep
+) -> dict[str, Any]:
+    try:
+        return plan_furniture_modules(payload.workspace, payload.grid)
     except ValueError as exc:
         raise HTTPException(422, detail=str(exc)) from exc
 

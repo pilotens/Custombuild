@@ -287,7 +287,10 @@ def test_dogbone_actual_envelope_drives_boundary_and_collision_validation() -> N
     assert "FEATURE_COLLISION" not in {issue.code for issue in broad_bounds_report.blocking_issues}
 
 
-def test_open_end_relief_envelope_blocks_insufficient_nesting_spacing() -> None:
+@pytest.mark.parametrize("corner_strategy", ("dogbone-v1", "dogbone-v2"))
+def test_open_end_relief_envelope_blocks_insufficient_nesting_spacing(
+    corner_strategy: str,
+) -> None:
     exit_feature = ManufacturingFeature(
         "open-exit",
         "a-exit",
@@ -298,7 +301,7 @@ def test_open_end_relief_envelope_blocks_insufficient_nesting_spacing() -> None:
         5_000,
         width_um=10_000,
         length_um=80_000,
-        corner_strategy="dogbone-v1",
+        corner_strategy=corner_strategy,
         corner_relief_radius_um=3_000,
         open_end_reliefs=("u_max",),
     )
@@ -323,6 +326,101 @@ def test_open_end_relief_envelope_blocks_insufficient_nesting_spacing() -> None:
     )
     assert clearance_issue.feature_id == "open-exit"
     assert clearance_issue.inputs["other_instance_id"] == "b-neighbor:001"
+
+
+def _open_slot_at_sheet_margin(
+    side: Side, rotated_90: bool, margin_um: int
+) -> tuple[PartSpec, NestingLayout]:
+    feature = ManufacturingFeature(
+        "open-slot",
+        "panel",
+        FeatureKind.GROOVE,
+        side,
+        0,
+        50_000,
+        5_000,
+        width_um=20_000,
+        length_um=80_000,
+        corner_strategy="dogbone-v2",
+        corner_relief_radius_um=3_000,
+        open_end_reliefs=("u_min",),
+    )
+    part = base_part(feature)
+    stock = base_stock(margin_um=0, kerf_um=0)
+    placement = Placement(
+        "panel:001",
+        "panel",
+        stock.stock_id,
+        0,
+        margin_um,
+        margin_um,
+        part.height_um if rotated_90 else part.width_um,
+        part.width_um if rotated_90 else part.height_um,
+        rotated_90,
+    )
+    return part, NestingLayout(stock, (placement,), (), 1, 0, "manual")
+
+
+@pytest.mark.parametrize(
+    ("rotated_90", "side", "expected_machine_bounds"),
+    (
+        (False, Side.A, Rect(-2_000, 48_000, 26_000, 86_000)),
+        (False, Side.B, Rect(-2_000, 466_000, 26_000, 86_000)),
+        (True, Side.A, Rect(68_000, -2_000, 86_000, 26_000)),
+        (True, Side.B, Rect(68_000, 576_000, 86_000, 26_000)),
+    ),
+)
+def test_open_slot_cutter_overhang_rejects_one_mm_stock_clearance_after_rotation_and_flip(
+    rotated_90: bool, side: Side, expected_machine_bounds: Rect
+) -> None:
+    part, layout = _open_slot_at_sheet_margin(side, rotated_90, 1_000)
+
+    report = DFMValidator().validate((part,), layout, linuxcnc_reference_router_1325())
+
+    assert "FEATURE_OUTSIDE_PART" not in {issue.code for issue in report.blocking_issues}
+    issue = next(
+        issue
+        for issue in report.blocking_issues
+        if issue.code == "OPEN_END_RELIEF_STOCK_CLEARANCE"
+    )
+    assert issue.feature_id == "open-slot"
+    assert issue.inputs["machine_bounds"] == expected_machine_bounds
+    assert issue.inputs["stock_bounds"] == Rect(0, 0, 1_000_000, 600_000)
+
+
+@pytest.mark.parametrize("zone_source", ("stock-clamp", "machine-keepout"))
+@pytest.mark.parametrize(
+    ("rotated_90", "side", "zone"),
+    (
+        (False, Side.A, Rect(18_000, 100_000, 1_000, 10_000)),
+        (False, Side.B, Rect(18_000, 490_000, 1_000, 10_000)),
+        (True, Side.A, Rect(120_000, 18_000, 10_000, 1_000)),
+        (True, Side.B, Rect(120_000, 581_000, 10_000, 1_000)),
+    ),
+)
+def test_open_slot_cutter_overhang_rejects_one_mm_fixture_clearance(
+    rotated_90: bool, side: Side, zone: Rect, zone_source: str
+) -> None:
+    part, layout = _open_slot_at_sheet_margin(side, rotated_90, 20_000)
+    machine = linuxcnc_reference_router_1325()
+    assert not DFMValidator().validate((part,), layout, machine).blocking_issues
+
+    # The zone is beyond the nominal slot mouth and away from either closed-end
+    # dogbone. Only the cutter overhang needed to clear the open slot hits it.
+    if zone_source == "stock-clamp":
+        layout = replace(layout, stock=replace(layout.stock, clamp_zones=(zone,)))
+    else:
+        machine = replace(machine, keep_out_zones=(zone,))
+
+    report = DFMValidator().validate((part,), layout, machine)
+
+    assert "NESTING_CLAMP_COLLISION" not in {issue.code for issue in report.blocking_issues}
+    issue = next(
+        issue
+        for issue in report.blocking_issues
+        if issue.code == "FEATURE_KEEPOUT_COLLISION"
+    )
+    assert issue.feature_id == "open-slot"
 
 
 def test_dfm_reports_machine_feature_tool_depth_keepout_and_collision_failures() -> None:

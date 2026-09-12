@@ -149,6 +149,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/furniture/module-plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Module Plan */
+        post: operations["module_plan_v1_furniture_module_plan_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/furniture/preview": {
         parameters: {
             query?: never;
@@ -1203,6 +1220,34 @@ export interface components {
              * @default 2440000
              */
             stock_width_um: number;
+        };
+        /**
+         * FurnitureModuleGrid
+         * @description Equal outer widths/heights, with explicit gaps and shelf counts.
+         *
+         *     Rows run from floor to ceiling; columns from left to right. Integer
+         *     remainders go to the first rows/columns. Shelf positions inside each new
+         *     carcass are evenly distributed by the ordinary geometry compiler.
+         */
+        FurnitureModuleGrid: {
+            /** Columns */
+            columns: number;
+            /**
+             * Divider Count Per Module
+             * @default 0
+             */
+            divider_count_per_module: number;
+            /** Gap Um */
+            gap_um: number;
+            /** Rows */
+            rows: number;
+            /** Shelf Count Per Row */
+            shelf_count_per_row: number[];
+        };
+        /** FurnitureModulePlanRequest */
+        FurnitureModulePlanRequest: {
+            grid: components["schemas"]["FurnitureModuleGrid"];
+            workspace: components["schemas"]["FurnitureWorkspace"];
         };
         /** FurnitureProductionPreviewRequest */
         FurnitureProductionPreviewRequest: {
@@ -2382,6 +2427,41 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    module_plan_v1_furniture_module_plan_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FurnitureModulePlanRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

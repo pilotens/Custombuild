@@ -1293,6 +1293,25 @@ def _reconstruct_part_outlines(
                 "operation nominal geometry leaves its bound finished-part outline",
                 operation_id=operation.operation_id,
             )
+        if operation.open_end_reliefs:
+            physical_nominal = _rect_to_physical_a_frame(nominal, setup)
+            opened = _physical_open_end_boundaries(operation)
+            edge_coordinates = {
+                "x_min": (physical_nominal.x_um, outline.rect.x_um),
+                "x_max": (physical_nominal.right_um, outline.rect.right_um),
+                "y_min": (physical_nominal.y_um, outline.rect.y_um),
+                "y_max": (physical_nominal.top_um, outline.rect.top_um),
+            }
+            if (
+                operation.kind != OperationKind.GROOVE
+                or len(opened) != len(set(operation.open_end_reliefs))
+                or any(edge_coordinates[edge][0] != edge_coordinates[edge][1] for edge in opened)
+            ):
+                issues.add(
+                    "OPEN_END_BINDING_INVALID",
+                    "each declared open end must be a groove at its exact finished-part boundary",
+                    operation_id=operation.operation_id,
+                )
     ordered_outlines = tuple(
         sorted(
             outlines.values(),
@@ -2027,12 +2046,11 @@ def _independent_area_cutter_envelope(
     radius_um: int,
 ) -> Rect:
     centres = _independent_dogbone_centres(operation)
-    if not centres:
-        return nominal
-    left = min(nominal.x_um, *(x_um - radius_um for x_um, _ in centres))
-    right = max(nominal.right_um, *(x_um + radius_um for x_um, _ in centres))
-    bottom = min(nominal.y_um, *(y_um - radius_um for _, y_um in centres))
-    top = max(nominal.top_um, *(y_um + radius_um for _, y_um in centres))
+    x_min, x_max, y_min, y_max = _independent_area_raster_bounds(operation, radius_um)
+    left = min([x_min - radius_um, *(x_um - radius_um for x_um, _ in centres)])
+    right = max([x_max + radius_um, *(x_um + radius_um for x_um, _ in centres)])
+    bottom = min([y_min - radius_um, *(y_um - radius_um for _, y_um in centres)])
+    top = max([y_max + radius_um, *(y_um + radius_um for _, y_um in centres)])
     return Rect(left, bottom, right - left, top - bottom)
 
 
@@ -2964,9 +2982,8 @@ def _operation_point_allowed(
     bottom = operation.y_um
     top = operation.y_um + operation.length_um
     if operation.kind in {OperationKind.POCKET, OperationKind.GROOVE}:
-        within_raster = (
-            left + radius <= x_um <= right - radius and bottom + radius <= y_um <= top - radius
-        )
+        x_min, x_max, y_min, y_max = _independent_area_raster_bounds(operation, radius)
+        within_raster = x_min <= x_um <= x_max and y_min <= y_um <= y_max
         return within_raster or (x_um, y_um) in _independent_dogbone_centres(operation)
     if operation.kind != OperationKind.CONTOUR:
         return False
@@ -3027,10 +3044,9 @@ def _material_removal_segment_allowed(
     bottom = operation.y_um
     top = operation.y_um + operation.length_um
     if operation.kind in {OperationKind.POCKET, OperationKind.GROOVE}:
-        raster_left = left + radius_um
-        raster_right = right - radius_um
-        raster_bottom = bottom + radius_um
-        raster_top = top - radius_um
+        raster_left, raster_right, raster_bottom, raster_top = _independent_area_raster_bounds(
+            operation, radius_um
+        )
 
         def in_raster(point: tuple[int, int]) -> bool:
             return (
@@ -3127,6 +3143,27 @@ def _independent_dogbone_centres(operation: CAMOperation) -> frozenset[tuple[int
     return frozenset(values)
 
 
+def _independent_area_raster_bounds(
+    operation: CAMOperation, radius_um: int
+) -> tuple[int, int, int, int]:
+    assert operation.width_um is not None
+    assert operation.length_um is not None
+    # Physical A-frame declarations need the B-side Y reflection to describe
+    # this program's machine-frame coordinates. Do not use generator helpers.
+    opened = _physical_open_end_boundaries(operation)
+    if operation.side.value == "B":
+        opened = frozenset(
+            "y_max" if edge == "y_min" else "y_min" if edge == "y_max" else edge
+            for edge in opened
+        )
+    return (
+        operation.x_um if "x_min" in opened else operation.x_um + radius_um,
+        operation.x_um + operation.width_um - (0 if "x_max" in opened else radius_um),
+        operation.y_um if "y_min" in opened else operation.y_um + radius_um,
+        operation.y_um + operation.length_um - (0 if "y_max" in opened else radius_um),
+    )
+
+
 def _validate_area_coverage(
     program: ProductionProgram,
     operation: CAMOperation,
@@ -3139,13 +3176,10 @@ def _validate_area_coverage(
     assert operation.width_um is not None
     assert operation.length_um is not None
     radius = binding.effective_diameter_um // 2
-    x_min, x_max = operation.x_um + radius, operation.x_um + operation.width_um - radius
-    y_min, y_max = operation.y_um + radius, operation.y_um + operation.length_um - radius
+    x_min, x_max, y_min, y_max = _independent_area_raster_bounds(operation, radius)
     stepover = binding.effective_diameter_um * recipe.stepover_ppm // 1_000_000
     guaranteed_cut_width = binding.effective_diameter_um - 2 * recipe.process_accuracy_um
-    horizontal = operation.width_um - binding.effective_diameter_um >= (
-        operation.length_um - binding.effective_diameter_um
-    )
+    horizontal = x_max - x_min >= y_max - y_min
     previous_by_sequence = {move.sequence + 1: move for move in moves}
     for pass_index, level in enumerate(expected_levels, start=1):
         lanes: set[int] = set()

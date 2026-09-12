@@ -16,6 +16,7 @@ import { FurnitureProduction } from "./furniture-production";
 import { FurnitureStockRequirements, InstallationEditor, ShelvingLayoutEditor } from "./furniture-dimensions";
 import { FurnitureRuleValues } from "./furniture-rule-values";
 import { FurnitureShelfSuggestionPanel } from "./furniture-shelf-suggestion";
+import { FurnitureModulePlanningPanel } from "./furniture-module-planning";
 import { FurnitureStockEditor, FurnitureStockPlan } from "./furniture-stock-planning";
 
 const Viewer = dynamic(() => import("./furniture-viewer"), {
@@ -375,6 +376,10 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         key={`${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}
         designHash={preview.design.design_hash} disabled={busy || invalidInput || profileDirty || !mayEdit}
         onApply={next => { update(next); setNotice("Fackindelningen är ändrad. Granska möbeln och spara en ny revision."); }} /> : null}
+      {intent.family === "shelving" && preview ? <FurnitureModulePlanningPanel
+        key={`modules-${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}
+        designHash={preview.design.design_hash} disabled={busy || invalidInput || profileDirty || !mayEdit}
+      /> : null}
       <div className={styles.rules}>{preview?.rules.evaluations.map(rule => <details key={rule.rule_id}>
         <summary><span className={rule.status === "PASS" ? styles.pass : rule.status === "BLOCK" ? styles.blocked : styles.requiresReview}>
           {rule.status === "PASS" ? "Kontrollerat" : rule.status === "BLOCK" ? "Blockerar tillverkning" : "Behöver granskas"}</span>{rule.title}</summary>
