@@ -193,7 +193,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     }).catch(reason => setError(errorText(reason))).finally(() => setBusy(false));
   });
   const save = async () => {
-    if (invalidInput || profileDirty || !preview) return;
+    if (invalidInput || profileDirty) return;
     setBusy(true); setError(undefined);
     try {
       let id = projectId;
@@ -235,7 +235,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     finally { setBusy(false); }
   };
   const exportWorkspace = () => {
-    if (profileDirty || invalidInput || !preview) return;
+    if (profileDirty || invalidInput) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(workspace, null, 2)+"\n"], { type: "application/json" }));
     const link = document.createElement("a"); link.href = url;
     link.download = `custombuild-${intent.family}-revision-${revision || 1}.json`; link.click();
@@ -256,14 +256,14 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <label>Läs arbetsfil (JSON)<input type="file" accept=".json,application/json" disabled={busy || !mayEdit}
           onChange={e => { const file = e.target.files?.[0]; e.target.value = "";
             if (file) navigate(() => { void importWorkspace(file); }); }} /></label>
-        <button disabled={busy || !preview || invalidInput || profileDirty} onClick={exportWorkspace}>Spara arbetsfil</button>
+        <button disabled={busy || invalidInput || profileDirty} onClick={exportWorkspace}>Spara arbetsfil</button>
         <label>Öppna projekt<select aria-label="Öppna möbelprojekt" value={projectId ?? ""}
           disabled={busy} onChange={e => { if (e.target.value) openProject(e.target.value); }}>
           <option value="">Ny design</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select></label>
         <label>Projektnamn<input value={name} maxLength={180} disabled={Boolean(projectId) || busy || !mayEdit}
           onChange={e => setName(e.target.value)} /></label>
-        <button className={styles.primary} disabled={!mayEdit || busy || !preview || invalidInput || profileDirty || !name.trim()}
+        <button className={styles.primary} disabled={!mayEdit || busy || invalidInput || profileDirty || !name.trim()}
           onClick={() => { void save(); }}>{busy ? "Arbetar…" : "Spara revision"}</button>
       </div>
     </section>

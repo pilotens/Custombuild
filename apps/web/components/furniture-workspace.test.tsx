@@ -378,6 +378,36 @@ describe("möbelstudions revisions- och profilflöde", () => {
     expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
   });
 
+  it("kan rädda arbetsfil och spara via servern efter misslyckad förhandsgranskning", async () => {
+    const api = setup();
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:recovery");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    vi.spyOn(api, "createProject").mockResolvedValue({ id: "recovery", name: "Min möbel", furniture_type: "shelving",
+      current_revision: 0, description: "", archived: false, created_at: "2026-09-12T12:00:00Z",
+      updated_at: "2026-09-12T12:00:00Z" });
+    const save = vi.spyOn(api, "saveFurnitureDraft").mockImplementation(async (id, revision, workspace) => ({
+      project_id: id, revision: revision+1, workspace, preview: preview(workspace),
+    }));
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    vi.mocked(api.previewFurniture).mockRejectedValue(new Error("Förhandsgranskning tillfälligt otillgänglig"));
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1234.567" } });
+    await screen.findByText("Förhandsgranskning tillfälligt otillgänglig");
+    expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Förbered tillverkning" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Spara arbetsfil" }));
+    expect(createUrl).toHaveBeenCalledOnce();
+    const blob = createUrl.mock.calls[0]![0] as Blob;
+    const contents = await new Promise<string>(resolve => {
+      const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.readAsText(blob);
+    });
+    expect(JSON.parse(contents).design.intent.width_um).toBe(1_234_567);
+    fireEvent.click(screen.getByRole("button", { name: "Spara revision" }));
+    await screen.findByText("Revision 1 är sparad.");
+    expect(save.mock.calls[0]![2].design.intent.width_um).toBe(1_234_567);
+  });
+
   it("avrundar aldrig inmatade CAD-mått till en annan geometri", async () => {
     const api = setup();
     render(<FurnitureStudio api={api} principal={principal} />);

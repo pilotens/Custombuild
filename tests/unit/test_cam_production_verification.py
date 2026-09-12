@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
+from math import hypot
 
 import pytest
 from custombuild_cam import production_verification as verification_module
@@ -1516,3 +1518,69 @@ def test_inside_contour_and_degenerate_depth_helpers_are_fail_closed() -> None:
     assert verification_module._depth_levels(0, 1) == ()
     assert verification_module._depth_levels(1, 0) == ()
     assert verification_module._canonical_contour_interpolation_error_um(0) == 0
+
+
+@pytest.mark.parametrize("horizontal", [False, True])
+@pytest.mark.parametrize("source_factory", [_pocket_source_document, _dogbone_source_document])
+def test_area_end_scallops_are_removed_and_legacy_raster_is_rejected(
+    horizontal: bool, source_factory: Callable[[], OperationsDocument],
+) -> None:
+    # Use an analytic point-to-segment distance oracle, independent of both
+    # the generator's raster construction and the verifier's coverage rules.
+    source = source_factory()
+    area = source.operations[-1]
+    if horizontal:
+        area = replace(
+            area, width_um=area.length_um, length_um=area.width_um,
+            cutter_envelope_width_um=area.cutter_envelope_length_um,
+            cutter_envelope_length_um=area.cutter_envelope_width_um,
+        )
+        source = replace(source, operations=(*source.operations[:-1], area))
+    candidate = generate_production_toolpaths(source, _execution_context(source))
+    assert verify_production_toolpaths(candidate, source).report.status == CuttingProgramStatus.PASS
+    index = next(
+        i for i, p in enumerate(candidate.programs) if area.operation_id in p.operation_ids
+    )
+    program = candidate.programs[index]
+    radius = 3_000
+    # Halfway between 2.4 mm raster lanes, on the nominal closed edge.
+    point = (area.x_um, area.y_um + radius + 1_200) if horizontal else (
+        area.x_um + radius + 1_200, area.y_um
+    )
+
+    def residual(moves: tuple[ProductionMove, ...]) -> float:
+        distances = []
+        for start, end in zip(moves, moves[1:], strict=False):
+            if not (
+                start.operation_id == end.operation_id == area.operation_id
+                and start.kind == end.kind == ProductionMoveKind.LINEAR
+                and start.z_um == end.z_um == -area.depth_um
+            ):
+                continue
+            dx, dy = end.x_um - start.x_um, end.y_um - start.y_um
+            denominator = dx * dx + dy * dy
+            fraction = 0 if not denominator else max(0, min(1, (
+                (point[0] - start.x_um) * dx + (point[1] - start.y_um) * dy
+            ) / denominator))
+            distances.append(hypot(point[0] - start.x_um - fraction * dx,
+                                   point[1] - start.y_um - fraction * dy))
+        return min(distances) - radius
+
+    assert residual(program.moves) <= 1e-6
+    # Recreate the previously accepted raster-only path at each depth by
+    # removing the finish loop immediately before its inset retract.
+    legacy = list(program.moves)
+    retract_indexes = [
+        i for i, move in enumerate(legacy)
+        if move.operation_id == area.operation_id and move.role == ProductionMoveRole.RETRACT
+        and (move.x_um, move.y_um) == (area.x_um + radius, area.y_um + radius)
+    ]
+    for i in reversed(retract_indexes):
+        move = legacy[i]
+        old_end = legacy[i - 6]
+        legacy[i] = replace(move, x_um=old_end.x_um, y_um=old_end.y_um)
+        del legacy[i - 5:i]
+    legacy_moves = _resequence(tuple(legacy))
+    assert residual(legacy_moves) > 200  # ~231 um at this boundary sample
+    damaged = _replace_program(candidate, index, replace(program, moves=legacy_moves))
+    assert "MATERIAL_REMOVAL_COVERAGE_INVALID" in _issue_codes(damaged, source)

@@ -1153,7 +1153,30 @@ def _generate_raster_moves(
                 recipe.feed_um_min,
                 recipe.process_accuracy_um,
             )
+        # Raster end caps leave scallops between adjacent lanes. Sweep the
+        # entire inset boundary at every depth to finish the rounded rectangle.
+        # The separate dogbone cycles below clear the declared corner reliefs.
+        boundary = (
+            (left_um, bottom_um),
+            (right_um, bottom_um),
+            (right_um, top_um),
+            (left_um, top_um),
+            (left_um, bottom_um),
+        )
         end_x_um, end_y_um = raster[-1][1]
+        for x_um, y_um in boundary:
+            if (x_um, y_um) == (end_x_um, end_y_um):
+                continue
+            builder.cut(
+                operation,
+                pass_index,
+                x_um,
+                y_um,
+                depth_z_um,
+                recipe.feed_um_min,
+                recipe.process_accuracy_um,
+            )
+            end_x_um, end_y_um = x_um, y_um
         builder.retract(operation, pass_index, end_x_um, end_y_um)
         for relief_x_um, relief_y_um in relief_centres:
             builder.position(

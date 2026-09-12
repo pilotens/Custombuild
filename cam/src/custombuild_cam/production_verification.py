@@ -3149,6 +3149,7 @@ def _validate_area_coverage(
     previous_by_sequence = {move.sequence + 1: move for move in moves}
     for pass_index, level in enumerate(expected_levels, start=1):
         lanes: set[int] = set()
+        boundary_segments: set[frozenset[tuple[int, int]]] = set()
         for move in moves:
             previous = previous_by_sequence.get(move.sequence)
             if (
@@ -3161,6 +3162,9 @@ def _validate_area_coverage(
                 or previous.z_um != level
             ):
                 continue
+            boundary_segments.add(frozenset((
+                (previous.x_um, previous.y_um), (move.x_um, move.y_um)
+            )))
             if (
                 horizontal
                 and move.y_um == previous.y_um
@@ -3181,6 +3185,22 @@ def _validate_area_coverage(
                 == {y_min, y_max}
             ):
                 lanes.add(move.x_um)
+        # Lane spacing proves interior coverage, but not the scalloped ends
+        # of the cutter sweeps. Independently require full boundary segments
+        # at this depth; rapid moves and cuts at other depths cannot qualify.
+        corners = ((x_min, y_min), (x_max, y_min), (x_max, y_max), (x_min, y_max))
+        required_boundary = {
+            frozenset((start, end))
+            for start, end in zip(corners, (*corners[1:], corners[0]), strict=True)
+            if start != end
+        }
+        if not required_boundary.issubset(boundary_segments):
+            issues.add(
+                "MATERIAL_REMOVAL_COVERAGE_INVALID",
+                "area boundary is not fully cut at every required depth",
+                program=program,
+                operation_id=operation.operation_id,
+            )
         expected_min, expected_max = (y_min, y_max) if horizontal else (x_min, x_max)
         ordered = sorted(lanes)
         if (

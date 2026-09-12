@@ -12,6 +12,7 @@ import io
 import json
 import zipfile
 from dataclasses import replace
+from math import hypot
 from typing import Any
 
 import pytest
@@ -585,6 +586,38 @@ def test_custom_shelving_compiles_to_a_complete_linuxcnc_candidate() -> None:
     assert len(candidate.programs) == len(candidate.toolpaths.programs) == 9
     assert sum(len(program.moves) for program in candidate.toolpaths.programs) > 7_000
     assert candidate.cutting_program_report["result"] == "PASS"
+    # Independently sample the finished straight edges of every real groove.
+    # A PASS label alone missed the old raster-end scallops. Compute the
+    # distance to actual cutter centre segments, without generator helpers.
+    for operation in source.operations:
+        if operation.kind.value != "GROOVE":
+            continue
+        assert operation.width_um is not None and operation.length_um is not None
+        program = next(p for p in candidate.toolpaths.programs
+                       if operation.operation_id in p.operation_ids)
+        binding = next(t for t in candidate.toolpaths.execution_context.tool_bindings
+                       if t.source_tool_id == operation.tool_id)
+        radius = binding.effective_diameter_um / 2
+        segments = [
+            (a, b) for a, b in zip(program.moves, program.moves[1:], strict=False)
+            if a.operation_id == b.operation_id == operation.operation_id
+            and a.kind.value == b.kind.value == "LINEAR"
+            and a.z_um == b.z_um == -operation.depth_um
+        ]
+        assert segments
+        for fraction in (i / 16 for i in range(17)):
+            x = operation.x_um + radius + (operation.width_um - 2 * radius) * fraction
+            y = operation.y_um + radius + (operation.length_um - 2 * radius) * fraction
+            for px, py in ((x, operation.y_um), (x, operation.y_um + operation.length_um),
+                           (operation.x_um, y), (operation.x_um + operation.width_um, y)):
+                distances = []
+                for a, b in segments:
+                    dx, dy = b.x_um - a.x_um, b.y_um - a.y_um
+                    denominator = dx * dx + dy * dy
+                    t = 0 if not denominator else max(0, min(1,
+                        ((px - a.x_um) * dx + (py - a.y_um) * dy) / denominator))
+                    distances.append(hypot(px - a.x_um - t * dx, py - a.y_um - t * dy))
+                assert min(distances) <= radius + 1e-6, operation.operation_id
     manifest_materials = candidate.manifest["materials"]
     assert candidate.program_index["materials"] == manifest_materials
     assert candidate.setup_instructions["materials"] == manifest_materials
