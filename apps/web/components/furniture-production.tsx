@@ -8,10 +8,11 @@ import {
 import { DEFAULT_DESIGN_SPEC, type DesignSpec, type ResolvedDesign } from "@/lib/design-types";
 import type { FurnitureProductionSource, FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { furnitureProductionRecovery, furnitureProductionRecoveryKey,
-  restoreFurnitureProductionRecovery } from "@/lib/furniture-production-recovery";
+  restoreFurnitureProductionState, serializeFurnitureProductionRecovery } from "@/lib/furniture-production-recovery";
 import { replaceFurnitureRecovery } from "@/lib/furniture-draft-recovery";
 import { parseRevisionProductionContext, productionContextFromDesignSpec } from "@/lib/workshop-production-context";
 import { ProductionWorkflow, type ProductionSummary } from "./production-workflow";
+import { restoreWorkshopContextDraftState, type WorkshopContextDraftState } from "./workshop-context-editor";
 import styles from "./furniture-workspace.module.css";
 
 interface Props {
@@ -43,7 +44,7 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
   const [error, setError] = useState<string>();
   const [refresh, setRefresh] = useState(0);
   const [baseline, setBaseline] = useState<string>();
-  const [formDirty, setFormDirty] = useState(false);
+  const [formState, setFormState] = useState<WorkshopContextDraftState>();
   const [confirmClose, setConfirmClose] = useState(false);
   const [pendingRecovery, setPendingRecovery] = useState<{ raw: string; persisted: boolean }>();
   const [storageError, setStorageError] = useState<string>();
@@ -57,8 +58,8 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
   const navigationApproved = useRef(false);
   const activeSpec = useRef<DesignSpec | undefined>(undefined);
   const retry = useCallback(() => setRefresh(value => value + 1), []);
+  const formDirty = Boolean(formState && (formState.dirty || !formState.valid));
   const dirty = formDirty || Boolean(data && contextKey(data.spec) !== baseline);
-  const appliedDirty = Boolean(data && contextKey(data.spec) !== baseline);
   const recoveryKey = data ? furnitureProductionRecoveryKey(api.baseUrl, principal, data.source) : undefined;
   const initialSpec = useMemo((): DesignSpec => {
     const planning = workspace.manufacturing;
@@ -133,17 +134,17 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
     void Promise.resolve().then(() => {
       if (!active) return;
       try {
-        const next = appliedDirty ? JSON.stringify(furnitureProductionRecovery(data.spec, data.source)) : null;
+        const next = dirty ? serializeFurnitureProductionRecovery(furnitureProductionRecovery(data.spec, data.source, formState)) : null;
         replaceFurnitureRecovery(window.localStorage, recoveryKey, lastSeenRecovery.current, next);
         lastSeenRecovery.current = next;
         setStorageError(undefined);
       } catch (reason) {
-        setStorageError(reason instanceof Error && reason.message.startsWith("En annan flik")
+        setStorageError(reason instanceof Error && /^(En annan flik|Formulärkopian|Beredningskopian)/.test(reason.message)
           ? reason.message : "Den lokala beredningskopian kunde inte sparas. Ladda ned utkastet innan du lämnar sidan.");
       }
     });
     return () => { active = false; };
-  }, [data, recoveryKey, pendingRecovery, appliedDirty]);
+  }, [data, recoveryKey, pendingRecovery, dirty, formState]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -179,7 +180,7 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
       setBaseline(contextKey(activeSpec.current));
     }
   }, []);
-  const formChanged = useCallback((state: { dirty: boolean }) => setFormDirty(state.dirty), []);
+  const formChanged = useCallback((state: WorkshopContextDraftState) => setFormState(state), []);
   const applyContext = (patch: Partial<DesignSpec>) => {
     if (!data) return;
     try {
@@ -193,7 +194,13 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
 
   const downloadRecovery = (raw?: string) => {
     if (!data && !raw) return;
-    const content = raw ?? JSON.stringify(furnitureProductionRecovery(data!.spec, data!.source), null, 2);
+    let content: string;
+    try {
+      content = raw ?? serializeFurnitureProductionRecovery(furnitureProductionRecovery(data!.spec, data!.source, formState));
+    } catch (reason) {
+      setStorageError(reason instanceof Error ? reason.message : "Beredningskopian kunde inte skapas.");
+      return;
+    }
     const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url; anchor.download = `${projectId}-beredningsutkast.json`;
@@ -211,8 +218,9 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
         throw new Error("Möbelkällan har ändrats. Kopian kan inte användas för denna beredning.");
       }
       const serverSpec = designSpecFromServer(fresh.preview.spec, data.spec);
-      const spec = restoreFurnitureProductionRecovery(pendingRecovery.raw, fresh.source_furniture, serverSpec);
+      const { spec, editorDraft } = restoreFurnitureProductionState(pendingRecovery.raw, fresh.source_furniture, serverSpec);
       const design = normalizePreviewResponse(fresh.preview, spec);
+      setFormState(editorDraft ? restoreWorkshopContextDraftState(spec, editorDraft) : undefined);
       activeSpec.current = spec;
       setData({ spec, design, source: fresh.source_furniture, preview: fresh.preview });
       setPendingRecovery(undefined);
@@ -252,7 +260,7 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
     </div>
     {confirmClose ? <section role="alertdialog" aria-label="Osparad beredning" className={styles.notice}>
       <p>Beredningen har osparade ändringar. Spara en tillverkningsrevision för att behålla dem på servern.</p>
-      <p>Tillämpade verkstadsuppgifter kan återställas från den lokala kopian när webbläsaren tillåter det. Ofullständiga formulärfält ingår inte.</p>
+      <p>Verkstadsuppgifter och ofullständiga formulärfält kan återställas från den lokala kopian när webbläsaren tillåter det.</p>
       <button onClick={() => setConfirmClose(false)}>Fortsätt bereda</button>
       <button onClick={() => (pendingNavigation.current ?? onClose)()}>Lämna utan att spara beredningen</button>
     </section> : null}
@@ -267,7 +275,7 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
       <button disabled={restoring} onClick={discardRecovery}>Kasta beredningskopian</button>
     </section> : null}
     {data && !pendingRecovery ? <section className={styles.notice} aria-label="Säkerhetskopia av beredning">
-      <p>Tillämpade verkstadsuppgifter säkerhetskopieras lokalt tills revisionen sparas. Ofullständiga formulärfält ingår inte. En kopia är inget tillverkningsgodkännande.</p>
+      <p>Verkstadsuppgifter och ofullständiga formulärfält säkerhetskopieras lokalt tills revisionen sparas. Återställda fält måste kontrolleras innan de tillämpas. En kopia är inget tillverkningsgodkännande.</p>
       <button onClick={() => downloadRecovery()}>Ladda ned beredningsutkast</button>
       <label>Läs in beredningsutkast <input type="file" accept=".json,application/json" disabled={dirty || !sourceReady}
         onChange={event => {
@@ -284,7 +292,7 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
       apiClient={api} principal={principal} projectId={projectId} projectName={projectName}
       templateId="shelving" sourceFurniture={data.source} showRevisionHistory
       onApplyWorkshopContextChange={applyContext} onRequestServerPreviewRetry={retry}
-      onSummaryChange={summaryChanged} onWorkshopContextDraftStateChange={formChanged} />
+      onSummaryChange={summaryChanged} workshopContextDraftState={formState} onWorkshopContextDraftStateChange={formChanged} />
       </fieldset>
       : !error && !pendingRecovery ? <p role="status">Kontrollerar den sparade möbeln mot tillverkningsmodellen…</p> : null}
   </section>;

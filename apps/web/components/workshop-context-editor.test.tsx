@@ -7,6 +7,8 @@ import {
 } from "@/lib/workshop-production-context";
 import {
   WorkshopContextEditor,
+  createWorkshopContextDraftState,
+  restoreWorkshopContextDraftState,
   type WorkshopContextDraftState,
 } from "./workshop-context-editor";
 
@@ -73,6 +75,21 @@ function boundContext(): WorkshopProductionContext {
 }
 
 describe("WorkshopContextEditor", () => {
+  it("revalidates recovered complete text only after an explicit action", async () => {
+    const context = boundContext();
+    const spec = { ...DEFAULT_DESIGN_SPEC, workshop_context: context };
+    const original = createWorkshopContextDraftState(spec, context);
+    const restored = restoreWorkshopContextDraftState(spec, original.draft);
+    const onChange = vi.fn();
+    render(<WorkshopContextEditor spec={spec} value={context} draftState={restored} onChange={onChange} />);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Formulärutkastet är återställt"));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(restored).toMatchObject({ dirty: true, valid: false, pendingValueSignature: undefined });
+    fireEvent.click(screen.getByRole("button", { name: "Kontrollera verkstadsuppgifterna" }));
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(onChange.mock.calls[0]![0].stock_profiles).toEqual(context.stock_profiles);
+  });
+
   it("offers both catalogued validation profiles with exact capacity and emits the selected ID", () => {
     const onChange = vi.fn();
     render(<WorkshopContextEditor spec={DEFAULT_DESIGN_SPEC} onChange={onChange} />);

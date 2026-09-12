@@ -76,10 +76,13 @@ kopia från en annan flik skrivs inte över utan att konflikten hanteras.
 Skadade kopior kan laddas ned för återställning och export fungerar även
 när API-granskningen inte är tillgänglig.
 
-Produktionsberedningens säkerhetskopia omfattar tillämpade beredningsval och
-binds till den exakta designkällan. Den kontrolleras på nytt mot servern och
-återställer inga godkännanden. Råa, ännu ej tillämpade produktionsfält omfattas
-inte av denna kopia; gränsen visas i arbetsytan.
+Produktionsberedningens säkerhetskopia omfattar tillämpade beredningsval samt
+ofullständiga råfält för leverantörsprofiler, råmått, zoner och registreringspinnar.
+Den binds till konto, API och exakt designkälla, som kontrolleras på nytt mot
+servern. Råfält återställs som okontrollerade och måste klara formulärets
+validering innan de tillämpas. Godkännanden och sparade giltighetsflaggor återställs
+aldrig. Samma kopia kan laddas ned; filer över 256 KiB avvisas utan trunkering,
+och lagringsfel eller konflikter mellan flikar visas uttryckligen.
 
 ## CAM och den fysiska verkstadskedjan
 

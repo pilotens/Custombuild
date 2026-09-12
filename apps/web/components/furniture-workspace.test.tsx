@@ -564,3 +564,128 @@ it("låter en schemagiltig men omöjlig form återställas och rättas även nä
   await screen.findByText("5 delar");
   expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
 });
+
+
+describe("återställning bevarar schemagiltigt arbetsutkast vid motstridiga fält", () => {
+  it("behåller för stort montageutrymme som råfält även när motsatt sida är okänd", async () => {
+    const api = setup();
+    let view = render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Djup (mm)"), { target: { value: "280" } });
+    fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+    fireEvent.change(screen.getByLabelText("Bakom · reserverat (mm)"), { target: { value: "300" } });
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain('"installation.rear_allowance_um":"300"'));
+    const saved = parseFurnitureDraftRecovery(window.localStorage.getItem(key)!);
+    expect(saved.workspace.design.installation).toMatchObject({ depth_um: 280_000,
+      rear_allowance_um: null, front_allowance_um: null });
+    view.unmount();
+    view = render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.click(screen.getByRole("button", { name: "Återställ utkast" }));
+    await screen.findByText(/Utkastet är återställt/);
+    expect(screen.getByLabelText("Bakom · reserverat (mm)")).toHaveValue(300);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Bakom · reserverat (mm)"), { target: { value: "20" } });
+    fireEvent.change(screen.getByLabelText("Kunddjup (mm)"), { target: { value: "10" } });
+    expect(screen.getByLabelText("Kunddjup (mm)")).toHaveValue(10);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    await waitFor(() => expect(parseFurnitureDraftRecovery(window.localStorage.getItem(key)!).workspace.design.installation)
+      .toMatchObject({ depth_um: 280_000, rear_allowance_um: 20_000 }));
+    view.unmount();
+  });
+
+  it("tillämpar inte listreservationer som tar hela utrymmet", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Djup (mm)"), { target: { value: "50" } });
+    fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+    fireEvent.click(screen.getByLabelText("Ange listprofil"));
+    fireEvent.change(screen.getByLabelText("Listbredd/utstick (mm)"), { target: { value: "60" } });
+    fireEvent.change(screen.getByLabelText("Listens funktion"), { target: { value: "existing_room_trim" } });
+    fireEvent.click(screen.getByLabelText("Bakom möbeln"));
+    fireEvent.click(screen.getByRole("button", { name: "Reservera frigång för befintlig list", hidden: true }));
+    expect(screen.getByLabelText("Bakom · reserverat (mm)")).toHaveValue(null);
+    expect(screen.getByRole("alert")).toHaveTextContent("positivt stommått");
+    fireEvent.change(screen.getByLabelText("Listbredd/utstick (mm)"), { target: { value: "20" } });
+    fireEvent.click(screen.getByRole("button", { name: "Reservera frigång för befintlig list", hidden: true }));
+    expect(screen.getByLabelText("Bakom · reserverat (mm)")).toHaveValue(20);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it.each([
+    { width: "4340", load: "200", field: "carcass.shelf_load_per_metre_n", raw: "200", changed: "load" },
+    { width: "6000", load: "100", field: "carcass.width_um", raw: "6000", changed: "width" },
+  ])("bevarar en för stor radlast från $changed som råtext utan schemabrott", async ({ width, load, field, raw, changed }) => {
+    const api = setup();
+    let view = render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    if (changed === "load") fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: width } });
+    fireEvent.change(screen.getByLabelText("Hur anges hyllasten?"), { target: { value: "per_metre" } });
+    fireEvent.change(screen.getByLabelText("Last per meter hyllrad (kg/m)"), { target: { value: load } });
+    if (changed === "width") fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: width } });
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    await waitFor(() => expect(parseFurnitureDraftRecovery(window.localStorage.getItem(key)!).inputDrafts?.[field]).toBe(raw));
+    const saved = parseFurnitureDraftRecovery(window.localStorage.getItem(key)!);
+    expect(Math.ceil(saved.workspace.design.intent.width_um * (saved.workspace.design.intent.shelf_load_per_metre_n ?? 0)/1_000_000)).toBeLessThanOrEqual(5_000);
+    view.unmount();
+    view = render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.click(screen.getByRole("button", { name: "Återställ utkast" }));
+    await screen.findByText(/Utkastet är återställt/);
+    expect(screen.getByLabelText(changed === "width" ? "Bredd (mm)" : "Last per meter hyllrad (kg/m)")).toHaveValue(Number(raw));
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    view.unmount();
+  });
+
+  it("återställer ogiltig tjocklek och batchtext utan att förgifta profilförslaget", async () => {
+    const api = setup();
+    let view = render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "101" } });
+    fireEvent.change(screen.getByLabelText(/Batch-ID/), { target: { value: "Batch med mellanslag" } });
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain("Batch med mellanslag"));
+    const saved = parseFurnitureDraftRecovery(window.localStorage.getItem(key)!);
+    expect(saved.profile!.proposed.design.material).toMatchObject({ measured_thickness_um: 18_000, batch_id: null });
+    view.unmount();
+    view = render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.click(screen.getByRole("button", { name: "Återställ utkast" }));
+    await screen.findByText(/Utkastet är återställt/);
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(101);
+    expect(screen.getByLabelText(/Batch-ID/)).toHaveValue("Batch med mellanslag");
+    expect(screen.getByRole("button", { name: "Kontrollera profilbyte" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "0.5" } });
+    expect(screen.getByRole("button", { name: "Kontrollera profilbyte" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "17.9" } });
+    fireEvent.change(screen.getByLabelText(/Batch-ID/), { target: { value: "Batch-42:a" } });
+    expect(screen.getByRole("button", { name: "Kontrollera profilbyte" })).toBeEnabled();
+    expect(screen.queryByRole("alert")).toBeNull();
+    view.unmount();
+  });
+});
+
+it("avvisar lastöverskridanden från byte av lastbasis och omräkning av kundmått", async () => {
+  const api = setup();
+  render(<FurnitureStudio api={api} principal={principal} />);
+  await screen.findByText("5 delar");
+  fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+  fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "20" } });
+  fireEvent.change(screen.getByLabelText("Hur anges hyllasten?"), { target: { value: "per_metre" } });
+  expect(screen.getByLabelText("Hur anges hyllasten?")).toHaveValue("per_row");
+  expect(screen.getByRole("alert")).toHaveTextContent("5000 N");
+  fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "900" } });
+  fireEvent.change(screen.getByLabelText("Hur anges hyllasten?"), { target: { value: "per_metre" } });
+  fireEvent.change(screen.getByLabelText("Last per meter hyllrad (kg/m)"), { target: { value: "100" } });
+  fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+  fireEvent.change(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)"), { target: { value: "6000" } });
+  for (const side of ["Vänster", "Höger", "Ovanför", "Under", "Framför", "Bakom"]) {
+    fireEvent.change(screen.getByLabelText(`${side} · reserverat (mm)`), { target: { value: "0" } });
+  }
+  fireEvent.click(screen.getByRole("button", { name: "Räkna om stommen från kundmåtten", hidden: true }));
+  expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(900);
+  expect(screen.getByRole("alert")).toHaveTextContent("5000 N");
+  const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+  await waitFor(() => expect(parseFurnitureDraftRecovery(window.localStorage.getItem(key)!).workspace.design)
+    .toMatchObject({ intent: { width_um: 900_000, shelf_load_per_metre_n: 981 }, installation: { width_um: 6_000_000 } }));
+});

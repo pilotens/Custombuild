@@ -14,6 +14,7 @@ import { furnitureDraftRecoveryKey, parseFurnitureDraftRecovery, replaceFurnitur
   type FurnitureDraftRecovery, type FurnitureProfileDraft } from "@/lib/furniture-draft-recovery";
 import { FurnitureTrialReadinessPanel } from "./furniture-trial-readiness";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
+import { assertFurnitureRowLoad } from "@/lib/furniture-dimensions";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
 import { FurnitureProduction } from "./furniture-production";
@@ -132,6 +133,8 @@ export function FurnitureStudio({ api, principal, onLogin }: {
     setInputErrors({}); setInputDrafts({}); setInputEpoch(value => value+1);
   };
   const updateInput = (next: FurnitureWorkspace, field: string) => {
+    try { assertFurnitureRowLoad(next); }
+    catch (reason) { setError(errorText(reason)); return; }
     clearInputError(field); update(next);
   };
 
@@ -241,10 +244,12 @@ export function FurnitureStudio({ api, principal, onLogin }: {
     const nextName = `Min ${FURNITURE_FAMILY_LABELS[family].toLowerCase()}`; setName(nextName); setNameBaseline(nextName);
     setDrawersOpen(false); setSelectedPart(undefined);
   });
-  const changeDimension = (key: string, value: number) => {
+  const changeDimension = (key: string, value: number, raw: string) => {
     if (!Number.isSafeInteger(value)) return;
-    clearInputError(`carcass.${key}`);
-    update({ ...workspace, design: { ...workspace.design, intent: { ...intent, [key]: value } } });
+    const next = { ...workspace, design: { ...workspace.design, intent: { ...intent, [key]: value } } };
+    try { assertFurnitureRowLoad(next); }
+    catch (reason) { inputError(errorText(reason), `carcass.${key}`, raw); return; }
+    clearInputError(`carcass.${key}`); update(next);
   };
   const changeCount = (key: string, raw: string, minimum: number, maximum: number) => {
     const value = Number(raw);
@@ -252,7 +257,7 @@ export function FurnitureStudio({ api, principal, onLogin }: {
       inputError(`Ange ett heltal mellan ${minimum} och ${maximum}.`, `carcass.${key}`, raw);
       return;
     }
-    changeDimension(key, value);
+    changeDimension(key, value, raw);
   };
   const changeLoad = (raw: string) => {
     const kilograms = Number(raw);
@@ -260,7 +265,7 @@ export function FurnitureStudio({ api, principal, onLogin }: {
       inputError("Ange en last mellan 0 och 500 kg. Tomt betyder inte noll last.", `carcass.${loadKey}`, raw);
       return;
     }
-    changeDimension(loadKey, Math.round(kilograms * 9.80665));
+    changeDimension(loadKey, Math.round(kilograms * 9.80665), raw);
   };
   const changeMillimetres = (key: string, raw: string) => {
     try {
@@ -268,7 +273,7 @@ export function FurnitureStudio({ api, principal, onLogin }: {
         : key === "stretcher_height_um" ? { minimumUm: 40_000, maximumUm: 300_000 }
         : key === "front_gap_um" ? { minimumUm: 1_000, maximumUm: 10_000 }
         : { minimumUm: 1, maximumUm: 6_000_000 };
-      changeDimension(key, exactMillimetreTextToMicrometres(raw, limits));
+      changeDimension(key, exactMillimetreTextToMicrometres(raw, limits), raw);
     }
     catch (reason) { inputError(errorText(reason), `carcass.${key}`, raw); }
   };
@@ -576,7 +581,7 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChan
     setInputDrafts(previous => ({ ...previous, [field]: raw }));
   };
   const withMillimetres = (field: string, raw: string, apply: (value: number) => FurnitureWorkspace) => {
-    try { change(apply(exactMillimetreTextToMicrometres(raw, { minimumUm: 1, maximumUm: 6_000_000 })), field); }
+    try { change(apply(exactMillimetreTextToMicrometres(raw, { minimumUm: 1_000, maximumUm: 100_000 })), field); }
     catch (reason) { inputError(field, reason, raw); }
   };
   const check = async (event: FormEvent) => {
@@ -603,12 +608,19 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChan
           }}>{catalog.materials.filter(m => m.nominal_thickness_um === (key === "material" ? 18_000 : 6_000))
             .map(m => <option key={m.material_id} value={m.material_id}>{m.name}</option>)}</select></label>
         <label>{key === "material" ? "Uppmätt skivtjocklek (mm)" : "Uppmätt rygg-/bottentjocklek (mm)"}
-          <input type="number" min="1" step="0.001" value={inputDrafts[`${key}.thickness`] ?? proposed.design[key].measured_thickness_um/1_000}
+          <input type="number" min="1" max="100" step="0.001" value={inputDrafts[`${key}.thickness`] ?? proposed.design[key].measured_thickness_um/1_000}
             onChange={e => withMillimetres(`${key}.thickness`, e.target.value, value => ({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
               measured_thickness_um: value } } }))} /></label>
-        <label>Batch-ID <span>(valfritt)</span><input maxLength={80} value={proposed.design[key].batch_id ?? ""}
-          onChange={e => change({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
-            batch_id: e.target.value || null } } })} /></label>
+        <label>Batch-ID <span>(valfritt)</span><input maxLength={80} value={inputDrafts[`${key}.batch_id`] ?? proposed.design[key].batch_id ?? ""}
+          onChange={e => {
+            const raw = e.target.value;
+            if (raw && !/^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(raw)) {
+              inputError(`${key}.batch_id`, new Error("Batch-ID ska börja med bokstav eller siffra. Använd A–Z, 0–9, punkt, understreck, kolon eller bindestreck; inga blanksteg."), raw);
+              return;
+            }
+            change({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
+              batch_id: raw || null } } }, `${key}.batch_id`);
+          }} /></label>
       </div>)}
       {workspace.design.hardware ? <label>Beslagslayout<select value={proposed.design.hardware?.catalog_id}
         onChange={e => {

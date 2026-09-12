@@ -42,6 +42,62 @@ function show(api: CustombuildApiClient, onClose = vi.fn()) {
 afterEach(() => { vi.restoreAllMocks(); window.sessionStorage.clear(); window.localStorage.clear(); });
 
 describe("beredning från sparad möbel", () => {
+  it("säkerhetskopierar råfält och registreringspinnar utan att tillämpa eller godkänna dem efter omladdning", async () => {
+    const api = setup();
+    const create = vi.spyOn(api, "createVersion");
+    const first = show(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Bind leverantörsdeklarerad verkstadsprofil" }));
+    fireEvent.change(screen.getAllByRole("textbox", { name: "Leverantörens profil-ID (deklarerat)" })[0]!, { target: { value: "batch påbörjad" } });
+    fireEvent.change(screen.getAllByRole("textbox", { name: "Skivbredd (mm)" })[0]!, { target: { value: "12,fel" } });
+    fireEvent.click(screen.getByRole("button", { name: "Lägg till tvåsidig skiva" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Pinne 1, X (mm)" }), { target: { value: "80," } });
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain('"xMm":"80,"'));
+    const raw = window.localStorage.getItem(key)!;
+    expect(JSON.parse(raw).editor_draft).not.toHaveProperty("valid");
+    expect(JSON.parse(raw).context).not.toHaveProperty("stock_profiles");
+    expect(screen.getByRole("button", { name: "Spara och kontrollera" })).toBeDisabled();
+
+    const url = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:raw-preparation");
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Ladda ned beredningsutkast" }));
+    const exported = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(url.mock.calls[0]![0] as Blob);
+    });
+    expect(JSON.parse(exported).editor_draft).toEqual(JSON.parse(raw).editor_draft);
+    first.unmount();
+    show(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Återställ beredningskopian" }));
+    expect((await screen.findAllByRole("textbox", { name: "Leverantörens profil-ID (deklarerat)" }))[0]).toHaveValue("batch påbörjad");
+    expect(screen.getAllByRole("textbox", { name: "Skivbredd (mm)" })[0]).toHaveValue("12,fel");
+    expect(screen.getByRole("textbox", { name: "Pinne 1, X (mm)" })).toHaveValue("80,");
+    expect(await screen.findByRole("button", { name: "Spara och kontrollera" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Kontrollera verkstadsuppgifterna" }));
+    expect(screen.getByRole("button", { name: "Spara och kontrollera" })).toBeDisabled();
+    expect(create).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Godkänn CAM" })).not.toBeInTheDocument();
+  });
+
+  it("skriver inte över en annan fliks kopia vid enbart råfältändringar", async () => {
+    const api = setup();
+    show(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Bind leverantörsdeklarerad verkstadsprofil" }));
+    const input = screen.getAllByRole("textbox", { name: "Leverantörens profil-ID (deklarerat)" })[0]!;
+    fireEvent.change(input, { target: { value: "min första batch" } });
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain("min första batch"));
+    const other = window.localStorage.getItem(key)!.replace("min första batch", "annan fliks batch");
+    window.localStorage.setItem(key, other);
+    fireEvent.change(input, { target: { value: "min fortsatta batch" } });
+    expect(await screen.findByText(/En annan flik har ändrat återställningskopian/)).toBeVisible();
+    expect(window.localStorage.getItem(key)).toBe(other);
+    expect(input).toHaveValue("min fortsatta batch");
+    expect(screen.getByRole("button", { name: "Ladda ned beredningsutkast" })).toBeEnabled();
+  });
+
   it("skickar den faktiska servermodellen och ursprungsrevisionen till befintligt produktionsflöde", async () => {
     const api = setup();
     const create = vi.spyOn(api, "createVersion").mockImplementation(async (_id, _spec, hash, _revision, _template, _retention, bound) => versionFixture({

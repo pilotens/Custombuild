@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { INSTALLATION_ALLOWANCES, installationCarcassDimensions, parseFurniturePercentages } from "@/lib/furniture-dimensions";
+import { INSTALLATION_ALLOWANCES, assertInstallationRemainingSpace, installationCarcassDimensions, parseFurniturePercentages } from "@/lib/furniture-dimensions";
 import type { FurnitureInstallation, FurniturePreview, FurnitureTrimProfile, FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 
@@ -14,14 +14,18 @@ type EditorProps = {
 
 export function InstallationEditor({ workspace, onChange, onError, inputDrafts = {} }: EditorProps) {
   const installation = workspace.design.installation;
-  const apply = (value: FurnitureInstallation | null, field = "installation") => onChange({ ...workspace,
-    design: { ...workspace.design, installation: value } }, field);
+  const apply = (value: FurnitureInstallation | null, field = "installation", raw?: string) => {
+    try {
+      if (value) assertInstallationRemainingSpace(value);
+      onChange({ ...workspace, design: { ...workspace.design, installation: value } }, field);
+    } catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera kundmåtten.", field, raw); }
+  };
   const changeMm = (key: keyof FurnitureInstallation, raw: string, nullable = false) => {
     if (!installation) return;
     try {
       const value = nullable && !raw.trim() ? null : exactMillimetreTextToMicrometres(raw,
         { minimumUm: nullable ? 0 : 1, maximumUm: nullable ? 500_000 : 6_000_000 });
-      apply({ ...installation, [key]: value }, `installation.${key}`);
+      apply({ ...installation, [key]: value }, `installation.${key}`, raw);
     } catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera måttet.", `installation.${key}`, raw); }
   };
   let dimensions: ReturnType<typeof installationCarcassDimensions> = null;

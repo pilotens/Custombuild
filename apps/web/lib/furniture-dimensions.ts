@@ -1,4 +1,4 @@
-import type { FurnitureInstallation } from "./furniture-workspace";
+import type { FurnitureInstallation, FurnitureWorkspace } from "./furniture-workspace";
 
 export const INSTALLATION_ALLOWANCES = [
   ["left_allowance_um", "Vänster"], ["right_allowance_um", "Höger"],
@@ -6,7 +6,32 @@ export const INSTALLATION_ALLOWANCES = [
   ["front_allowance_um", "Framför"], ["rear_allowance_um", "Bakom"],
 ] as const;
 
+/** Match the server invariant even when some allowances are still unknown. */
+export function assertInstallationRemainingSpace(value: FurnitureInstallation): void {
+  for (const [size, first, second] of [
+    [value.width_um, value.left_allowance_um, value.right_allowance_um],
+    [value.height_um, value.top_allowance_um, value.bottom_allowance_um],
+    [value.depth_um, value.front_allowance_um, value.rear_allowance_um],
+  ]) {
+    if ((first ?? 0) + (second ?? 0) >= size!) {
+      throw new Error("Reserverat utrymme måste lämna ett positivt stommått. Kontrollera kundmåttet och båda sidornas frigång.");
+    }
+  }
+}
+
+/** The editor must not put a schema-invalid row load in its recoverable workspace. */
+export function assertFurnitureRowLoad(workspace: FurnitureWorkspace): void {
+  const intent = workspace.design.intent;
+  if (intent.family !== "shelving") return;
+  const perMetre = intent.shelf_load_per_metre_n ?? 0;
+  if (!Number.isSafeInteger(perMetre) || perMetre < 0 || perMetre > 5_000
+    || (intent.shelf_load_basis === "per_metre" && Math.ceil(intent.width_um * perMetre / 1_000_000) > 5_000)) {
+    throw new Error("Den jämnt fördelade lasten för hela hyllraden får vara högst 5000 N. Minska lasten eller bredden.");
+  }
+}
+
 export function installationCarcassDimensions(value: FurnitureInstallation) {
+  assertInstallationRemainingSpace(value);
   if (INSTALLATION_ALLOWANCES.some(([key]) => value[key] === null)) return null;
   const dimensions = {
     width_um: value.width_um - value.left_allowance_um! - value.right_allowance_um!,

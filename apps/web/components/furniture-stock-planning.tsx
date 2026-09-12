@@ -27,6 +27,10 @@ export function FurnitureStockEditor({ workspace, inputDrafts, onChange, onInput
   })).values()];
   const overrides = selection.material_stocks ?? [];
   const setOverrides = (next: FurnitureMaterialStock[], field: string) => {
+    if (next.length > 16) {
+      onInputError(field, new Error("Högst 16 egna råformat kan sparas. Ta bort ett oanvänt råformat och försök igen, eller återställ profilförslaget."), "");
+      return;
+    }
     const result: FurnitureManufacturingSelection = { ...selection, material_stocks: next };
     if (!next.length) delete result.material_stocks;
     onChange(result, field);
