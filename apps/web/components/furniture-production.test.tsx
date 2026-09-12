@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Profiler } from "react";
 import fixture from "./fixtures/furniture-production-preview.json";
 import { ApiError, CustombuildApiClient, type CurrentPrincipal, type DesignVersionRead } from "@/lib/api-client";
 import type { FurnitureProductionPreview } from "@/lib/furniture-workspace";
@@ -314,15 +315,27 @@ describe("Web Locks in furniture production recovery", () => {
     expect(window.localStorage.getItem(key)).toBe(raw);
   });
 
-  it("reports unavailable Web Locks and preserves the recovery for download", async () => {
+  it("handles an unavailable lock action at the first interactive commit without leaving recovery busy", async () => {
     Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
     const api = setup();
     const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
     const raw = "{keep-this-copy";
     window.localStorage.setItem(key, raw);
-    show(api);
-    fireEvent.click(await screen.findByRole("button", { name: "Kasta beredningskopian" }));
+    let clicked = false;
+    // Profiler runs in commit after child layout effects, before passive effects.
+    // This reproduces activation as soon as the initial source exposes its buttons.
+    render(<Profiler id="first-recovery-action" onRender={() => {
+      const discard = Array.from(document.querySelectorAll<HTMLButtonElement>("button"))
+        .find(button => button.textContent === "Kasta beredningskopian");
+      if (!clicked && discard && !discard.disabled) { clicked = true; discard.click(); }
+    }}>
+      <FurnitureProduction api={api} principal={principal} workspace={source.workspace}
+        designHash={source.furniture_design_hash} projectName="Mitt hyllsystem" onClose={vi.fn()} />
+    </Profiler>);
     await screen.findByText(/stöder inte säker samordning/);
+    expect(clicked).toBe(true);
+    expect(screen.getByRole("button", { name: "Kasta beredningskopian" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Återställ beredningskopian" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Ladda ned beredningskopian" })).toBeEnabled();
     expect(window.localStorage.getItem(key)).toBe(raw);
   });

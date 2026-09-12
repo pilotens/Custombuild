@@ -645,6 +645,7 @@ jobs:
           docker compose --file compose.yml ps --all || true
           docker compose --file compose.yml logs --no-color --timestamps > prod-compose-acceptance.log || true
           tail --lines=1000 prod-compose-acceptance.log || true
+          python3 scripts/compose_diagnostics.py --output-directory artifacts/prod-compose-acceptance-diagnostics || true
       - name: Upload prod diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -652,6 +653,7 @@ jobs:
           name: prod-compose-acceptance-diagnostics
           path: |
             prod-compose-acceptance.log
+            artifacts/prod-compose-acceptance-diagnostics
             apps/web/playwright-report
             apps/web/test-results
           if-no-files-found: error

@@ -116,6 +116,16 @@ revisionsbindning, isolering mellan kunder och checksummeverifierade nedladdning
 behövs. UI-flödet ska provas genom riktig API och worker: ändra mått, spara,
 öppna igen, granska, byta profil och läsa ut samma identiteter ur paketet.
 
+Det längre Compose-provet avslöjade att schemaläggningen kunde stanna efter
+cirka 22 minuter medan workrarna fortfarande rapporterade god hälsa. Därför
+övervakas nu den verkliga schemaläggarprocessen. En avslutad process eller en
+för gammal schemaläggningsfil leder till kontrollerad omstart; filkontrollen
+behåller hälsokontrollens gränser.
+CI framtvingar även ett processstopp och kräver återhämtning tillsammans med
+det fullständiga genererings- och nedladdningsflödet. Separata tjänsteloggar och
+omstartsräknare gör återkommande stopp synliga. Den ursprungliga interna
+stopporsaken är ännu inte fastställd; återkommande omstarter ska utredas.
+
 `scripts/live_acceptance.py` rapporterar uttryckligen
 `acceptance_scope=development_design_review`, `executable_cam_exercised=false`
 och `physical_trial_verified=false`. Ett grönt utvecklingstest bevisar därför

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import gc
 import hashlib
+from collections import Counter
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import app.api as api_module
 import app.storage as storage_module
@@ -23,6 +26,8 @@ from app.models import (
     Organization,
     OutboxEvent,
 )
+from celery import Celery
+from celery.beat import ScheduleEntry, Scheduler
 from celery.exceptions import SoftTimeLimitExceeded
 from custombuild_manufacturing import MAX_ARTIFACT_BYTES, MAX_CORE_DOCUMENT_BYTES
 from custombuild_manufacturing.readiness import ReadinessValidationError
@@ -869,14 +874,83 @@ def test_celery_routes_generation_and_maintenance_to_exact_fail_closed_queues() 
     }
     schedules = worker_tasks.celery_app.conf.beat_schedule
     assert schedules["dispatch-transactional-outbox"]["options"] == {
-        "queue": worker_tasks.MAINTENANCE_QUEUE
+        "queue": worker_tasks.MAINTENANCE_QUEUE,
+        "ignore_result": True,
     }
     assert schedules["recover-stale-generation-leases"]["options"] == {
-        "queue": worker_tasks.MAINTENANCE_QUEUE
+        "queue": worker_tasks.MAINTENANCE_QUEUE,
+        "ignore_result": True,
     }
     assert schedules["reap-abandoned-storage"]["options"] == {
-        "queue": worker_tasks.STORAGE_REAPER_QUEUE
+        "queue": worker_tasks.STORAGE_REAPER_QUEUE,
+        "ignore_result": True,
     }
+
+
+def test_periodic_dispatch_from_cold_start_never_opens_result_pubsub_under_gc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Exercise the installed Celery dispatch and AsyncResult finalizers without
+    # a Redis server: any result-backend subscription is an immediate failure.
+    with Celery(
+        "periodic-result-isolation",
+        broker="memory://",
+        backend="redis://localhost:1/0",
+        set_as_current=False,
+    ) as app:
+        app.conf.update(
+            task_queues=worker_tasks.celery_app.conf.task_queues,
+            task_default_queue=worker_tasks.UNROUTED_QUEUE,
+            task_create_missing_queues=False,
+            task_publish_retry=False,
+        )
+        backend = app.backend
+        on_task_call = Mock(side_effect=AssertionError("periodic result subscription"))
+        pubsub = Mock(side_effect=AssertionError("periodic result PubSub"))
+        monkeypatch.setattr(backend, "on_task_call", on_task_call)
+        monkeypatch.setattr(backend.client, "pubsub", pubsub)
+        scheduler = Scheduler(app=app, lazy=True)
+        entries = [
+            ScheduleEntry(name=name, app=app, **schedule)
+            for name, schedule in worker_tasks.celery_app.conf.beat_schedule.items()
+        ]
+        assert len(entries) == 3
+        expected: Counter[tuple[str, str]] = Counter()
+        # Keep results in otherwise unreachable cycles so collection really
+        # executes their finalizers between periodic publications.
+        for iteration in range(300):
+            for entry in entries:
+                result = scheduler.apply_async(entry)
+                assert result.ignored is True
+                cycle: list[Any] = [result]
+                cycle.append(cycle)
+                del cycle, result
+                expected[(entry.options["queue"], entry.task)] += 1
+            if iteration % 50 == 0:
+                gc.collect()
+        gc.collect()
+        on_task_call.assert_not_called()
+        pubsub.assert_not_called()
+        assert backend.result_consumer._pubsub is None
+        assert backend.result_consumer.subscribed_to == set()
+
+        received: Counter[tuple[str, str]] = Counter()
+        with app.connection_for_read() as connection:
+            for queue_name in {queue for queue, _task in expected}:
+                with connection.SimpleQueue(queue_name) as queue:
+                    for _ in range(sum(n for (q, _task), n in expected.items() if q == queue_name)):
+                        message = queue.get(block=False)
+                        assert message.headers["ignore_result"] is True
+                        assert message.payload[:2] == [[], {}]
+                        assert message.delivery_info["routing_key"] == queue_name
+                        received[(queue_name, message.headers["task"])] += 1
+                        message.ack()
+                    assert queue.qsize() == 0
+        assert received == expected
+
+    # The result consumed by the furniture export API must remain available.
+    assert worker_tasks.generate_furniture_review.ignore_result is False
+    assert worker_tasks.generate_package.ignore_result is False
 
 
 def test_soft_time_limit_terminalizes_the_owned_job_without_retry(

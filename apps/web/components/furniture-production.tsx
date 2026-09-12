@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   CustombuildApiClient, designSpecFromServer, normalizePreviewResponse,
   type CurrentPrincipal,
@@ -62,7 +62,9 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
   const formDirty = Boolean(formState && (formState.dirty || !formState.valid));
   const dirty = formDirty || Boolean(data && contextKey(data.spec) !== baseline);
   const recoveryKey = data ? furnitureProductionRecoveryKey(api.baseUrl, principal, data.source) : undefined;
-  useEffect(() => {
+  // Bind the new source session before its recovery buttons can be activated.
+  // A passive effect can abort the old session after an early click starts.
+  useLayoutEffect(() => {
     const controller = new AbortController();
     recoverySession.current = controller;
     return () => controller.abort();

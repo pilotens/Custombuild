@@ -559,12 +559,33 @@ jobs:
               assert started >= completed, (started, completed)
           PY
       - name: Live design-review and blocked CAM/release acceptance
-        run: >-
-          python3 scripts/live_acceptance.py
-          --base-url http://127.0.0.1:8000
-          --run-id "${{ github.run_id }}-${{ github.run_attempt }}"
-          --readiness-timeout 180
-          --job-timeout 900
+        id: live_scheduler_recovery
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/scheduler-recovery"
+          mkdir -p "$evidence"
+          python3 scripts/probe_scheduler_recovery.py begin \
+            --project-name "$COMPOSE_PROJECT_NAME" --compose-file compose.yml \
+            --receipt "$evidence/receipt.json" --allow-fault-injection
+          python3 scripts/live_acceptance.py \
+            --base-url http://127.0.0.1:8000 \
+            --run-id "${{ github.run_id }}-${{ github.run_attempt }}" \
+            --readiness-timeout 180 \
+            --job-timeout 900 \
+            | python3 scripts/probe_scheduler_recovery.py record \
+                --acceptance-log "$evidence/live-job-events.jsonl"
+          python3 scripts/probe_scheduler_recovery.py verify \
+            --receipt "$evidence/receipt.json" \
+            --acceptance-log "$evidence/live-job-events.jsonl" \
+            | tee "$evidence/recovery-result.json"
+      - name: Preserve scheduler recovery evidence
+        if: always() && (steps.live_scheduler_recovery.outcome == 'success' || steps.live_scheduler_recovery.outcome == 'failure')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scheduler-recovery-evidence
+          path: ${{ runner.temp }}/scheduler-recovery
+          if-no-files-found: error
+          retention-days: 14
       - name: Live browser production acceptance
         env:
           PLAYWRIGHT_BASE_URL: http://localhost:3000
@@ -592,6 +613,7 @@ jobs:
           docker compose --file compose.yml ps --all || true
           docker compose --file compose.yml logs --no-color --timestamps > compose-acceptance.log || true
           tail --lines=1000 compose-acceptance.log || true
+          python3 scripts/compose_diagnostics.py --output-directory artifacts/compose-acceptance-diagnostics || true
       - name: Upload Compose diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -599,6 +621,7 @@ jobs:
           name: compose-acceptance-diagnostics
           path: |
             compose-acceptance.log
+            artifacts/compose-acceptance-diagnostics
             apps/web/playwright-report
             apps/web/test-results
           if-no-files-found: ignore

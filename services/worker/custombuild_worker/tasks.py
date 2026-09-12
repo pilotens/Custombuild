@@ -281,21 +281,23 @@ celery_app.conf.update(
         "socket_timeout": 5,
         "retry_on_timeout": False,
     },
+    # Beat never reads maintenance results. Keep every periodic task result-free
+    # so a fresh scheduler never opens Redis result PubSub (including on GC).
     beat_schedule={
         "dispatch-transactional-outbox": {
             "task": "custombuild.dispatch_outbox",
             "schedule": 2.0,
-            "options": {"queue": MAINTENANCE_QUEUE},
+            "options": {"queue": MAINTENANCE_QUEUE, "ignore_result": True},
         },
         "recover-stale-generation-leases": {
             "task": "custombuild.recover_stale_jobs",
             "schedule": GENERATION_RECOVERY_INTERVAL_SECONDS,
-            "options": {"queue": MAINTENANCE_QUEUE},
+            "options": {"queue": MAINTENANCE_QUEUE, "ignore_result": True},
         },
         "reap-abandoned-storage": {
             "task": "custombuild.reap_abandoned_storage",
             "schedule": 60.0,
-            "options": {"queue": STORAGE_REAPER_QUEUE},
+            "options": {"queue": STORAGE_REAPER_QUEUE, "ignore_result": True},
         },
     },
 )

@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Download, FileDown, LoaderCircle, RefreshCw, ShieldAlert } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   CustombuildApiClient,
@@ -2120,7 +2120,9 @@ export function ProductionWorkflow({
     onWorkshopContextDraftStateChange?.(state);
   }, [onWorkshopContextDraftStateChange]);
 
-  useEffect(() => {
+  // Publish the committed draft before input can arrive. A delayed passive
+  // notification could otherwise overwrite a newer field edit in the parent.
+  useLayoutEffect(() => {
     onWorkshopContextDraftStateChange?.(activeWorkshopContextDraftState);
   }, [activeWorkshopContextDraftState, onWorkshopContextDraftStateChange]);
 
