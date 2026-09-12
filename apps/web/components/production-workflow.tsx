@@ -1,7 +1,7 @@
 "use client";
 
 import { Check, Download, FileDown, LoaderCircle, RefreshCw, ShieldAlert } from "lucide-react";
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
   CustombuildApiClient,
@@ -636,8 +636,8 @@ interface CAMSoftwareProvenance {
   };
   implementations: {
     toolpath_schema_version: "custombuild.toolpaths.v1";
-    toolpath_engine_version: "production-toolpaths-1.1.0";
-    cutting_verifier_version: "cutting-program-verifier-1.1.0";
+    toolpath_engine_version: "production-toolpaths-1.2.0";
+    cutting_verifier_version: "cutting-program-verifier-1.2.0";
     cutting_backplot_version: "cutting-backplot-1.1.0";
     postprocessor_id: "linuxcnc-3axis-production";
     postprocessor_version: "1.2.0";
@@ -1134,8 +1134,8 @@ function parseCAMSoftwareProvenance(value: unknown): CAMSoftwareProvenance | und
     || !isRecord(implementations)
     || !hasExactKeys(implementations, CAM_IMPLEMENTATION_VERSION_KEYS)
     || implementations.toolpath_schema_version !== "custombuild.toolpaths.v1"
-    || implementations.toolpath_engine_version !== "production-toolpaths-1.1.0"
-    || implementations.cutting_verifier_version !== "cutting-program-verifier-1.1.0"
+    || implementations.toolpath_engine_version !== "production-toolpaths-1.2.0"
+    || implementations.cutting_verifier_version !== "cutting-program-verifier-1.2.0"
     || implementations.cutting_backplot_version !== "cutting-backplot-1.1.0"
     || implementations.postprocessor_id !== "linuxcnc-3axis-production"
     || implementations.postprocessor_version !== "1.2.0"
@@ -1161,8 +1161,8 @@ function parseCAMSoftwareProvenance(value: unknown): CAMSoftwareProvenance | und
     },
     implementations: {
       toolpath_schema_version: "custombuild.toolpaths.v1",
-      toolpath_engine_version: "production-toolpaths-1.1.0",
-      cutting_verifier_version: "cutting-program-verifier-1.1.0",
+      toolpath_engine_version: "production-toolpaths-1.2.0",
+      cutting_verifier_version: "cutting-program-verifier-1.2.0",
       cutting_backplot_version: "cutting-backplot-1.1.0",
       postprocessor_id: "linuxcnc-3axis-production",
       postprocessor_version: "1.2.0",
@@ -2120,7 +2120,9 @@ export function ProductionWorkflow({
     onWorkshopContextDraftStateChange?.(state);
   }, [onWorkshopContextDraftStateChange]);
 
-  useEffect(() => {
+  // Publish the committed draft before input can arrive. A delayed passive
+  // notification could otherwise overwrite a newer field edit in the parent.
+  useLayoutEffect(() => {
     onWorkshopContextDraftStateChange?.(activeWorkshopContextDraftState);
   }, [activeWorkshopContextDraftState, onWorkshopContextDraftStateChange]);
 

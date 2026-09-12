@@ -4,11 +4,94 @@ import { fileURLToPath } from "node:url";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
 import { newFurnitureWorkspace, type FurnitureFamily } from "../lib/furniture-workspace";
 import { provisionLiveProject, selectProjectBeforeNavigation } from "./live-helpers";
+import { furnitureDraftRecoveryKey, type FurnitureDraftRecovery } from "../lib/furniture-draft-recovery";
 
 async function attachView(page: Page, info: TestInfo, name: string) {
   const path = info.outputPath(`${name}.png`);
   await page.screenshot({ path, fullPage: true });
   await info.attach(name, { path, contentType: "image/png" });
+}
+
+async function verifyConcurrentFurnitureRecovery(
+  page: Page, project: { id: string; name: string }, principal: { organization_id: string; user_id: string },
+) {
+  const second = await page.context().newPage();
+  // Initialize both tabs before any edits: the live setup clears shared storage.
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
+    .filter(key => key.startsWith("custombuild:furniture-recovery:v1:")))).toEqual([]);
+  await selectProjectBeforeNavigation(second, { project, principal });
+  const authenticated = second.waitForResponse(response => response.request().method() === "GET"
+    && new URL(response.url()).pathname.endsWith("/v1/me"));
+  await second.goto("/furniture");
+  const me = await authenticated;
+  expect(me.ok()).toBe(true);
+  // The browser-facing API URL may differ from the runner-facing API URL.
+  const key = furnitureDraftRecoveryKey(me.url().replace(/\/v1\/me$/, ""), principal);
+  const lockName = `custombuild:recovery-write:${key}`;
+  const projects = second.getByRole("combobox", { name: "Öppna möbelprojekt" });
+  await expect(projects.locator(`option[value="${project.id}"]`)).toHaveCount(1);
+  await projects.selectOption(project.id);
+  await expect(second.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  await expect(second.getByLabel("Projektnamn", { exact: true })).toHaveValue(project.name);
+  await expect.poll(() => page.evaluate(async name =>
+    (await navigator.locks.query()).pending?.filter(lock => lock.name === name).length ?? 0, lockName)).toBe(0);
+
+  type LockWindow = Window & { __releaseFurnitureRecoveryLock?: () => void };
+  try {
+    await page.evaluate(async name => {
+      let acquired!: () => void;
+      const ready = new Promise<void>(resolve => { acquired = resolve; });
+      void navigator.locks.request(name, { mode: "exclusive" }, () => new Promise<void>(release => {
+        (window as LockWindow).__releaseFurnitureRecoveryLock = release;
+        acquired();
+      }));
+      await ready;
+    }, lockName);
+    const firstWidth = "1002";
+    const secondWidth = "1003";
+    await page.getByLabel("Bredd (mm)", { exact: true }).fill("1001");
+    await expect.poll(() => page.evaluate(async name =>
+      (await navigator.locks.query()).pending?.filter(lock => lock.name === name).length ?? 0, lockName)).toBe(1);
+    await page.getByLabel("Bredd (mm)", { exact: true }).fill(firstWidth);
+    await second.getByLabel("Bredd (mm)", { exact: true }).fill(secondWidth);
+    // Only current effects remain queued; the superseded first-tab write is cancelled.
+    await expect.poll(() => page.evaluate(async name =>
+      (await navigator.locks.query()).pending?.filter(lock => lock.name === name).length ?? 0, lockName)).toBe(2);
+    expect(await page.evaluate(storageKey => localStorage.getItem(storageKey), key)).toBeNull();
+
+    await page.evaluate(() => (window as LockWindow).__releaseFurnitureRecoveryLock?.());
+    await expect.poll(async () => {
+      const width = await page.evaluate(storageKey => {
+        const raw = localStorage.getItem(storageKey);
+        return raw ? (JSON.parse(raw) as FurnitureDraftRecovery).workspace.design.intent.width_um : 0;
+      }, key);
+      return [1_002_000, 1_003_000].includes(width);
+    }).toBe(true);
+    const raw = (await page.evaluate(storageKey => localStorage.getItem(storageKey), key))!;
+    const saved = JSON.parse(raw) as FurnitureDraftRecovery;
+    const firstWon = saved.workspace.design.intent.width_um === 1_002_000;
+    const loser = firstWon ? second : page;
+    const winner = firstWon ? page : second;
+    const loserWidth = firstWon ? 1_003_000 : 1_002_000;
+    await expect(loser.getByRole("alert").filter({ hasText: "En annan flik" })).toBeVisible();
+    await expect(winner.getByRole("alert").filter({ hasText: "En annan flik" })).toHaveCount(0);
+    await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue(firstWidth);
+    await expect(second.getByLabel("Bredd (mm)", { exact: true })).toHaveValue(secondWidth);
+
+    const downloadEvent = loser.waitForEvent("download");
+    await loser.getByRole("button", { name: "Spara återställningsfil", exact: true }).click();
+    const download = await downloadEvent;
+    expect(await download.failure()).toBeNull();
+    const recovered = JSON.parse(await readFile((await download.path())!, "utf8")) as FurnitureDraftRecovery;
+    expect(recovered.workspace.design.intent.width_um).toBe(loserWidth);
+    expect(await page.evaluate(storageKey => localStorage.getItem(storageKey), key)).toBe(raw);
+  } finally {
+    await page.evaluate(() => {
+      (window as LockWindow).__releaseFurnitureRecoveryLock?.();
+      delete (window as LockWindow).__releaseFurnitureRecoveryLock;
+    });
+    await second.close();
+  }
 }
 
 test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () => {
@@ -49,6 +132,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Listens funktion", { exact: true })).toHaveValue("unassigned");
     await expect(page.getByLabel("Vänster · reserverat (mm)")).toBeEmpty();
     await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
+    await expect(page.getByRole("region", { name: "Inför verkstadsprov" })).toContainText("Designen behöver åtgärdas före provet.");
     await page.getByText("Råformat att stämma av med verkstaden", { exact: true }).click();
     await expect(page.getByRole("table")).toHaveCount(2);
     await page.getByRole("button", { name: "Skapa granskningspaket" }).click();
@@ -68,6 +152,10 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " assert manifest['physical_cutting_authorized'] is False",
       " rows=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
       " assert rows and all(not r['measured'] and not r['result'] for r in rows)",
+      " assembly=list(csv.DictReader(io.StringIO(z.read('inspection/assembly-checks.csv').decode('utf-8-sig'))))",
+      " assert next(r for r in assembly if r['check']=='carcass_width')['expected']=='4340.000'",
+      " assert all(not r['agreed_acceptance_criterion'] and not r['result'] for r in assembly)",
+      " assert 'BLOCKERAR' in z.read('inspection/trial-readiness.md').decode()",
       " print(z.read('manufacturing/workshop-handoff.json').decode())",
     ].join("\n"), (await download.path())!], { encoding: "utf8" }));
     expect(exported.dimensions.installation.width_um).toBe(4_340_000);
@@ -77,6 +165,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       height_um: 90_000, width_um: 20_000, use: "unassigned", walls: [],
     });
     expect(exported.dimensions.state).toBe("requires_resolution");
+    expect(exported.trial_readiness.state).toBe("requires_design_change");
+    expect(exported.trial_readiness.physical_cutting_authorized).toBe(false);
     await attachView(page, info, "customer-bookcase-dimensions");
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -202,6 +292,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
         await attachView(page, info, "shelving-production-mobile");
       }
+      if (family === "table") await verifyConcurrentFurnitureRecovery(page, provisioned.project, provisioned.principal);
       expect(apiFailures).toEqual([]);
     });
   }

@@ -286,6 +286,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/furniture/validate-workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate Workspace
+         * @description Recover editable inputs even when their geometry cannot yet be built.
+         *
+         *     Pydantic checks the complete closed input contract. This does not build,
+         *     save, preview, approve or qualify a design. The ordinary preview/save and
+         *     production routes still require their full geometry and manufacturing gates.
+         */
+        post: operations["validate_workspace_v1_furniture_validate_workspace_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/jobs/{job_id}": {
         parameters: {
             query?: never;
@@ -1243,6 +1267,28 @@ export interface components {
              * @constant
              */
             schema_version: "custombuild.furniture-workspace.v1";
+        };
+        /** FurnitureWorkspaceValidation */
+        FurnitureWorkspaceValidation: {
+            /**
+             * Physical Cutting Authorized
+             * @default false
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /**
+             * Production Qualified
+             * @default false
+             * @constant
+             */
+            production_qualified: false;
+            /**
+             * Validation Scope
+             * @default workspace_structure
+             * @constant
+             */
+            validation_scope: "workspace_structure";
+            workspace: components["schemas"]["FurnitureWorkspace"];
         };
         /** GenerationRequest */
         GenerationRequest: {
@@ -2691,6 +2737,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    validate_workspace_v1_furniture_validate_workspace_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FurnitureWorkspace"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FurnitureWorkspaceValidation"];
                 };
             };
             /** @description Validation Error */

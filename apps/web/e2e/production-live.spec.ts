@@ -1,9 +1,11 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   expect,
   test,
   type APIRequestContext,
   type Page,
   type Request,
+  type Response,
   type TestInfo,
 } from "@playwright/test";
 import {
@@ -137,87 +139,144 @@ const WORKSHOP_REGISTRATIONS = [
   })),
 ] as const;
 
-async function bindStructuredWorkshopContext(page: Page, projectId: string): Promise<void> {
+async function bindStructuredWorkshopContext(
+  page: Page,
+  projectId: string,
+  persistence: { request: APIRequestContext; apiUrl: string; headers: Record<string, string> },
+): Promise<void> {
   const editor = page.getByRole("region", { name: "Råmaterial och tvåsidig registrering" });
-  await editor.getByRole("radio", { name: /Router 5125/ }).check();
-  await editor.getByRole("button", {
-    name: "Bind leverantörsdeklarerad verkstadsprofil",
-  }).click();
-
-  const fillProfile = async (
-    name: "Stomskivor" | "Bakstyckesskivor",
-    values: {
-      profileId: string;
-      profileVersion: string;
-      sheetHeightMm: string;
-      sheetCount: string;
-    },
-  ) => {
-    const profile = editor.getByRole("group", { name });
-    await profile.getByLabel("Leverantörens profil-ID (deklarerat)").fill(values.profileId);
-    await profile.getByLabel("Profilversion eller batch").fill(values.profileVersion);
-    await profile.getByLabel("Skivhöjd (mm)").fill(values.sheetHeightMm);
-    await profile.getByLabel("Antal fysiska skivor").fill(values.sheetCount);
-    await profile.getByLabel("Trimkant (mm)").fill("10");
-    await profile.getByLabel("Kerf/verktygsspalt (mm)").fill("6");
-    await profile.getByLabel("Fiberriktning i råskivan").selectOption("X");
-    await profile.getByLabel("Tillåt 90° rotation vid nesting").selectOption("true");
+  const draftPath = `/v1/projects/${encodeURIComponent(projectId)}/draft`;
+  // Match the complete serialized context, including every profile, sheet and pin.
+  const expectedContext = {
+    stock_width_mm: WORKSHOP_STOCK_PROFILES[0].sheet_width_um / 1_000,
+    stock_height_mm: WORKSHOP_STOCK_PROFILES[0].sheet_height_um / 1_000,
+    stock_count: WORKSHOP_STOCK_PROFILES[0].sheet_count,
+    back_stock_width_mm: WORKSHOP_STOCK_PROFILES[1].sheet_width_um / 1_000,
+    back_stock_height_mm: WORKSHOP_STOCK_PROFILES[1].sheet_height_um / 1_000,
+    back_stock_count: WORKSHOP_STOCK_PROFILES[1].sheet_count,
+    machine_profile_id: WORKSHOP_MACHINE_PROFILE_ID,
+    stock_profiles: WORKSHOP_STOCK_PROFILES,
+    two_sided_registrations: WORKSHOP_REGISTRATIONS,
   };
-  await fillProfile("Stomskivor", {
-    profileId: WORKSHOP_STOCK_PROFILES[0].supplier_profile_id,
-    profileVersion: WORKSHOP_STOCK_PROFILES[0].supplier_profile_version,
-    sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[0].sheet_height_um / 1_000),
-    sheetCount: String(WORKSHOP_STOCK_PROFILES[0].sheet_count),
-  });
-  await fillProfile("Bakstyckesskivor", {
-    profileId: WORKSHOP_STOCK_PROFILES[1].supplier_profile_id,
-    profileVersion: WORKSHOP_STOCK_PROFILES[1].supplier_profile_version,
-    sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[1].sheet_height_um / 1_000),
-    sheetCount: String(WORKSHOP_STOCK_PROFILES[1].sheet_count),
-  });
-
-  const registrationGroup = editor.getByRole("group", {
-    name: "Tvåsidig registrering per fysisk skiva",
-  });
-  for (const [index, registration] of WORKSHOP_REGISTRATIONS.entries()) {
-    await registrationGroup.getByRole("button", { name: "Lägg till tvåsidig skiva" }).click();
-    await registrationGroup.getByLabel("Råmaterialroll").nth(index)
-      .selectOption(registration.stock_role);
-    await registrationGroup.getByLabel("Fysiskt skivnummer").nth(index)
-      .fill(String(registration.sheet_index + 1));
-    await registrationGroup.getByLabel("Fixtur-/registreringsmetod-ID").nth(index)
-      .fill(registration.fixture_method_id);
-    await registrationGroup.getByLabel("Fixturmetodens version").nth(index)
-      .fill(registration.fixture_method_version);
-    await registrationGroup.getByLabel("Registreringspinnens diameter (mm)").nth(index)
-      .fill("10");
-    await registrationGroup.getByLabel("Positionstolerans (mm)").nth(index)
-      .fill("1");
-    await registrationGroup.getByLabel("Pinne 1, X (mm)").nth(index).fill("80");
-    await registrationGroup.getByLabel("Pinne 1, Y (mm)").nth(index).fill("30");
-    await registrationGroup.getByLabel("Pinne 2, X (mm)").nth(index).fill("2360");
-    const persistedContext = index === WORKSHOP_REGISTRATIONS.length - 1
-      ? page.waitForResponse((response) => {
-          if (
-            response.request().method() !== "PUT"
-            || requestPath(response.request()) !== `/v1/projects/${projectId}/draft`
-            || !response.ok()
-          ) return false;
-          const payload = response.request().postDataJSON() as {
-            workspace_spec?: { production_context?: { two_sided_registrations?: unknown[] } };
-          };
-          return payload.workspace_spec?.production_context?.two_sided_registrations?.length
-            === WORKSHOP_REGISTRATIONS.length;
-        }, { timeout: 30_000 })
-      : undefined;
-    await registrationGroup.getByLabel("Pinne 2, Y (mm)").nth(index).fill("30");
-    if (persistedContext) {
-      await Promise.all([
-        persistedContext,
-        expect(editor.getByText("Verkstadsprofilen är komplett och exakt bunden till aktuella designval."))
-          .toBeVisible({ timeout: 30_000 }),
-      ]);
+  const observedSaves: Array<{
+    status: number;
+    ok: boolean;
+    production_context: unknown;
+    parse_error?: string;
+  }> = [];
+  const observeDraftSave = (response: Response) => {
+    if (response.request().method() !== "PUT" || requestPath(response.request()) !== draftPath) return;
+    try {
+      const payload = response.request().postDataJSON() as {
+        workspace_spec?: { production_context?: unknown };
+      } | null;
+      observedSaves.push({
+        status: response.status(),
+        ok: response.ok(),
+        production_context: payload?.workspace_spec?.production_context ?? null,
+      });
+    } catch (error) {
+      observedSaves.push({
+        status: response.status(),
+        ok: response.ok(),
+        production_context: null,
+        parse_error: error instanceof Error ? error.message : String(error),
+      });
     }
+  };
+  // Observe before editing, and start the bounded wait only after the fields are filled.
+  page.on("response", observeDraftSave);
+  try {
+    await editor.getByRole("radio", { name: /Router 5125/ }).check();
+    await editor.getByRole("button", {
+      name: "Bind leverantörsdeklarerad verkstadsprofil",
+    }).click();
+
+    const fillProfile = async (
+      name: "Stomskivor" | "Bakstyckesskivor",
+      values: {
+        profileId: string;
+        profileVersion: string;
+        sheetHeightMm: string;
+        sheetCount: string;
+      },
+    ) => {
+      const profile = editor.getByRole("group", { name });
+      await profile.getByLabel("Leverantörens profil-ID (deklarerat)").fill(values.profileId);
+      await profile.getByLabel("Profilversion eller batch").fill(values.profileVersion);
+      await profile.getByLabel("Skivhöjd (mm)").fill(values.sheetHeightMm);
+      await profile.getByLabel("Antal fysiska skivor").fill(values.sheetCount);
+      await profile.getByLabel("Trimkant (mm)").fill("10");
+      await profile.getByLabel("Kerf/verktygsspalt (mm)").fill("6");
+      await profile.getByLabel("Fiberriktning i råskivan").selectOption("X");
+      await profile.getByLabel("Tillåt 90° rotation vid nesting").selectOption("true");
+    };
+    await fillProfile("Stomskivor", {
+      profileId: WORKSHOP_STOCK_PROFILES[0].supplier_profile_id,
+      profileVersion: WORKSHOP_STOCK_PROFILES[0].supplier_profile_version,
+      sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[0].sheet_height_um / 1_000),
+      sheetCount: String(WORKSHOP_STOCK_PROFILES[0].sheet_count),
+    });
+    await fillProfile("Bakstyckesskivor", {
+      profileId: WORKSHOP_STOCK_PROFILES[1].supplier_profile_id,
+      profileVersion: WORKSHOP_STOCK_PROFILES[1].supplier_profile_version,
+      sheetHeightMm: String(WORKSHOP_STOCK_PROFILES[1].sheet_height_um / 1_000),
+      sheetCount: String(WORKSHOP_STOCK_PROFILES[1].sheet_count),
+    });
+
+    const registrationGroup = editor.getByRole("group", {
+      name: "Tvåsidig registrering per fysisk skiva",
+    });
+    for (const [index, registration] of WORKSHOP_REGISTRATIONS.entries()) {
+      await registrationGroup.getByRole("button", { name: "Lägg till tvåsidig skiva" }).click();
+      await registrationGroup.getByLabel("Råmaterialroll").nth(index)
+        .selectOption(registration.stock_role);
+      await registrationGroup.getByLabel("Fysiskt skivnummer").nth(index)
+        .fill(String(registration.sheet_index + 1));
+      await registrationGroup.getByLabel("Fixtur-/registreringsmetod-ID").nth(index)
+        .fill(registration.fixture_method_id);
+      await registrationGroup.getByLabel("Fixturmetodens version").nth(index)
+        .fill(registration.fixture_method_version);
+      await registrationGroup.getByLabel("Registreringspinnens diameter (mm)").nth(index)
+        .fill("10");
+      await registrationGroup.getByLabel("Positionstolerans (mm)").nth(index)
+        .fill("1");
+      await registrationGroup.getByLabel("Pinne 1, X (mm)").nth(index).fill("80");
+      await registrationGroup.getByLabel("Pinne 1, Y (mm)").nth(index).fill("30");
+      await registrationGroup.getByLabel("Pinne 2, X (mm)").nth(index).fill("2360");
+      await registrationGroup.getByLabel("Pinne 2, Y (mm)").nth(index).fill("30");
+    }
+
+    await expect.poll(
+      () => observedSaves.some((save) => save.ok && isDeepStrictEqual(save.production_context, expectedContext)),
+      { timeout: 30_000, message: "The UI must successfully save the complete workshop context." },
+    ).toBe(true);
+
+    const savedResponse = await persistence.request.get(`${persistence.apiUrl}${draftPath}`, {
+      headers: persistence.headers,
+    });
+    expect(savedResponse.ok(), `Persisted workshop draft returned ${savedResponse.status()}`).toBe(true);
+    const savedDraft = await savedResponse.json() as {
+      workspace_spec_json?: { production_context?: unknown };
+    };
+    expect(savedDraft.workspace_spec_json?.production_context).toEqual(expectedContext);
+    await Promise.all([
+      expect(editor.getByText("Verkstadsprofilen är komplett och exakt bunden till aktuella designval."))
+        .toBeVisible({ timeout: 30_000 }),
+      expect(page.getByRole("button", { name: "Spara och kontrollera", exact: true }))
+        .toBeEnabled({ timeout: 30_000 }),
+    ]);
+  } catch (error) {
+    console.error("production-live: workshop draft responses", JSON.stringify(observedSaves));
+    try {
+      console.error("production-live: workshop editor", await editor.innerText());
+    } catch (diagnosticError) {
+      console.error("production-live: workshop editor unavailable",
+        diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError));
+    }
+    throw error;
+  } finally {
+    page.off("response", observeDraftSave);
   }
 }
 
@@ -464,7 +523,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     .toBeVisible();
   console.log("production-live: manufacturing review visible");
 
-  await bindStructuredWorkshopContext(page, project.project.id);
+  await bindStructuredWorkshopContext(page, project.project.id, { request, apiUrl: apiUrl!, headers: authHeaders });
   console.log("production-live: exact stock and two-sided registration persisted");
 
   const save = page.getByRole("button", {
@@ -599,24 +658,63 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     name: "Ladda ned granskningspaket (.zip)",
     exact: true,
   });
-  await expect(downloadButton).toBeVisible({ timeout: 4 * 60_000 });
+  const jobUrl = `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}`;
+  const jobState: { latest: {
+    status?: unknown;
+    attempts?: unknown;
+    error?: unknown;
+    result_json?: Record<string, unknown> | null;
+  } } = { latest: {} };
+  let previousStatus: unknown;
+  try {
+    // A queued POST is not a completed package. Observe the actual job before
+    // testing its UI, so a worker failure reports its cause without a blind wait.
+    await expect.poll(async () => {
+      const response = await request.get(jobUrl, { headers: authHeaders });
+      expect(response.ok(), `Job GET returned HTTP ${response.status()}`).toBe(true);
+      jobState.latest = await response.json();
+      const { status, attempts, error } = jobState.latest;
+      if (status !== previousStatus) {
+        console.log("production-live: generation job", { status, attempts, error });
+        previousStatus = status;
+      }
+      return ["succeeded", "failed", "cancelled"].includes(String(status));
+    }, { timeout: 4 * 60_000, intervals: [1_000, 2_000] }).toBe(true);
+    expect(jobState.latest.status, JSON.stringify({
+      status: jobState.latest.status,
+      attempts: jobState.latest.attempts,
+      error: jobState.latest.error,
+    })).toBe("succeeded");
+    await expect(downloadButton).toBeVisible({ timeout: 30_000 });
+  } catch (error) {
+    const { status, attempts, error: jobError, result_json: result } = jobState.latest;
+    console.error("production-live: generation failure context", {
+      status, attempts, error: jobError,
+      package_status: result?.design_review_package_status,
+      workshop_readiness: result?.workshop_readiness,
+    });
+    try {
+      const artifacts = await request.get(`${jobUrl}/artifacts`, { headers: authHeaders });
+      console.error("production-live: artifact inventory", {
+        httpStatus: artifacts.status(),
+        artifacts: artifacts.ok()
+          ? (await artifacts.json() as Array<{ kind: string; sha256: string; size_bytes: number }>)
+            .map(({ kind, sha256, size_bytes }) => ({ kind, sha256, size_bytes }))
+          : [],
+      });
+      console.error("production-live: visible workflow", await productionDialog.innerText());
+    } catch (diagnosticError) {
+      console.error("production-live: additional diagnostics unavailable", diagnosticError);
+    }
+    throw error;
+  }
+  const completedJob = jobState.latest;
   const camStatus = productionDialog.getByRole("status", { name: "Status för CAM" });
   await expect(camStatus).toContainText("versionsbunden, checksummeadresserad");
   await expect(camStatus).toContainText("torr självlåsning eller mekanisk retention");
   await expect(camStatus).toContainText(
     "Lim, bärande geometri och granskningsgodkännanden ersätter inte retentionsevidens",
   );
-
-  const completedJobResponse = await request.get(
-    `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}`,
-    { headers: authHeaders },
-  );
-  expect(completedJobResponse.ok()).toBe(true);
-  const completedJob = await completedJobResponse.json() as {
-    status?: unknown;
-    result_json?: Record<string, unknown> | null;
-  };
-  expect(completedJob.status).toBe("succeeded");
   expect(completedJob.result_json).toMatchObject({
     authoritative_geometry: true,
     dfm_status: "WARNING",
@@ -820,7 +918,9 @@ test("retention går genom en verkligt rollseparerad granskningskedja", async ({
   await initialDraftSave;
   const modes = page.getByRole("navigation", { name: "Produktlägen" });
   await modes.getByRole("button", { name: /Underlag/ }).click();
-  await bindStructuredWorkshopContext(page, project.project.id);
+  await bindStructuredWorkshopContext(page, project.project.id, {
+    request, apiUrl: apiUrl!, headers: { Authorization: `Bearer ${designerToken!}` },
+  });
 
   // Reviewer: register the certifier's immutable statement. Uploading alone
   // neither binds retention nor approves the design.

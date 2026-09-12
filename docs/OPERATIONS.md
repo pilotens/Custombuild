@@ -1,5 +1,39 @@
 # Operations
 
+## Scheduler recovery
+
+The singleton scheduler runs Celery beat under `custombuild_worker.scheduler`.
+The supervisor reads the same schedule-file freshness evidence as the container
+health check: a regular `/tmp/celerybeat-schedule*` file must be between zero and
+300 seconds old. It never touches the file to manufacture a heartbeat. After
+the 30-second startup grace, five consecutive failed checks at 30-second
+intervals stop the child process group. Shutdown allows ten seconds for TERM,
+then five seconds for KILL and reaping; the container has a 20-second stop grace.
+The existing `unless-stopped` policy restarts the container after it exits.
+Manual container stops and coordinated backup pauses remain operator controls.
+
+The supervisor starts only one beat child and never restarts a child in place.
+It does not mutate job state, outbox entries, leases or recovery barriers. The
+durable outbox and existing job lease fences still govern dispatch and retries.
+Worker health alone does not prove that scheduled dispatch is progressing.
+
+All three periodic maintenance messages set `ignore_result=True`: beat never
+reads their results, and a fresh beat process therefore opens no Redis result
+PubSub connection. This avoids a reproduced reentrant finalizer deadlock path
+in the installed Celery/Redis dependencies. Generation tasks retain their
+result contract. Apply this change by replacing the scheduler container; a
+previously opened result consumer is not repaired by changing live settings.
+
+Investigate `scheduler_liveness_failed`, `scheduler_stalled`, unexpected child
+exits and increasing container restart counts. Automatic recovery is not proof
+that the underlying fault has disappeared. The long Compose acceptance run
+exposed a scheduling stop without a Celery exception; its internal cause is
+still unresolved. `scripts/compose_diagnostics.py` collects separate scheduler,
+maintenance, generation and storage-reaper logs, selected health/process state,
+restart counts and schedule-file metadata without dumping container environment
+or configuration. CI tests recovery with a deliberately stopped beat child in
+its disposable acceptance stack and then verifies the normal package flow.
+
 ## Backup
 
 Back up PostgreSQL and the S3-compatible artifact bucket together. Encrypt

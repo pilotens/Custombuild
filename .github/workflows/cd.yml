@@ -910,6 +910,7 @@ jobs:
         run: |
           docker compose --file compose.yml ps --all || true
           docker compose --file compose.yml logs --no-color --timestamps > artifacts/cd-runtime.log || true
+          python3 scripts/compose_diagnostics.py --output-directory artifacts/cd-runtime-diagnostics || true
       - name: Upload runtime diagnostics
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -917,6 +918,7 @@ jobs:
           name: release-runtime-diagnostics-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             artifacts/cd-runtime.log
+            artifacts/cd-runtime-diagnostics
             artifacts/release-images/scan-*.json
             artifacts/release-images/registry-*.json
             apps/web/playwright-report

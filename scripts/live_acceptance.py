@@ -2578,6 +2578,10 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
             "release_id": None,
             "manifest_sha256": manifest_sha,
             "cam_status": "BLOCKED",
+            "acceptance_scope": "development_design_review",
+            "executable_cam_exercised": False,
+            "physical_trial_verified": False,
+            "physical_cutting_authorized": False,
         }
 
     cam_approval = mapping(
@@ -2648,6 +2652,10 @@ def run_acceptance(arguments: argparse.Namespace) -> dict[str, object]:
         "job_id": job_id,
         "release_id": release.get("release_id"),
         "manifest_sha256": manifest_sha,
+        "acceptance_scope": "development_design_review",
+        "executable_cam_exercised": False,
+        "physical_trial_verified": False,
+        "physical_cutting_authorized": False,
     }
 
 

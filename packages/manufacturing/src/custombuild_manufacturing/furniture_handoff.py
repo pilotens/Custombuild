@@ -14,7 +14,7 @@ from custombuild_domain.furniture_engine import FurnitureResult
 from .adapters import adapt_design_result
 from .model import FeatureKind
 
-HANDOFF_VERSION = "furniture-workshop-handoff-1.1.0"
+HANDOFF_VERSION = "furniture-workshop-handoff-1.2.0"
 
 
 def furniture_stock_requirements(result: FurnitureResult) -> list[dict[str, Any]]:
@@ -202,4 +202,54 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
                         side=feature.side.value,
                         origin_semantics=semantics,
                     )
+    return output.getvalue().encode("utf-8-sig")
+
+
+def furniture_assembly_checks(result: FurnitureResult) -> bytes:
+    """Whole-assembly targets without invented acceptance limits or measurements."""
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(
+        (
+            "design_hash",
+            "scope",
+            "check",
+            "expected",
+            "unit",
+            "agreed_acceptance_criterion",
+            "measured",
+            "result",
+            "inspector",
+            "notes",
+        )
+    )
+    for dimension in ("width", "height", "depth"):
+        value = getattr(result.spec.intent, f"{dimension}_um")
+        writer.writerow(
+            (
+                result.design_hash,
+                "carcass_excluding_trim_and_installation_allowances",
+                f"carcass_{dimension}",
+                f"{value / 1_000:.3f}",
+                "mm",
+                "",
+                "",
+                "",
+                "",
+                "",
+            )
+        )
+    for check in (
+        "diagonal_difference",
+        "flatness",
+        "joint_fit_and_retention",
+        "assembly_sequence",
+        "transport_and_raising",
+        "anchoring_and_stability",
+        "load_test",
+        "customer_dimensions_and_trim",
+    ):
+        writer.writerow(
+            (result.design_hash, "complete_assembly", check, "", "", "", "", "", "", "")
+        )
     return output.getvalue().encode("utf-8-sig")

@@ -357,6 +357,21 @@ export function createWorkshopContextDraftState(
   }
 }
 
+/** Recovered text is never an applied or approved production declaration. */
+export function restoreWorkshopContextDraftState(
+  spec: DesignSpec, draft: WorkshopContextDraft,
+): WorkshopContextDraftState {
+  return {
+    ...createWorkshopContextDraftState(spec, spec.workshop_context),
+    enabled: true,
+    draft,
+    dirty: true,
+    valid: false,
+    validationMessage: "Formulärutkastet är återställt. Kontrollera uppgifterna innan de tillämpas.",
+    pendingValueSignature: undefined,
+  };
+}
+
 export function WorkshopContextEditor({
   spec,
   value,
@@ -801,6 +816,11 @@ export function WorkshopContextEditor({
             ? <p className={styles.error} role="alert">{validationMessage}</p>
             : <p className={styles.valid} role="status">Verkstadsprofilen är komplett och exakt bunden till aktuella designval.</p>}
           <div className={styles.actions}>
+            {editorState.dirty && editorState.pendingValueSignature === undefined ? (
+              <button type="button" disabled={disabled} onClick={() => applyDraft(draft)}>
+                Kontrollera verkstadsuppgifterna
+              </button>
+            ) : null}
             <button type="button" disabled={disabled} onClick={returnToStockless}>Återgå till lagerobundet paket</button>
           </div>
         </>

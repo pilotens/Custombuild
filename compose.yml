@@ -439,7 +439,9 @@ services:
       context: .
       dockerfile: services/worker/Dockerfile
       args: *python-release-build-args
-    command: ["celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "beat", "--schedule=/tmp/celerybeat-schedule", "--loglevel=WARNING"]
+    command: ["python", "-m", "custombuild_worker.scheduler", "--", "celery", "--workdir", "services/worker", "-A", "custombuild_worker.tasks:celery_app", "beat", "--schedule=/tmp/celerybeat-schedule", "--loglevel=WARNING"]
+    # Let the supervisor finish its bounded TERM/KILL cleanup before Docker kills PID 1.
+    stop_grace_period: 20s
     environment:
       HOME: /tmp/custombuild
       APP_ENV: ${APP_ENV:-development}

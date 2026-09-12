@@ -87,3 +87,5 @@
 .stockPlan details { border: 1px solid #dddcd6; padding: 12px; margin-top: 8px; border-radius: 8px; overflow-wrap: anywhere; }
 .stockPlan summary { cursor: pointer; font-weight: 600; }
 .stockPlan li { margin: 6px 0; }
+
+.editorFrame { border: 0; padding: 0; margin: 0; min-width: 0; }

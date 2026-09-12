@@ -50,6 +50,35 @@ describe("råformat per material", () => {
     expect(changed.mock.lastCall?.[0]).not.toHaveProperty("material_stocks");
   });
 
+  it("bevarar de sexton befintliga råformaten när ett sjuttonde försöks läggas till", () => {
+    const initial = workspace(), changed = vi.fn(), invalid = vi.fn();
+    const originals = Array.from({ length: 16 }, (_, index) => ({ material_id: "birch-plywood",
+      material_version: "screening-2026.1", measured_thickness_um: 17_000 + index,
+      stock_width_um: 1_220_000 + index, stock_height_um: 2_440_000, stock_grain_axis: "y" as const }));
+    initial.manufacturing!.material_stocks = originals;
+    function Harness() {
+      const [value, setValue] = useState(initial);
+      return <FurnitureStockEditor workspace={value} inputDrafts={{}} onInputError={invalid}
+        onChange={manufacturing => { changed(manufacturing); setValue({ ...value, manufacturing }); }} />;
+    }
+    render(<Harness />);
+    const checkbox = screen.getByRole("checkbox", { name: "Eget råformat för birch-plywood · 18 mm" });
+    fireEvent.click(checkbox);
+    expect(changed).not.toHaveBeenCalled();
+    expect(invalid).toHaveBeenCalledWith("manufacturing.material:birch-plywood:screening-2026.1:18000",
+      expect.objectContaining({ message: expect.stringContaining("Högst 16 egna råformat") }), "");
+    expect(checkbox).not.toBeChecked();
+    expect(initial.manufacturing!.material_stocks).toEqual(originals);
+    expect(screen.getAllByRole("button", { name: "Ta bort oanvänt råformat" })).toHaveLength(16);
+    fireEvent.click(screen.getAllByRole("button", { name: "Ta bort oanvänt råformat" })[0]!);
+    fireEvent.click(checkbox);
+    expect(checkbox).toBeChecked();
+    const accepted = changed.mock.lastCall![0].material_stocks;
+    expect(accepted).toHaveLength(16);
+    expect(accepted.slice(0, 15)).toEqual(originals.slice(1));
+    expect(accepted[15]).toMatchObject({ measured_thickness_um: 18_000 });
+  });
+
   it("visar exakta formatbrister, maskinområde och okänd fiberriktning", () => {
     render(<FurnitureStockPlan manufacturing={{ state: "requires_change", geometry_compatible: false, issues: [],
       stock_groups: [{ material_id: "birch-plywood", material_version: "screening-2026.1", measured_thickness_um: 18_000,

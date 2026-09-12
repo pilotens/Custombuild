@@ -12,6 +12,7 @@ from custombuild_rules.furniture import evaluate_furniture
 
 from .furniture_handoff import furniture_workshop_handoff
 from .furniture_stock_planning import plan_furniture_stock
+from .furniture_trial import furniture_trial_readiness
 from .model import canonical_data
 from .profiles import linuxcnc_reference_router_1325, linuxcnc_reference_router_5125
 
@@ -86,14 +87,18 @@ def _dependencies(
 def preview_furniture(workspace: FurnitureWorkspace) -> dict[str, Any]:
     result = build_furniture(workspace.design)
     manufacturing = _manufacturing(workspace, result)
+    rules = evaluate_furniture(result)
+    handoff = {**furniture_workshop_handoff(result), "stock_plan": manufacturing}
+    trial_readiness = furniture_trial_readiness(workspace, result, rules, manufacturing, handoff)
     return {
         "schema_version": "custombuild.furniture-preview.v1",
         "workspace": workspace.model_dump(mode="json"),
         "design": result.model_dump(mode="json"),
         "dependencies": _dependencies(workspace, result, manufacturing),
-        "rules": evaluate_furniture(result),
+        "rules": rules,
         "manufacturing": manufacturing,
-        "workshop_handoff": {**furniture_workshop_handoff(result), "stock_plan": manufacturing},
+        "workshop_handoff": {**handoff, "trial_readiness": trial_readiness},
+        "trial_readiness": trial_readiness,
         "production_qualified": False,
         "physical_cutting_authorized": False,
     }

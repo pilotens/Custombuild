@@ -33,6 +33,7 @@ import {
   beginOidcLogin,
   clearOidcSession,
   completeOidcCallback,
+  consumeOidcReturnPath,
   oidcConfigured,
 } from "@/lib/auth-client";
 import {
@@ -540,6 +541,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         if (api.authenticated) {
           const current = await api.getCurrentPrincipal();
           if (!cancelled) {
+            const returnPath = consumeOidcReturnPath();
+            if (returnPath !== "/") { window.location.replace(returnPath); return; }
             setPrincipal(current);
             setApiState("syncing");
             setAuthError(undefined);

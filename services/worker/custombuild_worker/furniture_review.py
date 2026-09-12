@@ -13,8 +13,12 @@ from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWork
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
 from custombuild_manufacturing.exporters import bom_csv, cut_list_csv, dxf_for_part, svg_for_part
-from custombuild_manufacturing.furniture_handoff import furniture_first_article_checks
+from custombuild_manufacturing.furniture_handoff import (
+    furniture_assembly_checks,
+    furniture_first_article_checks,
+)
 from custombuild_manufacturing.furniture_profiles import preview_furniture
+from custombuild_manufacturing.furniture_trial import furniture_trial_markdown
 from custombuild_manufacturing.model import Side
 
 from .part_drawings import part_drawings_pdf
@@ -46,6 +50,8 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "validation/review.json": _json(preview),
         "manufacturing/workshop-handoff.json": _json(preview["workshop_handoff"]),
         "inspection/first-article-checks.csv": furniture_first_article_checks(result),
+        "inspection/assembly-checks.csv": furniture_assembly_checks(result),
+        "inspection/trial-readiness.md": furniture_trial_markdown(preview["trial_readiness"]),
         "documents/part-drawings.pdf": part_drawings_pdf(
             result,
             qualification_note=(
@@ -88,6 +94,12 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "inspection/first-article-checks.csv anger CAD-delarnas kontrollmått och\n"
         "modellens featuretoleranser. Verkstaden fastställer avtalade toleranser och\n"
         "fyller i mätning och granskare. Tomma resultat är inte godkända mätningar.\n"
+        "inspection/assembly-checks.csv kompletterar med stommens yttermått, diagonaler,\n"
+        "planhet, fogar, montering, transport, förankring och avtalat belastningsprov.\n"
+        "Stommåtten inkluderar inte list eller montageutrymme. Acceptansgränser ska\n"
+        "fastställas före provet; mätresultat och godkännanden är avsiktligt tomma.\n"
+        "inspection/trial-readiness.md visar samma revisionsbundna beredningsrapport\n"
+        "som validation/review.json. Rapporten godkänner ingen fysisk skärning.\n"
     ).encode()
     manifest = {
         "schema_version": "custombuild.furniture-review.v1",

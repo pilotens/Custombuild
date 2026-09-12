@@ -60,7 +60,7 @@ from .production_model import (
 from .validation import validate_operations_document
 
 CUTTING_PROGRAM_REPORT_SCHEMA_VERSION = "custombuild.cutting-program-report.v1"
-CUTTING_PROGRAM_VERIFIER_VERSION = "cutting-program-verifier-1.1.0"
+CUTTING_PROGRAM_VERIFIER_VERSION = "cutting-program-verifier-1.2.0"
 CUTTING_BACKPLOT_VERSION = "cutting-backplot-1.1.0"
 _ARC_RADIAL_TOLERANCE_UM = 4
 _MAX_CORNER_CHORD_PPM = 196_000
@@ -3127,6 +3127,22 @@ def _independent_dogbone_centres(operation: CAMOperation) -> frozenset[tuple[int
     return frozenset(values)
 
 
+def _interval_covered_by_cut_sweeps(
+    start: int,
+    end: int,
+    spans: list[tuple[int, int]],
+) -> bool:
+    """Prove continuous coverage from actual segment intervals, without sampling."""
+    reached = start
+    for lower, upper in sorted(spans):
+        if lower > reached:
+            return False
+        reached = max(reached, upper)
+        if reached >= end:
+            return True
+    return False
+
+
 def _validate_area_coverage(
     program: ProductionProgram,
     operation: CAMOperation,
@@ -3148,7 +3164,13 @@ def _validate_area_coverage(
     )
     previous_by_sequence = {move.sequence + 1: move for move in moves}
     for pass_index, level in enumerate(expected_levels, start=1):
-        lanes: set[int] = set()
+        raster_spans: dict[int, list[tuple[int, int]]] = {}
+        boundaries: dict[str, list[tuple[int, int]]] = {
+            "left": [],
+            "right": [],
+            "bottom": [],
+            "top": [],
+        }
         for move in moves:
             previous = previous_by_sequence.get(move.sequence)
             if (
@@ -3161,26 +3183,28 @@ def _validate_area_coverage(
                 or previous.z_um != level
             ):
                 continue
-            if (
-                horizontal
-                and move.y_um == previous.y_um
-                and {
-                    move.x_um,
-                    previous.x_um,
-                }
-                == {x_min, x_max}
-            ):
-                lanes.add(move.y_um)
-            if (
-                not horizontal
-                and move.x_um == previous.x_um
-                and {
-                    move.y_um,
-                    previous.y_um,
-                }
-                == {y_min, y_max}
-            ):
-                lanes.add(move.x_um)
+            if move.y_um == previous.y_um:
+                span = (min(move.x_um, previous.x_um), max(move.x_um, previous.x_um))
+                if horizontal:
+                    raster_spans.setdefault(move.y_um, []).append(span)
+                if move.y_um == y_min:
+                    boundaries["bottom"].append(span)
+                if move.y_um == y_max:
+                    boundaries["top"].append(span)
+            if move.x_um == previous.x_um:
+                span = (min(move.y_um, previous.y_um), max(move.y_um, previous.y_um))
+                if not horizontal:
+                    raster_spans.setdefault(move.x_um, []).append(span)
+                if move.x_um == x_min:
+                    boundaries["left"].append(span)
+                if move.x_um == x_max:
+                    boundaries["right"].append(span)
+        span_min, span_max = (x_min, x_max) if horizontal else (y_min, y_max)
+        lanes = {
+            lane
+            for lane, spans in raster_spans.items()
+            if _interval_covered_by_cut_sweeps(span_min, span_max, spans)
+        }
         expected_min, expected_max = (y_min, y_max) if horizontal else (x_min, x_max)
         ordered = sorted(lanes)
         if (
@@ -3198,6 +3222,15 @@ def _validate_area_coverage(
                 program=program,
                 operation_id=operation.operation_id,
             )
+        for boundary, spans in boundaries.items():
+            start, end = (y_min, y_max) if boundary in {"left", "right"} else (x_min, x_max)
+            if not _interval_covered_by_cut_sweeps(start, end, spans):
+                issues.add(
+                    "MATERIAL_REMOVAL_BOUNDARY_GAP",
+                    f"{boundary} wall lacks continuous cutting coverage at depth pass {pass_index}",
+                    program=program,
+                    operation_id=operation.operation_id,
+                )
         expected_reliefs = _independent_dogbone_centres(operation)
         relief_cycles_valid = True
         for centre in expected_reliefs:

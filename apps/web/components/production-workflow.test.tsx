@@ -1,4 +1,6 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { Profiler, useCallback, useState } from "react";
+import { createWorkshopContextDraftState, type WorkshopContextDraftState } from "./workshop-context-editor";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -718,8 +720,8 @@ function cuttingCandidateFixture(): {
         },
         implementations: {
           toolpath_schema_version: "custombuild.toolpaths.v1",
-          toolpath_engine_version: "production-toolpaths-1.1.0",
-          cutting_verifier_version: "cutting-program-verifier-1.1.0",
+          toolpath_engine_version: "production-toolpaths-1.2.0",
+          cutting_verifier_version: "cutting-program-verifier-1.2.0",
           cutting_backplot_version: "cutting-backplot-1.1.0",
           postprocessor_id: "linuxcnc-3axis-production",
           postprocessor_version: "1.2.0",
@@ -2481,6 +2483,68 @@ describe("ProductionWorkflow", () => {
     expect(screen.getByText(/osparade eller ofullständiga uppgifter/i)).toBeVisible();
     fireEvent.click(generate);
     expect(api.generateVersion).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { initialSheet: "", nextSheet: "2", valid: true },
+    { initialSheet: "2", nextSheet: "", valid: false },
+  ])("retains an early registration edit to '$nextSheet' before draft notification", async ({
+    initialSheet, nextSheet, valid,
+  }) => {
+    const spec = structuredWorkshopSpec();
+    const initial = createWorkshopContextDraftState(spec, spec.workshop_context);
+    initial.draft.registrations.push({
+      stockRole: "back", sheetIndex: initialSheet,
+      fixtureMethodId: "playwright-pin-fixture", fixtureMethodVersion: "v1.0",
+      pinDiameterMm: "10", positionToleranceMm: "1",
+      pins: [{ xMm: "80", yMm: "30" }, { xMm: "2360", yMm: "30" }],
+    });
+    initial.dirty = true;
+    initial.valid = initialSheet !== "";
+    const api = apiClient();
+    const applyContext = vi.fn();
+    const onSummaryChange = vi.fn();
+    let retainedDraft = initial;
+    let editAtCommit = true;
+    function ControlledWorkflow() {
+      const [draft, setDraft] = useState(initial);
+      const retainDraft = useCallback((next: WorkshopContextDraftState) => {
+        retainedDraft = next;
+        setDraft(next);
+      }, []);
+      return <Profiler id="workflow" onRender={() => {
+        if (!editAtCommit) return;
+        const input = screen.queryAllByRole("textbox", { name: "Fysiskt skivnummer" }).at(-1);
+        if (!input || (input as HTMLInputElement).disabled) return;
+        editAtCommit = false;
+        // The ancestor Profiler runs after child layout effects and before passive
+        // effects: the field is usable, but an older notification may still be pending.
+        const nativeValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+        nativeValue.call(input, nextSheet);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      }}><ProductionWorkflow apiClient={api} spec={spec} design={designWith([], "PASS")}
+        onApplyWorkshopContextChange={applyContext} onSummaryChange={onSummaryChange}
+        principal={designerPrincipal} workshopContextDraftState={draft}
+        onWorkshopContextDraftStateChange={retainDraft} /></Profiler>;
+    }
+    await act(async () => { render(<ControlledWorkflow />); });
+    await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
+    expect(editAtCommit).toBe(false);
+    expect(screen.getAllByRole("textbox", { name: "Fysiskt skivnummer" }).at(-1)).toHaveValue(nextSheet);
+    expect(retainedDraft.draft.registrations.at(-1)?.sheetIndex).toBe(nextSheet);
+    expect(retainedDraft).toMatchObject({ dirty: true, valid });
+    if (valid) {
+      expect(applyContext).toHaveBeenCalledOnce();
+      expect(applyContext.mock.calls[0]![0].workshop_context.two_sided_registrations.at(-1)).toEqual({
+        stock_role: "back", sheet_index: 1, declaration_authority: "CLIENT_DECLARED", flip_axis: "X",
+        fixture_method_id: "playwright-pin-fixture", fixture_method_version: "v1.0",
+        pin_diameter_um: 10_000, position_tolerance_um: 1_000,
+        pins: [{ x_um: 80_000, y_um: 30_000 }, { x_um: 2_360_000, y_um: 30_000 }],
+      });
+    } else {
+      expect(applyContext).not.toHaveBeenCalled();
+      expect(screen.getByText("Skivnummer måste vara ett heltal.")).toBeVisible();
+    }
   });
 
   it("blocks revision save while a new workshop binding is only partially filled", async () => {

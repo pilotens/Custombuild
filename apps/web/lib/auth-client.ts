@@ -2,6 +2,7 @@ import type { PublicRuntimeConfig } from "./runtime-config";
 
 const ACCESS_TOKEN_KEY = "custombuild:oidc:access-token";
 const PKCE_STATE_KEY = "custombuild:oidc:state";
+const RETURN_PATH_KEY = "custombuild:oidc:return-path";
 const PKCE_VERIFIER_KEY = "custombuild:oidc:verifier";
 
 interface StoredToken {
@@ -151,12 +152,20 @@ export function getStoredAccessToken(): string | undefined {
   }
 }
 
-export async function beginOidcLogin(config: PublicRuntimeConfig): Promise<void> {
+export function consumeOidcReturnPath(): "/" | "/furniture" {
+  const path = window.sessionStorage.getItem(RETURN_PATH_KEY);
+  window.sessionStorage.removeItem(RETURN_PATH_KEY);
+  return path === "/furniture" ? path : "/";
+}
+
+export async function beginOidcLogin(config: PublicRuntimeConfig, returnPath: "/" | "/furniture" = "/"): Promise<void> {
+  if (returnPath !== "/" && returnPath !== "/furniture") throw new Error("Ogiltig sida efter inloggning.");
   const clientId = configuredClientId(config);
   if (!clientId) throw new Error("OIDC client-id är inte konfigurerat.");
   const discoveryConfig = await discovery(config);
   const state = randomBase64Url();
   const verifier = randomBase64Url(48);
+  window.sessionStorage.setItem(RETURN_PATH_KEY, returnPath);
   window.sessionStorage.setItem(PKCE_STATE_KEY, state);
   window.sessionStorage.setItem(PKCE_VERIFIER_KEY, verifier);
   const authorization = new URL(discoveryConfig.authorization_endpoint);
@@ -217,6 +226,7 @@ export async function completeOidcCallback(config: PublicRuntimeConfig): Promise
 
 export function clearOidcSession(): void {
   if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(RETURN_PATH_KEY);
   window.sessionStorage.removeItem(ACCESS_TOKEN_KEY);
   window.sessionStorage.removeItem(PKCE_STATE_KEY);
   window.sessionStorage.removeItem(PKCE_VERIFIER_KEY);

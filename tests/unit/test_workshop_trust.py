@@ -1452,6 +1452,47 @@ def test_reference_program_must_be_a_member_of_the_executable_program_set() -> N
         _verify(run, _registry(keys), _signed_chain(statements, keys), policy=policy)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("wcs_id", "G55", "program WCS is outside the verified setup"),
+        ("stock_id", "unmeasured-sheet", "program stock is outside the verified setup"),
+        ("setup_id", "setup-02", "one verified setup cannot cover multiple program setups"),
+    ),
+)
+def test_signed_program_inventory_cannot_extend_the_verified_setup(
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    # Rebind both server-owned inputs and sign all three stages again. Hash,
+    # signature and reference-part membership checks therefore remain valid;
+    # only the production program exceeds the actual setup evidence.
+    run = _run()
+    policy = _policy()
+    programs = deepcopy(run["machine_programs"])
+    programs[0][field] = value
+    programs.sort(
+        key=lambda item: (
+            item["setup_id"],
+            item["wcs_id"],
+            item["program_id"],
+            item["relative_path"],
+        )
+    )
+    program_set_sha256 = workshop_machine_program_set_sha256(programs)
+    run["machine_programs"] = policy["machine_programs"] = programs
+    run["machine_program_set_sha256"] = policy["machine_program_set_sha256"] = program_set_sha256
+    run["workshop_policy_sha256"] = workshop_policy_sha256(
+        WorkshopVerificationPolicy.model_validate(policy)
+    )
+    keys = _keys()
+    statements = _statements(run)
+
+    with pytest.raises(WorkshopTrustError, match=message):
+        _verify(run, _registry(keys), _signed_chain(statements, keys), policy=policy)
+
+
 def test_program_set_digest_binds_logical_path_purpose_and_multiplicity() -> None:
     programs = deepcopy(_run()["machine_programs"])
     original = workshop_machine_program_set_sha256(programs)

@@ -59,6 +59,47 @@ def test_families_are_available_and_preview_requires_a_valid_session(client):
         assert not response.json()["physical_cutting_authorized"]
 
 
+def test_structure_validation_recovers_unbuildable_inputs_without_saving_or_qualifying(client):
+    project, saved = save(client)
+    edited = saved["workspace"]
+    edited["design"]["intent"]["width_um"] = 20_000
+    endpoint = "/v1/furniture/validate-workspace"
+    assert client.post(endpoint, json=edited).status_code == 401
+    response = client.post(endpoint, headers=HEADERS, json=edited)
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "workspace": edited,
+        "validation_scope": "workspace_structure",
+        "production_qualified": False,
+        "physical_cutting_authorized": False,
+    }
+    # Structural recovery leaves the invalid geometry editable. It cannot
+    # turn a too-small table into a preview or a committed design revision.
+    assert client.post("/v1/furniture/preview", headers=HEADERS, json=edited).status_code == 422
+    path = f"/v1/furniture/projects/{project['id']}/draft"
+    rejected = client.put(
+        path, headers=HEADERS,
+        json={"expected_revision": saved["revision"], "workspace": edited},
+    )
+    assert rejected.status_code == 422, rejected.text
+    unchanged = client.get(path, headers=HEADERS).json()
+    assert unchanged["revision"] == saved["revision"]
+    assert unchanged["workspace"]["design"]["intent"]["width_um"] == 1_000_000
+
+
+@pytest.mark.parametrize("invalid", ["unknown_field", "fractional_length", "missing_components"])
+def test_structure_validation_still_rejects_malformed_inputs(client, invalid):
+    document = workspace("table").model_dump(mode="json")
+    if invalid == "unknown_field":
+        document["physical_cutting_authorized"] = True
+    elif invalid == "fractional_length":
+        document["design"]["intent"]["width_um"] = 1_000_000.5
+    else:
+        document["design"]["hardware"] = None
+    response = client.post("/v1/furniture/validate-workspace", headers=HEADERS, json=document)
+    assert response.status_code == 422, response.text
+
+
 def test_customer_measurements_survive_save_reload_history_and_cannot_skip_dimension_resolution(
     client,
 ):
@@ -488,6 +529,21 @@ def test_real_family_review_exports_match_parts_and_contain_no_machine_programs(
         assert {r["part_id"] for r in measurements} == {p["part_id"] for p in resolved["parts"]}
         assert all(r["design_hash"] == resolved["design_hash"] for r in measurements)
         assert all(not r["measured"] and not r["result"] for r in measurements)
+        assembly = list(
+            csv.DictReader(
+                io.StringIO(archive.read("inspection/assembly-checks.csv").decode("utf-8-sig"))
+            )
+        )
+        assert {row["design_hash"] for row in assembly} == {resolved["design_hash"]}
+        assert all(
+            not row[key]
+            for row in assembly
+            for key in ("agreed_acceptance_criterion", "measured", "result", "inspector")
+        )
+        trial = handoff["trial_readiness"]
+        assert trial == json.loads(archive.read("validation/review.json"))["trial_readiness"]
+        assert trial["physical_cutting_authorized"] is False
+        assert trial["report_sha256"] in archive.read("inspection/trial-readiness.md").decode()
         assert handoff["design_hash"] == resolved["design_hash"]
         assert sum(group["part_count"] for group in handoff["stock_requirements"]) == len(
             resolved["parts"]
@@ -510,6 +566,11 @@ def test_real_family_review_exports_match_parts_and_contain_no_machine_programs(
             assert handoff["dimensions"]["installation"]["trim_profile"]["height_um"] == 90_000
             assert handoff["dimensions"]["installation"]["trim_profile"]["width_um"] == 20_000
             assert handoff["dimensions"]["state"] == "requires_resolution"
+            assert (
+                next(row for row in assembly if row["check"] == "carcass_width")["expected"]
+                == "4340.000"
+            )
+            assert b"BLOCKERAR" in archive.read("inspection/trial-readiness.md")
         assert not manifest["physical_cutting_authorized"]
         assert not any(n.endswith((".ngc", ".nc", ".gcode")) for n in names)
         assert archive.read("design/model.step").startswith(b"ISO-10303-21;")
