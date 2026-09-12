@@ -125,6 +125,7 @@ export interface FurniturePreview {
   };
   physical_cutting_authorized: false;
   production_qualified: false;
+  trial_readiness?: FurnitureTrialReadiness;
   workshop_handoff?: {
     stock_plan?: FurniturePreview["manufacturing"];
     shelf_load?: { basis: "per_row" | "per_metre"; total_row_load_n: number;
@@ -145,6 +146,21 @@ export interface FurniturePreview {
         grain_direction: string; along_grain_um: number | null; across_grain_um: number | null }[];
     }[];
   };
+}
+export interface FurnitureTrialReadiness {
+  schema_version: "custombuild.furniture-trial-readiness.v1";
+  scope: "design_review_preparation";
+  design_hash: string;
+  workspace_sha256: string;
+  report_sha256: string;
+  state: "requires_design_change" | "requires_workshop_evidence";
+  blocker_count: number;
+  evidence_required_count: number;
+  next_action: string;
+  checks: { code: string; title: string; state: "checked" | "blocked" | "requires_evidence";
+    detail: string; action: string }[];
+  production_qualified: false;
+  physical_cutting_authorized: false;
 }
 export interface FurnitureProfileComparison {
   state: string;

@@ -49,6 +49,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Listens funktion", { exact: true })).toHaveValue("unassigned");
     await expect(page.getByLabel("Vänster · reserverat (mm)")).toBeEmpty();
     await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
+    await expect(page.getByRole("region", { name: "Inför verkstadsprov" })).toContainText("Designen behöver åtgärdas före provet.");
     await page.getByText("Råformat att stämma av med verkstaden", { exact: true }).click();
     await expect(page.getByRole("table")).toHaveCount(2);
     await page.getByRole("button", { name: "Skapa granskningspaket" }).click();
@@ -68,6 +69,10 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " assert manifest['physical_cutting_authorized'] is False",
       " rows=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
       " assert rows and all(not r['measured'] and not r['result'] for r in rows)",
+      " assembly=list(csv.DictReader(io.StringIO(z.read('inspection/assembly-checks.csv').decode('utf-8-sig'))))",
+      " assert next(r for r in assembly if r['check']=='width')['expected']=='4340.000'",
+      " assert all(not r['agreed_acceptance_criterion'] and not r['result'] for r in assembly)",
+      " assert 'BLOCKERAR' in z.read('inspection/trial-readiness.md').decode()",
       " print(z.read('manufacturing/workshop-handoff.json').decode())",
     ].join("\n"), (await download.path())!], { encoding: "utf8" }));
     expect(exported.dimensions.installation.width_um).toBe(4_340_000);
@@ -77,6 +82,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       height_um: 90_000, width_um: 20_000, use: "unassigned", walls: [],
     });
     expect(exported.dimensions.state).toBe("requires_resolution");
+    expect(exported.trial_readiness.state).toBe("requires_design_change");
+    expect(exported.trial_readiness.physical_cutting_authorized).toBe(false);
     await attachView(page, info, "customer-bookcase-dimensions");
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

@@ -9,6 +9,7 @@ from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
 from custombuild_manufacturing.furniture_handoff import (
+    furniture_assembly_checks,
     furniture_first_article_checks,
     furniture_workshop_handoff,
 )
@@ -153,3 +154,30 @@ def test_handoff_distinguishes_external_row_payload_from_shelf_self_weight():
         "load_per_metre_n": 300,
         "width_um": 4_340_000,
     }
+
+
+def test_assembly_worksheet_preserves_exact_dimensions_and_leaves_acceptance_unagreed():
+    result = build_furniture(workspace("shelving", width_um=4_340_007).design)
+    raw = furniture_assembly_checks(result)
+    assert raw.startswith(b"\xef\xbb\xbf")
+    rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    indexed = {row["check"]: row for row in rows}
+    assert indexed["carcass_width"]["expected"] == "4340.007"
+    assert indexed["carcass_width"]["scope"] == "carcass_excluding_trim_and_installation_allowances"
+    assert {row["design_hash"] for row in rows} == {result.design_hash}
+    assert all(
+        not row[key]
+        for row in rows
+        for key in ("agreed_acceptance_criterion", "measured", "result", "inspector", "notes")
+    )
+    assert {
+        "diagonal_difference",
+        "flatness",
+        "joint_fit_and_retention",
+        "assembly_sequence",
+        "transport_and_raising",
+        "anchoring_and_stability",
+        "load_test",
+        "customer_dimensions_and_trim",
+    } <= indexed.keys()
+    assert all(not row["expected"] for row in rows if row["scope"] == "complete_assembly")

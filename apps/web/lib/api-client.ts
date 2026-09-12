@@ -1703,6 +1703,17 @@ export class CustombuildApiClient {
     }));
   }
 
+  async validateFurnitureWorkspace(workspace: FurnitureWorkspace): Promise<{
+    workspace: FurnitureWorkspace;
+    validation_scope: "workspace_structure";
+    production_qualified: false;
+    physical_cutting_authorized: false;
+  }> {
+    return this.request("/v1/furniture/validate-workspace", {
+      method: "POST", body: JSON.stringify(workspace),
+    });
+  }
+
   async compareFurnitureProfiles(current: FurnitureWorkspace, proposed: FurnitureWorkspace): Promise<FurnitureProfileComparison> {
     const result = await this.request<FurnitureProfileComparison>("/v1/furniture/profile-change", {
       method: "POST", body: JSON.stringify({ current, proposed }),

@@ -1,8 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fixture from "./fixtures/furniture-production-preview.json";
 import { ApiError, CustombuildApiClient, type CurrentPrincipal, type DesignVersionRead } from "@/lib/api-client";
 import type { FurnitureProductionPreview } from "@/lib/furniture-workspace";
+import { furnitureProductionRecovery, furnitureProductionRecoveryKey } from "@/lib/furniture-production-recovery";
+import { DEFAULT_DESIGN_SPEC } from "@/lib/design-types";
 import { FurnitureProduction } from "./furniture-production";
 
 const preview = fixture as unknown as FurnitureProductionPreview;
@@ -34,10 +36,10 @@ function setup() {
   return api;
 }
 function show(api: CustombuildApiClient, onClose = vi.fn()) {
-  render(<FurnitureProduction api={api} principal={principal} workspace={source.workspace}
+  return render(<FurnitureProduction api={api} principal={principal} workspace={source.workspace}
     designHash={source.furniture_design_hash} projectName="Mitt hyllsystem" onClose={onClose} />);
 }
-afterEach(() => { vi.restoreAllMocks(); window.sessionStorage.clear(); });
+afterEach(() => { vi.restoreAllMocks(); window.sessionStorage.clear(); window.localStorage.clear(); });
 
 describe("beredning från sparad möbel", () => {
   it("skickar den faktiska servermodellen och ursprungsrevisionen till befintligt produktionsflöde", async () => {
@@ -115,5 +117,123 @@ describe("beredning från sparad möbel", () => {
     show(api);
     expect(await screen.findByText(/Modellen har ändrats\. Spara/)).toBeVisible();
     expect(screen.getByRole("button", { name: "Spara och kontrollera" })).toBeVisible();
+  });
+
+  it("återställer tillämpade verkstadsuppgifter efter omladdning först när källan kontrollerats på nytt", async () => {
+    const api = setup();
+    const first = show(api);
+    fireEvent.click(await screen.findByRole("radio", { name: /5125/ }));
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain("custombuild-router-5125-linuxcnc"));
+    const raw = window.localStorage.getItem(key)!;
+    expect(JSON.parse(raw)).not.toHaveProperty("approvals");
+    first.unmount();
+    show(api);
+    expect(await screen.findByRole("region", { name: "Lokal beredningskopia" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Spara och kontrollera" })).not.toBeInTheDocument();
+    vi.mocked(api.previewFurnitureProduction).mockRejectedValueOnce(new ApiError("Tillfälligt offline", 503));
+    fireEvent.click(screen.getByRole("button", { name: "Återställ beredningskopian" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Tillfälligt offline");
+    expect(window.localStorage.getItem(key)).toBe(raw);
+    let finishVerification!: (value: FurnitureProductionPreview) => void;
+    vi.mocked(api.previewFurnitureProduction).mockImplementationOnce(() => new Promise(resolve => { finishVerification = resolve; }));
+    fireEvent.click(screen.getByRole("button", { name: "Återställ beredningskopian" }));
+    expect(screen.getByRole("button", { name: "Återställ beredningskopian" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Kasta beredningskopian" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Kasta beredningskopian" }));
+    expect(window.localStorage.getItem(key)).toBe(raw);
+    await act(async () => finishVerification(preview));
+    expect(await screen.findByRole("radio", { name: /5125/ })).toBeChecked();
+    expect(screen.getByText(/Kopian innehåller inga godkännanden/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Tillbaka till möbeln" }));
+    expect(screen.getByRole("alertdialog", { name: "Osparad beredning" })).toBeVisible();
+  });
+
+  it("byter inte källa eller användare när en annan kopia finns och återanvänder inte minnesändringar", async () => {
+    const api = setup();
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    const otherKey = furnitureProductionRecoveryKey(api.baseUrl, { ...principal, user_id: "another-user" }, source);
+    const raw = JSON.stringify(furnitureProductionRecovery({ ...DEFAULT_DESIGN_SPEC,
+      machine_profile_id: "custombuild-router-5125-linuxcnc" }, source));
+    window.localStorage.setItem(otherKey, raw);
+    const mounted = show(api);
+    const larger = await screen.findByRole("radio", { name: /5125/ });
+    expect(larger).not.toBeChecked();
+    expect(screen.queryByRole("region", { name: "Lokal beredningskopia" })).not.toBeInTheDocument();
+    fireEvent.click(larger);
+    await waitFor(() => expect(window.localStorage.getItem(key)).not.toBeNull());
+    mounted.rerender(<FurnitureProduction api={api} principal={{ ...principal, organization_id: "another-org" }}
+      workspace={source.workspace} designHash={source.furniture_design_hash} projectName="Mitt hyllsystem" onClose={vi.fn()} />);
+    expect(await screen.findByRole("radio", { name: /5125/ })).not.toBeChecked();
+    expect(window.localStorage.getItem(key)).not.toBeNull();
+    expect(window.localStorage.getItem(otherKey)).toBe(raw);
+  });
+
+  it("behåller korrupta kopior för nedladdning utan att tillåta produktionsåtgärder", async () => {
+    const api = setup();
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    window.localStorage.setItem(key, "{trasigt");
+    show(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Återställ beredningskopian" }));
+    expect(await screen.findByRole("alert")).toBeVisible();
+    expect(window.localStorage.getItem(key)).toBe("{trasigt");
+    expect(screen.getByRole("button", { name: "Ladda ned beredningskopian" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Spara och kontrollera" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Kasta beredningskopian" }));
+    expect(await screen.findByRole("button", { name: "Spara och kontrollera" })).toBeVisible();
+    expect(window.localStorage.getItem(key)).toBeNull();
+  });
+
+  it("visar lagringsfel och fångar intern navigation utan att tappa utkastet", async () => {
+    const api = setup();
+    show(api);
+    const larger = await screen.findByRole("radio", { name: /5125/ });
+    const original = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key.startsWith("custombuild:furniture-production-recovery:")) throw new DOMException("Quota", "QuotaExceededError");
+      original.call(this, key, value);
+    });
+    fireEvent.click(larger);
+    expect(await screen.findByText(/Den lokala beredningskopian kunde inte sparas/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "Ladda ned beredningsutkast" })).toBeEnabled();
+    const link = document.createElement("a"); link.href = "/another-page"; link.textContent = "Annan sida";
+    document.body.appendChild(link);
+    try {
+      expect(fireEvent.click(link)).toBe(false);
+      expect(screen.getByRole("alertdialog", { name: "Osparad beredning" })).toBeVisible();
+      fireEvent.click(screen.getByRole("button", { name: "Fortsätt bereda" }));
+      expect(larger).toBeChecked();
+      const leave = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(leave);
+      expect(leave.defaultPrevented).toBe(true);
+    } finally { link.remove(); }
+  });
+
+  it("skriver inte över eller raderar en annan fliks nyare beredningskopia", async () => {
+    const api = setup();
+    const mounted = show(api);
+    const larger = await screen.findByRole("radio", { name: /5125/ });
+    const original = screen.getAllByRole("radio").find(input => (input as HTMLInputElement).checked)!;
+    fireEvent.click(larger);
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    await waitFor(() => expect(window.localStorage.getItem(key)).not.toBeNull());
+    const other = window.localStorage.getItem(key)!.replace('"stock_count":1', '"stock_count":2');
+    window.localStorage.setItem(key, other);
+    // Returning to the saved baseline must not remove the newer copy.
+    fireEvent.click(original);
+    expect(await screen.findByText(/En annan flik har ändrat återställningskopian/)).toBeVisible();
+    expect(window.localStorage.getItem(key)).toBe(other);
+    fireEvent.click(larger);
+    await waitFor(() => expect(larger).toBeChecked());
+    expect(window.localStorage.getItem(key)).toBe(other);
+    mounted.unmount();
+    show(api);
+    await screen.findByRole("button", { name: "Kasta beredningskopian" });
+    const newest = other.replace('"stock_count":2', '"stock_count":3');
+    window.localStorage.setItem(key, newest);
+    fireEvent.click(screen.getByRole("button", { name: "Kasta beredningskopian" }));
+    expect(await screen.findByText(/En annan flik har ändrat återställningskopian/)).toBeVisible();
+    expect(window.localStorage.getItem(key)).toBe(newest);
+    expect(screen.getByRole("region", { name: "Lokal beredningskopia" })).toBeVisible();
   });
 });

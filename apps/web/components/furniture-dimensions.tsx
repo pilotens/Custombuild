@@ -8,10 +8,11 @@ import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-cont
 type EditorProps = {
   workspace: FurnitureWorkspace;
   onChange: (value: FurnitureWorkspace, field: string) => void;
-  onError: (message: string, field: string) => void;
+  onError: (message: string, field: string, raw?: string) => void;
+  inputDrafts?: Record<string, string>;
 };
 
-export function InstallationEditor({ workspace, onChange, onError }: EditorProps) {
+export function InstallationEditor({ workspace, onChange, onError, inputDrafts = {} }: EditorProps) {
   const installation = workspace.design.installation;
   const apply = (value: FurnitureInstallation | null, field = "installation") => onChange({ ...workspace,
     design: { ...workspace.design, installation: value } }, field);
@@ -21,7 +22,7 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
       const value = nullable && !raw.trim() ? null : exactMillimetreTextToMicrometres(raw,
         { minimumUm: nullable ? 0 : 1, maximumUm: nullable ? 500_000 : 6_000_000 });
       apply({ ...installation, [key]: value }, `installation.${key}`);
-    } catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera måttet.", `installation.${key}`); }
+    } catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera måttet.", `installation.${key}`, raw); }
   };
   let dimensions: ReturnType<typeof installationCarcassDimensions> = null;
   try { if (installation) dimensions = installationCarcassDimensions(installation); } catch { /* Server reports invalid geometry. */ }
@@ -37,13 +38,13 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
       <p>Stommåtten ovan styr CAD-delarna. Kundmåtten nedan inkluderar det utrymme som reserveras för list och montage.</p>
       {([['width_um', 'Kundlängd inklusive reserverat utrymme'], ['height_um', 'Kundhöjd'], ['depth_um', 'Kunddjup']] as const).map(([key, label]) =>
         <label key={key}>{label} (mm)<input type="number" min="1" max="6000" step="0.001"
-          value={installation[key]/1_000} onChange={e => changeMm(key, e.target.value)} /></label>)}
+          value={inputDrafts[`installation.${key}`] ?? installation[key]/1_000} onChange={e => changeMm(key, e.target.value)} /></label>)}
       <label><input type="checkbox" checked={installation.width_includes_trim}
         onChange={e => apply({ ...installation, width_includes_trim: e.target.checked })} />Längden inkluderar list</label>
-      <TrimProfileEditor installation={installation} onChange={apply} onError={onError} />
+      <TrimProfileEditor installation={installation} onChange={apply} onError={onError} inputDrafts={inputDrafts} />
       <p>Reserverat utrymme per sida. Tomt betyder okänt. Ange 0 där inget utrymme ska reserveras.</p>
       {INSTALLATION_ALLOWANCES.map(([key, label]) => <label key={key}>{label} · reserverat (mm)
-        <input type="number" min="0" max="500" step="0.001" value={installation[key] === null ? "" : installation[key]/1_000}
+        <input type="number" min="0" max="500" step="0.001" value={inputDrafts[`installation.${key}`] ?? (installation[key] === null ? "" : installation[key]/1_000)}
           onChange={e => changeMm(key, e.target.value, true)} /></label>)}
       <button type="button" disabled={!dimensions} onClick={() => {
         if (dimensions) onChange({ ...workspace, design: { ...workspace.design,
@@ -56,10 +57,11 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
   </details>;
 }
 
-function TrimProfileEditor({ installation, onChange, onError }: {
+function TrimProfileEditor({ installation, onChange, onError, inputDrafts = {} }: {
   installation: FurnitureInstallation;
   onChange: (value: FurnitureInstallation, field: string) => void;
-  onError: (message: string, field: string) => void;
+  onError: (message: string, field: string, raw?: string) => void;
+  inputDrafts?: Record<string, string>;
 }) {
   const profile = installation.trim_profile;
   const update = (trim_profile: FurnitureTrimProfile | null, field = "installation.trim") =>
@@ -70,9 +72,9 @@ function TrimProfileEditor({ installation, onChange, onError }: {
     {profile ? <>
       {([['height_um', 'Listhöjd', 500_000], ['width_um', 'Listbredd/utstick', 100_000]] as const).map(([key, label, maximumUm]) =>
         <label key={key}>{label} (mm)<input type="number" min="0.001" max={maximumUm/1_000} step="0.001"
-          value={profile[key] === null ? "" : profile[key]/1_000} onChange={e => {
+          value={inputDrafts[`installation.trim.${key}`] ?? (profile[key] === null ? "" : profile[key]/1_000)} onChange={e => {
             try { update({ ...profile, [key]: e.target.value.trim() ? exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 1, maximumUm }) : null }, `installation.trim.${key}`); }
-            catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera listmåttet.", `installation.trim.${key}`); }
+            catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera listmåttet.", `installation.trim.${key}`, e.target.value); }
           }} /></label>)}
       <label>Listens funktion<select aria-label="Listens funktion" value={profile.use} onChange={e => update({ ...profile,
         use: e.target.value as FurnitureTrimProfile["use"], walls: [] })}>
@@ -100,21 +102,21 @@ function TrimProfileEditor({ installation, onChange, onError }: {
   </>;
 }
 
-function PercentageEditor({ label, values, count, kind, onChange, onError }: {
+function PercentageEditor({ label, values, count, kind, onChange, onError, rawDraft }: {
   label: string; values: number[]; count: number; kind: "bays" | "shelves";
-  onChange: (value: number[]) => void; onError: (message: string) => void;
+  onChange: (value: number[]) => void; onError: (message: string, raw: string) => void; rawDraft?: string;
 }) {
   const canonical = values.map(v => v/10_000).join("; ");
   const [draft, setDraft] = useState({ raw: canonical, base: canonical });
-  return <label>{label}<input type="text" value={draft.base === canonical ? draft.raw : canonical} placeholder="Tomt = jämn fördelning"
+  return <label>{label}<input type="text" value={rawDraft ?? (draft.base === canonical ? draft.raw : canonical)} placeholder="Tomt = jämn fördelning"
     onChange={e => {
       setDraft({ raw: e.target.value, base: canonical });
       try { onChange(parseFurniturePercentages(e.target.value, count, kind)); }
-      catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera indelningen."); }
+      catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera indelningen.", e.target.value); }
     }} /></label>;
 }
 
-export function ShelvingLayoutEditor({ workspace, onChange, onError }: EditorProps) {
+export function ShelvingLayoutEditor({ workspace, onChange, onError, inputDrafts = {} }: EditorProps) {
   const intent = workspace.design.intent;
   if (intent.family !== "shelving") return null;
   const patch = (value: Partial<typeof intent>, field: string) => onChange({ ...workspace, design: { ...workspace.design,
@@ -123,11 +125,11 @@ export function ShelvingLayoutEditor({ workspace, onChange, onError }: EditorPro
     <p>Ange procent med semikolon mellan värdena. Fackbredderna ska summera till 100 % av den fria bredden.</p>
     <PercentageEditor label="Fackbredder (%)" values={intent.bay_width_ratios_ppm ?? []} count={(intent.divider_count ?? 0)+1}
       kind="bays" onChange={bay_width_ratios_ppm => patch({ bay_width_ratios_ppm }, "layout.bays")}
-      onError={message => onError(message, "layout.bays")} />
+      rawDraft={inputDrafts["layout.bays"]} onError={(message, raw) => onError(message, "layout.bays", raw)} />
     <p>Hyllcentrens höjd mäts från botten av den fria hyllzonen. Proportionerna följer med när kunden ändrar totalhöjden.</p>
     <PercentageEditor label="Hyllcentrum från botten (%)" values={intent.shelf_height_ratios_ppm ?? []} count={intent.shelf_count ?? 0}
       kind="shelves" onChange={shelf_height_ratios_ppm => patch({ shelf_height_ratios_ppm }, "layout.shelves")}
-      onError={message => onError(message, "layout.shelves")} />
+      rawDraft={inputDrafts["layout.shelves"]} onError={(message, raw) => onError(message, "layout.shelves", raw)} />
     <label>Hyllornas infästning<select value={intent.shelf_mount ?? "fixed"}
       onChange={e => patch({ shelf_mount: e.target.value as "fixed" | "adjustable" }, "layout.mount")}>
       <option value="fixed">Fasta hyllor</option><option value="adjustable">Flyttbara hyllor med hyllbärare</option>
@@ -137,9 +139,9 @@ export function ShelvingLayoutEditor({ workspace, onChange, onError }: EditorPro
       <option value="inset_groove">Rygg i spår</option><option value="none">Utan rygg</option>
       <option value="surface_mounted">Utanpåliggande rygg</option>
     </select></label>
-    <label>Sockelhöjd (mm)<input type="number" min="0" max="300" step="0.001" value={(intent.plinth_height_um ?? 0)/1_000}
+    <label>Sockelhöjd (mm)<input type="number" min="0" max="300" step="0.001" value={inputDrafts["layout.plinth"] ?? (intent.plinth_height_um ?? 0)/1_000}
       onChange={e => { try { patch({ plinth_height_um: exactMillimetreTextToMicrometres(e.target.value, { minimumUm: 0, maximumUm: 300_000 }) }, "layout.plinth"); }
-        catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera sockelhöjden.", "layout.plinth"); } }} /></label>
+        catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera sockelhöjden.", "layout.plinth", e.target.value); } }} /></label>
   </details>;
 }
 

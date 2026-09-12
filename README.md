@@ -36,6 +36,12 @@ toolpaths, setup instructions, program order and independent verification.
 > `physical_cutting_authorized=false`: Custombuild does not start a machine or
 > certify construction. See [workshop handoff](docs/CAM_CANDIDATE_WORKSHOP_HANDOFF.md).
 
+The workspace now prioritizes revision-bound trial blockers and exports both
+part and whole-assembly inspection worksheets. Agreed tolerances and actual
+measurements remain blank until established. See the [MVP trial readiness
+assessment](docs/MVP_TRIAL_READINESS.md) before booking a physical manufacturing
+trial; passing software checks does not qualify materials, joints or a machine.
+
 ## Implemented vertical
 
 - Swedish desktop-first workbench with deterministic 2D/3D preview, orthographic

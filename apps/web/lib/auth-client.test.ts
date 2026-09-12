@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   clearOidcSession,
+  consumeOidcReturnPath,
   getStoredAccessToken,
   oidcConfigured,
   oidcRedirectUri,
@@ -111,5 +112,23 @@ describe("OIDC browser session", () => {
       { ...config, oidcRedirectUri: "https://app.example.test/callback" },
       "https://app.example.test",
     )).toThrow("exakta HTTPS-rot");
+  });
+});
+
+
+describe("OIDC return destination", () => {
+  it("consumes only an allowed furniture return once and clears it on logout", () => {
+    const key = "custombuild:oidc:return-path";
+    window.sessionStorage.setItem(key, "/furniture");
+    expect(consumeOidcReturnPath()).toBe("/furniture");
+    expect(consumeOidcReturnPath()).toBe("/");
+    for (const value of ["https://attacker.test", "//attacker.test", "/furniture?redirect=external", "/unknown"]) {
+      window.sessionStorage.setItem(key, value);
+      expect(consumeOidcReturnPath()).toBe("/");
+      expect(window.sessionStorage.getItem(key)).toBeNull();
+    }
+    window.sessionStorage.setItem(key, "/furniture");
+    clearOidcSession();
+    expect(window.sessionStorage.getItem(key)).toBeNull();
   });
 });

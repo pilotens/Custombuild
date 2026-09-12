@@ -62,11 +62,11 @@ def _block_executable_program_missing() -> NoReturn:
         code=EXECUTABLE_MACHINE_PROGRAM_MISSING,
         message=(
             "The selected generation contains no server-identified executable machine "
-            "program. Current machine programs are validation-only."
+            "program. This generation is validation-only."
         ),
         solution=(
-            "Generate an executable program through a future machine-, tool-, material- "
-            "and setup-bound production workflow."
+            "Generate and review an executable CAM candidate using the machine-, tool-, "
+            "material- and setup-bound production workflow."
         ),
     )
 
@@ -75,11 +75,12 @@ def _block_executable_package_missing() -> NoReturn:
     raise WorkshopPreparationBlocker(
         code=WORKSHOP_EXECUTABLE_PACKAGE_MISSING,
         message=(
-            "No immutable executable workshop package is bound to the selected release. "
-            "A design-review release cannot start a physical workshop run."
+            "No immutable physical workshop run is bound to the selected release. "
+            "An executable CAM release alone cannot start a physical workshop run."
         ),
         solution=(
-            "Create a server-verified executable release package before preparing a workshop run."
+            "Bind the verified executable release to an immutable workshop run and "
+            "accepted workshop policy before preparing physical workshop stages."
         ),
     )
 
@@ -88,8 +89,8 @@ def _claims_executable_program(result: Mapping[str, Any]) -> bool:
     """Recognize only explicit executable claims; ambiguous values fail closed.
 
     This predicate is intentionally insufficient for preparation. Even an exact
-    claim must still be backed by a persisted executable package contract, which
-    the current release model does not provide.
+    claim must still be backed by the separately persisted physical workshop run
+    and accepted policy. A frozen CAM release does not supply that physical state.
     """
 
     if (
@@ -124,7 +125,7 @@ def require_workshop_preparation_source(
 
     The request supplies only an opaque job identity. Every production fact is
     re-derived from tenant-scoped database rows. The function deliberately has
-    no success path until an immutable executable-package model exists; it must
+    no success path until immutable physical run preparation is connected; it must
     never turn mutable JSON claims into physical-cutting authority.
     """
 
@@ -160,7 +161,7 @@ def require_workshop_preparation_source(
     if not _claims_executable_program(job.result_json):
         _block_executable_program_missing()
 
-    # The current Release schema stores only a design-review bundle and has no
-    # executable program inventory, exact setup identity or workshop policy.
-    # Never infer those physical facts from result JSON or artifact filenames.
+    # Release can freeze an executable candidate and its program inventory, but
+    # physical WorkshopRun preparation and its accepted policy are not connected.
+    # Never infer that physical state from result JSON or artifact filenames.
     _block_executable_package_missing()

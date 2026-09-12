@@ -6,7 +6,7 @@ import base64
 import hashlib
 from datetime import UTC, datetime, timedelta
 from functools import lru_cache
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from celery import Celery
@@ -61,6 +61,14 @@ class FurnitureExportRequest(BaseModel):
     expected_design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class FurnitureWorkspaceValidation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    workspace: FurnitureWorkspace
+    validation_scope: Literal["workspace_structure"] = "workspace_structure"
+    production_qualified: Literal[False] = False
+    physical_cutting_authorized: Literal[False] = False
+
+
 def _workspace(project: Project) -> FurnitureWorkspace | None:
     if project.draft_spec_json is None:
         return None
@@ -93,6 +101,19 @@ def preview(
     payload: FurnitureWorkspace, principal: ReaderDep, session: SessionDep
 ) -> dict[str, Any]:
     return _preview(payload)
+
+
+@router.post("/validate-workspace", response_model=FurnitureWorkspaceValidation)
+def validate_workspace(
+    payload: FurnitureWorkspace, principal: ReaderDep, session: SessionDep
+) -> FurnitureWorkspaceValidation:
+    """Recover editable inputs even when their geometry cannot yet be built.
+
+    Pydantic checks the complete closed input contract. This does not build,
+    save, preview, approve or qualify a design. The ordinary preview/save and
+    production routes still require their full geometry and manufacturing gates.
+    """
+    return FurnitureWorkspaceValidation(workspace=payload)
 
 
 @router.post("/profile-change")

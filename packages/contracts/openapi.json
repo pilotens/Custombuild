@@ -1394,6 +1394,37 @@
         "title": "FurnitureWorkspace",
         "type": "object"
       },
+      "FurnitureWorkspaceValidation": {
+        "additionalProperties": false,
+        "properties": {
+          "physical_cutting_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "production_qualified": {
+            "const": false,
+            "default": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "validation_scope": {
+            "const": "workspace_structure",
+            "default": "workspace_structure",
+            "title": "Validation Scope",
+            "type": "string"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "workspace"
+        ],
+        "title": "FurnitureWorkspaceValidation",
+        "type": "object"
+      },
       "GenerationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4503,6 +4534,53 @@
           }
         ],
         "summary": "Shelf Bay Suggestion",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/validate-workspace": {
+      "post": {
+        "description": "Recover editable inputs even when their geometry cannot yet be built.\n\nPydantic checks the complete closed input contract. This does not build,\nsave, preview, approve or qualify a design. The ordinary preview/save and\nproduction routes still require their full geometry and manufacturing gates.",
+        "operationId": "validate_workspace_v1_furniture_validate_workspace_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FurnitureWorkspace"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FurnitureWorkspaceValidation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Validate Workspace",
         "tags": [
           "furniture-design"
         ]

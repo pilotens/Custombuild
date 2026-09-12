@@ -594,8 +594,8 @@ def _dispatch_entry(
 _V2_IMPLEMENTATION_IDENTITY = parse_supported_cam_implementation_identity(
     {
         "toolpath_schema_version": "custombuild.toolpaths.v1",
-        "toolpath_engine_version": "production-toolpaths-1.1.0",
-        "cutting_verifier_version": "cutting-program-verifier-1.1.0",
+        "toolpath_engine_version": "production-toolpaths-1.2.0",
+        "cutting_verifier_version": "cutting-program-verifier-1.2.0",
         "cutting_backplot_version": "cutting-backplot-1.1.0",
         "postprocessor_id": "linuxcnc-3axis-production",
         "postprocessor_version": "1.2.0",

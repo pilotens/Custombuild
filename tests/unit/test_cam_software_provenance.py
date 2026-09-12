@@ -121,6 +121,16 @@ def test_pre_release_v1_stack_requires_regeneration_for_the_runtime_contract() -
         parse_supported_cam_implementation_identity(corpus["implementations"])
 
 
+def test_pre_wall_coverage_cam_stack_requires_regeneration_and_new_review() -> None:
+    previous_versions = {
+        **current_cam_implementation_versions(),
+        "toolpath_engine_version": "production-toolpaths-1.1.0",
+        "cutting_verifier_version": "cutting-program-verifier-1.1.0",
+    }
+    with pytest.raises(CAMSoftwareProvenanceError, match="unsupported"):
+        parse_supported_cam_implementation_identity(previous_versions)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (

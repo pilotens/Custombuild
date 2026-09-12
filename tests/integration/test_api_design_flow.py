@@ -388,7 +388,11 @@ def structured_workshop_context() -> dict[str, object]:
 
 
 def _accepted_production_profile_for_review_bundle(review_bundle: bytes) -> bytes:
-    """Turn the exact review operations into a non-placeholder accepted profile."""
+    """Synthetic CI acceptance exercises the production parser, not a real workshop.
+
+    This isolated fixture deliberately supplies the production contract's accepted
+    shape. It never grants TEST_ONLY promotion or establishes measured machine facts.
+    """
 
     def accepted_string(value: str) -> str:
         replacements = (
@@ -737,6 +741,7 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
     _restore_real_cam_promotion_gates: None,
     furniture_source: bool,
 ) -> None:
+    monkeypatch.setattr(get_settings(), "production_four_eyes_required", True)
     object_storage = _MultiObjectImmutableStorage()
     monkeypatch.setattr(worker_tasks, "SessionFactory", get_session_factory())
     monkeypatch.setattr(worker_tasks, "_s3_client", lambda: object_storage)
@@ -1101,10 +1106,21 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         base = f"/v1/projects/{project['id']}/versions/{version.json()['revision']}"
         assert client.post(f"{base}/validate", headers=HEADERS).status_code == 200
 
+        operator_headers = _provision_download_role(monkeypatch, Role.operator)
+        designer_headers = _provision_download_role(monkeypatch, Role.designer)
+        viewer_headers = _provision_download_role(monkeypatch, Role.viewer)
+        production_headers = _provision_download_role(monkeypatch, Role.production)
+        _provision_four_eyes_reviewer(monkeypatch)
+        designer_id = auth_module._DEV_TOKENS[
+            designer_headers["Authorization"].removeprefix("Bearer ")
+        ].user_id
+        production_id = auth_module._DEV_TOKENS[
+            production_headers["Authorization"].removeprefix("Bearer ")
+        ].user_id
         approve_design(client, base)
         queued = client.post(
             f"{base}/generate",
-            headers=HEADERS,
+            headers=designer_headers,
             json=production_context,
         )
         assert queued.status_code == 202, queued.text
@@ -1183,9 +1199,6 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
             assert len(response.content) == artifact["size_bytes"]
             assert hashlib.sha256(response.content).hexdigest() == artifact["sha256"]
             downloaded[kind] = response.content
-        operator_headers = _provision_download_role(monkeypatch, Role.operator)
-        designer_headers = _provision_download_role(monkeypatch, Role.designer)
-        viewer_headers = _provision_download_role(monkeypatch, Role.viewer)
         for denied_headers in (designer_headers, viewer_headers):
             denied_bundle = client.get(
                 artifacts["production_bundle"]["download_path"],
@@ -1275,7 +1288,7 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
 
         candidate_queued = client.post(
             f"{base}/generate",
-            headers=HEADERS,
+            headers=designer_headers,
             json={**production_context, "include_cutting_candidate": True},
         )
         assert candidate_queued.status_code == 202, candidate_queued.text
@@ -1319,6 +1332,13 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
             )
             assert persisted_candidate_job is not None
             assert persisted_candidate_job.status is JobStatus.succeeded
+            generation_actor = session.scalar(
+                select(AuditEvent.actor_id).where(
+                    AuditEvent.entity_id == persisted_candidate_job.id,
+                    AuditEvent.action == "generation.queued",
+                )
+            )
+            assert generation_actor == designer_id
             assert (
                 persisted_candidate_job.request_json["production_machine_profile"]
                 == (candidate_receipt["production_profile_job_binding"])
@@ -1361,14 +1381,24 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         result = candidate_result
         artifacts = candidate_artifacts
 
+        cam_approval_payload = {
+            "approval_type": "cam",
+            "reason": "Exact signed-retention review package checked",
+            "generation_job_id": queued.json()["id"],
+        }
+        for denied_headers, expected_status in ((HEADERS, 409), (operator_headers, 403)):
+            rejected_cam = client.post(
+                f"{base}/approve", headers=denied_headers, json=cam_approval_payload
+            )
+            assert rejected_cam.status_code == expected_status, rejected_cam.text
+            if expected_status == 409:
+                assert rejected_cam.json()["detail"]["code"] == (
+                    api_module.FOUR_EYES_APPROVER_SEPARATION_REQUIRED_CODE
+                )
         cam_approved = client.post(
             f"{base}/approve",
-            headers=HEADERS,
-            json={
-                "approval_type": "cam",
-                "reason": "Exact signed-retention review package checked",
-                "generation_job_id": queued.json()["id"],
-            },
+            headers=FOUR_EYES_REVIEWER_HEADERS,
+            json=cam_approval_payload,
         )
         assert cam_approved.status_code == 200, cam_approved.text
         with get_session_factory()() as session:
@@ -1379,6 +1409,15 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
                 )
             )
             assert persisted_cam_approval is not None
+            assert persisted_cam_approval.approved_by == FOUR_EYES_REVIEWER_ID
+            design_approver_id = session.scalar(
+                select(Approval.approved_by).where(
+                    Approval.design_version_id == version.json()["id"],
+                    Approval.approval_type == "design",
+                )
+            )
+            assert design_approver_id == DEV_USER_NORDIC
+            assert design_approver_id != persisted_cam_approval.approved_by
             cam_approval_id = persisted_cam_approval.id
             cam_production_context_hash = persisted_cam_approval.production_context_hash
             expected_cam_approval_snapshot = api_module._cam_approval_release_snapshot(
@@ -1391,7 +1430,7 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
             )
         released = client.post(
             f"{base}/release",
-            headers=HEADERS,
+            headers=production_headers,
             json={"release_number": "SIGNED-RETENTION-R1", "confirmation": "RELEASE"},
         )
         assert released.status_code == 200, released.text
@@ -1424,6 +1463,7 @@ def test_signed_retention_executable_cam_release_and_historical_download_are_bou
         with get_session_factory()() as session:
             persisted_release = session.get(Release, release_id)
             assert persisted_release is not None
+            assert persisted_release.released_by == production_id
             assert persisted_release.generation_job_id == queued.json()["id"]
             assert persisted_release.cam_approval_id == cam_approval_id
             assert (

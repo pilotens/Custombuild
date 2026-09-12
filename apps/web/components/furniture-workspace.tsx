@@ -9,6 +9,10 @@ import {
   type FurnitureCatalog, type FurnitureFamily, type FurnitureHistory, type FurniturePreview,
   type FurnitureProfileComparison, type FurnitureWorkspace,
 } from "@/lib/furniture-workspace";
+import { beginOidcLogin, oidcConfigured } from "@/lib/auth-client";
+import { furnitureDraftRecoveryKey, parseFurnitureDraftRecovery, replaceFurnitureRecovery,
+  type FurnitureDraftRecovery, type FurnitureProfileDraft } from "@/lib/furniture-draft-recovery";
+import { FurnitureTrialReadinessPanel } from "./furniture-trial-readiness";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
@@ -23,35 +27,59 @@ const Viewer = dynamic(() => import("./furniture-viewer"), {
 });
 const errorText = (error: unknown) => error instanceof Error ? error.message : "Åtgärden misslyckades.";
 const fingerprint = (workspace: FurnitureWorkspace) => JSON.stringify(workspace);
+const recoveredInputErrors = (drafts?: Record<string, string>, errors?: Record<string, string>) => ({
+  ...errors, ...Object.fromEntries(Object.keys(drafts ?? {}).map(key => [key, errors?.[key] ?? "Kontrollera det återställda fältet innan du sparar."])),
+});
 
 export function FurnitureWorkspacePage({ runtimeConfig }: { runtimeConfig: PublicRuntimeConfig }) {
   const api = useMemo(() => new CustombuildApiClient(runtimeConfig.apiUrl, undefined,
     runtimeConfig.developmentToken), [runtimeConfig.apiUrl, runtimeConfig.developmentToken]);
   const [principal, setPrincipal] = useState<CurrentPrincipal>();
   const [error, setError] = useState<string>();
+  const [retry, setRetry] = useState(0);
   useEffect(() => {
     let active = true;
     void api.getCurrentPrincipal().then(value => { if (active) setPrincipal(value); })
       .catch(reason => { if (active) setError(errorText(reason)); });
     return () => { active = false; };
-  }, [api]);
+  }, [api, retry]);
+  const login = oidcConfigured(runtimeConfig) ? () => {
+    void beginOidcLogin(runtimeConfig, "/furniture").catch(reason => setError(errorText(reason)));
+  } : undefined;
   return <main className={styles.page}>
     <header className={styles.header}>
       <Link href="/" className={styles.brand}>Custombuild</Link>
       <span>Formge din möbel</span>
       <Link href="/">Till startsidan</Link>
     </header>
-    {principal ? <FurnitureStudio key={`${principal.organization_id}:${principal.user_id}`}
-      api={api} principal={principal} /> : <section className={styles.intro}>
+    {principal ? <FurnitureStudio key={`${api.baseUrl}:${principal.organization_id}:${principal.user_id}`}
+      api={api} principal={principal} onLogin={login} /> : <section className={styles.intro}>
       <h1>Bord, byråer och hyllsystem</h1>
       <p>Forma möbeln, jämför material och välj tillverkning när du är redo.</p>
-      {error ? <><p role="alert">{error}</p><Link href="/">Logga in från startsidan</Link></>
+      {error ? <><p role="alert">{error}</p><button onClick={() => setRetry(value => value+1)}>Försök igen</button>
+        {login ? <button onClick={login}>Logga in</button> : <Link href="/">Logga in från startsidan</Link>}</>
         : <p role="status">Öppnar din arbetsyta…</p>}
     </section>}
   </main>;
 }
 
-export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient; principal: CurrentPrincipal }) {
+export function FurnitureStudio({ api, principal, onLogin }: {
+  api: CustombuildApiClient; principal: CurrentPrincipal; onLogin?: () => void;
+}) {
+  const recoveryKey = furnitureDraftRecoveryKey(api.baseUrl, principal);
+  const [initialRecovery] = useState(() => {
+    try { return { raw: window.localStorage.getItem(recoveryKey), error: undefined as string | undefined }; }
+    catch { return { raw: null, error: "Webbläsaren kan inte spara återställningskopior. Hämta en återställningsfil för att behålla ditt arbete." }; }
+  });
+  const [pendingRecovery, setPendingRecovery] = useState(initialRecovery.raw);
+  const persistedRecovery = useRef(initialRecovery.raw);
+  const [storageError, setStorageError] = useState(initialRecovery.error);
+  const [refresh, setRefresh] = useState(0);
+  const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({});
+  const [profileDraft, setProfileDraft] = useState<FurnitureProfileDraft>();
+  const [restoredProfile, setRestoredProfile] = useState<FurnitureProfileDraft>();
+  const [nameBaseline, setNameBaseline] = useState("Mitt bord");
+  const navigationApproved = useRef(false);
   const [workspace, setWorkspace] = useState(() => newFurnitureWorkspace("table"));
   const [baseline, setBaseline] = useState(() => fingerprint(newFurnitureWorkspace("table")));
   const [catalog, setCatalog] = useState<FurnitureCatalog>();
@@ -77,26 +105,31 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const [exportMessage, setExportMessage] = useState<string>();
   const mutationEpoch = useRef(0);
   const invalidInput = Object.keys(inputErrors).length > 0;
-  const dirty = fingerprint(workspace) !== baseline || invalidInput || profileDirty;
+  const dirty = fingerprint(workspace) !== baseline || invalidInput || profileDirty || (!projectId && name !== nameBaseline);
   const profileDirtyChanged = useCallback((value: boolean) => setProfileDirty(value), []);
+  const profileDraftChanged = useCallback((value: FurnitureProfileDraft | undefined) => setProfileDraft(value), []);
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
   const linearShelfLoad = intent.family === "shelving" && intent.shelf_load_basis === "per_metre";
+  const loadKey = intent.family === "table" ? "top_load_n" : intent.family === "chest_of_drawers" ? "drawer_load_n"
+    : linearShelfLoad ? "shelf_load_per_metre_n" : "shelf_load_n";
   const update = (next: FurnitureWorkspace) => {
     mutationEpoch.current += 1;
     setWorkspace(next); setPreview(undefined); setError(undefined); setNotice(undefined);
-    setProfileDirty(false);
+    setProfileDirty(false); setProfileDraft(undefined); setRestoredProfile(undefined);
     setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
   };
-  const inputError = (message: string, field: string) => {
+  const inputError = (message: string, field: string, raw?: string) => {
     mutationEpoch.current += 1; setPreview(undefined); setInputErrors(previous => ({ ...previous, [field]: message }));
+    if (raw !== undefined) setInputDrafts(previous => ({ ...previous, [field]: raw }));
   };
   const clearInputError = (field: string) => {
-    setInputErrors(previous => Object.fromEntries(Object.entries(previous)
-      .filter(([key]) => key !== field && !key.startsWith(`${field}.`))));
+    const remaining = (previous: Record<string, string>) => Object.fromEntries(Object.entries(previous)
+      .filter(([key]) => key !== field && !key.startsWith(`${field}.`)));
+    setInputErrors(remaining); setInputDrafts(remaining);
   };
   const resetInputDrafts = () => {
-    setInputErrors({}); setInputEpoch(value => value+1);
+    setInputErrors({}); setInputDrafts({}); setInputEpoch(value => value+1);
   };
   const updateInput = (next: FurnitureWorkspace, field: string) => {
     clearInputError(field); update(next);
@@ -108,9 +141,10 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       if (active) { setCatalog(c); setProjects(p.filter(item => item.furniture_type in FURNITURE_FAMILY_LABELS)); }
     }).catch(reason => { if (active) setError(errorText(reason)); });
     return () => { active = false; };
-  }, [api]);
+  }, [api, refresh]);
 
   useEffect(() => {
+    if (pendingRecovery) return;
     let active = true;
     const epoch = mutationEpoch.current;
     const timer = setTimeout(() => {
@@ -121,14 +155,48 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       });
     }, 180);
     return () => { active = false; clearTimeout(timer); };
-  }, [api, workspace]);
+  }, [api, workspace, refresh, pendingRecovery]);
 
   useEffect(() => {
     if (!dirty) return;
-    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!navigationApproved.current) { event.preventDefault(); event.returnValue = ""; }
+    };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
+
+  useEffect(() => {
+    if (!dirty || productionOpen) return;
+    const guard = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (!(anchor instanceof HTMLAnchorElement) || anchor.hasAttribute("download") || anchor.target === "_blank") return;
+      const target = new URL(anchor.href, window.location.href);
+      if (target.origin !== window.location.origin || target.pathname === window.location.pathname) return;
+      event.preventDefault(); event.stopPropagation();
+      setPendingNavigation(() => () => { navigationApproved.current = true; window.location.assign(target.href); });
+    };
+    document.addEventListener("click", guard, true);
+    return () => document.removeEventListener("click", guard, true);
+  }, [dirty, productionOpen]);
+
+  useEffect(() => {
+    if (pendingRecovery) return;
+    let active = true;
+    void Promise.resolve().then(() => {
+      if (!active) return;
+      try {
+        const snapshot: FurnitureDraftRecovery = { version: 1, workspace, projectId, revision,
+          name: name.trim() || "Min möbel", updatedAt: new Date().toISOString(), inputDrafts, inputErrors, profile: profileDraft };
+        const next = dirty ? JSON.stringify(snapshot) : null;
+        if (next && new TextEncoder().encode(next).length > 256 * 1024) throw new Error("Återställningskopian är för stor.");
+        replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery.current, next);
+        persistedRecovery.current = next; setStorageError(undefined);
+      } catch (reason) { setStorageError(`${errorText(reason)} Hämta en återställningsfil för att behålla ditt arbete.`); }
+    });
+    return () => { active = false; };
+  }, [dirty, workspace, projectId, revision, name, inputDrafts, inputErrors, profileDraft, recoveryKey, pendingRecovery]);
 
   useEffect(() => {
     if (!download) return;
@@ -169,7 +237,8 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     const next = newFurnitureWorkspace(family);
     resetInputDrafts();
     update(next); setBaseline(fingerprint(next)); setProjectId(undefined); setRevision(0);
-    setHistory({ items: [], next_offset: null }); setName(`Min ${FURNITURE_FAMILY_LABELS[family].toLowerCase()}`);
+    setHistory({ items: [], next_offset: null });
+    const nextName = `Min ${FURNITURE_FAMILY_LABELS[family].toLowerCase()}`; setName(nextName); setNameBaseline(nextName);
     setDrawersOpen(false); setSelectedPart(undefined);
   });
   const changeDimension = (key: string, value: number) => {
@@ -177,9 +246,31 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     clearInputError(`carcass.${key}`);
     update({ ...workspace, design: { ...workspace.design, intent: { ...intent, [key]: value } } });
   };
+  const changeCount = (key: string, raw: string, minimum: number, maximum: number) => {
+    const value = Number(raw);
+    if (!raw.trim() || !Number.isSafeInteger(value) || value < minimum || value > maximum) {
+      inputError(`Ange ett heltal mellan ${minimum} och ${maximum}.`, `carcass.${key}`, raw);
+      return;
+    }
+    changeDimension(key, value);
+  };
+  const changeLoad = (raw: string) => {
+    const kilograms = Number(raw);
+    if (!raw.trim() || !Number.isFinite(kilograms) || kilograms < 0 || kilograms > 500) {
+      inputError("Ange en last mellan 0 och 500 kg. Tomt betyder inte noll last.", `carcass.${loadKey}`, raw);
+      return;
+    }
+    changeDimension(loadKey, Math.round(kilograms * 9.80665));
+  };
   const changeMillimetres = (key: string, raw: string) => {
-    try { changeDimension(key, exactMillimetreTextToMicrometres(raw, { maximumUm: 6_000_000 })); }
-    catch (reason) { inputError(errorText(reason), `carcass.${key}`); }
+    try {
+      const limits = key === "end_inset_um" ? { minimumUm: 0, maximumUm: 500_000 }
+        : key === "stretcher_height_um" ? { minimumUm: 40_000, maximumUm: 300_000 }
+        : key === "front_gap_um" ? { minimumUm: 1_000, maximumUm: 10_000 }
+        : { minimumUm: 1, maximumUm: 6_000_000 };
+      changeDimension(key, exactMillimetreTextToMicrometres(raw, limits));
+    }
+    catch (reason) { inputError(errorText(reason), `carcass.${key}`, raw); }
   };
   const openProject = (id: string) => navigate(() => {
     setBusy(true); const epoch = ++mutationEpoch.current;
@@ -199,7 +290,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       let id = projectId;
       if (!id) {
         const project = await api.createProject(name.trim());
-        id = project.id; setProjectId(id);
+        id = project.id; setProjectId(id); setBaseline("");
         setProjects(items => [...items, { ...project, furniture_type: intent.family }]);
       }
       const saved = await api.saveFurnitureDraft(id, revision, workspace);
@@ -223,23 +314,65 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     setBusy(true); const epoch = ++mutationEpoch.current;
     try {
       if (file.size > 256 * 1024) throw new Error("Arbetsfilen får vara högst 256 kB.");
-      const document = JSON.parse(await file.text()) as FurnitureWorkspace;
+      const raw = await file.text();
+      const parsed = JSON.parse(raw) as FurnitureWorkspace | FurnitureDraftRecovery;
+      const recovered = "version" in parsed ? parseFurnitureDraftRecovery(raw) : undefined;
+      const document = recovered?.workspace ?? parsed as FurnitureWorkspace;
       const proposed = { ...document, design: { ...document.design, design_id: "furniture", revision: 1 } };
-      const checked = await api.previewFurniture(proposed);
+      const checked = await api.validateFurnitureWorkspace(proposed);
+      const checkedProfile = recovered?.profile ? await api.validateFurnitureWorkspace({ ...recovered.profile.proposed,
+        design: { ...recovered.profile.proposed.design, design_id: "furniture", revision: 1 } }) : undefined;
       if (epoch !== mutationEpoch.current) return;
       resetInputDrafts(); update(checked.workspace); setBaseline(""); setProjectId(undefined); setRevision(0);
-      setPreview(checked); setHistory({ items: [], next_offset: null });
+      setPreview(undefined); setHistory({ items: [], next_offset: null });
       setName(file.name.replace(/\.json$/i, "").slice(0, 180));
-      setNotice("Arbetsfilen har kontrollerats. Spara som ett nytt projekt för att skapa underlag.");
+      if (recovered) {
+        setInputDrafts(recovered.inputDrafts ?? {}); setInputErrors(recoveredInputErrors(recovered.inputDrafts, recovered.inputErrors));
+        if (recovered.profile && checkedProfile) setRestoredProfile({ ...recovered.profile,
+          proposed: checkedProfile.workspace,
+          inputErrors: recoveredInputErrors(recovered.profile.inputDrafts, recovered.profile.inputErrors) });
+      }
+      setNotice("Arbetsfilen har kontrollerats och öppnats som ett nytt utkast. Rätta eventuella formfel innan du sparar och skapar underlag.");
     } catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); }
   };
   const exportWorkspace = () => {
-    if (profileDirty || invalidInput || !preview) return;
+    if (profileDirty || invalidInput) return;
     const url = URL.createObjectURL(new Blob([JSON.stringify(workspace, null, 2)+"\n"], { type: "application/json" }));
     const link = document.createElement("a"); link.href = url;
-    link.download = `custombuild-${intent.family}-revision-${revision || 1}.json`; link.click();
+    link.download = `custombuild-${intent.family}-${preview ? "arbetsfil" : "ogranskat-utkast"}-revision-${revision || 1}.json`; link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  };
+  const downloadRecovery = (raw?: string) => {
+    const content = raw ?? JSON.stringify({ version: 1, workspace, projectId, revision, name: name.trim() || "Min möbel",
+      updatedAt: new Date().toISOString(), inputDrafts, inputErrors, profile: profileDraft } satisfies FurnitureDraftRecovery, null, 2);
+    const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+    const link = document.createElement("a"); link.href = url; link.download = "custombuild-aterstallning.json"; link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  };
+  const restoreRecovery = async () => {
+    if (!pendingRecovery) return;
+    setBusy(true); setError(undefined);
+    try {
+      const recovered = parseFurnitureDraftRecovery(pendingRecovery);
+      const checked = await api.validateFurnitureWorkspace(recovered.workspace);
+      const checkedProfile = recovered.profile ? await api.validateFurnitureWorkspace(recovered.profile.proposed) : undefined;
+      if (recovered.projectId) await api.loadFurnitureDraft(recovered.projectId);
+      resetInputDrafts(); update(checked.workspace); setBaseline("");
+      setProjectId(recovered.projectId); setRevision(recovered.revision); setName(recovered.name);
+      setInputDrafts(recovered.inputDrafts ?? {}); setInputErrors(recoveredInputErrors(recovered.inputDrafts, recovered.inputErrors));
+      setRestoredProfile(recovered.profile && checkedProfile ? { ...recovered.profile, proposed: checkedProfile.workspace,
+        inputErrors: recoveredInputErrors(recovered.profile.inputDrafts, recovered.profile.inputErrors) } : undefined);
+      setPreview(undefined); setHistory({ items: [], next_offset: null }); setPendingRecovery(null);
+      setNotice("Utkastet är återställt och behöver sparas. Profilförslag och felaktiga fält måste kontrolleras innan de används.");
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setBusy(false); }
+  };
+  const discardRecovery = () => {
+    try {
+      replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery.current, null);
+      persistedRecovery.current = null; setPendingRecovery(null); setStorageError(undefined); setError(undefined);
+    } catch (reason) { setStorageError(errorText(reason)); }
   };
   const viewerParts = useMemo(() => preview ? furnitureViewerParts(preview, drawersOpen) : [], [preview, drawersOpen]);
 
@@ -249,14 +382,27 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   }
 
   return <>
+    {pendingRecovery ? <section role="region" aria-label="Återställ ditt utkast" className={styles.notice}>
+      <h2>Återställ ditt utkast</h2><p>Det finns arbete från ett tidigare besök. Återställningskopian är inte en sparad revision eller ett tillverkningsgodkännande.</p>
+      <button disabled={busy} onClick={() => { void restoreRecovery(); }}>Återställ utkast</button>
+      <button onClick={() => downloadRecovery(pendingRecovery)}>Hämta återställningskopian</button>
+      <button disabled={busy} onClick={discardRecovery}>Ta bort återställningskopian</button>
+    </section> : null}
+    {storageError ? <p role="alert" className={styles.error}>{storageError}</p> : null}
+    {error ? <p role="alert" className={styles.error}>{error} <button onClick={() => setRefresh(value => value+1)}>Försök igen</button>
+      {onLogin ? <button onClick={onLogin}>Logga in igen</button> : null}</p> : null}
+    <fieldset className={styles.editorFrame} disabled={Boolean(pendingRecovery)}>
     <section className={styles.titleRow}>
       <div><p className={styles.eyebrow}>Din design · {revision ? `senast sparad revision ${revision}` : "nytt utkast"}</p>
-        <h1>{FURNITURE_FAMILY_LABELS[intent.family]}</h1><p>Ändra formen. Välj material och tillverkning separat.</p></div>
+        <h1>{FURNITURE_FAMILY_LABELS[intent.family]}</h1><p>Ändra formen. Välj material och tillverkning separat.</p>
+        <p>{intent.family === "shelving" ? "Hyllsystem har ett flöde för tillverkningsberedning. Verkligt material, fogar och maskin måste verifieras."
+          : "Bord och byråer kan formges och exporteras för granskning. Tillverkningsstöd med verifierade beslag och bearbetningar saknas ännu."}</p></div>
       <div className={styles.projectActions}>
         <label>Läs arbetsfil (JSON)<input type="file" accept=".json,application/json" disabled={busy || !mayEdit}
           onChange={e => { const file = e.target.files?.[0]; e.target.value = "";
             if (file) navigate(() => { void importWorkspace(file); }); }} /></label>
-        <button disabled={busy || !preview || invalidInput || profileDirty} onClick={exportWorkspace}>Spara arbetsfil</button>
+        <button disabled={busy || invalidInput || profileDirty} onClick={exportWorkspace}>Spara arbetsfil</button>
+        <button onClick={() => downloadRecovery()}>Spara återställningsfil</button>
         <label>Öppna projekt<select aria-label="Öppna möbelprojekt" value={projectId ?? ""}
           disabled={busy} onChange={e => { if (e.target.value) openProject(e.target.value); }}>
           <option value="">Ny design</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -274,7 +420,6 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       <button onClick={() => setPendingNavigation(null)}>Tillbaka</button>
       <button onClick={() => { pendingNavigation(); setPendingNavigation(null); }}>Fortsätt utan att spara</button>
     </section> : null}
-    {error ? <p role="alert" className={styles.error}>{error}</p> : null}
     {Object.entries(inputErrors).map(([field, message]) => <p key={field} role="alert" className={styles.error}>{message}</p>)}
     {notice ? <p role="status" className={styles.notice}>{notice}</p> : null}
     {profileDirty ? <p role="status" className={styles.notice}>
@@ -290,25 +435,25 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <fieldset disabled={busy || !mayEdit || profileDirty}><legend>Stommått i millimeter</legend>
           {([['width_um', 'Bredd'], ['height_um', 'Höjd'], ['depth_um', 'Djup']] as const).map(([key, label]) =>
             <label key={key}>{label}<input aria-label={`${label} (mm)`} type="number" step="0.001" min="1" max="6000"
-              value={intent[key]/1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
+              value={inputDrafts[`carcass.${key}`] ?? intent[key]/1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
           {intent.family === "table" ? <>
-            <label>Gavelns indrag (mm)<input type="number" step="1" min="0" value={(intent.end_inset_um ?? 0)/1_000}
+            <label>Gavelns indrag (mm)<input type="number" step="1" min="0" max="500" value={inputDrafts["carcass.end_inset_um"] ?? (intent.end_inset_um ?? 0)/1_000}
               onChange={e => changeMillimetres("end_inset_um", e.target.value)} /></label>
-            <label>Sargens höjd (mm)<input type="number" step="1" min="40" max="300" value={(intent.stretcher_height_um ?? 0)/1_000}
+            <label>Sargens höjd (mm)<input type="number" step="1" min="40" max="300" value={inputDrafts["carcass.stretcher_height_um"] ?? (intent.stretcher_height_um ?? 0)/1_000}
               onChange={e => changeMillimetres("stretcher_height_um", e.target.value)} /></label>
           </> : intent.family === "chest_of_drawers" ? <>
-            <label>Antal lådor<input type="number" min="1" max="8" value={intent.drawer_count}
-              onChange={e => changeDimension("drawer_count", Number(e.target.value))} /></label>
-            <label>Frontspel (mm)<input type="number" min="1" max="10" step="0.1" value={(intent.front_gap_um ?? 0)/1_000}
+            <label>Antal lådor<input type="number" min="1" max="8" value={inputDrafts["carcass.drawer_count"] ?? intent.drawer_count}
+              onChange={e => changeCount("drawer_count", e.target.value, 1, 8)} /></label>
+            <label>Frontspel (mm)<input type="number" min="1" max="10" step="0.1" value={inputDrafts["carcass.front_gap_um"] ?? (intent.front_gap_um ?? 0)/1_000}
               onChange={e => changeMillimetres("front_gap_um", e.target.value)} /></label>
           </> : <>
-            <label>Hyllrader<input type="number" min="0" max="40" value={intent.shelf_count}
-              onChange={e => changeDimension("shelf_count", Number(e.target.value))} /></label>
-            <label>Avdelare<input type="number" min="0" max="16" value={intent.divider_count}
-              onChange={e => changeDimension("divider_count", Number(e.target.value))} /></label>
+            <label>Hyllrader<input type="number" min="0" max="40" value={inputDrafts["carcass.shelf_count"] ?? intent.shelf_count}
+              onChange={e => changeCount("shelf_count", e.target.value, 0, 40)} /></label>
+            <label>Avdelare<input type="number" min="0" max="16" value={inputDrafts["carcass.divider_count"] ?? intent.divider_count}
+              onChange={e => changeCount("divider_count", e.target.value, 0, 16)} /></label>
           </>}
-          <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${inputEpoch}`} workspace={workspace} onChange={updateInput} onError={inputError} />
-          <InstallationEditor workspace={workspace} onChange={updateInput} onError={inputError} />
+          <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${inputEpoch}`} workspace={workspace} inputDrafts={inputDrafts} onChange={updateInput} onError={inputError} />
+          <InstallationEditor workspace={workspace} inputDrafts={inputDrafts} onChange={updateInput} onError={inputError} />
           {intent.family === "shelving" ? <label>Hur anges hyllasten?<select value={intent.shelf_load_basis ?? "per_row"}
             onChange={e => updateInput({ ...workspace, design: { ...workspace.design, intent: {
               ...intent, shelf_load_basis: e.target.value as "per_row" | "per_metre",
@@ -320,10 +465,8 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
           <label>{intent.family === "table" ? "Last på skivan" : intent.family === "chest_of_drawers" ? "Last per låda"
             : linearShelfLoad ? "Last per meter hyllrad" : "Last per hel hyllrad"} ({linearShelfLoad ? "kg/m" : "kg"})
             <input type="number" min="0" max="500" step="0.1"
-              value={((intent.top_load_n ?? intent.drawer_load_n ?? (linearShelfLoad ? intent.shelf_load_per_metre_n : intent.shelf_load_n) ?? 0)/9.80665).toFixed(1)}
-              onChange={e => changeDimension(intent.family === "table" ? "top_load_n" : intent.family === "chest_of_drawers" ? "drawer_load_n"
-                : linearShelfLoad ? "shelf_load_per_metre_n" : "shelf_load_n",
-                Math.round(Number(e.target.value)*9.80665))} /></label>
+              value={inputDrafts[`carcass.${loadKey}`] ?? ((intent[loadKey] ?? 0)/9.80665).toFixed(1)}
+              onChange={e => changeLoad(e.target.value)} /></label>
           {intent.family === "shelving" ? <p>Ange jämnt fördelad nyttig last. Radens last fördelas mellan facken efter deras bredd. Hyllornas egenvikt räknas till separat.
             {preview?.workshop_handoff?.shelf_load ? ` Beräknad last per hel rad: ${(preview.workshop_handoff.shelf_load.total_row_load_n/9.80665).toFixed(1)} kg.` : ""}
             {linearShelfLoad ? " Lasten räknas om när stommens bredd ändras." : " Angiven vikt gäller hela raden, inte varje fack."}</p> : null}
@@ -349,9 +492,10 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         <p>Du kan spara designen innan du väljer verkstad.</p>
         {catalog ? <ProfileEditor key={`${fingerprint(workspace)}-${inputEpoch}`}
           api={api} workspace={workspace} catalog={catalog} disabled={busy || !mayEdit}
-          onApply={update} onDirtyChange={profileDirtyChanged} /> : <p>Läser profiler…</p>}
+          initialDraft={restoredProfile} onDraftChange={profileDraftChanged} onApply={update} onDirtyChange={profileDirtyChanged} /> : <p>Läser profiler…</p>}
       </aside>
     </div>
+    <FurnitureTrialReadinessPanel report={preview?.trial_readiness} designHash={preview?.design.design_hash} dirty={dirty} />
     <section className={styles.review}>
       <div><h2>Kontroll och underlag</h2>
         <p>Designunderlag för granskning. Skärande CAM kräver verifierade beslag, konstruktion och maskin.</p>
@@ -396,24 +540,28 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
         }))).catch(reason => setError(errorText(reason)));
       }}>Visa äldre revisioner</button> : null}
     </section> : null}
+    </fieldset>
   </>;
 }
 
-function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChange }: {
+function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChange, initialDraft, onDraftChange }: {
   api: CustombuildApiClient; workspace: FurnitureWorkspace; catalog: FurnitureCatalog;
   disabled: boolean; onApply: (next: FurnitureWorkspace) => void; onDirtyChange: (dirty: boolean) => void;
+  initialDraft?: FurnitureProfileDraft; onDraftChange: (draft: FurnitureProfileDraft | undefined) => void;
 }) {
-  const [proposed, setProposed] = useState(workspace);
+  const [proposed, setProposed] = useState(initialDraft?.proposed ?? workspace);
   const [comparison, setComparison] = useState<FurnitureProfileComparison>();
   const [error, setError] = useState<string>();
-  const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
-  const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({});
+  const [inputErrors, setInputErrors] = useState<Record<string, string>>(initialDraft?.inputErrors ?? {});
+  const [inputDrafts, setInputDrafts] = useState<Record<string, string>>(initialDraft?.inputDrafts ?? {});
   const [busy, setBusy] = useState(false);
   const epoch = useRef(0);
   const invalidInput = Object.keys(inputErrors).length > 0;
   const changed = fingerprint(workspace) !== fingerprint(proposed);
   const dirty = changed || invalidInput;
   useEffect(() => { onDirtyChange(dirty); }, [dirty, onDirtyChange]);
+  useEffect(() => { onDraftChange(dirty ? { proposed, inputDrafts, inputErrors } : undefined); },
+    [dirty, proposed, inputDrafts, inputErrors, onDraftChange]);
   const change = (next: FurnitureWorkspace, field?: string) => {
     epoch.current += 1; setProposed(next); setComparison(undefined); setError(undefined); setBusy(false);
     if (field) {

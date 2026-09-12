@@ -1154,6 +1154,29 @@ def _generate_raster_moves(
                 recipe.process_accuracy_um,
             )
         end_x_um, end_y_um = raster[-1][1]
+        # Raster lanes clear the interior, but their round end caps leave
+        # scallops between lanes at the walls. Finish the complete inset
+        # boundary at every depth, starting at the current corner so the
+        # transition never crosses uncut material diagonally.
+        perimeter = (
+            (left_um, bottom_um),
+            (right_um, bottom_um),
+            (right_um, top_um),
+            (left_um, top_um),
+        )
+        start_corner = perimeter.index((end_x_um, end_y_um))
+        for offset in range(1, 5):
+            next_x_um, next_y_um = perimeter[(start_corner + offset) % 4]
+            builder.cut(
+                operation,
+                pass_index,
+                next_x_um,
+                next_y_um,
+                depth_z_um,
+                recipe.feed_um_min,
+                recipe.process_accuracy_um,
+            )
+            end_x_um, end_y_um = next_x_um, next_y_um
         builder.retract(operation, pass_index, end_x_um, end_y_um)
         for relief_x_um, relief_y_um in relief_centres:
             builder.position(

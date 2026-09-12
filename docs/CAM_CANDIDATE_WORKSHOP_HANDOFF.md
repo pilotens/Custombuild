@@ -502,6 +502,19 @@ remaining work is ordered as follows:
    attestations. Only the workshop's separate physical-release procedure may
    permit machine start; Custombuild's candidate must remain non-authorizing.
 
+The current v2 attestation contract verifies one physical setup per chain: one
+WCS, fixture and keepout set shared by all three stages. Every program must name
+that WCS and measured stock from the accepted policy, and all programs must share
+one setup ID. A production program cannot borrow a reference part's evidence for
+another WCS, unmeasured sheet or setup, even if both reviewers sign the same
+internally consistent inventory. Different reference-part geometry is supported
+within that verified setup. Multi-sheet/A-B CAM candidates remain supported by
+candidate generation, but connecting them to physical workshop runs requires a
+separately versioned mapping of each setup to its own evidence and transition
+checks; one chain must not be copied across the complete candidate inventory.
+These checks tighten v2 verification without changing its document shape. Old
+multi-setup chains must be rejected on re-verification, not treated as qualified.
+
 Until those review and physical trials pass with real workshop evidence, the
 software can be rated complete for deterministic candidate generation, but the
 end-to-end physical workshop release cannot honestly be rated 10/10.

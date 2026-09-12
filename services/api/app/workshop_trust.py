@@ -653,7 +653,11 @@ class RequiredIndependentEngine(_StrictModel):
 
 
 class WorkshopVerificationPolicy(_StrictModel):
-    """Server-owned acceptance criteria bound into ``WorkshopRun`` by hash."""
+    """Server-owned criteria for one physical setup, bound into ``WorkshopRun``.
+
+    The v2 contract has one WCS, fixture and keepout set. Its program inventory
+    cannot extend that evidence to another setup, WCS or unmeasured stock.
+    """
 
     schema_version: Literal["custombuild.workshop-verification-policy.v2"]
     policy_id: Token
@@ -2133,6 +2137,19 @@ def verify_workshop_attestation_chain(
         raise WorkshopTrustError(
             "workshop executable program manifest does not match server policy"
         )
+    # A signed, internally consistent inventory is not proof that its programs
+    # share the evidenced physical setup. v2 has no per-setup evidence map: it
+    # cannot cover a second sheet-side setup or another WCS with the one signed
+    # fixture/WCS record. Check every program, including production programs;
+    # checking only the reference part would leave the rest outside the chain.
+    if len({program.setup_id for program in run.machine_programs}) != 1:
+        raise WorkshopTrustError("one verified setup cannot cover multiple program setups")
+    verified_stock_ids = {stock.stock_id for stock in policy.stock}
+    for program in run.machine_programs:
+        if program.wcs_id != policy.wcs.wcs_id:
+            raise WorkshopTrustError("program WCS is outside the verified setup")
+        if program.stock_id not in verified_stock_ids:
+            raise WorkshopTrustError("program stock is outside the verified setup")
     if len(evidence_objects) > 100_000:
         raise WorkshopTrustError("workshop evidence object index exceeds its size limit")
     if len(evidence_attachments) > 100_000:

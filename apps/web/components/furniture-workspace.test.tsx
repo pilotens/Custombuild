@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CustombuildApiClient, type CurrentPrincipal } from "@/lib/api-client";
 import { newFurnitureWorkspace, type FurniturePreview, type FurnitureWorkspace } from "@/lib/furniture-workspace";
+import { furnitureDraftRecoveryKey, parseFurnitureDraftRecovery } from "@/lib/furniture-draft-recovery";
 import { FurnitureStudio } from "./furniture-workspace";
 
 vi.mock("next/dynamic", () => ({ default: () => function Viewer() { return <div>Modell</div>; } }));
@@ -30,10 +31,12 @@ function setup() {
       nominal_thickness_um: 18_000, min_supported_thickness_um: 17_000, max_supported_thickness_um: 19_000 },
   ], hardware: [{ catalog_id: "panel-table-connectors-layout", version: "layout-1.0.0",
     name: "Gavelbord", family: "table", production_qualified: false }], machines: [] });
+  vi.spyOn(api, "validateFurnitureWorkspace").mockImplementation(async workspace => ({ workspace, validation_scope: "workspace_structure", production_qualified: false, physical_cutting_authorized: false }));
   vi.spyOn(api, "previewFurniture").mockImplementation(async workspace => preview(workspace));
   vi.spyOn(api, "furnitureHistory").mockResolvedValue({ items: [], next_offset: null });
   return api;
 }
+beforeEach(() => window.localStorage.clear());
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe("möbelstudions revisions- och profilflöde", () => {
@@ -159,7 +162,7 @@ describe("möbelstudions revisions- och profilflöde", () => {
     Object.defineProperty(file, "text", { value: async () => JSON.stringify(imported) });
     fireEvent.change(screen.getByLabelText("Läs arbetsfil (JSON)"), { target: { files: [file] } });
     await screen.findByText(/Arbetsfilen har kontrollerats/);
-    const checked = vi.mocked(api.previewFurniture).mock.lastCall?.[0];
+    const checked = vi.mocked(api.validateFurnitureWorkspace).mock.lastCall?.[0];
     expect(checked?.design.design_id).toBe("furniture");
     expect(checked?.design.revision).toBe(1);
     expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(4340);
@@ -185,7 +188,7 @@ describe("möbelstudions revisions- och profilflöde", () => {
     expect(screen.getByLabelText("Fackbredder (%)")).toHaveValue("");
     expect(screen.getByLabelText("Hyllcentrum från botten (%)")).toHaveValue("");
     expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18);
-    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled());
   });
 
   it("återbinder profilförslaget när ett projekt med samma form öppnas", async () => {
@@ -386,4 +389,178 @@ describe("möbelstudions revisions- och profilflöde", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("högst tre decimaler");
     expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
   });
+});
+
+// Recovery must preserve editing intent without converting it into a reviewed revision.
+describe("lokal återställning", () => {
+  it("återställer ogiltiga kundmått, indelning och profilförslag efter omladdning utan att tillämpa dem", async () => {
+    const api = setup();
+    let view = render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    fireEvent.click(screen.getByLabelText("Ange separata kundmått"));
+    fireEvent.change(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)"), { target: { value: "4340.0001" } });
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1100.0001" } });
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "17; 81" } });
+    fireEvent.change(screen.getByLabelText("Uppmätt skivtjocklek (mm)"), { target: { value: "18.0001" } });
+    fireEvent.change(screen.getAllByLabelText(/Batch-ID/)[0]!, { target: { value: "Min obearbetade batch" } });
+    await waitFor(() => expect(window.localStorage.getItem(furnitureDraftRecoveryKey(api.baseUrl, principal))).toContain("Min obearbetade batch"));
+    const saved = parseFurnitureDraftRecovery(window.localStorage.getItem(furnitureDraftRecoveryKey(api.baseUrl, principal))!);
+    expect(saved.workspace.design.material.batch_id).toBeNull();
+    view.unmount();
+    vi.mocked(api.previewFurniture).mockClear();
+    view = render(<FurnitureStudio api={api} principal={principal} />);
+    expect(screen.getByLabelText("Bredd (mm)")).toBeDisabled();
+    expect(api.previewFurniture).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Återställ utkast" }));
+    await screen.findByText(/Utkastet är återställt/);
+    expect(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)")).toHaveValue(4340.0001);
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1100.0001);
+    expect(screen.getByLabelText("Fackbredder (%)")).toHaveValue("17; 81");
+    expect(screen.getByLabelText("Uppmätt skivtjocklek (mm)")).toHaveValue(18.0001);
+    expect(screen.getAllByLabelText(/Batch-ID/)[0]).toHaveValue("Min obearbetade batch");
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
+    expect(api.validateFurnitureWorkspace).toHaveBeenCalledWith(saved.workspace);
+    expect(api.validateFurnitureWorkspace).toHaveBeenCalledWith(saved.profile!.proposed);
+    fireEvent.click(screen.getByRole("button", { name: "Återställ profilförslag" }));
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1100" } });
+    fireEvent.change(screen.getByLabelText("Kundlängd inklusive reserverat utrymme (mm)"), { target: { value: "4340" } });
+    fireEvent.change(screen.getByLabelText("Fackbredder (%)"), { target: { value: "50; 50" } });
+    await screen.findByText("5 delar");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    view.unmount();
+  });
+
+  it("bevarar nedladdningsbar arbetsfil vid API-fel och kan försöka igen utan att nollställa måtten", async () => {
+    const api = setup();
+    vi.mocked(api.previewFurniture).mockRejectedValue(new Error("Nätverket saknas"));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const url = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:local-workspace");
+    render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1437.001" } });
+    await screen.findByText(/Nätverket saknas/);
+    fireEvent.click(screen.getByRole("button", { name: "Spara arbetsfil" }));
+    expect(url).toHaveBeenCalled(); expect(click).toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    vi.mocked(api.previewFurniture).mockImplementation(async workspace => preview(workspace));
+    fireEvent.click(screen.getByRole("button", { name: "Försök igen" }));
+    await screen.findByText("5 delar");
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1437.001);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  });
+
+  it("bevarar korrupta kopior och läser inte en annan användares, organisations eller API:s utkast", async () => {
+    const api = setup();
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    window.localStorage.setItem(key, "korrupt men viktig fil");
+    let view = render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.click(screen.getByRole("button", { name: "Återställ utkast" }));
+    await screen.findByRole("alert");
+    expect(window.localStorage.getItem(key)).toBe("korrupt men viktig fil");
+    expect(screen.getByRole("button", { name: "Hämta återställningskopian" })).toBeEnabled();
+    view.unmount();
+    for (const changed of [{ ...principal, user_id: "annan" }, { ...principal, organization_id: "annan" }]) {
+      view = render(<FurnitureStudio api={api} principal={changed} />);
+      await screen.findByText("5 delar");
+      expect(screen.queryByRole("button", { name: "Återställ utkast" })).toBeNull();
+      view.unmount();
+    }
+    const otherApi = setup(); Object.defineProperty(otherApi, "baseUrl", { value: "https://other.example.test" });
+    view = render(<FurnitureStudio api={otherApi} principal={principal} />);
+    await screen.findByText("5 delar");
+    expect(screen.queryByRole("button", { name: "Återställ utkast" })).toBeNull();
+    expect(window.localStorage.getItem(key)).toBe("korrupt men viktig fil");
+    view.unmount();
+  });
+
+  it("varnar för lagringsfel och skriver aldrig över en nyare kopia från en annan flik", async () => {
+    const api = setup();
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    window.localStorage.setItem(key, "arbete i annan flik");
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1300" } });
+    await screen.findByText(/En annan flik har ändrat/);
+    expect(window.localStorage.getItem(key)).toBe("arbete i annan flik");
+    expect(screen.getByRole("button", { name: "Spara återställningsfil" })).toBeEnabled();
+  });
+
+  it("skyddar namnädringar och interna länkar utan att stänga av framtida navigationsvakter", async () => {
+    const api = setup();
+    render(<><a href="/different-workspace">Annan arbetsyta</a><FurnitureStudio api={api} principal={principal} /></>);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Projektnamn"), { target: { value: "Viktigt namn" } });
+    const before = new Event("beforeunload", { cancelable: true }); fireEvent(window, before);
+    expect(before.defaultPrevented).toBe(true);
+    fireEvent.click(screen.getByRole("link", { name: "Annan arbetsyta" }));
+    expect(screen.getByRole("alertdialog", { name: "Osparad design" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Tillbaka" }));
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "shelving" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fortsätt utan att spara" }));
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1700" } });
+    const next = new Event("beforeunload", { cancelable: true }); fireEvent(window, next);
+    expect(next.defaultPrevented).toBe(true);
+  });
+});
+
+
+describe("råa antal och last", () => {
+  it("bevarar tomt antal och tom last efter återställning utan att skriva noll till designen", async () => {
+    const api = setup();
+    let view = render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Möbeltyp"), { target: { value: "chest_of_drawers" } });
+    await screen.findByText("5 delar");
+    const before = vi.mocked(api.previewFurniture).mock.lastCall![0].design.intent;
+    fireEvent.change(screen.getByLabelText("Antal lådor"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Last per låda (kg)"), { target: { value: "" } });
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain('"carcass.drawer_load_n":""'));
+    expect(parseFurnitureDraftRecovery(window.localStorage.getItem(key)!).workspace.design.intent).toEqual(before);
+    expect(screen.getByLabelText("Antal lådor")).toHaveValue(null);
+    expect(screen.getByLabelText("Last per låda (kg)")).toHaveValue(null);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    view.unmount();
+    view = render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.click(screen.getByRole("button", { name: "Återställ utkast" }));
+    await screen.findByText(/Utkastet är återställt/);
+    expect(screen.getByLabelText("Antal lådor")).toHaveValue(null);
+    expect(screen.getByLabelText("Last per låda (kg)")).toHaveValue(null);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    for (const raw of ["0", "9", "2.5"]) {
+      fireEvent.change(screen.getByLabelText("Antal lådor"), { target: { value: raw } });
+      expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    }
+    fireEvent.change(screen.getByLabelText("Antal lådor"), { target: { value: "3" } });
+    fireEvent.change(screen.getByLabelText("Last per låda (kg)"), { target: { value: "0" } });
+    await screen.findByText("5 delar");
+    expect(vi.mocked(api.previewFurniture).mock.lastCall![0].design.intent).toMatchObject({ drawer_count: 3, drawer_load_n: 0 });
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    view.unmount();
+  });
+});
+
+
+it("låter en schemagiltig men omöjlig form återställas och rättas även när CAD-förhandsvisningen misslyckas", async () => {
+  const api = setup();
+  const workspace = newFurnitureWorkspace("table");
+  workspace.design.intent.width_um = 20_000;
+  const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+  window.localStorage.setItem(key, JSON.stringify({ version: 1, workspace,
+    name: "För smalt bord", revision: 0, updatedAt: new Date().toISOString() }));
+  vi.mocked(api.previewFurniture).mockImplementation(async value => {
+    if (value.design.intent.width_um < 36_000) throw new Error("Bredden rymmer inte gavlarna.");
+    return preview(value);
+  });
+  render(<FurnitureStudio api={api} principal={principal} />);
+  fireEvent.click(screen.getByRole("button", { name: "Återställ utkast" }));
+  await screen.findByText(/Bredden rymmer inte gavlarna/);
+  expect(screen.getByLabelText("Bredd (mm)")).toBeEnabled();
+  expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(20);
+  expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+  fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1000" } });
+  await screen.findByText("5 delar");
+  expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
 });
