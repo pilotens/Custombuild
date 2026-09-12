@@ -53,6 +53,7 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
   const [restoring, setRestoring] = useState(false);
   const recoveryChecked = useRef(false);
   const lastSeenRecovery = useRef<string | null>(null);
+  const recoverySession = useRef<AbortController | null>(null);
   const boundSourceHash = useRef<string | undefined>(undefined);
   const pendingNavigation = useRef<(() => void) | undefined>(undefined);
   const navigationApproved = useRef(false);
@@ -61,6 +62,11 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
   const formDirty = Boolean(formState && (formState.dirty || !formState.valid));
   const dirty = formDirty || Boolean(data && contextKey(data.spec) !== baseline);
   const recoveryKey = data ? furnitureProductionRecoveryKey(api.baseUrl, principal, data.source) : undefined;
+  useEffect(() => {
+    const controller = new AbortController();
+    recoverySession.current = controller;
+    return () => controller.abort();
+  }, [recoveryKey]);
   const initialSpec = useMemo((): DesignSpec => {
     const planning = workspace.manufacturing;
     if (!planning) throw new Error("Välj en planeringsprofil före beredningen.");
@@ -131,19 +137,21 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
   useEffect(() => {
     if (!data || !recoveryKey || pendingRecovery || !recoveryChecked.current) return;
     let active = true;
-    void Promise.resolve().then(() => {
+    const controller = new AbortController();
+    void Promise.resolve().then(async () => {
       if (!active) return;
       try {
         const next = dirty ? serializeFurnitureProductionRecovery(furnitureProductionRecovery(data.spec, data.source, formState)) : null;
-        replaceFurnitureRecovery(window.localStorage, recoveryKey, lastSeenRecovery.current, next);
-        lastSeenRecovery.current = next;
-        setStorageError(undefined);
+        const written = await replaceFurnitureRecovery(window.localStorage, recoveryKey, lastSeenRecovery, next,
+          () => active, controller.signal);
+        if (active && written) setStorageError(undefined);
       } catch (reason) {
-        setStorageError(reason instanceof Error && /^(En annan flik|Formulärkopian|Beredningskopian)/.test(reason.message)
+        if (!active) return;
+        setStorageError(reason instanceof Error && /^(En annan flik|Formulärkopian|Beredningskopian|Webbläsaren)/.test(reason.message)
           ? reason.message : "Den lokala beredningskopian kunde inte sparas. Ladda ned utkastet innan du lämnar sidan.");
       }
     });
-    return () => { active = false; };
+    return () => { active = false; controller.abort(); };
   }, [data, recoveryKey, pendingRecovery, dirty, formState]);
 
   useEffect(() => {
@@ -231,18 +239,22 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
       setError(reason instanceof Error ? reason.message : "Beredningskopian kunde inte återställas.");
     } finally { setRestoring(false); }
   };
-  const discardRecovery = () => {
-    if (restoring) return;
+  const discardRecovery = async () => {
+    const session = recoverySession.current;
+    if (restoring || !session || session.signal.aborted) return;
+    setRestoring(true);
     try {
       if (pendingRecovery?.persisted && recoveryKey) {
-        replaceFurnitureRecovery(window.localStorage, recoveryKey, lastSeenRecovery.current, null);
-        lastSeenRecovery.current = null;
+        const removed = await replaceFurnitureRecovery(window.localStorage, recoveryKey, lastSeenRecovery, null,
+          () => !session.signal.aborted, session.signal);
+        if (!removed) return;
       }
-      setPendingRecovery(undefined);
-      setError(undefined);
+      if (!session.signal.aborted) { setPendingRecovery(undefined); setError(undefined); }
     } catch (reason) {
-      setStorageError(reason instanceof Error && reason.message.startsWith("En annan flik")
+      if (!session.signal.aborted) setStorageError(reason instanceof Error && /^(En annan flik|Webbläsaren)/.test(reason.message)
         ? reason.message : "Kopian kunde inte tas bort. Ladda ned den och försök igen.");
+    } finally {
+      if (!session.signal.aborted) setRestoring(false);
     }
   };
 
@@ -272,7 +284,7 @@ function FurnitureProductionSession({ api, principal, workspace, designHash, pro
       <p>Kopian måste matcha exakt denna möbelrevision. Uppgifterna kontrolleras mot servern innan de används.</p>
       <button disabled={restoring} aria-busy={restoring} onClick={() => { void restoreRecovery(); }}>Återställ beredningskopian</button>
       <button onClick={() => downloadRecovery(pendingRecovery.raw)}>Ladda ned beredningskopian</button>
-      <button disabled={restoring} onClick={discardRecovery}>Kasta beredningskopian</button>
+      <button disabled={restoring} onClick={() => { void discardRecovery(); }}>Kasta beredningskopian</button>
     </section> : null}
     {data && !pendingRecovery ? <section className={styles.notice} aria-label="Säkerhetskopia av beredning">
       <p>Verkstadsuppgifter och ofullständiga formulärfält säkerhetskopieras lokalt tills revisionen sparas. Återställda fält måste kontrolleras innan de tillämpas. En kopia är inget tillverkningsgodkännande.</p>

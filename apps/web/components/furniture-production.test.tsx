@@ -293,3 +293,37 @@ describe("beredning från sparad möbel", () => {
     expect(screen.getByRole("region", { name: "Lokal beredningskopia" })).toBeVisible();
   });
 });
+
+
+describe("Web Locks in furniture production recovery", () => {
+  it("keeps a persisted preparation when a queued discard's source session unmounts", async () => {
+    const api = setup();
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    const raw = "{keep-this-copy";
+    window.localStorage.setItem(key, raw);
+    const mounted = show(api);
+    await screen.findByRole("button", { name: "Kasta beredningskopian" });
+    let release!: () => void;
+    const holder = navigator.locks.request(`custombuild:recovery-write:${key}`, { mode: "exclusive" },
+      () => new Promise<void>(resolve => { release = resolve; }));
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    fireEvent.click(screen.getByRole("button", { name: "Kasta beredningskopian" }));
+    expect(screen.getByRole("button", { name: "Kasta beredningskopian" })).toBeDisabled();
+    mounted.unmount();
+    await act(async () => { release(); await holder; });
+    expect(window.localStorage.getItem(key)).toBe(raw);
+  });
+
+  it("reports unavailable Web Locks and preserves the recovery for download", async () => {
+    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+    const api = setup();
+    const key = furnitureProductionRecoveryKey(api.baseUrl, principal, source);
+    const raw = "{keep-this-copy";
+    window.localStorage.setItem(key, raw);
+    show(api);
+    fireEvent.click(await screen.findByRole("button", { name: "Kasta beredningskopian" }));
+    await screen.findByText(/stöder inte säker samordning/);
+    expect(screen.getByRole("button", { name: "Ladda ned beredningskopian" })).toBeEnabled();
+    expect(window.localStorage.getItem(key)).toBe(raw);
+  });
+});

@@ -57,11 +57,28 @@ export function parseFurnitureDraftRecovery(raw: string): FurnitureDraftRecovery
   return value as unknown as FurnitureDraftRecovery;
 }
 
-/** Compare before writing so another tab's newer draft cannot be silently replaced. */
-export function replaceFurnitureRecovery(storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
-  key: string, expected: string | null, next: string | null): void {
-  if (storage.getItem(key) !== expected) {
-    throw new Error("En annan flik har ändrat återställningskopian. Hämta din återställningsfil innan du fortsätter.");
+/**
+ * Every recovery mutation uses the same origin-wide Web Lock. The expected
+ * value is read and advanced while holding the lock, never before/after await.
+ */
+export async function replaceFurnitureRecovery(
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
+  key: string,
+  expected: { current: string | null },
+  next: string | null,
+  isCurrent: () => boolean,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (typeof navigator === "undefined" || typeof navigator.locks?.request !== "function") {
+    throw new Error("Webbläsaren stöder inte säker samordning av återställningskopior. Hämta en återställningsfil för att behålla ditt arbete.");
   }
-  if (next === null) storage.removeItem(key); else storage.setItem(key, next);
+  return navigator.locks.request(`custombuild:recovery-write:${key}`, { mode: "exclusive", signal }, () => {
+    if (!isCurrent() || signal?.aborted) return false;
+    if (storage.getItem(key) !== expected.current) {
+      throw new Error("En annan flik har ändrat återställningskopian. Hämta din återställningsfil innan du fortsätter.");
+    }
+    if (next === null) storage.removeItem(key); else storage.setItem(key, next);
+    expected.current = next;
+    return true;
+  });
 }

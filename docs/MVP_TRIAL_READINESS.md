@@ -73,6 +73,9 @@ batch-, maskin- och råformatsbyten. Servern kontrollerar arbetsfil och
 profilförslag före återställning; ogiltiga råfält måste rättas innan de kan
 tillämpas. Kopian skiljs per API, organisation och användare. En förändrad
 kopia från en annan flik skrivs inte över utan att konflikten hanteras.
+Båda möbelvyerna samordnar skrivning och borttagning med webbläsarens exklusiva
+lås. Föråldrade väntande ändringar avbryts. Om låsstöd saknas eller nekas visas
+ett lagringsfel; användaren kan fortsätta redigera och hämta en återställningsfil.
 Skadade kopior kan laddas ned för återställning och export fungerar även
 när API-granskningen inte är tillgänglig.
 

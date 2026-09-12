@@ -74,6 +74,12 @@ export function FurnitureStudio({ api, principal, onLogin }: {
   });
   const [pendingRecovery, setPendingRecovery] = useState(initialRecovery.raw);
   const persistedRecovery = useRef(initialRecovery.raw);
+  const recoverySession = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    recoverySession.current = controller;
+    return () => controller.abort();
+  }, [recoveryKey]);
   const [storageError, setStorageError] = useState(initialRecovery.error);
   const [refresh, setRefresh] = useState(0);
   const [inputDrafts, setInputDrafts] = useState<Record<string, string>>({});
@@ -187,18 +193,22 @@ export function FurnitureStudio({ api, principal, onLogin }: {
   useEffect(() => {
     if (pendingRecovery) return;
     let active = true;
-    void Promise.resolve().then(() => {
+    const controller = new AbortController();
+    void Promise.resolve().then(async () => {
       if (!active) return;
       try {
         const snapshot: FurnitureDraftRecovery = { version: 1, workspace, projectId, revision,
           name: name.trim() || "Min möbel", updatedAt: new Date().toISOString(), inputDrafts, inputErrors, profile: profileDraft };
         const next = dirty ? JSON.stringify(snapshot) : null;
         if (next && new TextEncoder().encode(next).length > 256 * 1024) throw new Error("Återställningskopian är för stor.");
-        replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery.current, next);
-        persistedRecovery.current = next; setStorageError(undefined);
-      } catch (reason) { setStorageError(`${errorText(reason)} Hämta en återställningsfil för att behålla ditt arbete.`); }
+        const written = await replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery, next,
+          () => active, controller.signal);
+        if (active && written) setStorageError(undefined);
+      } catch (reason) {
+        if (active) setStorageError(`${errorText(reason)} Hämta en återställningsfil för att behålla ditt arbete.`);
+      }
     });
-    return () => { active = false; };
+    return () => { active = false; controller.abort(); };
   }, [dirty, workspace, projectId, revision, name, inputDrafts, inputErrors, profileDraft, recoveryKey, pendingRecovery]);
 
   useEffect(() => {
@@ -373,11 +383,21 @@ export function FurnitureStudio({ api, principal, onLogin }: {
     } catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); }
   };
-  const discardRecovery = () => {
+  const discardRecovery = async () => {
+    const session = recoverySession.current;
+    if (busy || !session || session.signal.aborted) return;
+    setBusy(true);
     try {
-      replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery.current, null);
-      persistedRecovery.current = null; setPendingRecovery(null); setStorageError(undefined); setError(undefined);
-    } catch (reason) { setStorageError(errorText(reason)); }
+      const removed = await replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery, null,
+        () => !session.signal.aborted, session.signal);
+      if (removed && !session.signal.aborted) {
+        setPendingRecovery(null); setStorageError(undefined); setError(undefined);
+      }
+    } catch (reason) {
+      if (!session.signal.aborted) setStorageError(errorText(reason));
+    } finally {
+      if (!session.signal.aborted) setBusy(false);
+    }
   };
   const viewerParts = useMemo(() => preview ? furnitureViewerParts(preview, drawersOpen) : [], [preview, drawersOpen]);
 
@@ -391,7 +411,7 @@ export function FurnitureStudio({ api, principal, onLogin }: {
       <h2>Återställ ditt utkast</h2><p>Det finns arbete från ett tidigare besök. Återställningskopian är inte en sparad revision eller ett tillverkningsgodkännande.</p>
       <button disabled={busy} onClick={() => { void restoreRecovery(); }}>Återställ utkast</button>
       <button onClick={() => downloadRecovery(pendingRecovery)}>Hämta återställningskopian</button>
-      <button disabled={busy} onClick={discardRecovery}>Ta bort återställningskopian</button>
+      <button disabled={busy} onClick={() => { void discardRecovery(); }}>Ta bort återställningskopian</button>
     </section> : null}
     {storageError ? <p role="alert" className={styles.error}>{storageError}</p> : null}
     {error ? <p role="alert" className={styles.error}>{error} <button onClick={() => setRefresh(value => value+1)}>Försök igen</button>

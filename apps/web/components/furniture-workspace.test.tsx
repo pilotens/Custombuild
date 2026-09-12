@@ -689,3 +689,55 @@ it("avvisar lastöverskridanden från byte av lastbasis och omräkning av kundm�
   await waitFor(() => expect(parseFurnitureDraftRecovery(window.localStorage.getItem(key)!).workspace.design)
     .toMatchObject({ intent: { width_um: 900_000, shelf_load_per_metre_n: 981 }, installation: { width_um: 6_000_000 } }));
 });
+
+
+describe("Web Locks in the furniture editor", () => {
+  it("shows unsupported coordination without blocking editing or offering false local-save success", async () => {
+    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1437" } });
+    await screen.findByText(/stöder inte säker samordning/);
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1437);
+    expect(screen.getByRole("button", { name: "Spara återställningsfil" })).toBeEnabled();
+    expect(window.localStorage.getItem(furnitureDraftRecoveryKey(api.baseUrl, principal))).toBeNull();
+  });
+
+  it("cancels a queued discard on unmount and keeps the stored recovery intact", async () => {
+    const api = setup();
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    const raw = JSON.stringify({ version: 1, workspace: newFurnitureWorkspace("table"),
+      name: "Behåll mitt utkast", revision: 0, updatedAt: new Date().toISOString() });
+    window.localStorage.setItem(key, raw);
+    let release!: () => void;
+    const holder = navigator.locks.request(`custombuild:recovery-write:${key}`, { mode: "exclusive" },
+      () => new Promise<void>(resolve => { release = resolve; }));
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    const mounted = render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.click(screen.getByRole("button", { name: "Ta bort återställningskopian" }));
+    expect(screen.getByRole("button", { name: "Ta bort återställningskopian" })).toBeDisabled();
+    expect(window.localStorage.getItem(key)).toBe(raw);
+    mounted.unmount();
+    await act(async () => { release(); await holder; });
+    expect(window.localStorage.getItem(key)).toBe(raw);
+  });
+
+  it("cancels obsolete queued autosaves and persists only the current edit", async () => {
+    const api = setup();
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    let release!: () => void;
+    const holder = navigator.locks.request(`custombuild:recovery-write:${key}`, { mode: "exclusive" },
+      () => new Promise<void>(resolve => { release = resolve; }));
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    render(<FurnitureStudio api={api} principal={principal} />);
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1200" } });
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1400" } });
+    await act(async () => { await Promise.resolve(); });
+    expect(window.localStorage.getItem(key)).toBeNull();
+    await act(async () => { release(); await holder; });
+    await waitFor(() => expect(parseFurnitureDraftRecovery(window.localStorage.getItem(key)!)
+      .workspace.design.intent.width_um).toBe(1_400_000));
+    expect(screen.queryByText(/En annan flik har ändrat/)).toBeNull();
+  });
+});
