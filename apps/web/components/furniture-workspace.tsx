@@ -98,6 +98,9 @@ export function FurnitureStudio({ api, principal, onLogin }: {
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const saveActive = useRef(false);
+  const recoveryAutosave = useRef<AbortController | null>(null);
   const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
   const [inputEpoch, setInputEpoch] = useState(0);
   const [profileDirty, setProfileDirty] = useState(false);
@@ -111,9 +114,13 @@ export function FurnitureStudio({ api, principal, onLogin }: {
   const [download, setDownload] = useState<{ url: string; name: string; revision: number }>();
   const [exportMessage, setExportMessage] = useState<string>();
   const mutationEpoch = useRef(0);
+  const profileMutationEpoch = useRef(0);
   const invalidInput = Object.keys(inputErrors).length > 0;
   const dirty = fingerprint(workspace) !== baseline || invalidInput || profileDirty || (!projectId && name !== nameBaseline);
-  const profileDirtyChanged = useCallback((value: boolean) => setProfileDirty(value), []);
+  const profileDirtyChanged = useCallback((value: boolean) => {
+    if (value) profileMutationEpoch.current += 1;
+    setProfileDirty(value);
+  }, []);
   const profileDraftChanged = useCallback((value: FurnitureProfileDraft | undefined) => setProfileDraft(value), []);
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
@@ -167,16 +174,16 @@ export function FurnitureStudio({ api, principal, onLogin }: {
   }, [api, workspace, refresh, pendingRecovery]);
 
   useEffect(() => {
-    if (!dirty) return;
+    if (!dirty && !saving) return;
     const warn = (event: BeforeUnloadEvent) => {
       if (!navigationApproved.current) { event.preventDefault(); event.returnValue = ""; }
     };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
-  }, [dirty]);
+  }, [dirty, saving]);
 
   useEffect(() => {
-    if (!dirty || productionOpen) return;
+    if ((!dirty && !saving) || productionOpen) return;
     const guard = (event: MouseEvent) => {
       if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const anchor = event.target instanceof Element ? event.target.closest("a[href]") : null;
@@ -188,12 +195,13 @@ export function FurnitureStudio({ api, principal, onLogin }: {
     };
     document.addEventListener("click", guard, true);
     return () => document.removeEventListener("click", guard, true);
-  }, [dirty, productionOpen]);
+  }, [dirty, saving, productionOpen]);
 
   useEffect(() => {
-    if (pendingRecovery) return;
+    if (pendingRecovery || saving || saveActive.current) return;
     let active = true;
     const controller = new AbortController();
+    recoveryAutosave.current = controller;
     void Promise.resolve().then(async () => {
       if (!active) return;
       try {
@@ -202,14 +210,14 @@ export function FurnitureStudio({ api, principal, onLogin }: {
         const next = dirty ? JSON.stringify(snapshot) : null;
         if (next && new TextEncoder().encode(next).length > 256 * 1024) throw new Error("Återställningskopian är för stor.");
         const written = await replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery, next,
-          () => active, controller.signal);
-        if (active && written) setStorageError(undefined);
+          () => active && !saveActive.current, controller.signal);
+        if (active && !saveActive.current && written) setStorageError(undefined);
       } catch (reason) {
-        if (active) setStorageError(`${errorText(reason)} Hämta en återställningsfil för att behålla ditt arbete.`);
+        if (active && !saveActive.current) setStorageError(`${errorText(reason)} Hämta en återställningsfil för att behålla ditt arbete.`);
       }
     });
     return () => { active = false; controller.abort(); };
-  }, [dirty, workspace, projectId, revision, name, inputDrafts, inputErrors, profileDraft, recoveryKey, pendingRecovery]);
+  }, [dirty, workspace, projectId, revision, name, inputDrafts, inputErrors, profileDraft, recoveryKey, pendingRecovery, saving]);
 
   useEffect(() => {
     if (!download) return;
@@ -299,22 +307,61 @@ export function FurnitureStudio({ api, principal, onLogin }: {
     }).catch(reason => setError(errorText(reason))).finally(() => setBusy(false));
   });
   const save = async () => {
-    if (invalidInput || profileDirty || !preview) return;
-    setBusy(true); setError(undefined);
+    const session = recoverySession.current;
+    if (busy || saveActive.current || invalidInput || profileDirty || !preview || !session || session.signal.aborted) return;
+    const submittedEpoch = mutationEpoch.current;
+    const submittedProfileEpoch = profileMutationEpoch.current;
+    saveActive.current = true;
+    recoveryAutosave.current?.abort();
+    setSaving(true); setBusy(true); setError(undefined); setNotice(undefined);
     try {
       let id = projectId;
       if (!id) {
         const project = await api.createProject(name.trim());
+        if (session.signal.aborted) return;
         id = project.id; setProjectId(id); setBaseline("");
         setProjects(items => [...items, { ...project, furniture_type: intent.family }]);
       }
       const saved = await api.saveFurnitureDraft(id, revision, workspace);
       if (!saved.workspace) throw new Error("Servern returnerade inget sparat utkast.");
-      update(saved.workspace); setBaseline(fingerprint(saved.workspace)); setRevision(saved.revision);
-      setPreview(saved.preview ?? undefined); setNotice(`Revision ${saved.revision} är sparad.`);
-      setHistory(await api.furnitureHistory(id));
-    } catch (reason) { setError(errorText(reason)); }
-    finally { setBusy(false); }
+      if (session.signal.aborted) return;
+      // Acknowledgement binds the submitted snapshot, never later raw inputs or proposals.
+      setBaseline(fingerprint(saved.workspace)); setRevision(saved.revision);
+      if (submittedEpoch === mutationEpoch.current && submittedProfileEpoch === profileMutationEpoch.current) {
+        update(saved.workspace); setPreview(saved.preview ?? undefined);
+        const cleanupEpoch = mutationEpoch.current;
+        const cleanupProfileEpoch = profileMutationEpoch.current;
+        try {
+          const cleaned = await replaceFurnitureRecovery(window.localStorage, recoveryKey, persistedRecovery, null,
+            () => !session.signal.aborted && mutationEpoch.current === cleanupEpoch
+              && profileMutationEpoch.current === cleanupProfileEpoch, session.signal);
+          if (session.signal.aborted) return;
+          if (cleaned) {
+            setStorageError(undefined);
+            setNotice(`Revision ${saved.revision} är sparad.`);
+          } else {
+            setNotice(`Revision ${saved.revision} är sparad på servern. Nyare ändringar finns kvar i utkastet och behöver sparas separat.`);
+          }
+        } catch (reason) {
+          if (session.signal.aborted) return;
+          setStorageError(errorText(reason));
+          setNotice(`Revision ${saved.revision} är sparad på servern, men återställningskopian kunde inte rensas. Hämta kopian innan du lämnar sidan.`);
+        }
+      } else {
+        setNotice(`Revision ${saved.revision} är sparad på servern. Nyare ändringar finns kvar i utkastet och behöver sparas separat.`);
+      }
+      const historyEpoch = mutationEpoch.current;
+      void api.furnitureHistory(id).then(next => {
+        if (!session.signal.aborted && historyEpoch === mutationEpoch.current) setHistory(next);
+      }).catch(reason => {
+        if (!session.signal.aborted && historyEpoch === mutationEpoch.current) setError(errorText(reason));
+      });
+    } catch (reason) {
+      if (!session.signal.aborted) setError(errorText(reason));
+    } finally {
+      saveActive.current = false;
+      if (!session.signal.aborted) { setSaving(false); setBusy(false); }
+    }
   };
   const exportReview = async () => {
     if (!projectId || !preview || dirty) return;
@@ -439,7 +486,7 @@ export function FurnitureStudio({ api, principal, onLogin }: {
       </div>
     </section>
     {pendingNavigation ? <section role="alertdialog" aria-label="Osparad design" className={styles.notice}>
-      <p>{profileDirty
+      <p>{saving ? "Sparandet pågår. Vänta tills revisionen är sparad och återställningskopian är uppdaterad innan du lämnar sidan." : profileDirty
         ? "Du har ett profilförslag som inte är tillämpat. Gå tillbaka, använd profilbytet och spara revisionen för att behålla det."
         : "Du har osparade ändringar. Spara revisionen för att behålla dem."}</p>
       <button onClick={() => setPendingNavigation(null)}>Tillbaka</button>

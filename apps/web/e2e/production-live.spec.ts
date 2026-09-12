@@ -599,24 +599,63 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     name: "Ladda ned granskningspaket (.zip)",
     exact: true,
   });
-  await expect(downloadButton).toBeVisible({ timeout: 4 * 60_000 });
+  const jobUrl = `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}`;
+  const jobState: { latest: {
+    status?: unknown;
+    attempts?: unknown;
+    error?: unknown;
+    result_json?: Record<string, unknown> | null;
+  } } = { latest: {} };
+  let previousStatus: unknown;
+  try {
+    // A queued POST is not a completed package. Observe the actual job before
+    // testing its UI, so a worker failure reports its cause without a blind wait.
+    await expect.poll(async () => {
+      const response = await request.get(jobUrl, { headers: authHeaders });
+      expect(response.ok(), `Job GET returned HTTP ${response.status()}`).toBe(true);
+      jobState.latest = await response.json();
+      const { status, attempts, error } = jobState.latest;
+      if (status !== previousStatus) {
+        console.log("production-live: generation job", { status, attempts, error });
+        previousStatus = status;
+      }
+      return ["succeeded", "failed", "cancelled"].includes(String(status));
+    }, { timeout: 4 * 60_000, intervals: [1_000, 2_000] }).toBe(true);
+    expect(jobState.latest.status, JSON.stringify({
+      status: jobState.latest.status,
+      attempts: jobState.latest.attempts,
+      error: jobState.latest.error,
+    })).toBe("succeeded");
+    await expect(downloadButton).toBeVisible({ timeout: 30_000 });
+  } catch (error) {
+    const { status, attempts, error: jobError, result_json: result } = jobState.latest;
+    console.error("production-live: generation failure context", {
+      status, attempts, error: jobError,
+      package_status: result?.design_review_package_status,
+      workshop_readiness: result?.workshop_readiness,
+    });
+    try {
+      const artifacts = await request.get(`${jobUrl}/artifacts`, { headers: authHeaders });
+      console.error("production-live: artifact inventory", {
+        httpStatus: artifacts.status(),
+        artifacts: artifacts.ok()
+          ? (await artifacts.json() as Array<{ kind: string; sha256: string; size_bytes: number }>)
+            .map(({ kind, sha256, size_bytes }) => ({ kind, sha256, size_bytes }))
+          : [],
+      });
+      console.error("production-live: visible workflow", await productionDialog.innerText());
+    } catch (diagnosticError) {
+      console.error("production-live: additional diagnostics unavailable", diagnosticError);
+    }
+    throw error;
+  }
+  const completedJob = jobState.latest;
   const camStatus = productionDialog.getByRole("status", { name: "Status för CAM" });
   await expect(camStatus).toContainText("versionsbunden, checksummeadresserad");
   await expect(camStatus).toContainText("torr självlåsning eller mekanisk retention");
   await expect(camStatus).toContainText(
     "Lim, bärande geometri och granskningsgodkännanden ersätter inte retentionsevidens",
   );
-
-  const completedJobResponse = await request.get(
-    `${apiUrl}/v1/jobs/${encodeURIComponent(queuedJob.id as string)}`,
-    { headers: authHeaders },
-  );
-  expect(completedJobResponse.ok()).toBe(true);
-  const completedJob = await completedJobResponse.json() as {
-    status?: unknown;
-    result_json?: Record<string, unknown> | null;
-  };
-  expect(completedJob.status).toBe("succeeded");
   expect(completedJob.result_json).toMatchObject({
     authoritative_geometry: true,
     dfm_status: "WARNING",

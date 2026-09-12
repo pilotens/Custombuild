@@ -741,3 +741,113 @@ describe("Web Locks in the furniture editor", () => {
     expect(screen.queryByText(/En annan flik har ändrat/)).toBeNull();
   });
 });
+
+
+describe("save acknowledgement and recovery completion", () => {
+  function saveApi() {
+    const api = setup();
+    vi.spyOn(api, "createProject").mockResolvedValue({ id: "saved-project", name: "Mitt bord", furniture_type: "table",
+      current_revision: 0, description: "", archived: false, created_at: "2026-09-07T12:00:00Z",
+      updated_at: "2026-09-07T12:00:00Z" });
+    const save = vi.spyOn(api, "saveFurnitureDraft").mockImplementation(async (id, revision, workspace) => {
+      const saved = { ...workspace, design: { ...workspace.design, design_id: id, revision: revision + 1 } };
+      return { project_id: id, revision: revision + 1, workspace: saved, preview: preview(saved) };
+    });
+    return { api, save };
+  }
+
+  async function holdRecovery(key: string) {
+    let release!: () => void;
+    const holder = navigator.locks.request(`custombuild:recovery-write:${key}`, { mode: "exclusive" },
+      () => new Promise<void>(resolve => { release = resolve; }));
+    await waitFor(() => expect(release).toBeTypeOf("function"));
+    return async () => { release(); await holder; };
+  }
+
+  it("announces a saved revision only after its recovery cleanup completes, so immediate reload is clean", async () => {
+    const { api, save } = saveApi();
+    let mounted = render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1437" } });
+    await screen.findByText("5 delar");
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain('"width_um":1437000'));
+    const before = window.localStorage.getItem(key);
+    const release = await holdRecovery(key);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Spara revision" })); });
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(screen.queryByText("Revision 1 är sparad.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Arbetar…" })).toBeDisabled();
+    expect(window.localStorage.getItem(key)).toBe(before);
+    const unload = new Event("beforeunload", { cancelable: true });
+    fireEvent(window, unload);
+    expect(unload.defaultPrevented).toBe(true);
+    await act(release);
+    await screen.findByText("Revision 1 är sparad.");
+    expect(window.localStorage.getItem(key)).toBeNull();
+    mounted.unmount();
+    mounted = render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    expect(screen.queryByRole("region", { name: "Återställ ditt utkast" })).toBeNull();
+    expect(screen.getByLabelText("Öppna möbelprojekt")).toBeEnabled();
+    mounted.unmount();
+  });
+
+  it("reports server success with a cleanup warning when another tab owns the newer copy", async () => {
+    const { api, save } = saveApi();
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1437" } });
+    await screen.findByText("5 delar");
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain('"width_um":1437000'));
+    const release = await holdRecovery(key);
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Spara revision" })); });
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    const foreign = "a newer copy owned by the other lock holder";
+    window.localStorage.setItem(key, foreign);
+    await act(release);
+    await screen.findByText(/sparad på servern, men återställningskopian kunde inte rensas/);
+    expect(screen.queryByText("Revision 1 är sparad.")).toBeNull();
+    expect(window.localStorage.getItem(key)).toBe(foreign);
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1437);
+  });
+
+  it.each(["server", "cleanup"] as const)("preserves newer raw fields and profile proposals arriving during %s", async phase => {
+    const { api, save } = saveApi();
+    let finishServer!: (value: Awaited<ReturnType<CustombuildApiClient["saveFurnitureDraft"]>>) => void;
+    if (phase === "server") save.mockImplementationOnce(() => new Promise(resolve => { finishServer = resolve; }));
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1437" } });
+    await screen.findByText("5 delar");
+    const key = furnitureDraftRecoveryKey(api.baseUrl, principal);
+    await waitFor(() => expect(window.localStorage.getItem(key)).toContain('"width_um":1437000'));
+    const release = phase === "cleanup" ? await holdRecovery(key) : undefined;
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Spara revision" })); });
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    // Model an input event already queued when the save action disabled its controls.
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1437.0001" } });
+    fireEvent.change(screen.getByLabelText(/Batch-ID/), { target: { value: "Ny batchtext" } });
+    if (phase === "server") {
+      const submitted = save.mock.calls[0]![2];
+      const saved = { ...submitted, design: { ...submitted.design, design_id: "saved-project", revision: 1 } };
+      await act(async () => finishServer({ project_id: "saved-project", revision: 1, workspace: saved, preview: preview(saved) }));
+    } else {
+      await act(release!);
+    }
+    await screen.findByText(/Nyare ändringar finns kvar i utkastet/);
+    expect(screen.queryByText("Revision 1 är sparad.")).toBeNull();
+    expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(1437.0001);
+    expect(screen.getByLabelText(/Batch-ID/)).toHaveValue("Ny batchtext");
+    await waitFor(() => {
+      const recovered = parseFurnitureDraftRecovery(window.localStorage.getItem(key)!);
+      expect(recovered.revision).toBe(1);
+      expect(recovered.workspace.design.intent.width_um).toBe(1_437_000);
+      expect(recovered.inputDrafts?.["carcass.width_um"]).toBe("1437.0001");
+      expect(recovered.profile?.inputDrafts["material.batch_id"]).toBe("Ny batchtext");
+      expect(recovered.profile?.proposed.design.material.batch_id).toBeNull();
+    });
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+  });
+});
