@@ -153,7 +153,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " rows=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
       " assert rows and all(not r['measured'] and not r['result'] for r in rows)",
       " assembly=list(csv.DictReader(io.StringIO(z.read('inspection/assembly-checks.csv').decode('utf-8-sig'))))",
-      " assert next(r for r in assembly if r['check']=='width')['expected']=='4340.000'",
+      " assert next(r for r in assembly if r['check']=='carcass_width')['expected']=='4340.000'",
       " assert all(not r['agreed_acceptance_criterion'] and not r['result'] for r in assembly)",
       " assert 'BLOCKERAR' in z.read('inspection/trial-readiness.md').decode()",
       " print(z.read('manufacturing/workshop-handoff.json').decode())",
