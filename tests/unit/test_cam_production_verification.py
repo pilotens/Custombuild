@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
+from math import hypot
 
 import pytest
 from custombuild_cam import production_verification as verification_module
@@ -25,7 +27,7 @@ from custombuild_cam.production_verification import (
     cutting_program_report_json,
     verify_production_toolpaths,
 )
-from custombuild_cam.toolpaths import generate_production_toolpaths
+from custombuild_cam.toolpaths import ProductionCAMError, generate_production_toolpaths
 from custombuild_manufacturing.model import (
     CAMOperation,
     OperationKind,
@@ -427,9 +429,9 @@ def _open_edge_groove_source_document() -> OperationsDocument:
         depth_um=6_000,
         width_um=30_000,
         length_um=80_000,
-        cutter_envelope_x_um=20_000,
+        cutter_envelope_x_um=17_000,
         cutter_envelope_y_um=97_000,
-        cutter_envelope_width_um=33_000,
+        cutter_envelope_width_um=36_000,
         cutter_envelope_length_um=86_000,
         stepdown_um=3_000,
         stepover_ppm=400_000,
@@ -460,9 +462,9 @@ def _rotated_open_edge_groove_source_document() -> OperationsDocument:
         width_um=80_000,
         length_um=30_000,
         cutter_envelope_x_um=97_000,
-        cutter_envelope_y_um=20_000,
+        cutter_envelope_y_um=17_000,
         cutter_envelope_width_um=86_000,
-        cutter_envelope_length_um=33_000,
+        cutter_envelope_length_um=36_000,
         stepdown_um=3_000,
         stepover_ppm=400_000,
         source_rotation_90=True,
@@ -648,6 +650,147 @@ def test_rotated_source_open_edge_maps_to_the_exact_physical_boundary() -> None:
 
     assert report.status == CuttingProgramStatus.PASS
     assert report.issue_count == 0
+
+
+def test_edge_flush_pocket_cannot_use_a_groove_open_end_declaration() -> None:
+    source = _open_edge_groove_source_document()
+    candidate = generate_production_toolpaths(source, _execution_context(source))
+    pocket_source = replace(
+        source,
+        operations=tuple(
+            replace(operation, kind=OperationKind.POCKET)
+            if operation.open_end_reliefs else operation for operation in source.operations
+        ),
+    )
+    with pytest.raises(ProductionCAMError, match="finished part boundary"):
+        generate_production_toolpaths(pocket_source, _execution_context(pocket_source))
+    forged = replace(candidate, operations_sha256=sha256_hex(pocket_source.to_json()))
+    assert "OPEN_END_BINDING_INVALID" in _issue_codes(forged, pocket_source)
+
+
+@pytest.mark.parametrize("side", [Side.A, Side.B])
+@pytest.mark.parametrize("rotated", [False, True])
+@pytest.mark.parametrize("source_edge", ["u_min", "u_max", "v_min", "v_max"])
+@pytest.mark.parametrize("strategy", ["dogbone-v1", "dogbone-v2"])
+def test_open_mouth_corners_are_removed_at_every_depth(
+    side: Side, rotated: bool, source_edge: str, strategy: str,
+) -> None:
+    # Define the physical transform in this independent fixture, including
+    # asymmetric rectangles so a swapped axis cannot accidentally pass.
+    edge = ({"u_min": "y_min", "u_max": "y_max", "v_min": "x_max", "v_max": "x_min"}
+            if rotated else
+            {"u_min": "x_min", "u_max": "x_max", "v_min": "y_min", "v_max": "y_max"}
+            )[source_edge]
+    if side == Side.B and edge.startswith("y_"):
+        edge = "y_max" if edge == "y_min" else "y_min"
+    source = _dogbone_source_document()
+    setup = replace(
+        source.setups[0], side=side,
+        setup_id=f"setup:sheet:001:{side.value}",
+        orientation=("A_SIDE_UP; STOCK_ORIGIN_AT_LOWER_LEFT" if side == Side.A else
+                     "FLIP_STOCK_ABOUT_X_AXIS; MACHINE_Y=STOCK_HEIGHT-DESIGN_Y"),
+    )
+    width, length = (80_000, 30_000) if rotated else (30_000, 80_000)
+    x = 20_000 if edge == "x_min" else 420_000 - width if edge == "x_max" else 150_000
+    y = 20_000 if edge == "y_min" else 320_000 - length if edge == "y_max" else 100_000
+    area = replace(
+        source.operations[-1], x_um=x, y_um=y, width_um=width, length_um=length,
+        cutter_envelope_x_um=x - 3_000, cutter_envelope_y_um=y - 3_000,
+        cutter_envelope_width_um=width + 6_000, cutter_envelope_length_um=length + 6_000,
+        corner_strategy=strategy, open_end_reliefs=(source_edge,),
+    )
+    source = replace(
+        source, setups=(setup,),
+        operations=tuple(replace(op, side=side, setup_id=setup.setup_id, source_rotation_90=rotated)
+                         for op in (*source.operations[:-1], area)),
+    )
+    candidate = generate_production_toolpaths(source, _execution_context(source))
+    assert verify_production_toolpaths(candidate, source).report.status == CuttingProgramStatus.PASS
+    program_index = next(i for i, p in enumerate(candidate.programs)
+                         if area.operation_id in p.operation_ids)
+    program = candidate.programs[program_index]
+    if edge.startswith("x_"):
+        px = x + 700 if edge == "x_min" else x + width - 700
+        points = ((px, y + 50), (px, y + length - 50))
+    else:
+        py = y + 700 if edge == "y_min" else y + length - 700
+        points = ((x + 50, py), (x + width - 50, py))
+
+    def gap_at_depth(moves: tuple[ProductionMove, ...], point: tuple[int, int], z: int) -> float:
+        distances = []
+        for a, b in zip(moves, moves[1:], strict=False):
+            if (a.operation_id != area.operation_id or b.operation_id != area.operation_id
+                    or b.kind != ProductionMoveKind.LINEAR or b.z_um != z):
+                continue
+            if a.z_um != b.z_um and (a.x_um, a.y_um) != (b.x_um, b.y_um):
+                continue
+            dx, dy = b.x_um - a.x_um, b.y_um - a.y_um
+            denominator = dx * dx + dy * dy
+            t = 0 if not denominator else max(0, min(1,
+                ((point[0] - a.x_um) * dx + (point[1] - a.y_um) * dy) / denominator))
+            distances.append(hypot(point[0] - a.x_um - t * dx, point[1] - a.y_um - t * dy))
+        return min(distances) - 3_000
+
+    for depth in (-5_000, -6_000):
+        for point in points:
+            assert gap_at_depth(program.moves, point, depth) <= 1e-6
+    if strategy == "dogbone-v2":
+        mouth_corners = (
+            {(x if edge == "x_min" else x + width, y),
+             (x if edge == "x_min" else x + width, y + length)}
+            if edge.startswith("x_") else
+            {(x, y if edge == "y_min" else y + length),
+             (x + width, y if edge == "y_min" else y + length)}
+        )
+        assert not any(
+            move.kind == ProductionMoveKind.LINEAR
+            and move.operation_id == area.operation_id
+            and (move.x_um, move.y_um) in mouth_corners
+            for move in program.moves
+        )
+        # Moving the same otherwise valid cuts into the panel must not turn
+        # an interior edge into an opening. Check the source contract without
+        # relying on the own-outline breakout check to happen to catch it.
+        dx = 20_000 if edge == "x_min" else -20_000 if edge == "x_max" else 0
+        dy = 20_000 if edge == "y_min" else -20_000 if edge == "y_max" else 0
+        for invalid_kind in (OperationKind.GROOVE, OperationKind.POCKET):
+            interior_source = replace(
+                source,
+                operations=tuple(
+                    replace(
+                        op, kind=invalid_kind, x_um=op.x_um + dx, y_um=op.y_um + dy,
+                        cutter_envelope_x_um=x - 3_000 + dx,
+                        cutter_envelope_y_um=y - 3_000 + dy,
+                    ) if op.operation_id == area.operation_id else op
+                    for op in source.operations
+                ),
+            )
+            with pytest.raises(ProductionCAMError, match="finished part boundary"):
+                generate_production_toolpaths(interior_source, _execution_context(interior_source))
+            interior_moves = tuple(
+                replace(move, x_um=move.x_um + dx, y_um=move.y_um + dy)
+                if move.operation_id == area.operation_id else move for move in program.moves
+            )
+            interior_candidate = replace(
+                _replace_program(candidate, program_index, replace(program, moves=interior_moves)),
+                operations_sha256=sha256_hex(interior_source.to_json()),
+            )
+            assert "OPEN_END_BINDING_INVALID" in _issue_codes(interior_candidate, interior_source)
+
+        # Restore the former inset-only mouth on ONE depth at a time. Keep
+        # the opposite depth correct so it cannot stand in for missing cuts.
+        for damaged_pass in (1, 2):
+            legacy = tuple(replace(
+                move,
+                x_um=(max(move.x_um, x + 3_000) if edge == "x_min" else
+                      min(move.x_um, x + width - 3_000) if edge == "x_max" else move.x_um),
+                y_um=(max(move.y_um, y + 3_000) if edge == "y_min" else
+                      min(move.y_um, y + length - 3_000) if edge == "y_max" else move.y_um),
+            ) if move.operation_id == area.operation_id and move.pass_index == damaged_pass
+                else move for move in program.moves)
+            assert gap_at_depth(legacy, points[0], (-5_000, -6_000)[damaged_pass - 1]) > 700
+            damaged = _replace_program(candidate, program_index, replace(program, moves=legacy))
+            assert "MATERIAL_REMOVAL_COVERAGE_INVALID" in _issue_codes(damaged, source)
 
 
 def test_xy_rapid_below_safe_z_blocks() -> None:
@@ -1516,3 +1659,69 @@ def test_inside_contour_and_degenerate_depth_helpers_are_fail_closed() -> None:
     assert verification_module._depth_levels(0, 1) == ()
     assert verification_module._depth_levels(1, 0) == ()
     assert verification_module._canonical_contour_interpolation_error_um(0) == 0
+
+
+@pytest.mark.parametrize("horizontal", [False, True])
+@pytest.mark.parametrize("source_factory", [_pocket_source_document, _dogbone_source_document])
+def test_area_end_scallops_are_removed_and_legacy_raster_is_rejected(
+    horizontal: bool, source_factory: Callable[[], OperationsDocument],
+) -> None:
+    # Use an analytic point-to-segment distance oracle, independent of both
+    # the generator's raster construction and the verifier's coverage rules.
+    source = source_factory()
+    area = source.operations[-1]
+    if horizontal:
+        area = replace(
+            area, width_um=area.length_um, length_um=area.width_um,
+            cutter_envelope_width_um=area.cutter_envelope_length_um,
+            cutter_envelope_length_um=area.cutter_envelope_width_um,
+        )
+        source = replace(source, operations=(*source.operations[:-1], area))
+    candidate = generate_production_toolpaths(source, _execution_context(source))
+    assert verify_production_toolpaths(candidate, source).report.status == CuttingProgramStatus.PASS
+    index = next(
+        i for i, p in enumerate(candidate.programs) if area.operation_id in p.operation_ids
+    )
+    program = candidate.programs[index]
+    radius = 3_000
+    # Halfway between 2.4 mm raster lanes, on the nominal closed edge.
+    point = (area.x_um, area.y_um + radius + 1_200) if horizontal else (
+        area.x_um + radius + 1_200, area.y_um
+    )
+
+    def residual(moves: tuple[ProductionMove, ...]) -> float:
+        distances = []
+        for start, end in zip(moves, moves[1:], strict=False):
+            if not (
+                start.operation_id == end.operation_id == area.operation_id
+                and start.kind == end.kind == ProductionMoveKind.LINEAR
+                and start.z_um == end.z_um == -area.depth_um
+            ):
+                continue
+            dx, dy = end.x_um - start.x_um, end.y_um - start.y_um
+            denominator = dx * dx + dy * dy
+            fraction = 0 if not denominator else max(0, min(1, (
+                (point[0] - start.x_um) * dx + (point[1] - start.y_um) * dy
+            ) / denominator))
+            distances.append(hypot(point[0] - start.x_um - fraction * dx,
+                                   point[1] - start.y_um - fraction * dy))
+        return min(distances) - radius
+
+    assert residual(program.moves) <= 1e-6
+    # Recreate the previously accepted raster-only path at each depth by
+    # removing the finish loop immediately before its inset retract.
+    legacy = list(program.moves)
+    retract_indexes = [
+        i for i, move in enumerate(legacy)
+        if move.operation_id == area.operation_id and move.role == ProductionMoveRole.RETRACT
+        and (move.x_um, move.y_um) == (area.x_um + radius, area.y_um + radius)
+    ]
+    for i in reversed(retract_indexes):
+        move = legacy[i]
+        old_end = legacy[i - 6]
+        legacy[i] = replace(move, x_um=old_end.x_um, y_um=old_end.y_um)
+        del legacy[i - 5:i]
+    legacy_moves = _resequence(tuple(legacy))
+    assert residual(legacy_moves) > 200  # ~231 um at this boundary sample
+    damaged = _replace_program(candidate, index, replace(program, moves=legacy_moves))
+    assert "MATERIAL_REMOVAL_COVERAGE_INVALID" in _issue_codes(damaged, source)

@@ -521,11 +521,19 @@ def _part_drawing_metadata(part: PartSpec, side: Side) -> dict[str, object]:
 def _drawing_geometry_extents(part: PartSpec, side: Side) -> Rect:
     side_features = tuple(feature for feature in part.features if feature.side == side)
     _, outline = _outline_for_side(part, side_features)
-    bounds = [
-        feature.machining_bounds()
+    drawn_features = tuple(
+        feature
         for feature in side_features
         if feature.kind not in {FeatureKind.OUTER_CONTOUR, FeatureKind.LABEL}
-    ]
+    )
+    # Drawing extents contain the emitted nominal shapes and relief circles.
+    # Cutter overhang at open mouths is a machining clearance, not a drawn cut.
+    bounds = [feature.bounds() for feature in drawn_features]
+    bounds.extend(
+        Rect(point.x_um - radius, point.y_um - radius, 2 * radius, 2 * radius)
+        for feature in drawn_features
+        for point, radius in feature.relief_circles()
+    )
     left = min((value.x_um for value in bounds), default=outline.x_um)
     bottom = min((value.y_um for value in bounds), default=outline.y_um)
     right = max((value.right_um for value in bounds), default=outline.right_um)

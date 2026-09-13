@@ -246,28 +246,31 @@ class ManufacturingFeature:
         return Rect(self.x_um, self.y_um, width, length)
 
     def machining_bounds(self) -> Rect:
-        """Actual cutter envelope, including the full declared dogbone radius."""
+        """Cutter envelope including corner reliefs and declared open-end exits.
+
+        An open slot must be cleared through its nominal boundary: the cutter
+        centre reaches that boundary and its radius extends beyond the part.
+        Suppressing a mouth dogbone does not suppress this cutter overhang.
+        """
 
         nominal = self.bounds()
         circles = self.relief_circles()
-        if not circles:
-            return nominal
-        left = min((point.x_um - radius for point, radius in circles), default=nominal.x_um)
-        right = max(
-            (point.x_um + radius for point, radius in circles),
-            default=nominal.right_um,
+        radius = (
+            self.corner_relief_radius_um or 0
+            if self.corner_strategy in {"dogbone-v1", "dogbone-v2"}
+            else 0
         )
-        bottom = min((point.y_um - radius for point, radius in circles), default=nominal.y_um)
-        top = max(
-            (point.y_um + radius for point, radius in circles),
-            default=nominal.top_um,
-        )
-        return Rect(
-            min(nominal.x_um, left),
-            min(nominal.y_um, bottom),
-            max(nominal.right_um, right) - min(nominal.x_um, left),
-            max(nominal.top_um, top) - min(nominal.y_um, bottom),
-        )
+        declared = set(self.open_end_reliefs)
+        left = nominal.x_um - (radius if "u_min" in declared else 0)
+        right = nominal.right_um + (radius if "u_max" in declared else 0)
+        bottom = nominal.y_um - (radius if "v_min" in declared else 0)
+        top = nominal.top_um + (radius if "v_max" in declared else 0)
+        for point, circle_radius in circles:
+            left = min(left, point.x_um - circle_radius)
+            right = max(right, point.x_um + circle_radius)
+            bottom = min(bottom, point.y_um - circle_radius)
+            top = max(top, point.y_um + circle_radius)
+        return Rect(left, bottom, right - left, top - bottom)
 
     def relief_circles(self) -> tuple[tuple[Point2D, int], ...]:
         """Exact local cutter circles under the declared versioned dogbone semantics."""

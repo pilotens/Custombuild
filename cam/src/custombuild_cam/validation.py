@@ -256,9 +256,18 @@ def theoretical_removal_envelopes(
             x_min, y_min = operation.x_um - radius, operation.y_um - radius
             x_max, y_max = operation.x_um + radius, operation.y_um + radius
         else:
-            x_min, y_min = operation.x_um, operation.y_um
-            x_max = operation.x_um + (operation.width_um or 0)
-            y_max = operation.y_um + (operation.length_um or 0)
+            x_min = (
+                operation.cutter_envelope_x_um
+                if operation.cutter_envelope_x_um is not None
+                else operation.x_um
+            )
+            y_min = (
+                operation.cutter_envelope_y_um
+                if operation.cutter_envelope_y_um is not None
+                else operation.y_um
+            )
+            x_max = x_min + (operation.cutter_envelope_width_um or operation.width_um or 0)
+            y_max = y_min + (operation.cutter_envelope_length_um or operation.length_um or 0)
         envelopes.append(
             RemovalEnvelope(
                 operation.operation_id,
@@ -799,6 +808,8 @@ def _expected_versioned_dogbone_envelope(
     ``open_end_reliefs`` stays in source-part U/V coordinates in an operations
     document.  Map each active source corner through the declared nesting
     rotation and B-side flip before expanding the machine-coordinate envelope.
+    Open ends also require a cutter-radius exit beyond the nominal boundary,
+    including when all corner relief circles on that edge are suppressed.
     """
 
     strategy = operation.corner_strategy
@@ -810,6 +821,29 @@ def _expected_versioned_dogbone_envelope(
     right = nominal.right_um
     bottom = nominal.y_um
     top = nominal.top_um
+    edge_mapping = (
+        {"u_min": "y_min", "u_max": "y_max", "v_min": "x_max", "v_max": "x_min"}
+        if operation.source_rotation_90
+        else {"u_min": "x_min", "u_max": "x_max", "v_min": "y_min", "v_max": "y_max"}
+    )
+    for source_edge in declared:
+        machine_edge = edge_mapping.get(source_edge)
+        if machine_edge is None:
+            # The caller reports invalid declarations separately. Preserve a
+            # validation result for malformed input instead of raising here.
+            continue
+        if operation.side == Side.B:
+            machine_edge = {"y_min": "y_max", "y_max": "y_min"}.get(
+                machine_edge, machine_edge
+            )
+        if machine_edge == "x_min":
+            left = nominal.x_um - radius_um
+        elif machine_edge == "x_max":
+            right = nominal.right_um + radius_um
+        elif machine_edge == "y_min":
+            bottom = nominal.y_um - radius_um
+        elif machine_edge == "y_max":
+            top = nominal.top_um + radius_um
     for u_boundary, v_boundary in (
         ("u_min", "v_min"),
         ("u_max", "v_min"),

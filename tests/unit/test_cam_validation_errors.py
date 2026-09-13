@@ -284,7 +284,7 @@ def _versioned_dogbone_document(corner_strategy: str) -> OperationsDocument:
 
 @pytest.mark.parametrize(
     ("corner_strategy", "expected_envelope_width_um"),
-    (("dogbone-v1", 26_000), ("dogbone-v2", 23_000)),
+    (("dogbone-v1", 26_000), ("dogbone-v2", 26_000)),
 )
 def test_cam_accepts_versioned_legacy_and_open_slot_dogbone_semantics(
     corner_strategy: str,
@@ -321,15 +321,13 @@ def test_cam_rejects_forged_versioned_dogbone_cutter_envelopes() -> None:
 
     v1_document = _versioned_dogbone_document("dogbone-v1")
     v1_operation = v1_document.operations[0]
-    v2_shaped_forgery = replace(
+    clipped_mouth_forgery = replace(
         v1_operation,
-        cutter_envelope_x_um=v2_operation.cutter_envelope_x_um,
-        cutter_envelope_y_um=v2_operation.cutter_envelope_y_um,
-        cutter_envelope_width_um=v2_operation.cutter_envelope_width_um,
-        cutter_envelope_length_um=v2_operation.cutter_envelope_length_um,
+        cutter_envelope_x_um=v1_operation.x_um,
+        cutter_envelope_width_um=v1_operation.width_um + 3_000,
     )
     legacy_result = validate_operations_document(
-        replace(v1_document, operations=(v2_shaped_forgery,)),
+        replace(v1_document, operations=(clipped_mouth_forgery,)),
         machine=machine,
     )
     assert any(

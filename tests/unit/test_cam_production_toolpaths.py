@@ -1362,9 +1362,11 @@ def test_versioned_dogbone_centres_are_cut_without_unwanted_connecting_slots() -
     )
     dogbone = replace(
         groove,
-        cutter_envelope_x_um=100_000,
+        x_um=20_000,
+        width_um=100_000,
+        cutter_envelope_x_um=17_000,
         cutter_envelope_y_um=97_000,
-        cutter_envelope_width_um=23_000,
+        cutter_envelope_width_um=106_000,
         cutter_envelope_length_um=86_000,
         corner_strategy="dogbone-v2",
         corner_relief_radius_um=3_000,

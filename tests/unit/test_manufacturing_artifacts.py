@@ -451,6 +451,14 @@ def test_dogbone_v2_omits_open_slot_mouth_scallops_but_v1_remains_stable() -> No
     assert len(document.modelspace().query('CIRCLE[layer=="GROOVE"]')) == 2
     assert tuple(document.header["$EXTMIN"]) == pytest.approx((0.0, 0.0, 0.0))
     assert drawing["emitted_geometry_extents_mm"]["u_min"] == "0"
+    # Independently reconstruct actual DXF entity bounds. The cutter exits
+    # 3 mm beyond the mouth, but no drawing entity or extra dogbone does.
+    from ezdxf import bbox
+
+    actual_extents = bbox.extents(document.modelspace())
+    assert tuple(document.header["$EXTMIN"]) == pytest.approx(tuple(actual_extents.extmin))
+    assert tuple(document.header["$EXTMAX"]) == pytest.approx(tuple(actual_extents.extmax))
+    assert current.machining_bounds().x_um == -3_000
     assert svg.count('class="groove corner-relief"') == 2
     assert 'data-corner-strategy="dogbone-v2"' in svg
 
