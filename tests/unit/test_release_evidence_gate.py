@@ -26,13 +26,13 @@ SEAWEED_ID = "sha256:" + "3" * 64
 EXTERNAL_SBOM_IDENTITIES = {
     "postgres": (
         "cgr.dev/chainguard/postgres",
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060",
+        "sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9",
         "latest",
     ),
-    "redis": ("redis", "7.2.15-alpine", "7.2.15-alpine"),
+    "redis": ("redis", "7.2.16-alpine", "7.2.16-alpine"),
     "volume-init": (
         "cgr.dev/chainguard/busybox",
-        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6",
+        "sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba",
         "latest",
     ),
 }
@@ -383,7 +383,7 @@ def test_final_gate_binds_all_release_evidence(
     assert report["runtime_image_references"]["api"] == f"custombuild-api:{REVISION}"
     assert report["runtime_scan_inputs"]["postgres"] == (
         "cgr.dev/chainguard/postgres:latest@"
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+        "sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
     )
     assert set(report["runtime_sbom_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_scan_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
@@ -493,7 +493,7 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
         == release_evidence_gate.REQUIRED_IMAGES
     )
     assert release_evidence_gate._expected_image_reference("postgres", REVISION).endswith(
-        "@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+        "@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
     )
     assert release_evidence_gate._expected_scan_input(
         "postgres", REVISION

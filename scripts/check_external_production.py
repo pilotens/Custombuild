@@ -709,17 +709,15 @@ def external_production_issues(
         minimum_length = 32 if label == "api.ARTIFACT_SIGNING_SECRET" else 24
         if _insecure_secret(value, minimum_length=minimum_length):
             issues.append(f"{label} is missing, too short, or uses an insecure default")
-    attestor_password = postgres_env.get("CAPACITY_ATTESTOR_DATABASE_PASSWORD", "")
-    if attestor_password and attestor_password in {
+    database_passwords = (
         postgres_env.get("POSTGRES_PASSWORD", ""),
         postgres_env.get("MIGRATOR_DATABASE_PASSWORD", ""),
         postgres_env.get("API_DATABASE_PASSWORD", ""),
         postgres_env.get("WORKER_DATABASE_PASSWORD", ""),
-    }:
-        issues.append(
-            "postgres.CAPACITY_ATTESTOR_DATABASE_PASSWORD must be unique to the "
-            "storage-attestor role"
-        )
+        postgres_env.get("CAPACITY_ATTESTOR_DATABASE_PASSWORD", ""),
+    )
+    if len(set(database_passwords)) != len(database_passwords):
+        issues.append("postgres database role passwords must be pairwise distinct")
 
     expected_postgres_roles = {
         "POSTGRES_USER": "custombuild_bootstrap",

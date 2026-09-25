@@ -26,8 +26,12 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 Granskningspaketet innehåller STEP, GLB, DXF/SVG för delarnas båda sidor,
 delritningar i PDF, BOM, kaplista, rörelsegrupper, modell, profiler och
 kontrollrapport. Ett manifest binder varje fil med SHA-256. Exportstatusen binds
-till organisation, projekt, revision, design och profilval. Paketet är tillgängligt
-i en timme; en sparad revision kan exporteras på nytt.
+till organisation, projekt, revision, design och profilval. Jobb och artefaktmetadata
+lagras beständigt i PostgreSQL, medan ZIP-filen lagras oföränderligt i objektlagringen
+med ordinarie kvotkontroll. Redis transporterar uppgifter men innehåller inte längre
+base64-kodade paket. Samma oförändrade revision återanvänder sitt jobb; sparade
+ändringar spärrar gamla nedladdningar. Lagringens återställning och retention följer
+den gemensamma artefaktkedjan, inte en Redis-TTL på en timme.
 
 `manufacturing/workshop-handoff.json` innehåller kundmått, skillnaden mot den
 genererade stommen och råmått för varje CAD-del, grupperat efter material/version
@@ -139,19 +143,25 @@ beslag, hålbilder och kompletta monteringsförband.
 
 ## Driftsättning och verifiering
 
-Kör ordinarie migrering till `0021_furniture_review_reads` före API/worker.
-Migreringen ger API:t SELECT på tenant-avgränsad historik och köbeställningar.
+Kör ordinarie migrering till `0022_durable_furniture_review_exports` före API/worker.
+Den föregående migreringen `0021_furniture_review_reads` ger API:t SELECT på tenant-avgränsad historik och köbeställningar.
 API:t får fortsatt inte ändra/radera auditposter eller ändra köleveransstatus.
 PostgreSQL FORCE RLS och de befintliga rollkontrollerna gäller även dessa läsvägar.
-Ingen ny extern tjänst behövs; exporten använder befintlig Redis, Celery och CAD-worker.
+Ingen ny extern tjänst behövs; exporten använder befintlig PostgreSQL, Redis,
+Celery, objektlagring och CAD-worker. Migrering `0022_durable_furniture_review_exports`
+krävs före driftsättning. Gamla Redis-exporter flyttas inte automatiskt: beställ
+en ny export av den sparade revisionen. Nedgradering blockeras när beständiga
+möbelexportjobb finns, så att deras ägar- och lagringsidentiteter inte förloras.
 
 Beredningskopplingen kräver ingen ytterligare databasmigrering. Deploya API och
 worker tillsammans: produktionspipeline `1.12.0` ändrar paketkontrollen och
 tidigare generationsjobb måste genereras om mot den aktuella implementationen.
 
 API-ytan är `/v1/furniture/catalog`, `/preview`, `/profile-change` samt
-`/projects/{id}/draft`, `/history`, `/exports` och `/exports/{job_id}` under samma
-prefix. OpenAPI beskriver inmatningens versionsbundna scheman.
+`/projects/{id}/draft`, `/history`, `/exports`, `/exports/{job_id}` och
+`/exports/{job_id}/download` under samma prefix. OpenAPI beskriver versionsbundna
+inmatnings- och svarsscheman. Exportstatus innehåller bara metadata; den separata
+autentiserade nedladdningen levererar ZIP-filen med verifierad storlek och SHA-256.
 
 `POST /v1/furniture/projects/{id}/production-preview` öppnar en exakt sparad
 möbelrevision. `POST /v1/projects/{id}/versions` kräver dess serverkontrollerade

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import base64
 import json
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Event, Thread
 from types import SimpleNamespace
 from typing import Any
 
@@ -671,6 +675,118 @@ def test_dependency_probe_reports_all_failures_and_continues(
         "rule_engine": "ok",
     }
     assert failures == [readiness.DependencyFailure(name="redis", error_type="TimeoutError")]
+
+
+def test_dependency_probe_caches_defensive_copies_until_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    now = [100.0]
+
+    def passing(name: str) -> Callable[[Settings], None]:
+        def check(_settings: Settings) -> None:
+            calls.append(name)
+
+        return check
+
+    for name in (
+        "database",
+        "joint_retention_registry",
+        "storage_capacity",
+        "redis",
+        "object_storage",
+        "rule_engine",
+    ):
+        monkeypatch.setattr(readiness, f"check_{name}", passing(name))
+
+    configured = settings()
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        coordinator = readiness.ReadinessProbeCoordinator(
+            ttl_seconds=5,
+            clock=lambda: now[0],
+            executor=executor,
+        )
+        first_statuses, first_failures = coordinator.probe(configured)
+        first_statuses["database"] = "mutated"
+        second_statuses, second_failures = coordinator.probe(configured)
+        now[0] = 105.0
+        third_statuses, third_failures = coordinator.probe(configured)
+
+    assert sorted(calls) == sorted(
+        [
+            "database",
+            "joint_retention_registry",
+            "storage_capacity",
+            "redis",
+            "object_storage",
+            "rule_engine",
+        ]
+        * 2
+    )
+    assert first_failures == second_failures == third_failures == []
+    assert second_statuses["database"] == "ok"
+    assert third_statuses == second_statuses
+
+
+def test_dependency_probe_rejects_overlapping_work_without_allocating_another_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = Event()
+    release = Event()
+    calls: list[str] = []
+    first_result: list[tuple[dict[str, str], list[readiness.DependencyFailure]]] = []
+
+    def database(_settings: Settings) -> None:
+        calls.append("database")
+        started.set()
+        if not release.wait(timeout=2):
+            raise TimeoutError("test did not release readiness probe")
+
+    def passing(name: str) -> Callable[[Settings], None]:
+        def check(_settings: Settings) -> None:
+            calls.append(name)
+
+        return check
+
+    monkeypatch.setattr(readiness, "check_database", database)
+    for name in (
+        "joint_retention_registry",
+        "storage_capacity",
+        "redis",
+        "object_storage",
+        "rule_engine",
+    ):
+        monkeypatch.setattr(readiness, f"check_{name}", passing(name))
+
+    configured = settings()
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        coordinator = readiness.ReadinessProbeCoordinator(executor=executor)
+        leader = Thread(target=lambda: first_result.append(coordinator.probe(configured)))
+        leader.start()
+        assert started.wait(timeout=1)
+
+        began = time.monotonic()
+        overlapping = coordinator.probe(configured)
+        elapsed = time.monotonic() - began
+        release.set()
+        leader.join(timeout=2)
+
+        cached = coordinator.probe(configured)
+
+    assert leader.is_alive() is False
+    assert overlapping == (
+        {"readiness_probe": "unavailable"},
+        [
+            readiness.DependencyFailure(
+                name="readiness_probe",
+                error_type="ReadinessProbeInFlight",
+            )
+        ],
+    )
+    assert elapsed < 0.25
+    assert len(calls) == 6
+    assert first_result == [cached]
+    assert all(value == "ok" for value in cached[0].values())
 
 
 def test_rule_engine_probe_fails_closed_when_package_cannot_load(

@@ -782,7 +782,7 @@ def test_checked_in_registry_overlay_is_exact() -> None:
     ("original", "replacement"),
     (
         ("required-up-flag: --no-build", "required-up-flag: --build"),
-        ("sha256:3af67", "sha256:9af67"),
+        ("sha256:f275a", "sha256:a275a"),
         ("CUSTOMBUILD_DEPLOY_API_IMAGE", "CUSTOMBUILD_DEPLOY_WEB_IMAGE"),
         ("services:\n", "services:\n  unexpected:\n    build: .\n"),
     ),

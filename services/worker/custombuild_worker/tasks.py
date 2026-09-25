@@ -33,6 +33,7 @@ from app.models import (
     AuditEvent,
     DesignVersion,
     GenerationJob,
+    GenerationJobType,
     JobStatus,
     Organization,
     OutboxEvent,
@@ -40,8 +41,10 @@ from app.models import (
 from app.storage import (
     ArtifactIntegrityError,
     ArtifactStorageUnavailableError,
+    StoredObjectExpectation,
     storage_runtime,
     store_create_once_object,
+    verify_stored_object,
 )
 from app.storage_quota import (
     StorageClaimConflict,
@@ -334,6 +337,9 @@ GENERATION_DELIVERY_WATCHDOG_EVENT_PREFIX = "generation-delivery-watchdog"
 GENERATION_DELIVERY_WATCHDOG_ERROR = "Queued generation delivery watchdog state is invalid"
 TERMINAL_JOB_STATUSES = frozenset({JobStatus.succeeded, JobStatus.failed, JobStatus.cancelled})
 GENERATION_DEADLINE_ERROR = "Generation job exceeded the server deadline of 120 minutes"
+FURNITURE_REVIEW_ARTIFACT_KIND = "furniture_review_bundle"
+FURNITURE_REVIEW_CONTENT_TYPE = "application/zip"
+FURNITURE_REVIEW_SCHEMA_VERSION = "custombuild.furniture-review.v1"
 S3_CONNECT_TIMEOUT_SECONDS = 3
 S3_READ_TIMEOUT_SECONDS = 30
 S3_TOTAL_MAX_ATTEMPTS = 2
@@ -451,6 +457,36 @@ def _valid_event_identifier(value: object) -> bool:
         return str(UUID(value)) == value.lower()
     except ValueError:
         return False
+
+
+def _job_type(job: GenerationJob) -> GenerationJobType:
+    """Resolve persisted job routing while tolerating old detached unit fixtures."""
+
+    if job.job_type in {GenerationJobType.production, GenerationJobType.production.value}:
+        return GenerationJobType.production
+    if job.job_type in {
+        GenerationJobType.furniture_review,
+        GenerationJobType.furniture_review.value,
+    }:
+        return GenerationJobType.furniture_review
+    if job.job_type is None and job.design_version_id is not None:
+        return GenerationJobType.production
+    raise RuntimeError("generation job has an invalid durable job type")
+
+
+def _job_outbox_topic(job: GenerationJob) -> str:
+    return (
+        "furniture.review.requested"
+        if _job_type(job) is GenerationJobType.furniture_review
+        else "generation.requested"
+    )
+
+
+def _job_event_key(job: GenerationJob, purpose: str) -> str:
+    prefix = (
+        "furniture-review" if _job_type(job) is GenerationJobType.furniture_review else "generation"
+    )
+    return f"{prefix}-{purpose}:{job.id}:{job.attempts}"
 
 
 def _scheduler_limit(value: int) -> int:
@@ -655,6 +691,7 @@ def _recover_unclaimed_queued_delivery(
         return None
 
     event_key = _generation_delivery_watchdog_event_key(job.id)
+    topic = _job_outbox_topic(job)
     expected_payload = {
         "job_id": job.id,
         "organization_id": job.organization_id,
@@ -670,7 +707,7 @@ def _recover_unclaimed_queued_delivery(
     if watchdog is not None:
         if (
             watchdog.organization_id != job.organization_id
-            or watchdog.topic != "generation.requested"
+            or watchdog.topic != topic
             or watchdog.payload_json != expected_payload
             or watchdog.dead_lettered_at is not None
         ):
@@ -685,7 +722,7 @@ def _recover_unclaimed_queued_delivery(
         .where(
             OutboxEvent.organization_id == job.organization_id,
             OutboxEvent.event_key != event_key,
-            OutboxEvent.topic == "generation.requested",
+            OutboxEvent.topic == topic,
             OutboxEvent.dispatched_at.is_(None),
             OutboxEvent.dead_lettered_at.is_(None),
             OutboxEvent.payload_json["job_id"].as_string() == job.id,
@@ -700,7 +737,7 @@ def _recover_unclaimed_queued_delivery(
         return OutboxEvent(
             organization_id=job.organization_id,
             event_key=event_key,
-            topic="generation.requested",
+            topic=topic,
             payload_json=expected_payload,
             available_at=now,
         )
@@ -781,50 +818,92 @@ def _dispatch_tenant_outbox_events(
     name="custombuild.generate_furniture_review",
     soft_time_limit=180,
     time_limit=210,
+    ignore_result=True,
 )
 def generate_furniture_review(job_id: str, organization_id: str) -> dict[str, str | int]:
-    """Read one tenant-bound snapshot; never publish production CAM or approval."""
-    import base64
-
-    from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWorkspace
-    from custombuild_domain.furniture_engine import build_furniture
-    from custombuild_domain.identity import content_hash
-
-    from .furniture_review import build_furniture_review
-
+    """Persist one lease-owned, tenant-bound review archive outside Redis."""
     if not _valid_event_identifier(job_id) or not _valid_event_identifier(organization_id):
         raise ValueError("invalid furniture review request identity")
-    with _tenant_transaction(organization_id) as session:
-        event = session.scalar(
-            select(OutboxEvent).where(
-                OutboxEvent.organization_id == organization_id,
-                OutboxEvent.event_key == f"furniture-review:{job_id}",
-                OutboxEvent.topic == "furniture.review.requested",
+    claim = _claim_job(
+        job_id,
+        organization_id,
+        expected_job_type=GenerationJobType.furniture_review,
+    )
+    if claim is None:
+        return {"job_id": job_id, "state": "already_running_or_complete"}
+    job, version = claim
+    if version is not None:
+        raise RuntimeError("furniture review claim unexpectedly resolved a design version")
+    lease_token = job.lease_token
+    if lease_token is None:
+        raise RuntimeError("Furniture review claim did not receive a lease token")
+    lease_guard: _GenerationLeaseGuard | None = None
+    try:
+        with _maintain_generation_lease(
+            job_id,
+            organization_id,
+            lease_token,
+        ) as lease_guard:
+            result = _generate_furniture_review(
+                job,
+                lease_token=lease_token,
+                lease_guard=lease_guard,
             )
+            lease_guard.check()
+            completed = _complete_furniture_review(
+                job_id,
+                organization_id,
+                lease_token,
+                result,
+            )
+            if not completed:
+                raise GenerationLeaseOwnershipLost(
+                    "furniture review completion lost its exact job or storage lease"
+                )
+        return {
+            "job_id": job_id,
+            "state": "succeeded",
+            "artifact_id": str(result["artifact_id"]),
+        }
+    except SoftTimeLimitExceeded:
+        _record_failure(
+            job_id,
+            organization_id,
+            lease_token,
+            GenerationDeadlineExceeded(
+                "Furniture review task exceeded the server execution deadline"
+            ),
+            terminal=True,
         )
-        if event is None:
-            raise ValueError("furniture review request not found")
-        payload = dict(event.payload_json)
-    if payload.get("job_id") != job_id or payload.get("organization_id") != organization_id:
-        raise ValueError("furniture review request identity mismatch")
-    if payload.get("engine_version") != FURNITURE_ENGINE_VERSION:
-        raise ValueError("furniture engine changed; save a new revision")
-    workspace = FurnitureWorkspace.model_validate(payload.get("workspace"))
-    if workspace.design.design_id != payload.get("project_id") or (
-        workspace.design.revision != payload.get("revision")
-    ):
-        raise ValueError("furniture review snapshot does not match its project/revision")
-    design = build_furniture(workspace.design)
-    if design.design_hash != payload.get("design_hash"):
-        raise ValueError("furniture review design changed; save a new revision")
-    result = build_furniture_review(workspace)
-    return {
-        "design_hash": design.design_hash,
-        "revision": workspace.design.revision,
-        "workspace_sha256": content_hash(workspace),
-        "sha256": hashlib.sha256(result).hexdigest(),
-        "content_base64": base64.b64encode(result).decode("ascii"),
-    }
+        raise
+    except Exception as exc:
+        failure_at = _utcnow()
+        terminal = job.attempts >= MAX_GENERATION_ATTEMPTS or isinstance(
+            exc,
+            (ValueError, GenerationDeadlineExceeded, *IMMEDIATE_TERMINAL_GENERATION_ERRORS),
+        )
+        if isinstance(exc, GenerationStorageReservationBusy):
+            retry_delay = exc.retry_after_seconds
+        elif lease_guard is not None and bool(lease_guard.storage_claims()):
+            retry_delay = int(GENERATION_LEASE_TTL.total_seconds()) + 5
+        else:
+            retry_delay = 5
+        recorded_status = _record_failure(
+            job_id,
+            organization_id,
+            lease_token,
+            exc,
+            terminal=terminal,
+            recorded_at=failure_at,
+            retry_after_seconds=retry_delay,
+        )
+        if recorded_status is not JobStatus.queued:
+            raise
+        return {
+            "job_id": job_id,
+            "state": "retry_scheduled",
+            "retry_after_seconds": retry_delay,
+        }
 
 
 @celery_app.task(name="custombuild.recover_stale_jobs")  # type: ignore[misc]
@@ -999,8 +1078,8 @@ def _recover_stale_job(job: GenerationJob, *, now: datetime) -> OutboxEvent | No
     job.finished_at = None
     return OutboxEvent(
         organization_id=job.organization_id,
-        event_key=f"generation-recovery:{job.id}:{job.attempts}",
-        topic="generation.requested",
+        event_key=_job_event_key(job, "recovery"),
+        topic=_job_outbox_topic(job),
         payload_json={
             "job_id": job.id,
             "organization_id": job.organization_id,
@@ -1011,11 +1090,17 @@ def _recover_stale_job(job: GenerationJob, *, now: datetime) -> OutboxEvent | No
 
 @celery_app.task(name="custombuild.generate_package")  # type: ignore[misc]
 def generate_package(*, job_id: str, organization_id: str) -> dict[str, Any]:
-    claim = _claim_job(job_id, organization_id)
+    claim = _claim_job(
+        job_id,
+        organization_id,
+        expected_job_type=GenerationJobType.production,
+    )
     if claim is None:
         return {"job_id": job_id, "state": "already_running_or_complete"}
 
     job, version = claim
+    if version is None:
+        raise RuntimeError("production generation claim has no design version")
     lease_token = job.lease_token
     if lease_token is None:
         raise RuntimeError("Generation claim did not receive a lease token")
@@ -1092,13 +1177,19 @@ def generate_package(*, job_id: str, organization_id: str) -> dict[str, Any]:
         }
 
 
-def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, DesignVersion] | None:
+def _claim_job(
+    job_id: str,
+    organization_id: str,
+    *,
+    expected_job_type: GenerationJobType = GenerationJobType.production,
+) -> tuple[GenerationJob, DesignVersion | None] | None:
     with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
             .where(
                 GenerationJob.id == job_id,
                 GenerationJob.organization_id == organization_id,
+                GenerationJob.job_type == expected_job_type,
             )
             .with_for_update()
         )
@@ -1117,14 +1208,20 @@ def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, Design
             return None
         if job.next_attempt_at is not None and _as_utc(job.next_attempt_at) > now:
             return None
-        version = session.scalar(
-            select(DesignVersion).where(
-                DesignVersion.id == job.design_version_id,
-                DesignVersion.organization_id == organization_id,
+        version: DesignVersion | None = None
+        if expected_job_type is GenerationJobType.production:
+            if job.design_version_id is None or job.project_id is not None:
+                raise RuntimeError("Production generation job has an invalid owner binding")
+            version = session.scalar(
+                select(DesignVersion).where(
+                    DesignVersion.id == job.design_version_id,
+                    DesignVersion.organization_id == organization_id,
+                )
             )
-        )
-        if version is None:
-            raise RuntimeError("Generation job references a missing tenant design version")
+            if version is None:
+                raise RuntimeError("Generation job references a missing tenant design version")
+        elif job.design_version_id is not None or job.project_id is None:
+            raise RuntimeError("Furniture review job has an invalid project binding")
         job.status = JobStatus.running
         job.lease_token = str(uuid4())
         job.started_at = now
@@ -1136,7 +1233,8 @@ def _claim_job(job_id: str, organization_id: str) -> tuple[GenerationJob, Design
         job.error = None
         session.flush()
         session.expunge(job)
-        session.expunge(version)
+        if version is not None:
+            session.expunge(version)
         return job, version
 
 
@@ -1349,6 +1447,330 @@ def _generation_storage_claims(
         return tuple(claims)
     except (TypeError, ValueError) as exc:
         raise ProductionBlockedError("generation storage inventory is invalid") from exc
+
+
+def _validated_furniture_review_snapshot(
+    job: GenerationJob,
+) -> tuple[Any, str, str, int, str]:
+    from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWorkspace
+    from custombuild_domain.furniture_engine import build_furniture
+    from custombuild_domain.identity import content_hash
+
+    request = job.request_json
+    expected_keys = {
+        "schema_version",
+        "job_type",
+        "project_id",
+        "revision",
+        "workspace",
+        "workspace_sha256",
+        "design_hash",
+        "engine_version",
+        "requested_by",
+    }
+    expected_engine_context = {
+        "job_type": GenerationJobType.furniture_review.value,
+        "furniture_engine_version": FURNITURE_ENGINE_VERSION,
+        "review_schema_version": FURNITURE_REVIEW_SCHEMA_VERSION,
+    }
+    if (
+        _job_type(job) is not GenerationJobType.furniture_review
+        or job.design_version_id is not None
+        or job.project_id is None
+        or not isinstance(request, dict)
+        or set(request) != expected_keys
+        or request.get("schema_version") != "custombuild.furniture-review-job.v1"
+        or request.get("job_type") != GenerationJobType.furniture_review.value
+        or request.get("project_id") != job.project_id
+        or request.get("engine_version") != FURNITURE_ENGINE_VERSION
+        or job.production_engine_context_json != expected_engine_context
+        or content_hash(request) != job.production_context_hash
+    ):
+        raise ProductionBlockedError("furniture review job snapshot identity is invalid")
+    revision = request.get("revision")
+    workspace_sha256 = request.get("workspace_sha256")
+    design_hash = request.get("design_hash")
+    requested_by = request.get("requested_by")
+    if (
+        type(revision) is not int
+        or revision < 1
+        or not isinstance(workspace_sha256, str)
+        or len(workspace_sha256) != 64
+        or not isinstance(design_hash, str)
+        or len(design_hash) != 64
+        or not isinstance(requested_by, str)
+        or not _valid_event_identifier(requested_by)
+    ):
+        raise ProductionBlockedError("furniture review job snapshot fields are invalid")
+    try:
+        workspace = FurnitureWorkspace.model_validate(request.get("workspace"))
+    except (TypeError, ValueError) as exc:
+        raise ProductionBlockedError("furniture review workspace snapshot is invalid") from exc
+    if (
+        workspace.design.design_id != job.project_id
+        or workspace.design.revision != revision
+        or content_hash(workspace) != workspace_sha256
+    ):
+        raise ProductionBlockedError("furniture review workspace snapshot is detached")
+    design = build_furniture(workspace.design)
+    if design.design_hash != design_hash:
+        raise ProductionBlockedError("furniture review design changed; save a new revision")
+    return workspace, design_hash, workspace_sha256, revision, requested_by
+
+
+def _furniture_review_storage_claim(
+    job: GenerationJob,
+    result: Mapping[str, Any],
+    lease_token: str,
+) -> StorageObjectClaim:
+    from .furniture_review import MAX_FURNITURE_REVIEW_BYTES
+
+    if job.lease_token != lease_token or job.project_id is None:
+        raise ProductionBlockedError("furniture review storage lease identity is invalid")
+    attempt_id = _generation_attempt_id(job.id, lease_token)
+    artifact_id = _generation_artifact_id(attempt_id, FURNITURE_REVIEW_ARTIFACT_KIND)
+    design_hash = result.get("design_hash")
+    object_key = result.get("object_key")
+    digest = result.get("sha256")
+    size_bytes = result.get("size_bytes")
+    expected_key = (
+        f"{organization_id_safe(job.organization_id)}/{design_hash}/"
+        f"{job.production_context_hash}/attempts/{attempt_id}/artifacts/"
+        f"{artifact_id}/furniture-review.zip"
+    )
+    if (
+        result.get("artifact_id") != artifact_id
+        or result.get("artifact_kind") != FURNITURE_REVIEW_ARTIFACT_KIND
+        or result.get("content_type") != FURNITURE_REVIEW_CONTENT_TYPE
+        or result.get("job_context_hash") != job.production_context_hash
+        or not isinstance(design_hash, str)
+        or len(design_hash) != 64
+        or object_key != expected_key
+        or not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or type(size_bytes) is not int
+        or size_bytes <= 0
+        or size_bytes > MAX_FURNITURE_REVIEW_BYTES
+    ):
+        raise ProductionBlockedError("furniture review storage inventory is invalid")
+    return StorageObjectClaim(
+        project_id=job.project_id,
+        object_key=object_key,
+        sha256=digest,
+        size_bytes=size_bytes,
+        media_type=FURNITURE_REVIEW_CONTENT_TYPE,
+        owner_type="generation_job",
+        owner_id=job.id,
+        idempotency_key=(f"generation:{job.id}:{FURNITURE_REVIEW_ARTIFACT_KIND}:{artifact_id}"),
+    )
+
+
+def _generate_furniture_review(
+    job: GenerationJob,
+    *,
+    lease_token: str,
+    lease_guard: _GenerationLeaseGuard,
+) -> dict[str, Any]:
+    from .furniture_review import build_furniture_review
+
+    if lease_guard.organization_id != job.organization_id or lease_guard.lease_token != lease_token:
+        raise ValueError("furniture review generation requires its exact lease guard")
+    lease_guard.check()
+    workspace, design_hash, workspace_sha256, revision, _requested_by = (
+        _validated_furniture_review_snapshot(job)
+    )
+    payload = build_furniture_review(workspace)
+    lease_guard.check()
+    attempt_id = _generation_attempt_id(job.id, lease_token)
+    artifact_id = _generation_artifact_id(attempt_id, FURNITURE_REVIEW_ARTIFACT_KIND)
+    object_key = (
+        f"{organization_id_safe(job.organization_id)}/{design_hash}/"
+        f"{job.production_context_hash}/attempts/{attempt_id}/artifacts/"
+        f"{artifact_id}/furniture-review.zip"
+    )
+    result = {
+        "job_context_hash": job.production_context_hash,
+        "artifact_id": artifact_id,
+        "artifact_kind": FURNITURE_REVIEW_ARTIFACT_KIND,
+        "object_key": object_key,
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "size_bytes": len(payload),
+        "content_type": FURNITURE_REVIEW_CONTENT_TYPE,
+        "file_name": f"custombuild-design-review-{revision}.zip",
+        "design_hash": design_hash,
+        "workspace_sha256": workspace_sha256,
+        "revision": revision,
+        "physical_cutting_authorized": False,
+    }
+    claim = _furniture_review_storage_claim(job, result, lease_token)
+    try:
+        reserve_storage_batch(
+            SessionFactory,
+            job.organization_id,
+            (claim,),
+            lease_token=lease_token,
+            lease_duration=GENERATION_LEASE_TTL,
+            capacity_settings=WORKER_SETTINGS,
+        )
+    except StorageReservationBusy as exc:
+        raise GenerationStorageReservationBusy(
+            "a previous furniture review attempt still owns its storage reservation",
+            retry_after_seconds=exc.retry_after_seconds,
+        ) from exc
+    except (StorageClaimConflict, StorageQuotaExceeded, StorageQuotaInvariantError) as exc:
+        raise ProductionBlockedError(
+            "furniture review storage quota could not reserve its immutable artifact"
+        ) from exc
+    lease_guard.bind_storage_claims((claim,))
+    lease_guard.check()
+    _put_object(
+        object_key,
+        payload,
+        FURNITURE_REVIEW_CONTENT_TYPE,
+        metadata={
+            "furniture-design-hash": design_hash,
+            "workspace-sha256": workspace_sha256,
+        },
+    )
+    lease_guard.check()
+    return result
+
+
+def _complete_furniture_review(
+    job_id: str,
+    organization_id: str,
+    lease_token: str,
+    result: dict[str, Any],
+) -> bool:
+    with _tenant_transaction(organization_id) as session:
+        job = session.scalar(
+            select(GenerationJob)
+            .where(
+                GenerationJob.id == job_id,
+                GenerationJob.organization_id == organization_id,
+                GenerationJob.job_type == GenerationJobType.furniture_review,
+                GenerationJob.status == JobStatus.running,
+                GenerationJob.lease_token == lease_token,
+            )
+            .with_for_update()
+        )
+        if job is None:
+            return False
+        completed_at = _database_time(session)
+        if _deadline_is_expired(job, now=completed_at):
+            _terminalize_deadline(job, now=completed_at)
+            return False
+        if not _lease_is_live(job, now=completed_at):
+            return False
+        if job.attempts > MAX_GENERATION_ATTEMPTS:
+            _terminalize_attempt_budget(job, now=completed_at)
+            return False
+        _workspace, design_hash, workspace_sha256, revision, requested_by = (
+            _validated_furniture_review_snapshot(job)
+        )
+        if (
+            result.get("design_hash") != design_hash
+            or result.get("workspace_sha256") != workspace_sha256
+            or result.get("revision") != revision
+            or result.get("file_name") != f"custombuild-design-review-{revision}.zip"
+            or result.get("physical_cutting_authorized") is not False
+        ):
+            raise ProductionBlockedError("furniture review result is detached from its snapshot")
+        claim = _furniture_review_storage_claim(job, result, lease_token)
+        artifact_id = str(result["artifact_id"])
+        existing = session.scalar(
+            select(Artifact).where(
+                Artifact.generation_job_id == job.id,
+                Artifact.organization_id == organization_id,
+                Artifact.kind == FURNITURE_REVIEW_ARTIFACT_KIND,
+            )
+        )
+        if existing is None:
+            session.add(
+                Artifact(
+                    id=artifact_id,
+                    organization_id=organization_id,
+                    generation_job_id=job.id,
+                    kind=FURNITURE_REVIEW_ARTIFACT_KIND,
+                    object_key=claim.object_key,
+                    sha256=claim.sha256,
+                    size_bytes=claim.size_bytes,
+                    content_type=claim.media_type,
+                )
+            )
+        elif (
+            existing.id != artifact_id
+            or existing.object_key != claim.object_key
+            or existing.sha256 != claim.sha256
+            or existing.size_bytes != claim.size_bytes
+            or existing.content_type != claim.media_type
+        ):
+            raise RuntimeError("non-deterministic furniture review artifact detected")
+        try:
+            commit_storage_batch_in_transaction(
+                session,
+                organization_id,
+                (claim,),
+                lease_token=lease_token,
+            )
+        except (StorageClaimConflict, StorageQuotaExceeded, StorageQuotaInvariantError) as exc:
+            raise ProductionBlockedError(
+                "furniture review storage reservation could not be committed exactly"
+            ) from exc
+        session.flush()
+        try:
+            with storage_runtime(client=_s3_client(), bucket=WORKER_SETTINGS.s3_bucket):
+                verify_stored_object(
+                    StoredObjectExpectation(
+                        object_key=claim.object_key,
+                        sha256=claim.sha256,
+                        size_bytes=claim.size_bytes,
+                        content_type=claim.media_type,
+                        required_metadata=(
+                            ("furniture-design-hash", design_hash),
+                            ("workspace-sha256", workspace_sha256),
+                        ),
+                    ),
+                    stream_hash=True,
+                )
+        except ArtifactIntegrityError as exc:
+            raise ProductionBlockedError(
+                "furniture review storage failed its final integrity verification"
+            ) from exc
+        final_fence_at = _database_time(session)
+        if _deadline_is_expired(job, now=final_fence_at):
+            raise GenerationDeadlineExceeded(
+                "Furniture review completion crossed the server execution deadline"
+            )
+        if not _lease_is_live(job, now=final_fence_at):
+            raise GenerationLeaseOwnershipLost(
+                "Furniture review completion lease expired before success"
+            )
+        job.result_json = dict(result)
+        job.status = JobStatus.succeeded
+        job.lease_token = None
+        job.lease_expires_at = None
+        job.next_attempt_at = None
+        job.finished_at = completed_at
+        session.add(
+            AuditEvent(
+                organization_id=organization_id,
+                actor_id=requested_by,
+                action="furniture.export.succeeded",
+                entity_type="generation_job",
+                entity_id=job.id,
+                payload_json={
+                    "project_id": job.project_id,
+                    "revision": revision,
+                    "design_hash": design_hash,
+                    "artifact_id": artifact_id,
+                    "sha256": claim.sha256,
+                    "size_bytes": claim.size_bytes,
+                },
+            )
+        )
+        return True
 
 
 def _configured_cutting_candidate_profile(
@@ -2362,8 +2784,8 @@ def _record_failure(
             session.add(
                 OutboxEvent(
                     organization_id=organization_id,
-                    event_key=f"generation-retry:{job.id}:{job.attempts}",
-                    topic="generation.requested",
+                    event_key=_job_event_key(job, "retry"),
+                    topic=_job_outbox_topic(job),
                     payload_json={
                         "job_id": job.id,
                         "organization_id": organization_id,

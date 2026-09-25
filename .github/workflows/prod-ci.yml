@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+        image: cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -354,7 +354,7 @@ jobs:
       - name: Generate exact PostgreSQL runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+          image: cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
           format: spdx-json
           output-file: artifacts/release-evidence/sbom-postgres.spdx.json
           upload-artifact: false
@@ -362,7 +362,7 @@ jobs:
       - name: Generate exact Redis runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+          image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
           format: spdx-json
           output-file: artifacts/release-evidence/sbom-redis.spdx.json
           upload-artifact: false
@@ -370,7 +370,7 @@ jobs:
       - name: Generate exact volume-init runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+          image: cgr.dev/chainguard/busybox:latest@sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba
           format: spdx-json
           output-file: artifacts/release-evidence/sbom-volume-init.spdx.json
           upload-artifact: false
@@ -476,7 +476,7 @@ jobs:
       - name: Scan exact PostgreSQL runtime image
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+          image: cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -486,7 +486,7 @@ jobs:
       - name: Scan exact Redis runtime image
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+          image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -496,7 +496,7 @@ jobs:
       - name: Scan exact volume-init runtime image
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+          image: cgr.dev/chainguard/busybox:latest@sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -533,9 +533,9 @@ jobs:
           worker_ref="custombuild-worker:${GITHUB_SHA}"
           web_ref="custombuild-web:${GITHUB_SHA}"
           seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
-          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060'
-          redis_ref='redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6'
-          volume_init_ref='cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6'
+          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9'
+          redis_ref='redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0'
+          volume_init_ref='cgr.dev/chainguard/busybox:latest@sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba'
           api_id="$(image_id "$api_ref")"
           worker_id="$(image_id "$worker_ref")"
           web_id="$(image_id "$web_ref")"

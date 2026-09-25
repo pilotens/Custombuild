@@ -61,6 +61,29 @@ async function waitForVisualFonts(page: Page, timeout = 10_000): Promise<void> {
   }).toEqual({ pendingStylesheets: [], pendingFonts: [] });
 }
 
+async function captureWithVisualFonts<T>(
+  page: Page,
+  capture: () => Promise<T>,
+  timeout = 10_000,
+): Promise<T> {
+  await waitForVisualFonts(page, timeout);
+  // Playwright 1.62.1 repeats document.fonts.ready inside BOTH page and locator
+  // screenshots, undoing our bounded, resource-specific gate on WebKit. Scope
+  // its internal opt-out to this capture only; never disable font validation
+  // globally. The pending-image capture regression below guards this private
+  // hook on dependency upgrades. Pixel tolerances and render checks stay intact.
+  const previous = process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY;
+  process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY = "1";
+  try {
+    const result = await capture();
+    await waitForVisualFonts(page, timeout);
+    return result;
+  } finally {
+    if (previous === undefined) delete process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY;
+    else process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY = previous;
+  }
+}
+
 function renderedModelSurface(page: Page) {
   return page.getByTestId("furniture-viewer")
     .locator("canvas, [data-testid='front-projection-fallback'] svg")
@@ -239,7 +262,9 @@ async function waitForHorizontalScrollToSettle(scroller: Locator): Promise<void>
 }
 
 async function projectedModelMetrics(page: Page): Promise<ProjectedModelMetrics> {
-  const screenshot = await renderedModelSurface(page).screenshot({ animations: "disabled", scale: "css" });
+  const screenshot = await captureWithVisualFonts(page, () => (
+    renderedModelSurface(page).screenshot({ animations: "disabled", scale: "css" })
+  ));
   return page.evaluate(async (encodedPng) => {
     const binary = atob(encodedPng);
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
@@ -772,7 +797,7 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   expect(statusStripIsExposed).toBe(true);
 }
 
-test("font settling does not wait for an unrelated pending image", async ({ page }) => {
+test("font settling and page/locator capture do not wait for an unrelated pending image", async ({ page }) => {
   let observeImage!: (route: Route) => void;
   const imageRequested = new Promise<Route>((resolve) => { observeImage = resolve; });
   await page.route("**/visual-font-gate-image.png", observeImage);
@@ -786,6 +811,21 @@ test("font settling does not wait for an unrelated pending image", async ({ page
     await waitForVisualFonts(page);
     await expect(page.getByText("Ready text")).toBeVisible();
     expect(await page.evaluate(() => document.readyState)).toBe("interactive");
+    expect(await page.locator("img").evaluate((image) => (
+      image instanceof HTMLImageElement && !image.complete
+    ))).toBe(true);
+    const previous = process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY;
+    const screenshot = await captureWithVisualFonts(page, () => page.screenshot({ timeout: 3_000 }));
+    expect(screenshot.subarray(1, 4).toString()).toBe("PNG");
+    const elementScreenshot = await captureWithVisualFonts(page, () => (
+      page.locator("p").screenshot({ timeout: 3_000 })
+    ));
+    expect(elementScreenshot.subarray(1, 4).toString()).toBe("PNG");
+    expect(process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY).toBe(previous);
+    await expect(captureWithVisualFonts(page, async () => {
+      throw new Error("synthetic capture failure");
+    })).rejects.toThrow("synthetic capture failure");
+    expect(process.env.PW_TEST_SCREENSHOT_NO_FONTS_READY).toBe(previous);
     expect(await page.locator("img").evaluate((image) => (
       image instanceof HTMLImageElement && !image.complete
     ))).toBe(true);
@@ -808,14 +848,41 @@ test("font settling rejects a loading font and its eventual load failure", async
   await page.goto("/visual-font-gate", { waitUntil: "domcontentloaded" });
   await page.locator("p").boundingBox();
   const fontRoute = await fontRequested;
+  let captured = false;
+  const capture = async () => { captured = true; };
   try {
-    await expect(waitForVisualFonts(page, 250)).rejects.toThrow("Visual evidence requires");
+    await expect(captureWithVisualFonts(page, capture, 250)).rejects.toThrow("Visual evidence requires");
+    expect(captured).toBe(false);
   } finally {
     await fontRoute.fulfill({ contentType: "font/woff2", body: "unavailable font data" });
   }
   await expect.poll(() => page.evaluate(() => [...document.fonts].map((font) => font.status)))
     .toEqual(["error"]);
-  await expect(waitForVisualFonts(page, 250)).rejects.toThrow("Visual evidence requires");
+  await expect(captureWithVisualFonts(page, capture, 250)).rejects.toThrow("Visual evidence requires");
+  expect(captured).toBe(false);
+});
+
+test("font settling rejects a pending stylesheet before capture", async ({ page }) => {
+  let observeStylesheet!: (route: Route) => void;
+  const stylesheetRequested = new Promise<Route>((resolve) => { observeStylesheet = resolve; });
+  await page.route("**/visual-font-gate-pending.css", observeStylesheet);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.evaluate(() => {
+    const stylesheet = document.createElement("link");
+    stylesheet.rel = "stylesheet";
+    stylesheet.href = "/visual-font-gate-pending.css";
+    document.head.append(stylesheet);
+  });
+  const stylesheetRoute = await stylesheetRequested;
+  let captured = false;
+  try {
+    await expect(captureWithVisualFonts(page, async () => { captured = true; }, 250))
+      .rejects.toThrow("Visual evidence requires");
+    expect(captured).toBe(false);
+  } finally {
+    await stylesheetRoute.fulfill({ contentType: "text/css", body: "body { color: black; }" });
+  }
+  await waitForVisualFonts(page);
 });
 
 test("renderer settling requires a new commit on the same canvas", async ({ page }) => {
@@ -870,7 +937,9 @@ for (const visualCase of visualCases) {
       await expect(explore.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible();
       await expect(explore).toHaveAttribute("data-presentation", "embedded");
       await settleViewport(page, visualCase.viewport.width);
-      await expect.soft(page).toHaveScreenshot(`utforska-${visualCase.name}.png`, screenshotOptions);
+      await captureWithVisualFonts(page, () => (
+        expect.soft(page).toHaveScreenshot(`utforska-${visualCase.name}.png`, screenshotOptions)
+      ));
 
       await openDeterministicWallLibrary(page);
       const modes = page.getByRole("navigation", { name: "Produktlägen" });
@@ -885,7 +954,9 @@ for (const visualCase of visualCases) {
       viewerCheckpoint = await settleViewport(page, visualCase.viewport.width, true) ?? viewerCheckpoint;
       await verifyPersistentVisibleModel(page);
       await verifyViewerOverlayLayout(page);
-      await expect.soft(page).toHaveScreenshot(`studio-${visualCase.name}.png`, screenshotOptions);
+      await captureWithVisualFonts(page, () => (
+        expect.soft(page).toHaveScreenshot(`studio-${visualCase.name}.png`, screenshotOptions)
+      ));
 
       await modes.getByRole("button", { name: /Kontroll/ }).click();
       await expect(modes.getByRole("button", { name: /Kontroll/ })).toHaveAttribute("aria-current", "page");
@@ -900,7 +971,9 @@ for (const visualCase of visualCases) {
       ) ?? viewerCheckpoint;
       await verifyPersistentVisibleModel(page);
       await verifyViewerOverlayLayout(page);
-      await expect.soft(page).toHaveScreenshot(`kontroll-${visualCase.name}.png`, screenshotOptions);
+      await captureWithVisualFonts(page, () => (
+        expect.soft(page).toHaveScreenshot(`kontroll-${visualCase.name}.png`, screenshotOptions)
+      ));
 
       await modes.getByRole("button", { name: /Underlag/ }).click();
       await expect(modes.getByRole("button", { name: /Underlag/ })).toHaveAttribute("aria-current", "page");
@@ -914,7 +987,9 @@ for (const visualCase of visualCases) {
       );
       await verifyPersistentVisibleModel(page);
       await verifyViewerOverlayLayout(page);
-      await expect.soft(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions);
+      await captureWithVisualFonts(page, () => (
+        expect.soft(page).toHaveScreenshot(`underlag-${visualCase.name}.png`, screenshotOptions)
+      ));
       await verifyCanvasStateBannerStack(page);
     });
   });

@@ -40,10 +40,10 @@ COPY packages/contracts packages/contracts
 RUN mkdir -p apps/web/public && pnpm --dir apps/web build
 
 
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b AS runtime-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:6acf5a19a988abdaf0f3d30247561431a206034e702871442bed66a2c68cc1a2 AS runtime-base
 
 
-FROM cgr.dev/chainguard/python:latest-dev@sha256:f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd AS runtime-assembler
+FROM cgr.dev/chainguard/python:latest-dev@sha256:2d5551e22013aa1bb69c070398273171941c4a0d80414e7f786db8e6d966bb83 AS runtime-assembler
 
 USER root
 COPY --from=runtime-base / /base-chroot
@@ -58,13 +58,13 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
       libnghttp2-14=1.70.0-r2 \
       libssl3=3.6.4-r0 \
       libuv=1.52.1-r1 \
-      zlib=1.3.2-r4 \
+      zlib=1.3.2.1_rc20260601-r0 \
       nodejs-24=24.19.0-r0 \
     && ldconfig -r /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
     && test "$(wc -l < /tmp/runtime-package-closure)" = "19" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "f44e2ee8aacd1d2fbe9c51b2e354973ef3d1ef1b82a202be483c3bedab17879f" \
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "77bcd8a611e2039b4030b330c3b2737f09fbd37792b5178bd56f9bcd5c76de23" \
     && PATH=/usr/bin:/usr/sbin:/sbin:/bin \
       chroot /base-chroot /usr/bin/node -e \
       "const fs = require('node:fs'); require('node:inspector'); if (process.version !== 'v24.19.0') process.exit(1); for (const path of ['/usr/local/bin/node', '/usr/bin/npm', '/usr/bin/pnpm', '/usr/bin/corepack']) if (fs.existsSync(path)) process.exit(1)"

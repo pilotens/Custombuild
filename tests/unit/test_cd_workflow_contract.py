@@ -212,7 +212,7 @@ def test_images_are_built_once_archived_tested_then_pushed_without_rebuild() -> 
     assert source.count(
         "test \"$(jq -er '.local_scan_manifest_digest' \"$metadata\")\" ="
     ) == 2
-    assert "registry:redis:7.2.15-alpine@sha256:" in source
+    assert "registry:redis:7.2.16-alpine@sha256:" in source
     assert "resolve_registry_platform()" in source
     assert 'platform.architecture == "amd64"' in source
     assert (

@@ -36,19 +36,19 @@ REQUIRED_IMAGES = frozenset(
 REQUIRED_NATIVE_PACKAGES = {
     "api": frozenset(
         {
-            ("python-3.13", "3.13.15-r2"),
-            ("python-3.13-base", "3.13.15-r2"),
+            ("python-3.13", "3.13.15_git20260918-r2"),
+            ("python-3.13-base", "3.13.15_git20260918-r2"),
         }
     ),
     "worker": frozenset(
         {
-            ("ca-certificates-bundle", "20260611-r0"),
-            ("glibc-2.44-locale-posix", "2.44-r1"),
-            ("glibc-2.44", "2.44-r1"),
-            ("ld-linux-2.44", "2.44-r1"),
-            ("libgcc", "16.2.0-r0"),
-            ("libstdc++", "16.2.0-r0"),
-            ("wolfi-baselayout", "20230201-r29"),
+            ("ca-certificates-bundle", "20260909-r1"),
+            ("glibc-2.44-locale-posix", "2.44-r6"),
+            ("glibc-2.44", "2.44-r6"),
+            ("ld-linux-2.44", "2.44-r6"),
+            ("libgcc", "16.2.0-r1"),
+            ("libstdc++", "16.2.0-r1"),
+            ("wolfi-baselayout", "20230201-r30"),
             ("py3-pip-wheel", "26.2.1-r0"),
             ("libbz2-1", "1.0.8-r23"),
             ("libcrypto3", "3.6.4-r0"),
@@ -63,9 +63,9 @@ REQUIRED_NATIVE_PACKAGES = {
             ("sqlite-libs", "3.53.4-r0"),
             ("libssl3", "3.6.4-r0"),
             ("libuuid", "2.42.2-r3"),
-            ("zlib", "1.3.2-r4"),
-            ("python-3.13", "3.13.15-r2"),
-            ("python-3.13-base", "3.13.15-r2"),
+            ("zlib", "1.3.2.1_rc20260601-r0"),
+            ("python-3.13", "3.13.15_git20260918-r2"),
+            ("python-3.13-base", "3.13.15_git20260918-r2"),
             ("mesa-gl", "26.2.1-r0"),
             ("libx11", "1.8.13-r5"),
             ("libxau", "1.0.12-r7"),
@@ -104,15 +104,15 @@ BUILT_IMAGE_NAMES = {
 EXTERNAL_IMAGE_REFERENCES = {
     "postgres": (
         "cgr.dev/chainguard/postgres:latest@"
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+        "sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
     ),
     "redis": (
-        "redis:7.2.15-alpine@"
-        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
+        "redis:7.2.16-alpine@"
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0"
     ),
     "volume-init": (
         "cgr.dev/chainguard/busybox:latest@"
-        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+        "sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba"
     ),
 }
 SHA256 = re.compile(r"^[a-f0-9]{64}$")

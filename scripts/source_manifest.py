@@ -549,7 +549,14 @@ def _read_index_bound_regular_file(
     if git_mode not in {"100644", "100755"}:
         raise SourceManifestError(f"unsupported Git mode {git_mode} for {path_text}")
     path = repo.joinpath(*path_text.split("/"))
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # Hash exact on-disk bytes: Windows text mode translates CRLF and treats
+    # Ctrl-Z as EOF. Never normalize content before checking its Git identity.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError as exc:

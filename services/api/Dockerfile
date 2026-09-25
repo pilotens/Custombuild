@@ -59,10 +59,10 @@ RUN python -m compileall -f -q packages cad cam postprocessors services/api scri
       /usr/local/bin/uv /usr/local/bin/uvx
 
 
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b AS runtime-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:6acf5a19a988abdaf0f3d30247561431a206034e702871442bed66a2c68cc1a2 AS runtime-base
 
 
-FROM cgr.dev/chainguard/python:latest-dev@sha256:f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd AS runtime-assembler
+FROM cgr.dev/chainguard/python:latest-dev@sha256:2d5551e22013aa1bb69c070398273171941c4a0d80414e7f786db8e6d966bb83 AS runtime-assembler
 
 USER root
 COPY --from=runtime-base / /base-chroot
@@ -81,14 +81,14 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
       sqlite-libs=3.53.4-r0 \
       libssl3=3.6.4-r0 \
       libuuid=2.42.2-r3 \
-      zlib=1.3.2-r4 \
-      python-3.13-base=3.13.15-r2 \
-      python-3.13=3.13.15-r2 \
+      zlib=1.3.2.1_rc20260601-r0 \
+      python-3.13-base=3.13.15_git20260918-r2 \
+      python-3.13=3.13.15_git20260918-r2 \
     && ldconfig -r /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
     && test "$(wc -l < /tmp/runtime-package-closure)" = "24" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "b877ad764a4b02b376bf61c2b62ebfc5044c1b1b70fb4a3a5ffca089be06bffb"
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "3ff9f734716757ab88abf71fd3c537a9aa9c0f807847d665657c60be3a3a1b6a"
 
 COPY --from=builder /opt/custombuild-venv /base-chroot/opt/custombuild-venv
 COPY --from=builder /app/packages /base-chroot/app/packages
