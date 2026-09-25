@@ -13,6 +13,10 @@ hardware and manufacturing profiles. It supports revision history and real
 STEP/GLB/DXF/PDF review exports. Table/chest hardware remains unqualified and
 does not unlock cutting CAM. See [scope and verification](docs/MULTI_FURNITURE_V1_IMPLEMENTATION.md).
 
+Furniture exports are durable, quota-accounted jobs with immutable object-store
+artifacts. Status polling returns metadata, and authenticated binary downloads
+are revision-bound and checksum-verified; ZIP payloads are not stored in Redis.
+
 Shelving can request a server-calculated equal-bay proposal at the customer's
 exact dimensions and useful load. It shows calculated values against limits,
 clear bay widths, furniture weight and remaining construction/workshop issues

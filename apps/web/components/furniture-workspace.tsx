@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { CustombuildApiClient, type CurrentPrincipal, type ProjectRead } from "@/lib/api-client";
 import {
-  FURNITURE_FAMILY_LABELS, furnitureViewerParts, newFurnitureWorkspace, verifiedFurnitureDownload,
+  FURNITURE_FAMILY_LABELS, furnitureViewerParts, newFurnitureWorkspace,
   type FurnitureCatalog, type FurnitureFamily, type FurnitureHistory, type FurniturePreview,
   type FurnitureProfileComparison, type FurnitureWorkspace,
 } from "@/lib/furniture-workspace";
@@ -139,19 +139,21 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   useEffect(() => {
     if (!exportJob) return;
     let active = true;
+    const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
       try {
-        const result = await api.furnitureExportResult(exportJob.project, exportJob.id);
+        const result = await api.furnitureExportResult(exportJob.project, exportJob.id, abort.signal);
         if (!active) return;
         if (result.state === "succeeded") {
-          if (result.design_hash !== exportJob.hash) throw new Error("Exporten gäller en annan design.");
-          const bytes = await verifiedFurnitureDownload(result);
+          const blob = await api.downloadFurnitureExport(
+            exportJob.project, exportJob.id, exportJob.revision, exportJob.hash, result, abort.signal,
+          );
           if (!active) return;
-          setDownload({ url: URL.createObjectURL(new Blob([bytes], { type: "application/zip" })),
-            name: result.file_name ?? "custombuild-design-review.zip", revision: exportJob.revision });
+          setDownload({ url: URL.createObjectURL(blob),
+            name: result.file_name, revision: exportJob.revision });
           setExportMessage("Granskningspaketet är klart.");
-        } else if (result.state === "failed" || result.state === "expired") {
+        } else if (result.state === "failed" || result.state === "cancelled") {
           setExportMessage(result.message ?? "Exporten kunde inte slutföras.");
         } else {
           setExportMessage("Skapar och kontrollerar CAD-modeller, delritningar och kaplista…");
@@ -160,7 +162,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       } catch (reason) { if (active) setExportMessage(errorText(reason)); }
     };
     void poll();
-    return () => { active = false; clearTimeout(timer); };
+    return () => { active = false; abort.abort(); clearTimeout(timer); };
   }, [api, exportJob]);
 
   const navigate = (action: () => void) => {
@@ -213,9 +215,11 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   };
   const exportReview = async () => {
     if (!projectId || !preview || dirty) return;
-    setBusy(true); setDownload(undefined);
+    setBusy(true); setDownload(undefined); setExportMessage(undefined);
+    const epoch = mutationEpoch.current;
     try {
       const result = await api.requestFurnitureExport(projectId, revision, preview.design.design_hash);
+      if (epoch !== mutationEpoch.current) return;
       setExportJob({ id: result.job_id, project: projectId, revision, hash: preview.design.design_hash });
     } catch (reason) { setExportMessage(errorText(reason)); }
     finally { setBusy(false); }

@@ -2,15 +2,25 @@
 
 ## Nuvarande grund
 
-Webbappen är en Next.js 16/React 19-applikation med en enda route (`/`). `CustombuildWorkspace`
-äger i dag designutkastet, lokal undo/redo, projektval, serverpreview och editorpresentation.
-Three.js renderas via React Three Fiber och Drei. En framtida uppdelning i fler vyer bör behålla
-samma monterade modellcanvas inom projektarbetsytan så att kamera och selection inte tappas.
+Webbappen är en Next.js 16/React 19-applikation med två arbetsytor:
+
+- `/`: `CustombuildWorkspace` äger bokhylleutkast, lokal undo/redo, projektval,
+  serverpreview och de fyra produktlägena Utforska, Studio, Kontroll och Underlag.
+- `/furniture`: `FurnitureWorkspacePage` använder `FurnitureWorkspace` för bord,
+  byråer och hyllor med separata material-, beslag-, tillverknings- och lagerprofiler.
+  Den har egna draft-, historik- och exportkontrakt under `/v1/furniture`.
+
+Three.js renderas via React Three Fiber och Drei. Den monterade modellcanvasen på `/`
+bevaras mellan produktlägen så att kamera och selection inte tappas. De två routerna
+är inte utbytbara serialiseringar av samma utkast; befintliga projekt får inte skrivas
+över vid ett routebyte.
 
 `DesignSpec` är den gemensamma redigerbara designmodellen. `ResolvedDesign` är en beräknad vy av
 den modellen och märks med `source: "local" | "server-preview"`. UI-state är medvetet separat:
-`WorkspaceUiState` innehåller sexstegsnavigation, guided/free-läge, vy, selection och panelstatus.
-Den får aldrig spridas in i `DesignSpec`.
+`WorkspaceUiState` version 2 innehåller `mode` (`explore`, `studio`, `check`, `build`),
+vy, selection och panelstatus. Den får aldrig spridas in i `DesignSpec`. Äldre sexstegs-
+och guided/free-state läses endast genom den explicita migreringen i
+`workspace-ui-state.ts`; de är inte aktuella navigationsmodeller.
 
 ## Lokal persistens
 
@@ -47,10 +57,10 @@ design-review-underlag, inte ett automatiskt kapptillstånd.
 
 ## Verifiering och underlag i gränssnittet
 
-Verifiering och underlag är steg 5 respektive 6 i samma arbetsflöde som resten av designen. De
-presenteras därför som vanliga projektytor, inte som ett separat release- eller bevisflöde.
-Underlagsvyn behåller projektets sexstegsnavigation och modellen kan ligga synlig bakom den
-sidoliggande dialogen.
+Kontroll och Underlag är två av de fyra produktlägena på `/`. De presenteras som
+projektytor bredvid samma modell, inte som en separat guide eller release-dialog.
+Navigationens tillgängliga namn är `Produktlägen`. Underlag är en inbäddad yta;
+redesignens visuella tester säkerställer att ingen `Skapa underlag`-dialog öppnas.
 
 Användarstatus översätts konsekvent till `Godkänt`, `Behöver beslut` och `Måste lösas`, alltid med
 både ikon och text. Regel-ID, version, beräkningsspår, antaganden och diagnostik ligger i
@@ -58,10 +68,10 @@ stängda `Tekniska detaljer`. En varning är informativ tills användaren bekrä
 checkboxen. Ett `BLOCK` stoppar fortsatt skapande. Efter lyckad servergenerering visas ZIP-filen
 direkt i en underlagskortlik yta, utan evidence-upload, CAM-godkännande eller release-steg.
 
-DOM-kontraktet använder `ProjectHeader` för projektrubriken, `StepNavigation` med
-`aria-label="Projektets sex steg"`, en namngiven statusregion för verifieringen, ett `role="alert"`
-för krav som måste lösas och ett riktigt dialogfokus för underlagsytan. Checkboxens label och
-knapparnas synliga namn är stabila test- och tillgänglighetskontrakt.
+DOM-kontraktet använder namngiven produktnavigation, en statusregion för verifieringen
+och `role="alert"` för krav som måste lösas. Checkboxens label och knapparnas synliga
+namn är stabila test- och tillgänglighetskontrakt. Canvasidentitet, modellrot och
+renderingsrevision verifieras över lägesbyten i `redesign-visual-evidence.spec.ts`.
 
 ## Backendkontrakt som måste bevaras
 
@@ -89,19 +99,25 @@ knapparnas synliga namn är stabila test- och tillgänglighetskontrakt.
 10. Release-kontraktet och CAM-approval finns kvar för spårbar låsning även om den förenklade
     UI:n i dag erbjuder direkt ZIP efter ett lyckat design-review-jobb.
 
-## Verkliga API-gap för redesignen
+## Multi-family-arbetsytan och återstående gap
 
-Följande behov finns inte i nuvarande kontrakt och bör lösas explicit, inte simuleras i UI:
+`/furniture` har redan serverkatalog, profiljämförelse, hyllförslag, modulplanering,
+revisionsskyddad sparning och historik. Bord och byråer har riktig granskningsgeometri
+men inte kvalificerade beslag eller tillstånd till skärande CAM. Dessa funktioner ska
+inte längre beskrivas som helt saknade. Läs `MULTI_FURNITURE_V1_IMPLEMENTATION.md`
+för den exakta avgränsningen.
+
+Följande behov kräver fortfarande separata kontrakt och får inte simuleras i UI:
 
 - projektuppdatering/arkivering/radering/duplicering, favoritmallar och senaste exporter,
 - serverpersistens av planeringsbrief, rumsbegränsningar, hinder, toleranser, designriktning,
   anteckningar och delning,
 - batchad interaktionsmutation med `clientMutationId` och explicit basrevision för en enda
   backendmutation vid avslutad dragning,
-- revisionsjämförelse och återställning/fork av historisk immutable revision,
-- serverlistor för material/ytor, priser och lagerstatus,
+- fullständig revisionsjämförelse och återställning/fork av historisk immutable revision,
+- kommersiella priser, ytkatalog och live-lagerstatus (inte den befintliga materialkatalogen),
 - flera servergenererade koncept med jämförbara material-, last- och komplexitetsmått,
-- utökad parametrisk komponentdomän för dörrar, lådor, fronter, beslag, belysning och egna delar,
+- kvalificering av dörrar/lådor/beslag för produktion samt belysning och egna delar,
 - artefaktmetadata/preview för individuella leveranser och en endpoint som kan visa den faktiska
   versionsbundna monteringsmanualen utan att först ladda ned hela ZIP-paketet,
 - serverpersistens av kamera/paneler om exakt återupptagning ska fungera mellan enheter (v3-state
@@ -109,3 +125,12 @@ Följande behov finns inte i nuvarande kontrakt och bör lösas explicit, inte s
 
 Tills dessa kontrakt finns ska frontend visa ärliga tom- eller koncepttillstånd och inte skapa
 parallella, produktionsliknande lokalfiler.
+
+## Utvecklingsriktning
+
+Nya möbelfamiljer hör hemma i multi-family-domänen. Återanvänd den gemensamma
+jobb-, lagrings- och produktionskedjan; skapa inte en tredje parallell pipeline.
+Bokhyllearbetsytans beprövade granskningsflöde behålls tills en explicit, testad
+migrering bevarar utkast, revisioner, importprovenance och workshop-spärrar.
+Bryt ut nya ansvar i fokuserade moduler i stället för att fortsätta växa
+`api.py`, `production-workflow.tsx` eller den globala stilmallen.

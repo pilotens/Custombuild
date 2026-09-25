@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from threading import Lock
+from time import monotonic
 from typing import Any, Literal
 
 import boto3
@@ -28,8 +30,11 @@ DependencyName = Literal[
     "redis",
     "object_storage",
     "rule_engine",
+    "readiness_probe",
 ]
-REQUIRED_DATABASE_REVISION = "0021_furniture_review_reads"
+REQUIRED_DATABASE_REVISION = "0022_durable_furniture_review_exports"
+READINESS_CACHE_TTL_SECONDS = 5.0
+_DEPENDENCY_CHECK_COUNT = 6
 
 
 @dataclass(frozen=True)
@@ -218,8 +223,8 @@ def check_rule_engine(_settings: Settings) -> None:
     assert_rule_engine_available()
 
 
-def probe_dependencies(settings: Settings) -> tuple[dict[str, str], list[DependencyFailure]]:
-    checks: tuple[tuple[DependencyName, Callable[[Settings], None]], ...] = (
+def _dependency_checks() -> tuple[tuple[DependencyName, Callable[[Settings], None]], ...]:
+    return (
         ("database", check_database),
         ("joint_retention_registry", check_joint_retention_registry),
         ("storage_capacity", check_storage_capacity),
@@ -227,16 +232,108 @@ def probe_dependencies(settings: Settings) -> tuple[dict[str, str], list[Depende
         ("object_storage", check_object_storage),
         ("rule_engine", check_rule_engine),
     )
+
+
+def _probe_dependencies_once(
+    settings: Settings,
+    executor: Executor,
+) -> tuple[dict[str, str], list[DependencyFailure]]:
+    checks = _dependency_checks()
     statuses: dict[str, str] = {}
     failures: list[DependencyFailure] = []
-    with ThreadPoolExecutor(max_workers=len(checks), thread_name_prefix="readiness") as executor:
-        futures = [executor.submit(check, settings) for _, check in checks]
-        for (name, _), future in zip(checks, futures, strict=True):
-            try:
-                future.result()
-            except Exception as exc:
-                statuses[name] = "unavailable"
-                failures.append(DependencyFailure(name=name, error_type=type(exc).__name__))
-            else:
-                statuses[name] = "ok"
+    futures = [executor.submit(check, settings) for _, check in checks]
+    for (name, _), future in zip(checks, futures, strict=True):
+        try:
+            future.result()
+        except Exception as exc:
+            statuses[name] = "unavailable"
+            failures.append(DependencyFailure(name=name, error_type=type(exc).__name__))
+        else:
+            statuses[name] = "ok"
     return statuses, failures
+
+
+class ReadinessProbeCoordinator:
+    """Cache one bounded dependency probe and reject overlapping probe work.
+
+    The fixed executor caps dependency work at one worker per check. If a
+    provider call stalls despite its client timeout, subsequent readiness
+    requests fail closed immediately instead of allocating another executor or
+    waiting behind the stalled probe.
+    """
+
+    def __init__(
+        self,
+        *,
+        ttl_seconds: float = READINESS_CACHE_TTL_SECONDS,
+        clock: Callable[[], float] = monotonic,
+        executor: Executor | None = None,
+    ) -> None:
+        if ttl_seconds <= 0:
+            raise ValueError("readiness cache TTL must be positive")
+        self._ttl_seconds = ttl_seconds
+        self._clock = clock
+        self._executor = executor or ThreadPoolExecutor(
+            max_workers=_DEPENDENCY_CHECK_COUNT,
+            thread_name_prefix="readiness",
+        )
+        self._lock = Lock()
+        self._in_flight = False
+        self._cached_settings: Settings | None = None
+        self._cached_statuses: tuple[tuple[str, str], ...] | None = None
+        self._cached_failures: tuple[DependencyFailure, ...] = ()
+        self._expires_at = 0.0
+
+    @staticmethod
+    def _copy_result(
+        statuses: tuple[tuple[str, str], ...],
+        failures: tuple[DependencyFailure, ...],
+    ) -> tuple[dict[str, str], list[DependencyFailure]]:
+        return dict(statuses), list(failures)
+
+    @staticmethod
+    def _coordination_failure(error_type: str) -> tuple[dict[str, str], list[DependencyFailure]]:
+        return (
+            {"readiness_probe": "unavailable"},
+            [DependencyFailure(name="readiness_probe", error_type=error_type)],
+        )
+
+    def probe(self, settings: Settings) -> tuple[dict[str, str], list[DependencyFailure]]:
+        with self._lock:
+            now = self._clock()
+            if (
+                self._cached_settings is settings
+                and self._cached_statuses is not None
+                and now < self._expires_at
+            ):
+                return self._copy_result(self._cached_statuses, self._cached_failures)
+            if self._in_flight:
+                return self._coordination_failure("ReadinessProbeInFlight")
+            self._in_flight = True
+
+        try:
+            result = _probe_dependencies_once(settings, self._executor)
+        except Exception as exc:
+            result = self._coordination_failure(type(exc).__name__)
+        except BaseException:
+            with self._lock:
+                self._in_flight = False
+            raise
+
+        statuses, failures = result
+        cached_statuses = tuple(statuses.items())
+        cached_failures = tuple(failures)
+        with self._lock:
+            self._cached_settings = settings
+            self._cached_statuses = cached_statuses
+            self._cached_failures = cached_failures
+            self._expires_at = self._clock() + self._ttl_seconds
+            self._in_flight = False
+        return self._copy_result(cached_statuses, cached_failures)
+
+
+_READINESS_PROBE_COORDINATOR = ReadinessProbeCoordinator()
+
+
+def probe_dependencies(settings: Settings) -> tuple[dict[str, str], list[DependencyFailure]]:
+    return _READINESS_PROBE_COORDINATOR.probe(settings)

@@ -52,17 +52,22 @@ class HangingStore:
         return 1
 
 
-def test_local_rate_limit_has_retry_after_and_exempts_health() -> None:
-    app = Starlette(routes=[Route("/resource", ok), Route("/health", ok)])
+def test_local_rate_limit_has_retry_after_exempts_liveness_and_throttles_readiness() -> None:
+    app = Starlette(
+        routes=[Route("/resource", ok), Route("/health", ok), Route("/ready", ok)]
+    )
     app.add_middleware(RateLimitMiddleware, requests=2, window_seconds=30)
     with TestClient(app) as client:
         assert client.get("/resource").status_code == 200
         assert client.get("/resource").status_code == 200
         blocked = client.get("/resource")
         assert client.get("/health").status_code == 200
+        readiness = client.get("/ready")
 
     assert blocked.status_code == 429
     assert blocked.headers["Retry-After"] == "30"
+    assert readiness.status_code == 429
+    assert readiness.headers["Retry-After"] == "30"
 
 
 def test_production_uses_shared_source_counter_without_storing_raw_identity() -> None:
@@ -191,6 +196,23 @@ def test_production_fails_closed_when_shared_counter_is_unavailable() -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Shared rate-limit dependency is unavailable"
+
+
+def test_production_keeps_liveness_available_but_fails_readiness_closed() -> None:
+    app = Starlette(routes=[Route("/health", ok), Route("/ready", ok)])
+    app.add_middleware(
+        RateLimitMiddleware,
+        distributed_required=True,
+        store=FailingStore(),
+    )
+
+    with TestClient(app) as client:
+        liveness = client.get("/health")
+        readiness = client.get("/ready")
+
+    assert liveness.status_code == 200
+    assert readiness.status_code == 503
+    assert readiness.json()["detail"] == "Shared rate-limit dependency is unavailable"
 
 
 def test_production_bounds_a_stalled_shared_counter_and_remains_serviceable() -> None:

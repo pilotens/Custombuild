@@ -189,6 +189,168 @@
         "title": "ArtifactRead",
         "type": "object"
       },
+      "AssemblyDirection": {
+        "enum": [
+          "+x",
+          "-x",
+          "+y",
+          "-y",
+          "+z",
+          "-z"
+        ],
+        "title": "AssemblyDirection",
+        "type": "string"
+      },
+      "AssemblyEdge": {
+        "additionalProperties": false,
+        "properties": {
+          "from_part_id": {
+            "title": "From Part Id",
+            "type": "string"
+          },
+          "joint_id": {
+            "title": "Joint Id",
+            "type": "string"
+          },
+          "to_part_id": {
+            "title": "To Part Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "joint_id",
+          "from_part_id",
+          "to_part_id"
+        ],
+        "title": "AssemblyEdge",
+        "type": "object"
+      },
+      "AssemblyGraph": {
+        "additionalProperties": false,
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/AssemblyEdge"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/AssemblyNode"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/AssemblyStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "nodes",
+          "edges",
+          "steps"
+        ],
+        "title": "AssemblyGraph",
+        "type": "object"
+      },
+      "AssemblyNode": {
+        "additionalProperties": false,
+        "properties": {
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "semantic_key": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Semantic Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part_id",
+          "semantic_key"
+        ],
+        "title": "AssemblyNode",
+        "type": "object"
+      },
+      "AssemblyStep": {
+        "additionalProperties": false,
+        "description": "One deterministic operator action derived from the assembly graph.",
+        "properties": {
+          "checkpoint": {
+            "title": "Checkpoint",
+            "type": "string"
+          },
+          "direction": {
+            "$ref": "#/components/schemas/AssemblyDirection"
+          },
+          "joint_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Joint Ids",
+            "type": "array"
+          },
+          "motion_path": {
+            "items": {
+              "$ref": "#/components/schemas/AssemblyDirection"
+            },
+            "minItems": 1,
+            "title": "Motion Path",
+            "type": "array"
+          },
+          "moving_part_ids": {
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1,
+            "title": "Moving Part Ids",
+            "type": "array"
+          },
+          "part_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Part Ids",
+            "type": "array"
+          },
+          "step_id": {
+            "title": "Step Id",
+            "type": "string"
+          },
+          "step_number": {
+            "exclusiveMinimum": 0.0,
+            "title": "Step Number",
+            "type": "integer"
+          },
+          "tool_ids": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            "title": "Tool Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "step_number",
+          "step_id",
+          "part_ids",
+          "moving_part_ids",
+          "joint_ids",
+          "direction",
+          "motion_path",
+          "checkpoint"
+        ],
+        "title": "AssemblyStep",
+        "type": "object"
+      },
       "BackPanelType": {
         "enum": [
           "none",
@@ -273,6 +435,246 @@
           "design_hash"
         ],
         "title": "Body_upload_external_evidence_v1_projects__project_id__evidence_post",
+        "type": "object"
+      },
+      "BookcaseDesignSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "back_material": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MaterialVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "design_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Design Id",
+            "type": "string"
+          },
+          "engine_version": {
+            "default": "0.9.0",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "joint_retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JointRetentionContract"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "material": {
+            "$ref": "#/components/schemas/MaterialVersion"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/BookcaseParameters"
+          },
+          "revision": {
+            "default": 1,
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DesignStatus",
+            "default": "draft"
+          },
+          "template_id": {
+            "default": "bookcase",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Template Id",
+            "type": "string"
+          },
+          "template_version": {
+            "default": "2.2.0",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Template Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "design_id",
+          "parameters",
+          "material"
+        ],
+        "title": "BookcaseDesignSpec",
+        "type": "object"
+      },
+      "BookcaseParameters": {
+        "additionalProperties": false,
+        "properties": {
+          "actual_thickness_um": {
+            "default": 18000,
+            "exclusiveMinimum": 0.0,
+            "title": "Actual Thickness Um",
+            "type": "integer"
+          },
+          "assumed_horizontal_force_n": {
+            "default": 50,
+            "exclusiveMinimum": 0.0,
+            "title": "Assumed Horizontal Force N",
+            "type": "integer"
+          },
+          "back_panel": {
+            "$ref": "#/components/schemas/BackPanelType",
+            "default": "inset_groove"
+          },
+          "back_thickness_um": {
+            "default": 6000,
+            "exclusiveMinimum": 0.0,
+            "title": "Back Thickness Um",
+            "type": "integer"
+          },
+          "base_cabinet_count": {
+            "default": 0,
+            "maximum": 17.0,
+            "minimum": 0.0,
+            "title": "Base Cabinet Count",
+            "type": "integer"
+          },
+          "base_cabinet_depth_um": {
+            "default": 0,
+            "maximum": 1200000.0,
+            "minimum": 0.0,
+            "title": "Base Cabinet Depth Um",
+            "type": "integer"
+          },
+          "base_cabinet_height_um": {
+            "default": 0,
+            "maximum": 2000000.0,
+            "minimum": 0.0,
+            "title": "Base Cabinet Height Um",
+            "type": "integer"
+          },
+          "bay_width_ratios_ppm": {
+            "default": [],
+            "items": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000000.0,
+              "type": "integer"
+            },
+            "title": "Bay Width Ratios Ppm",
+            "type": "array"
+          },
+          "deflection_span_ratio": {
+            "default": 200,
+            "exclusiveMinimum": 0.0,
+            "title": "Deflection Span Ratio",
+            "type": "integer"
+          },
+          "depth_um": {
+            "default": 320000,
+            "maximum": 1200000.0,
+            "minimum": 100000.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "edge_band_thickness_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Edge Band Thickness Um",
+            "type": "integer"
+          },
+          "height_um": {
+            "default": 2000000,
+            "maximum": 4000000.0,
+            "minimum": 300000.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "joint_system": {
+            "$ref": "#/components/schemas/JointType",
+            "default": "dado"
+          },
+          "max_deflection_um": {
+            "default": 3000,
+            "exclusiveMinimum": 0.0,
+            "title": "Max Deflection Um",
+            "type": "integer"
+          },
+          "nominal_thickness_um": {
+            "default": 18000,
+            "exclusiveMinimum": 0.0,
+            "title": "Nominal Thickness Um",
+            "type": "integer"
+          },
+          "plinth_height_um": {
+            "default": 80000,
+            "minimum": 0.0,
+            "title": "Plinth Height Um",
+            "type": "integer"
+          },
+          "reinforcement_mode": {
+            "$ref": "#/components/schemas/ReinforcementMode",
+            "default": "manual"
+          },
+          "shelf_count": {
+            "default": 5,
+            "maximum": 40.0,
+            "minimum": 0.0,
+            "title": "Shelf Count",
+            "type": "integer"
+          },
+          "shelf_height_ratios_ppm": {
+            "default": [],
+            "items": {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000000.0,
+              "type": "integer"
+            },
+            "title": "Shelf Height Ratios Ppm",
+            "type": "array"
+          },
+          "shelf_load_n": {
+            "default": 300,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Shelf Load N",
+            "type": "integer"
+          },
+          "shelf_mount": {
+            "$ref": "#/components/schemas/ShelfMount",
+            "default": "fixed"
+          },
+          "shelf_side_clearance_um": {
+            "default": 1000,
+            "minimum": 0.0,
+            "title": "Shelf Side Clearance Um",
+            "type": "integer"
+          },
+          "structural_safety_factor_permille": {
+            "default": 1800,
+            "exclusiveMinimum": 0.0,
+            "title": "Structural Safety Factor Permille",
+            "type": "integer"
+          },
+          "vertical_divider_count": {
+            "default": 0,
+            "maximum": 16.0,
+            "minimum": 0.0,
+            "title": "Vertical Divider Count",
+            "type": "integer"
+          },
+          "wall_anchor": {
+            "$ref": "#/components/schemas/WallAnchorSpec"
+          },
+          "width_um": {
+            "default": 900000,
+            "maximum": 6000000.0,
+            "minimum": 250000.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "title": "BookcaseParameters",
         "type": "object"
       },
       "BookcasePreviewInput": {
@@ -655,6 +1057,63 @@
         "title": "ChestIntent",
         "type": "object"
       },
+      "DesignResult": {
+        "additionalProperties": false,
+        "properties": {
+          "assembly_graph": {
+            "$ref": "#/components/schemas/AssemblyGraph"
+          },
+          "design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "engine_version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "joints": {
+            "items": {
+              "$ref": "#/components/schemas/Joint"
+            },
+            "title": "Joints",
+            "type": "array"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/PartInstance"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/BookcaseDesignSpec"
+          },
+          "template_version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Template Version",
+            "type": "string"
+          },
+          "total_weight_g": {
+            "exclusiveMinimum": 0.0,
+            "title": "Total Weight G",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "design_hash",
+          "engine_version",
+          "template_version",
+          "spec",
+          "parts",
+          "joints",
+          "assembly_graph",
+          "total_weight_g"
+        ],
+        "title": "DesignResult",
+        "type": "object"
+      },
       "DesignReviewBundleReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -920,6 +1379,52 @@
         "title": "DesignVersionRead",
         "type": "object"
       },
+      "Dimensions3D": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "height_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "width_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width_um",
+          "depth_um",
+          "height_um"
+        ],
+        "title": "Dimensions3D",
+        "type": "object"
+      },
+      "EdgeBand": {
+        "additionalProperties": false,
+        "properties": {
+          "edge": {
+            "$ref": "#/components/schemas/FaceName"
+          },
+          "thickness_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Thickness Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "edge",
+          "thickness_um"
+        ],
+        "title": "EdgeBand",
+        "type": "object"
+      },
       "ExecutableCAMReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -1115,6 +1620,354 @@
         "title": "ExternalEvidenceRead",
         "type": "object"
       },
+      "FaceName": {
+        "enum": [
+          "a",
+          "b",
+          "front",
+          "back",
+          "left",
+          "right",
+          "top",
+          "bottom"
+        ],
+        "title": "FaceName",
+        "type": "string"
+      },
+      "FeatureDimensions": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth Um"
+          },
+          "diameter_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diameter Um"
+          },
+          "length_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Length Um"
+          },
+          "radius_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Radius Um"
+          },
+          "width_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Width Um"
+          }
+        },
+        "title": "FeatureDimensions",
+        "type": "object"
+      },
+      "FeatureKind": {
+        "enum": [
+          "drill",
+          "drill_pattern",
+          "countersink",
+          "pocket",
+          "groove",
+          "rabbet",
+          "tenon",
+          "edge_relief",
+          "outer_contour",
+          "mark"
+        ],
+        "title": "FeatureKind",
+        "type": "string"
+      },
+      "FurnitureBayDimensionsRead": {
+        "additionalProperties": false,
+        "properties": {
+          "bay_count": {
+            "title": "Bay Count",
+            "type": "integer"
+          },
+          "clear_widths_um": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Clear Widths Um",
+            "type": "array"
+          },
+          "divider_count": {
+            "title": "Divider Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "divider_count",
+          "bay_count",
+          "clear_widths_um"
+        ],
+        "title": "FurnitureBayDimensionsRead",
+        "type": "object"
+      },
+      "FurnitureBlankFitRead": {
+        "additionalProperties": false,
+        "properties": {
+          "across_grain_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Across Grain Um"
+          },
+          "along_grain_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Along Grain Um"
+          },
+          "fits_stock": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fits Stock"
+          },
+          "grain_direction": {
+            "enum": [
+              "X",
+              "Y",
+              "Z",
+              "NONE"
+            ],
+            "title": "Grain Direction",
+            "type": "string"
+          },
+          "orientations": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureOrientationRead"
+            },
+            "title": "Orientations",
+            "type": "array"
+          },
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "raw_height_um": {
+            "title": "Raw Height Um",
+            "type": "integer"
+          },
+          "raw_width_um": {
+            "title": "Raw Width Um",
+            "type": "integer"
+          },
+          "semantic_key": {
+            "title": "Semantic Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part_id",
+          "semantic_key",
+          "raw_width_um",
+          "raw_height_um",
+          "grain_direction",
+          "along_grain_um",
+          "across_grain_um",
+          "fits_stock",
+          "orientations"
+        ],
+        "title": "FurnitureBlankFitRead",
+        "type": "object"
+      },
+      "FurnitureBlankRead": {
+        "additionalProperties": false,
+        "properties": {
+          "across_grain_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Across Grain Um"
+          },
+          "along_grain_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Along Grain Um"
+          },
+          "grain_direction": {
+            "enum": [
+              "X",
+              "Y",
+              "Z",
+              "NONE"
+            ],
+            "title": "Grain Direction",
+            "type": "string"
+          },
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "raw_height_um": {
+            "title": "Raw Height Um",
+            "type": "integer"
+          },
+          "raw_width_um": {
+            "title": "Raw Width Um",
+            "type": "integer"
+          },
+          "semantic_key": {
+            "title": "Semantic Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part_id",
+          "semantic_key",
+          "raw_width_um",
+          "raw_height_um",
+          "grain_direction",
+          "along_grain_um",
+          "across_grain_um"
+        ],
+        "title": "FurnitureBlankRead",
+        "type": "object"
+      },
+      "FurnitureCatalogRead": {
+        "additionalProperties": false,
+        "properties": {
+          "families": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureFamilyRead"
+            },
+            "title": "Families",
+            "type": "array"
+          },
+          "fingerprint": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "hardware": {
+            "items": {
+              "$ref": "#/components/schemas/HardwareProfile"
+            },
+            "title": "Hardware",
+            "type": "array"
+          },
+          "machines": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureMachineRead"
+            },
+            "title": "Machines",
+            "type": "array"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialVersion"
+            },
+            "title": "Materials",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "fingerprint",
+          "families",
+          "materials",
+          "hardware",
+          "machines"
+        ],
+        "title": "FurnitureCatalogRead",
+        "type": "object"
+      },
+      "FurnitureChangedFieldRead": {
+        "additionalProperties": false,
+        "properties": {
+          "after": {
+            "title": "After",
+            "type": "integer"
+          },
+          "before": {
+            "title": "Before",
+            "type": "integer"
+          },
+          "field": {
+            "title": "Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "before",
+          "after"
+        ],
+        "title": "FurnitureChangedFieldRead",
+        "type": "object"
+      },
       "FurnitureDesign": {
         "additionalProperties": false,
         "properties": {
@@ -1191,6 +2044,128 @@
         "title": "FurnitureDesign",
         "type": "object"
       },
+      "FurnitureDimensionsRead": {
+        "additionalProperties": false,
+        "properties": {
+          "carcass_dimensions_um": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Carcass Dimensions Um",
+            "type": "object"
+          },
+          "installation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstallationSpace"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureIssueRead"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "required_carcass_dimensions_um": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Carcass Dimensions Um"
+          },
+          "room_trim_clearances": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureTrimClearanceRead"
+            },
+            "title": "Room Trim Clearances",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "requires_resolution",
+              "reconciled",
+              "not_specified"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "state",
+          "carcass_dimensions_um",
+          "required_carcass_dimensions_um",
+          "room_trim_clearances",
+          "installation",
+          "issues",
+          "production_qualified"
+        ],
+        "title": "FurnitureDimensionsRead",
+        "type": "object"
+      },
+      "FurnitureDraftRead": {
+        "additionalProperties": false,
+        "properties": {
+          "preview": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurniturePreviewRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "workspace": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurnitureWorkspace"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "project_id",
+          "revision",
+          "workspace",
+          "preview"
+        ],
+        "title": "FurnitureDraftRead",
+        "type": "object"
+      },
       "FurnitureDraftSave": {
         "additionalProperties": false,
         "properties": {
@@ -1208,6 +2183,86 @@
           "workspace"
         ],
         "title": "FurnitureDraftSave",
+        "type": "object"
+      },
+      "FurnitureExportAccepted": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running",
+              "succeeded"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state"
+        ],
+        "title": "FurnitureExportAccepted",
+        "type": "object"
+      },
+      "FurnitureExportFailed": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "message": {
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "failed",
+              "cancelled"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state",
+          "message"
+        ],
+        "title": "FurnitureExportFailed",
+        "type": "object"
+      },
+      "FurnitureExportPending": {
+        "additionalProperties": false,
+        "properties": {
+          "job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "queued",
+              "running"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state"
+        ],
+        "title": "FurnitureExportPending",
         "type": "object"
       },
       "FurnitureExportRequest": {
@@ -1229,6 +2284,511 @@
           "expected_design_hash"
         ],
         "title": "FurnitureExportRequest",
+        "type": "object"
+      },
+      "FurnitureExportSucceeded": {
+        "additionalProperties": false,
+        "properties": {
+          "artifact_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Artifact Id",
+            "type": "string"
+          },
+          "content_type": {
+            "const": "application/zip",
+            "title": "Content Type",
+            "type": "string"
+          },
+          "design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "download_path": {
+            "pattern": "^/v1/furniture/projects/[0-9a-f-]+/exports/[0-9a-f-]+/download$",
+            "title": "Download Path",
+            "type": "string"
+          },
+          "file_name": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "title": "File Name",
+            "type": "string"
+          },
+          "job_id": {
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "revision": {
+            "minimum": 1.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Sha256",
+            "type": "string"
+          },
+          "size_bytes": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 16777216.0,
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "state": {
+            "const": "succeeded",
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state",
+          "artifact_id",
+          "file_name",
+          "download_path",
+          "sha256",
+          "size_bytes",
+          "content_type",
+          "design_hash",
+          "revision",
+          "physical_cutting_authorized"
+        ],
+        "title": "FurnitureExportSucceeded",
+        "type": "object"
+      },
+      "FurnitureFamilyRead": {
+        "additionalProperties": false,
+        "properties": {
+          "geometry_supported": {
+            "title": "Geometry Supported",
+            "type": "boolean"
+          },
+          "id": {
+            "enum": [
+              "shelving",
+              "table",
+              "chest_of_drawers"
+            ],
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "qualification": {
+            "enum": [
+              "structural_screening",
+              "layout_only"
+            ],
+            "title": "Qualification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "geometry_supported",
+          "qualification"
+        ],
+        "title": "FurnitureFamilyRead",
+        "type": "object"
+      },
+      "FurnitureHandoffRead": {
+        "additionalProperties": false,
+        "properties": {
+          "design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "dimensions": {
+            "$ref": "#/components/schemas/FurnitureDimensionsRead"
+          },
+          "family": {
+            "enum": [
+              "shelving",
+              "table",
+              "chest_of_drawers"
+            ],
+            "title": "Family",
+            "type": "string"
+          },
+          "hardware_requirements": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Hardware Requirements",
+            "type": "array"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "required_workshop_inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Workshop Inputs",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "custombuild.furniture-workshop-handoff.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "shelf_load": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurnitureShelfLoadRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stock_plan": {
+            "$ref": "#/components/schemas/FurnitureManufacturingRead"
+          },
+          "stock_requirements": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureStockRequirementRead"
+            },
+            "title": "Stock Requirements",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "version",
+          "design_hash",
+          "family",
+          "dimensions",
+          "stock_requirements",
+          "shelf_load",
+          "hardware_requirements",
+          "required_workshop_inputs",
+          "scope",
+          "production_qualified",
+          "physical_cutting_authorized",
+          "stock_plan"
+        ],
+        "title": "FurnitureHandoffRead",
+        "type": "object"
+      },
+      "FurnitureHistoryItemRead": {
+        "additionalProperties": false,
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dependencies": {
+            "additionalProperties": {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            "title": "Dependencies",
+            "type": "object"
+          },
+          "design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "engine_version": {
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "revision",
+          "workspace",
+          "design_hash",
+          "engine_version",
+          "dependencies"
+        ],
+        "title": "FurnitureHistoryItemRead",
+        "type": "object"
+      },
+      "FurnitureHistoryRead": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureHistoryItemRead"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_offset": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Offset"
+          }
+        },
+        "required": [
+          "items",
+          "next_offset"
+        ],
+        "title": "FurnitureHistoryRead",
+        "type": "object"
+      },
+      "FurnitureIssueRead": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "material_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Version"
+          },
+          "measured_thickness_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Thickness Um"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "part_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Part Id"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "FurnitureIssueRead",
+        "type": "object"
+      },
+      "FurnitureMachineRead": {
+        "additionalProperties": false,
+        "properties": {
+          "fingerprint": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Fingerprint",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "work_height_um": {
+            "title": "Work Height Um",
+            "type": "integer"
+          },
+          "work_width_um": {
+            "title": "Work Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profile_id",
+          "version",
+          "name",
+          "fingerprint",
+          "work_width_um",
+          "work_height_um",
+          "production_qualified"
+        ],
+        "title": "FurnitureMachineRead",
+        "type": "object"
+      },
+      "FurnitureManufacturingRead": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
+          "format_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format Scope"
+          },
+          "geometry_compatible": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geometry Compatible"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureIssueRead"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "machine_work_area_um": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Machine Work Area Um"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "state": {
+            "enum": [
+              "not_selected",
+              "requires_change",
+              "not_qualified"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "stock_groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FurnitureStockGroupRead"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Groups"
+          }
+        },
+        "required": [
+          "state",
+          "geometry_compatible",
+          "fingerprint",
+          "issues",
+          "production_qualified"
+        ],
+        "title": "FurnitureManufacturingRead",
         "type": "object"
       },
       "FurnitureMaterialStock": {
@@ -1362,6 +2922,110 @@
         "title": "FurnitureModulePlanRequest",
         "type": "object"
       },
+      "FurnitureOrientationRead": {
+        "additionalProperties": false,
+        "properties": {
+          "fits_machine": {
+            "title": "Fits Machine",
+            "type": "boolean"
+          },
+          "fits_stock": {
+            "title": "Fits Stock",
+            "type": "boolean"
+          },
+          "height_shortfall_um": {
+            "title": "Height Shortfall Um",
+            "type": "integer"
+          },
+          "required_stock_height_um": {
+            "title": "Required Stock Height Um",
+            "type": "integer"
+          },
+          "required_stock_width_um": {
+            "title": "Required Stock Width Um",
+            "type": "integer"
+          },
+          "rotation_deg": {
+            "enum": [
+              0,
+              90
+            ],
+            "title": "Rotation Deg",
+            "type": "integer"
+          },
+          "width_shortfall_um": {
+            "title": "Width Shortfall Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rotation_deg",
+          "required_stock_width_um",
+          "required_stock_height_um",
+          "width_shortfall_um",
+          "height_shortfall_um",
+          "fits_stock",
+          "fits_machine"
+        ],
+        "title": "FurnitureOrientationRead",
+        "type": "object"
+      },
+      "FurniturePreviewRead": {
+        "additionalProperties": false,
+        "properties": {
+          "dependencies": {
+            "additionalProperties": {
+              "pattern": "^[a-f0-9]{64}$",
+              "type": "string"
+            },
+            "title": "Dependencies",
+            "type": "object"
+          },
+          "design": {
+            "$ref": "#/components/schemas/FurnitureResult"
+          },
+          "manufacturing": {
+            "$ref": "#/components/schemas/FurnitureManufacturingRead"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "rules": {
+            "$ref": "#/components/schemas/FurnitureRulesRead"
+          },
+          "schema_version": {
+            "const": "custombuild.furniture-preview.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "workshop_handoff": {
+            "$ref": "#/components/schemas/FurnitureHandoffRead"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "schema_version",
+          "workspace",
+          "design",
+          "dependencies",
+          "rules",
+          "manufacturing",
+          "workshop_handoff",
+          "production_qualified",
+          "physical_cutting_authorized"
+        ],
+        "title": "FurniturePreviewRead",
+        "type": "object"
+      },
       "FurnitureProductionPreviewRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1430,6 +3094,855 @@
           "furniture_design_hash"
         ],
         "title": "FurnitureProductionSource",
+        "type": "object"
+      },
+      "FurnitureProfileChangeRead": {
+        "additionalProperties": false,
+        "properties": {
+          "can_apply": {
+            "title": "Can Apply",
+            "type": "boolean"
+          },
+          "changed_dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Dependencies",
+            "type": "array"
+          },
+          "changed_part_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed Part Ids"
+          },
+          "intent_preserved": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent Preserved"
+          },
+          "invalidated_reviews": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Invalidated Reviews",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "original_design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Original Design Hash",
+            "type": "string"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "proposed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurniturePreviewRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "requires_change",
+              "not_qualified"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "message",
+          "proposed",
+          "original_design_hash",
+          "changed_dependencies",
+          "invalidated_reviews",
+          "can_apply",
+          "production_qualified"
+        ],
+        "title": "FurnitureProfileChangeRead",
+        "type": "object"
+      },
+      "FurnitureRemainingIssuesRead": {
+        "additionalProperties": false,
+        "properties": {
+          "manufacturing": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureIssueRead"
+            },
+            "title": "Manufacturing",
+            "type": "array"
+          },
+          "rules": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureRuleRead"
+            },
+            "title": "Rules",
+            "type": "array"
+          }
+        },
+        "required": [
+          "rules",
+          "manufacturing"
+        ],
+        "title": "FurnitureRemainingIssuesRead",
+        "type": "object"
+      },
+      "FurnitureRequiredFormatRead": {
+        "additionalProperties": false,
+        "properties": {
+          "fits_machine": {
+            "title": "Fits Machine",
+            "type": "boolean"
+          },
+          "stock_height_um": {
+            "title": "Stock Height Um",
+            "type": "integer"
+          },
+          "stock_width_um": {
+            "title": "Stock Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stock_width_um",
+          "stock_height_um",
+          "fits_machine"
+        ],
+        "title": "FurnitureRequiredFormatRead",
+        "type": "object"
+      },
+      "FurnitureResult": {
+        "additionalProperties": false,
+        "properties": {
+          "design_hash": {
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "engine_version": {
+            "default": "furniture-families-1.0.0",
+            "title": "Engine Version",
+            "type": "string"
+          },
+          "hardware_profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HardwareProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "intent_hash": {
+            "title": "Intent Hash",
+            "type": "string"
+          },
+          "joints": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Joint"
+            },
+            "title": "Joints",
+            "type": "array"
+          },
+          "moving_groups": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MovingGroup"
+            },
+            "title": "Moving Groups",
+            "type": "array"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/PartInstance"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "spec": {
+            "$ref": "#/components/schemas/FurnitureDesign"
+          },
+          "template_version": {
+            "default": "1.0.0",
+            "title": "Template Version",
+            "type": "string"
+          },
+          "total_weight_g": {
+            "exclusiveMinimum": 0.0,
+            "title": "Total Weight G",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "design_hash",
+          "intent_hash",
+          "spec",
+          "parts",
+          "total_weight_g"
+        ],
+        "title": "FurnitureResult",
+        "type": "object"
+      },
+      "FurnitureRuleRead": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "rules_version": {
+            "title": "Rules Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PASS",
+              "WARNING",
+              "BLOCK"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "values": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "title": "Values",
+            "type": "object"
+          }
+        },
+        "required": [
+          "rule_id",
+          "title",
+          "status",
+          "detail",
+          "values",
+          "rules_version"
+        ],
+        "title": "FurnitureRuleRead",
+        "type": "object"
+      },
+      "FurnitureRulesRead": {
+        "additionalProperties": false,
+        "properties": {
+          "design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "disclaimer": {
+            "title": "Disclaimer",
+            "type": "string"
+          },
+          "evaluations": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureRuleRead"
+            },
+            "title": "Evaluations",
+            "type": "array"
+          },
+          "overall_status": {
+            "enum": [
+              "PASS",
+              "WARNING",
+              "BLOCK"
+            ],
+            "title": "Overall Status",
+            "type": "string"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "rules_version": {
+            "title": "Rules Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rules_version",
+          "design_hash",
+          "overall_status",
+          "evaluations",
+          "production_qualified",
+          "disclaimer"
+        ],
+        "title": "FurnitureRulesRead",
+        "type": "object"
+      },
+      "FurnitureScreeningCheckRead": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed"
+          },
+          "calculated": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Calculated"
+          },
+          "numeric_status": {
+            "enum": [
+              "PASS",
+              "WARNING",
+              "BLOCK",
+              "UNAVAILABLE"
+            ],
+            "title": "Numeric Status",
+            "type": "string"
+          },
+          "rule_id": {
+            "title": "Rule Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PASS",
+              "WARNING",
+              "BLOCK",
+              "UNAVAILABLE"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          }
+        },
+        "required": [
+          "rule_id",
+          "status",
+          "numeric_status",
+          "calculated",
+          "allowed",
+          "unit"
+        ],
+        "title": "FurnitureScreeningCheckRead",
+        "type": "object"
+      },
+      "FurnitureScreeningComparisonRead": {
+        "additionalProperties": false,
+        "properties": {
+          "current": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureScreeningCheckRead"
+            },
+            "title": "Current",
+            "type": "array"
+          },
+          "proposed": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/FurnitureScreeningCheckRead"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed"
+          }
+        },
+        "required": [
+          "current",
+          "proposed"
+        ],
+        "title": "FurnitureScreeningComparisonRead",
+        "type": "object"
+      },
+      "FurnitureShelfLoadRead": {
+        "additionalProperties": false,
+        "properties": {
+          "basis": {
+            "enum": [
+              "per_row",
+              "per_metre"
+            ],
+            "title": "Basis",
+            "type": "string"
+          },
+          "load_per_metre_n": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Load Per Metre N"
+          },
+          "total_row_load_n": {
+            "title": "Total Row Load N",
+            "type": "integer"
+          },
+          "width_um": {
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "basis",
+          "total_row_load_n",
+          "load_per_metre_n",
+          "width_um"
+        ],
+        "title": "FurnitureShelfLoadRead",
+        "type": "object"
+      },
+      "FurnitureShelfSuggestionRead": {
+        "additionalProperties": false,
+        "properties": {
+          "can_apply": {
+            "title": "Can Apply",
+            "type": "boolean"
+          },
+          "changed_fields": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureChangedFieldRead"
+            },
+            "title": "Changed Fields",
+            "type": "array"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "current": {
+            "$ref": "#/components/schemas/FurniturePreviewRead"
+          },
+          "current_bays": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurnitureBayDimensionsRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "production_qualified": {
+            "const": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "proposed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurniturePreviewRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proposed_bays": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FurnitureBayDimensionsRead"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "remaining_issues": {
+            "$ref": "#/components/schemas/FurnitureRemainingIssuesRead"
+          },
+          "schema_version": {
+            "const": "custombuild.furniture-shelf-suggestion.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "screening_checks": {
+            "$ref": "#/components/schemas/FurnitureScreeningComparisonRead"
+          },
+          "search": {
+            "$ref": "#/components/schemas/FurnitureSuggestionSearchRead"
+          },
+          "state": {
+            "enum": [
+              "available",
+              "already_pass",
+              "unavailable"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "version",
+          "state",
+          "code",
+          "message",
+          "current",
+          "proposed",
+          "changed_fields",
+          "current_bays",
+          "proposed_bays",
+          "screening_checks",
+          "search",
+          "remaining_issues",
+          "scope",
+          "can_apply",
+          "production_qualified",
+          "physical_cutting_authorized"
+        ],
+        "title": "FurnitureShelfSuggestionRead",
+        "type": "object"
+      },
+      "FurnitureStockFormatRead": {
+        "additionalProperties": false,
+        "properties": {
+          "edge_margin_um": {
+            "title": "Edge Margin Um",
+            "type": "integer"
+          },
+          "stock_grain_axis": {
+            "anyOf": [
+              {
+                "enum": [
+                  "x",
+                  "y"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Grain Axis"
+          },
+          "stock_height_um": {
+            "title": "Stock Height Um",
+            "type": "integer"
+          },
+          "stock_width_um": {
+            "title": "Stock Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "stock_width_um",
+          "stock_height_um",
+          "stock_grain_axis",
+          "edge_margin_um"
+        ],
+        "title": "FurnitureStockFormatRead",
+        "type": "object"
+      },
+      "FurnitureStockGroupRead": {
+        "additionalProperties": false,
+        "properties": {
+          "geometry_compatible": {
+            "title": "Geometry Compatible",
+            "type": "boolean"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureIssueRead"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_version": {
+            "title": "Material Version",
+            "type": "string"
+          },
+          "measured_thickness_um": {
+            "title": "Measured Thickness Um",
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureBlankFitRead"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "required_formats": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureRequiredFormatRead"
+            },
+            "title": "Required Formats",
+            "type": "array"
+          },
+          "selection_source": {
+            "enum": [
+              "default",
+              "material"
+            ],
+            "title": "Selection Source",
+            "type": "string"
+          },
+          "stock": {
+            "$ref": "#/components/schemas/FurnitureStockFormatRead"
+          },
+          "usable_height_um": {
+            "title": "Usable Height Um",
+            "type": "integer"
+          },
+          "usable_width_um": {
+            "title": "Usable Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "material_id",
+          "material_version",
+          "measured_thickness_um",
+          "selection_source",
+          "stock",
+          "usable_width_um",
+          "usable_height_um",
+          "geometry_compatible",
+          "parts",
+          "required_formats",
+          "issues"
+        ],
+        "title": "FurnitureStockGroupRead",
+        "type": "object"
+      },
+      "FurnitureStockRequirementRead": {
+        "additionalProperties": false,
+        "properties": {
+          "material_id": {
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_version": {
+            "title": "Material Version",
+            "type": "string"
+          },
+          "measured_thickness_um": {
+            "title": "Measured Thickness Um",
+            "type": "integer"
+          },
+          "minimum_across_grain_um": {
+            "title": "Minimum Across Grain Um",
+            "type": "integer"
+          },
+          "minimum_along_grain_um": {
+            "title": "Minimum Along Grain Um",
+            "type": "integer"
+          },
+          "minimum_long_edge_um": {
+            "title": "Minimum Long Edge Um",
+            "type": "integer"
+          },
+          "minimum_short_edge_um": {
+            "title": "Minimum Short Edge Um",
+            "type": "integer"
+          },
+          "part_count": {
+            "title": "Part Count",
+            "type": "integer"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/FurnitureBlankRead"
+            },
+            "title": "Parts",
+            "type": "array"
+          },
+          "raw_area_um2": {
+            "title": "Raw Area Um2",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "material_id",
+          "material_version",
+          "measured_thickness_um",
+          "part_count",
+          "raw_area_um2",
+          "minimum_long_edge_um",
+          "minimum_short_edge_um",
+          "minimum_along_grain_um",
+          "minimum_across_grain_um",
+          "parts"
+        ],
+        "title": "FurnitureStockRequirementRead",
+        "type": "object"
+      },
+      "FurnitureSuggestionSearchRead": {
+        "additionalProperties": false,
+        "properties": {
+          "attempted_candidate_count": {
+            "title": "Attempted Candidate Count",
+            "type": "integer"
+          },
+          "evaluated_candidate_count": {
+            "title": "Evaluated Candidate Count",
+            "type": "integer"
+          },
+          "max_divider_count": {
+            "title": "Max Divider Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "max_divider_count",
+          "attempted_candidate_count",
+          "evaluated_candidate_count"
+        ],
+        "title": "FurnitureSuggestionSearchRead",
+        "type": "object"
+      },
+      "FurnitureTrimClearanceRead": {
+        "additionalProperties": false,
+        "properties": {
+          "height_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Height Um"
+          },
+          "required_clearance_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Clearance Um"
+          },
+          "reserved_clearance_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Clearance Um"
+          },
+          "wall": {
+            "enum": [
+              "left",
+              "right",
+              "rear"
+            ],
+            "title": "Wall",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wall",
+          "required_clearance_um",
+          "reserved_clearance_um",
+          "height_um"
+        ],
+        "title": "FurnitureTrimClearanceRead",
         "type": "object"
       },
       "FurnitureWorkspace": {
@@ -1583,6 +4096,16 @@
         "title": "GenerationRequest",
         "type": "object"
       },
+      "GrainDirection": {
+        "enum": [
+          "x",
+          "y",
+          "z",
+          "none"
+        ],
+        "title": "GrainDirection",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1594,6 +4117,94 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HardwareProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "catalog_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Catalog Id",
+            "type": "string"
+          },
+          "family": {
+            "enum": [
+              "table",
+              "chest_of_drawers"
+            ],
+            "title": "Family",
+            "type": "string"
+          },
+          "maximum_thickness_um": {
+            "default": 19000,
+            "title": "Maximum Thickness Um",
+            "type": "integer"
+          },
+          "minimum_thickness_um": {
+            "default": 17000,
+            "title": "Minimum Thickness Um",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "production_qualified": {
+            "const": false,
+            "default": false,
+            "title": "Production Qualified",
+            "type": "boolean"
+          },
+          "rear_clearance_um": {
+            "default": 10000,
+            "minimum": 0.0,
+            "title": "Rear Clearance Um",
+            "type": "integer"
+          },
+          "required_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Evidence",
+            "type": "array"
+          },
+          "runner_length_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Runner Length Um",
+            "type": "integer"
+          },
+          "side_clearance_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Side Clearance Um",
+            "type": "integer"
+          },
+          "source": {
+            "default": "Dimensional planning fixture; no manufacturer qualification",
+            "title": "Source",
+            "type": "string"
+          },
+          "travel_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Travel Um",
+            "type": "integer"
+          },
+          "version": {
+            "default": "layout-1.0.0",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "catalog_id",
+          "name",
+          "family",
+          "required_evidence"
+        ],
+        "title": "HardwareProfile",
         "type": "object"
       },
       "HardwareSelection": {
@@ -1971,6 +4582,464 @@
         "title": "JobStatus",
         "type": "string"
       },
+      "Joint": {
+        "additionalProperties": false,
+        "description": "Paired feature relationship.\n\n``assembly_direction`` is the canonical mating axis relative to the first\njoint member.  The operator's actual movement is authoritatively represented\nby ``AssemblyStep.motion_path`` and its explicit moving group.",
+        "properties": {
+          "assembly_direction": {
+            "$ref": "#/components/schemas/AssemblyDirection"
+          },
+          "hardware_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Hardware Count",
+            "type": "integer"
+          },
+          "hardware_sku": {
+            "anyOf": [
+              {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hardware Sku"
+          },
+          "joint_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Joint Id",
+            "type": "string"
+          },
+          "joint_type": {
+            "$ref": "#/components/schemas/JointType"
+          },
+          "mating_origin": {
+            "$ref": "#/components/schemas/Point3D"
+          },
+          "members": {
+            "items": {
+              "$ref": "#/components/schemas/JointMember"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Members",
+            "type": "array"
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JointRetentionContract"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retention_application_class": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JointRetentionApplicationClass"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tolerance_um": {
+            "default": 200,
+            "minimum": 0.0,
+            "title": "Tolerance Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "joint_id",
+          "joint_type",
+          "members",
+          "mating_origin",
+          "assembly_direction"
+        ],
+        "title": "Joint",
+        "type": "object"
+      },
+      "JointMember": {
+        "additionalProperties": false,
+        "properties": {
+          "feature_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Feature Ids",
+            "type": "array"
+          },
+          "mating_face": {
+            "$ref": "#/components/schemas/FaceName"
+          },
+          "part_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Part Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part_id",
+          "mating_face",
+          "feature_ids"
+        ],
+        "title": "JointMember",
+        "type": "object"
+      },
+      "JointRetentionApplicationClass": {
+        "description": "Physical application governed by one retention decision.\n\nA machining feature name is not an application claim.  In particular, a\nload-bearing carcass DADO and the shallow groove that captures a 6 mm back\npanel are both represented by ``JointType.DADO`` but have different\nretention semantics.",
+        "enum": [
+          "load_bearing_carcass_dado",
+          "captive_inset_back_groove"
+        ],
+        "title": "JointRetentionApplicationClass",
+        "type": "string"
+      },
+      "JointRetentionContract": {
+        "additionalProperties": false,
+        "description": "Frozen result of an authenticated joint-retention selection.\n\nValidation proves structural completeness, exact application geometry and\nconservative capacity arithmetic. The model itself does *not* authenticate\ncatalogue/evidence bytes: the service trust boundary must verify a signed,\nserver-approved immutable statement before constructing and freezing this\npayload. Clients can select an evidence ID but cannot submit this contract.\nIt never authorizes physical work on its own.",
+        "properties": {
+          "applicable_materials": {
+            "items": {
+              "$ref": "#/components/schemas/JointRetentionMaterialIdentity"
+            },
+            "minItems": 1,
+            "title": "Applicable Materials",
+            "type": "array"
+          },
+          "application_class": {
+            "$ref": "#/components/schemas/JointRetentionApplicationClass",
+            "default": "load_bearing_carcass_dado"
+          },
+          "bound_feature_ids": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Bound Feature Ids",
+            "type": "array"
+          },
+          "catalog_entry_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Catalog Entry Sha256",
+            "type": "string"
+          },
+          "evidence_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "evidence_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Evidence Sha256",
+            "type": "string"
+          },
+          "hardware_count_per_joint": {
+            "exclusiveMinimum": 0.0,
+            "title": "Hardware Count Per Joint",
+            "type": "integer"
+          },
+          "hardware_sku": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Hardware Sku",
+            "type": "string"
+          },
+          "installation_instruction_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Installation Instruction Id",
+            "type": "string"
+          },
+          "installation_instruction_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Installation Instruction Sha256",
+            "type": "string"
+          },
+          "installation_instruction_version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Installation Instruction Version",
+            "type": "string"
+          },
+          "joint_geometry_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Joint Geometry Sha256",
+            "type": "string"
+          },
+          "joint_type": {
+            "$ref": "#/components/schemas/JointType",
+            "default": "dado"
+          },
+          "load_cases": {
+            "items": {
+              "$ref": "#/components/schemas/JointRetentionLoadCase"
+            },
+            "maxItems": 2,
+            "minItems": 2,
+            "title": "Load Cases",
+            "type": "array"
+          },
+          "machining_scope": {
+            "$ref": "#/components/schemas/JointRetentionMachiningScope"
+          },
+          "maximum_applicable_thickness_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Maximum Applicable Thickness Um",
+            "type": "integer"
+          },
+          "method": {
+            "$ref": "#/components/schemas/JointRetentionMethod"
+          },
+          "minimum_applicable_thickness_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Minimum Applicable Thickness Um",
+            "type": "integer"
+          },
+          "safety_factor_permille": {
+            "maximum": 100000.0,
+            "minimum": 1000.0,
+            "title": "Safety Factor Permille",
+            "type": "integer"
+          },
+          "system_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "System Id",
+            "type": "string"
+          },
+          "system_version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "System Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "system_id",
+          "system_version",
+          "method",
+          "catalog_entry_sha256",
+          "evidence_id",
+          "evidence_sha256",
+          "installation_instruction_id",
+          "installation_instruction_version",
+          "installation_instruction_sha256",
+          "machining_scope",
+          "hardware_sku",
+          "hardware_count_per_joint",
+          "applicable_materials",
+          "joint_geometry_sha256",
+          "minimum_applicable_thickness_um",
+          "maximum_applicable_thickness_um",
+          "load_cases",
+          "safety_factor_permille"
+        ],
+        "title": "JointRetentionContract",
+        "type": "object"
+      },
+      "JointRetentionLoadCase": {
+        "additionalProperties": false,
+        "description": "One evidence-backed retention capacity for an explicit load mode.",
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/JointRetentionLoadMode"
+          },
+          "rated_design_load_n": {
+            "exclusiveMinimum": 0.0,
+            "title": "Rated Design Load N",
+            "type": "integer"
+          },
+          "verified_capacity_n": {
+            "exclusiveMinimum": 0.0,
+            "title": "Verified Capacity N",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "mode",
+          "rated_design_load_n",
+          "verified_capacity_n"
+        ],
+        "title": "JointRetentionLoadCase",
+        "type": "object"
+      },
+      "JointRetentionLoadMode": {
+        "description": "Independent load modes covered by one retention application.",
+        "enum": [
+          "shear",
+          "withdrawal"
+        ],
+        "title": "JointRetentionLoadMode",
+        "type": "string"
+      },
+      "JointRetentionMachiningScope": {
+        "description": "Whether the selected retention system needs additional CNC geometry.",
+        "enum": [
+          "no_additional_cnc",
+          "features_bound_to_joint"
+        ],
+        "title": "JointRetentionMachiningScope",
+        "type": "string"
+      },
+      "JointRetentionMaterialIdentity": {
+        "additionalProperties": false,
+        "description": "Exact material/version pair covered by retention evidence.",
+        "properties": {
+          "material_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "material_version"
+        ],
+        "title": "JointRetentionMaterialIdentity",
+        "type": "object"
+      },
+      "JointRetentionMethod": {
+        "description": "Adhesive-free ways a joint may be retained after mating.\n\nThis is an identity carried by a versioned external catalogue contract. It\nis not, by itself, a strength or workshop-approval claim.",
+        "enum": [
+          "dry_self_locking",
+          "mechanical"
+        ],
+        "title": "JointRetentionMethod",
+        "type": "string"
+      },
+      "JointType": {
+        "enum": [
+          "dowel",
+          "confirmat",
+          "cam_dowel",
+          "shelf_pin",
+          "rabbet",
+          "dado",
+          "tenon"
+        ],
+        "title": "JointType",
+        "type": "string"
+      },
+      "ManufacturingFeature": {
+        "additionalProperties": false,
+        "properties": {
+          "corner_strategy": {
+            "anyOf": [
+              {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Corner Strategy"
+          },
+          "dimensions": {
+            "$ref": "#/components/schemas/FeatureDimensions"
+          },
+          "face": {
+            "$ref": "#/components/schemas/FaceName"
+          },
+          "feature_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Feature Id",
+            "type": "string"
+          },
+          "fit_clearance_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Fit Clearance Um",
+            "type": "integer"
+          },
+          "joint_id": {
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 8,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Joint Id"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/FeatureKind"
+          },
+          "open_end_reliefs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/OpenEndRelief"
+            },
+            "title": "Open End Reliefs",
+            "type": "array"
+          },
+          "origin": {
+            "$ref": "#/components/schemas/Point3D"
+          },
+          "part_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Part Id",
+            "type": "string"
+          },
+          "pattern_count": {
+            "default": 1,
+            "exclusiveMinimum": 0.0,
+            "title": "Pattern Count",
+            "type": "integer"
+          },
+          "pitch_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pitch Um"
+          },
+          "requires_square_corners": {
+            "default": false,
+            "title": "Requires Square Corners",
+            "type": "boolean"
+          },
+          "through": {
+            "default": false,
+            "title": "Through",
+            "type": "boolean"
+          },
+          "tolerance_um": {
+            "default": 150,
+            "minimum": 0.0,
+            "title": "Tolerance Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "feature_id",
+          "part_id",
+          "kind",
+          "face",
+          "origin",
+          "dimensions"
+        ],
+        "title": "ManufacturingFeature",
+        "type": "object"
+      },
       "ManufacturingSelection": {
         "additionalProperties": false,
         "description": "A separate planning profile. It grants no physical machine approval.",
@@ -2076,6 +5145,383 @@
           "measured_thickness_um"
         ],
         "title": "MaterialSelection",
+        "type": "object"
+      },
+      "MaterialType": {
+        "enum": [
+          "sheet_good",
+          "solid_wood"
+        ],
+        "title": "MaterialType",
+        "type": "string"
+      },
+      "MaterialVersion": {
+        "additionalProperties": false,
+        "properties": {
+          "bending_strength_mpa": {
+            "exclusiveMinimum": 0.0,
+            "title": "Bending Strength Mpa",
+            "type": "integer"
+          },
+          "creep_factor_permille": {
+            "default": 600,
+            "minimum": 0.0,
+            "title": "Creep Factor Permille",
+            "type": "integer"
+          },
+          "density_kg_m3": {
+            "exclusiveMinimum": 0.0,
+            "title": "Density Kg M3",
+            "type": "integer"
+          },
+          "elastic_modulus_mpa": {
+            "exclusiveMinimum": 0.0,
+            "title": "Elastic Modulus Mpa",
+            "type": "integer"
+          },
+          "grain_direction": {
+            "$ref": "#/components/schemas/GrainDirection",
+            "default": "x"
+          },
+          "machining_allowance_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Machining Allowance Um",
+            "type": "integer"
+          },
+          "material_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_type": {
+            "$ref": "#/components/schemas/MaterialType",
+            "default": "sheet_good"
+          },
+          "max_supported_thickness_um": {
+            "default": 40000,
+            "exclusiveMinimum": 0.0,
+            "title": "Max Supported Thickness Um",
+            "type": "integer"
+          },
+          "min_supported_thickness_um": {
+            "default": 6000,
+            "exclusiveMinimum": 0.0,
+            "title": "Min Supported Thickness Um",
+            "type": "integer"
+          },
+          "name": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "nominal_thickness_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Nominal Thickness Um",
+            "type": "integer"
+          },
+          "property_uncertainty_permille": {
+            "default": 150,
+            "minimum": 0.0,
+            "title": "Property Uncertainty Permille",
+            "type": "integer"
+          },
+          "shear_strength_mpa": {
+            "exclusiveMinimum": 0.0,
+            "title": "Shear Strength Mpa",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/PropertySource"
+          },
+          "version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "material_id",
+          "version",
+          "name",
+          "nominal_thickness_um",
+          "density_kg_m3",
+          "elastic_modulus_mpa",
+          "bending_strength_mpa",
+          "shear_strength_mpa",
+          "source"
+        ],
+        "title": "MaterialVersion",
+        "type": "object"
+      },
+      "MovingGroup": {
+        "additionalProperties": false,
+        "properties": {
+          "axis": {
+            "const": "y",
+            "default": "y",
+            "title": "Axis",
+            "type": "string"
+          },
+          "group_id": {
+            "title": "Group Id",
+            "type": "string"
+          },
+          "part_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Part Ids",
+            "type": "array"
+          },
+          "rated_load_n": {
+            "minimum": 0.0,
+            "title": "Rated Load N",
+            "type": "integer"
+          },
+          "travel_um": {
+            "minimum": 0.0,
+            "title": "Travel Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "group_id",
+          "part_ids",
+          "travel_um",
+          "rated_load_n"
+        ],
+        "title": "MovingGroup",
+        "type": "object"
+      },
+      "OpenEndRelief": {
+        "description": "A cutter exit that is intentionally open at a nominal feature boundary.",
+        "enum": [
+          "u_min",
+          "u_max",
+          "v_min",
+          "v_max"
+        ],
+        "title": "OpenEndRelief",
+        "type": "string"
+      },
+      "PartInstance": {
+        "additionalProperties": false,
+        "properties": {
+          "a_side": {
+            "$ref": "#/components/schemas/FaceName",
+            "default": "a"
+          },
+          "actual_thickness_um": {
+            "exclusiveMinimum": 0.0,
+            "title": "Actual Thickness Um",
+            "type": "integer"
+          },
+          "b_side": {
+            "$ref": "#/components/schemas/FaceName",
+            "default": "b"
+          },
+          "edge_bands": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EdgeBand"
+            },
+            "title": "Edge Bands",
+            "type": "array"
+          },
+          "features": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ManufacturingFeature"
+            },
+            "title": "Features",
+            "type": "array"
+          },
+          "finished_size": {
+            "$ref": "#/components/schemas/Dimensions3D"
+          },
+          "grain_direction": {
+            "$ref": "#/components/schemas/GrainDirection"
+          },
+          "instance_index": {
+            "minimum": 0.0,
+            "title": "Instance Index",
+            "type": "integer"
+          },
+          "material_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Id",
+            "type": "string"
+          },
+          "material_version": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Material Version",
+            "type": "string"
+          },
+          "named_edges": {
+            "default": [
+              "front",
+              "back",
+              "left",
+              "right"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/FaceName"
+            },
+            "title": "Named Edges",
+            "type": "array"
+          },
+          "part_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Part Id",
+            "type": "string"
+          },
+          "placement": {
+            "$ref": "#/components/schemas/Placement"
+          },
+          "raw_size": {
+            "$ref": "#/components/schemas/Dimensions3D"
+          },
+          "revision": {
+            "exclusiveMinimum": 0.0,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "role": {
+            "$ref": "#/components/schemas/PartRole"
+          },
+          "semantic_key": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Semantic Key",
+            "type": "string"
+          },
+          "visible_faces": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FaceName"
+            },
+            "title": "Visible Faces",
+            "type": "array"
+          },
+          "weight_g": {
+            "exclusiveMinimum": 0.0,
+            "title": "Weight G",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "part_id",
+          "semantic_key",
+          "role",
+          "instance_index",
+          "revision",
+          "finished_size",
+          "raw_size",
+          "placement",
+          "material_id",
+          "material_version",
+          "actual_thickness_um",
+          "grain_direction",
+          "weight_g"
+        ],
+        "title": "PartInstance",
+        "type": "object"
+      },
+      "PartRole": {
+        "enum": [
+          "left_side",
+          "right_side",
+          "top",
+          "bottom",
+          "shelf",
+          "back",
+          "plinth",
+          "divider",
+          "base_side",
+          "base_bottom",
+          "base_top",
+          "cabinet_front",
+          "table_end",
+          "table_stretcher",
+          "drawer_side",
+          "drawer_front",
+          "drawer_back",
+          "drawer_bottom"
+        ],
+        "title": "PartRole",
+        "type": "string"
+      },
+      "Placement": {
+        "additionalProperties": false,
+        "properties": {
+          "rotation_x_mdeg": {
+            "default": 0,
+            "maximum": 360000.0,
+            "minimum": -360000.0,
+            "title": "Rotation X Mdeg",
+            "type": "integer"
+          },
+          "rotation_y_mdeg": {
+            "default": 0,
+            "maximum": 360000.0,
+            "minimum": -360000.0,
+            "title": "Rotation Y Mdeg",
+            "type": "integer"
+          },
+          "rotation_z_mdeg": {
+            "default": 0,
+            "maximum": 360000.0,
+            "minimum": -360000.0,
+            "title": "Rotation Z Mdeg",
+            "type": "integer"
+          },
+          "x_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "X Um",
+            "type": "integer"
+          },
+          "y_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Y Um",
+            "type": "integer"
+          },
+          "z_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Z Um",
+            "type": "integer"
+          }
+        },
+        "title": "Placement",
+        "type": "object"
+      },
+      "Point3D": {
+        "additionalProperties": false,
+        "properties": {
+          "x_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "X Um",
+            "type": "integer"
+          },
+          "y_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Y Um",
+            "type": "integer"
+          },
+          "z_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Z Um",
+            "type": "integer"
+          }
+        },
+        "title": "Point3D",
         "type": "object"
       },
       "ProductionStateRead": {
@@ -2346,6 +5792,68 @@
         "title": "ProjectRead",
         "type": "object"
       },
+      "PropertySource": {
+        "additionalProperties": false,
+        "properties": {
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "revision": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Revision",
+            "type": "string"
+          },
+          "source_id": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Uri"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid From"
+          }
+        },
+        "required": [
+          "source_id",
+          "title",
+          "revision"
+        ],
+        "title": "PropertySource",
+        "type": "object"
+      },
       "ReferenceImageConfirmedInputs": {
         "properties": {
           "construction_assumptions_confirmed": {
@@ -2476,6 +5984,14 @@
         ],
         "title": "ReferenceImageSourceProvenance",
         "type": "object"
+      },
+      "ReinforcementMode": {
+        "enum": [
+          "manual",
+          "auto"
+        ],
+        "title": "ReinforcementMode",
+        "type": "string"
       },
       "ReleaseArtifactRead": {
         "description": "One immutable artifact resolved through its historical release.",
@@ -2939,6 +6455,58 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "WallAnchorSpec": {
+        "additionalProperties": false,
+        "properties": {
+          "anchor_system_id": {
+            "anyOf": [
+              {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor System Id"
+          },
+          "evidence_id": {
+            "anyOf": [
+              {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "verified": {
+            "default": false,
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "wall_substrate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Wall Substrate"
+          }
+        },
+        "title": "WallAnchorSpec",
         "type": "object"
       },
       "WarningOverrideCreate": {
@@ -4069,9 +7637,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Catalog V1 Furniture Catalog Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurnitureCatalogRead"
                 }
               }
             },
@@ -4155,9 +7721,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Preview V1 Furniture Preview Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurniturePreviewRead"
                 }
               }
             },
@@ -4203,9 +7767,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Profile Change V1 Furniture Profile Change Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurnitureProfileChangeRead"
                 }
               }
             },
@@ -4252,9 +7814,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Read Draft V1 Furniture Projects  Project Id  Draft Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurnitureDraftRead"
                 }
               }
             },
@@ -4309,9 +7869,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Save Draft V1 Furniture Projects  Project Id  Draft Put",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurnitureDraftRead"
                 }
               }
             },
@@ -4368,11 +7926,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Request Export V1 Furniture Projects  Project Id  Exports Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurnitureExportAccepted"
                 }
               }
             },
@@ -4428,9 +7982,28 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Export Result V1 Furniture Projects  Project Id  Exports  Job Id  Get",
-                  "type": "object"
+                  "discriminator": {
+                    "mapping": {
+                      "cancelled": "#/components/schemas/FurnitureExportFailed",
+                      "failed": "#/components/schemas/FurnitureExportFailed",
+                      "queued": "#/components/schemas/FurnitureExportPending",
+                      "running": "#/components/schemas/FurnitureExportPending",
+                      "succeeded": "#/components/schemas/FurnitureExportSucceeded"
+                    },
+                    "propertyName": "state"
+                  },
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/FurnitureExportPending"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FurnitureExportFailed"
+                    },
+                    {
+                      "$ref": "#/components/schemas/FurnitureExportSucceeded"
+                    }
+                  ],
+                  "title": "Response Export Result V1 Furniture Projects  Project Id  Exports  Job Id  Get"
                 }
               }
             },
@@ -4453,6 +8026,63 @@
           }
         ],
         "summary": "Export Result",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/projects/{project_id}/exports/{job_id}/download": {
+      "get": {
+        "operationId": "download_export_v1_furniture_projects__project_id__exports__job_id__download_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Fully verified furniture review archive"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Download Export",
         "tags": [
           "furniture-design"
         ]
@@ -4489,9 +8119,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response History V1 Furniture Projects  Project Id  History Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurnitureHistoryRead"
                 }
               }
             },
@@ -4593,9 +8221,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Shelf Bay Suggestion V1 Furniture Shelf Bay Suggestion Post",
-                  "type": "object"
+                  "$ref": "#/components/schemas/FurnitureShelfSuggestionRead"
                 }
               }
             },

@@ -29,29 +29,29 @@ APPLICATION_COMPONENTS = ("api", "worker", "web", "seaweedfs")
 PINNED_RUNTIME_IMAGES = {
     "postgres": (
         "cgr.dev/chainguard/postgres@"
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+        "sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
     ),
     "redis": (
         "docker.io/library/redis@"
-        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0"
     ),
     "volume-init": (
         "cgr.dev/chainguard/busybox@"
-        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+        "sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba"
     ),
 }
 PINNED_RUNTIME_SCAN_REFERENCES = {
     "postgres": (
         "cgr.dev/chainguard/postgres:latest@"
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+        "sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
     ),
     "redis": (
-        "redis:7.2.15-alpine@"
-        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
+        "redis:7.2.16-alpine@"
+        "sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0"
     ),
     "volume-init": (
         "cgr.dev/chainguard/busybox:latest@"
-        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+        "sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba"
     ),
 }
 ALL_COMPONENTS = (*APPLICATION_COMPONENTS, *PINNED_RUNTIME_IMAGES)

@@ -179,6 +179,7 @@ from .models import (
     DesignVersion,
     ExternalEvidence,
     GenerationJob,
+    GenerationJobType,
     ImportedAsset,
     JobStatus,
     OutboxEvent,
@@ -7033,6 +7034,7 @@ def get_job(job_id: str, session: SessionDep, principal: PrincipalDep) -> Genera
         .where(
             GenerationJob.id == job_id,
             GenerationJob.organization_id == principal.organization_id,
+            GenerationJob.job_type == GenerationJobType.production,
         )
         .with_for_update()
     )
@@ -7766,6 +7768,7 @@ def list_artifacts(
         select(GenerationJob).where(
             GenerationJob.id == job_id,
             GenerationJob.organization_id == principal.organization_id,
+            GenerationJob.job_type == GenerationJobType.production,
         )
     )
     if job is None:
@@ -7871,6 +7874,7 @@ def download_artifact(
         select(GenerationJob).where(
             GenerationJob.id == artifact.generation_job_id,
             GenerationJob.organization_id == principal.organization_id,
+            GenerationJob.job_type == GenerationJobType.production,
         )
     )
     if job is None:

@@ -1,0 +1,12 @@
+# Ownership routes review requests; branch protection must separately require review.
+# The owner is not a substitute for independent workshop/engineering approval.
+* @pilotens
+/cad/ @pilotens
+/cam/ @pilotens
+/postprocessors/ @pilotens
+/packages/domain/ @pilotens
+/packages/rule-engine/ @pilotens
+/packages/manufacturing/ @pilotens
+/services/ @pilotens
+/security/ @pilotens
+/.github/ @pilotens

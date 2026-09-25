@@ -4,6 +4,7 @@ import type { FurnitureModuleGrid, FurnitureModulePlan } from "./furniture-modul
 import {
   assertFurniturePreview,
   type FurnitureCatalog, type FurnitureDraft, type FurnitureExportResult,
+  type FurnitureExportAccepted, type FurnitureExportReady,
   type FurnitureHistory, type FurniturePreview, type FurnitureProfileComparison,
   type FurnitureProductionSource, type FurnitureProductionPreview,
   type FurnitureShelfSuggestion,
@@ -1782,14 +1783,51 @@ export class CustombuildApiClient {
     return result;
   }
 
-  async requestFurnitureExport(projectId: string, revision: number, designHash: string): Promise<{ job_id: string; state: string }> {
-    return this.request(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports`, {
+  async requestFurnitureExport(projectId: string, revision: number, designHash: string): Promise<FurnitureExportAccepted> {
+    const result = await this.request<FurnitureExportAccepted>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports`, {
       method: "POST", body: JSON.stringify({ expected_revision: revision, expected_design_hash: designHash }),
     });
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(result?.job_id)
+      || !["queued", "running", "succeeded"].includes(result.state)) {
+      throw new ApiError("Servern returnerade ett ogiltigt exportjobb.");
+    }
+    return result;
   }
 
-  async furnitureExportResult(projectId: string, jobId: string): Promise<FurnitureExportResult> {
-    return this.request(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}`, { method: "GET" });
+  async furnitureExportResult(projectId: string, jobId: string, signal?: AbortSignal): Promise<FurnitureExportResult> {
+    const result = await this.request<FurnitureExportResult>(
+      `/v1/furniture/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}`,
+      { method: "GET", cache: "no-store", signal },
+    );
+    if (result?.job_id !== jobId
+      || !["queued", "running", "failed", "cancelled", "succeeded"].includes(result.state)) {
+      throw new ApiError("Exportstatusen gäller inte det begärda jobbet.");
+    }
+    return result;
+  }
+
+  async downloadFurnitureExport(
+    projectId: string, jobId: string, revision: number, designHash: string,
+    artifact: FurnitureExportReady, signal?: AbortSignal,
+  ): Promise<Blob> {
+    const token = this.accessToken();
+    if (!token) throw new ApiError("Logga in för att hämta granskningspaketet.", 401);
+    if (!this.baseUrl) throw new ApiError("API-adress saknas.");
+    const path = `/v1/furniture/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}/download`;
+    if (artifact?.state !== "succeeded" || artifact.job_id !== jobId
+      || artifact.design_hash !== designHash || artifact.revision !== revision
+      || !/^[a-f0-9]{64}$/.test(artifact.sha256)
+      || !/^[a-f0-9]{64}$/.test(designHash)
+      || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(artifact.artifact_id)
+      || !Number.isSafeInteger(revision) || revision < 1
+      || !Number.isSafeInteger(artifact.size_bytes) || artifact.size_bytes <= 0
+      || artifact.size_bytes > 16 * 1024 * 1024
+      || artifact.content_type !== "application/zip" || artifact.physical_cutting_authorized !== false
+      || artifact.download_path !== path
+      || typeof artifact.file_name !== "string" || !/^[a-zA-Z0-9._-]+\.zip$/.test(artifact.file_name)) {
+      throw new ApiError("Exportens metadata stämmer inte med den sparade möbelrevisionen.");
+    }
+    return this.downloadVerifiedArtifact(artifact, new URL(path, this.baseUrl), token, signal);
   }
 
   async getCurrentPrincipal(): Promise<CurrentPrincipal> {
@@ -2068,6 +2106,15 @@ export class CustombuildApiClient {
       throw new ApiError("Artefaktens verifieringsmetadata är ogiltig.");
     }
     const downloadUrl = this.artifactDownloadUrl(artifact);
+    return this.downloadVerifiedArtifact(artifact, downloadUrl, token, signal);
+  }
+
+  private async downloadVerifiedArtifact(
+    artifact: Pick<ArtifactRead, "sha256" | "size_bytes" | "content_type">,
+    downloadUrl: URL,
+    token: string,
+    signal?: AbortSignal,
+  ): Promise<Blob> {
     let response: Response;
     try {
       response = await fetch(downloadUrl.href, {

@@ -67,6 +67,11 @@ class JobStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class GenerationJobType(str, enum.Enum):
+    production = "production"
+    furniture_review = "furniture_review"
+
+
 class StoredObjectState(str, enum.Enum):
     reserved = "reserved"
     committed = "committed"
@@ -248,11 +253,31 @@ class GenerationJob(IdMixin, TimestampMixin, TenantMixin, Base):
             name="fk_generation_jobs_org_design_version",
             ondelete="CASCADE",
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "project_id"],
+            ["projects.organization_id", "projects.id"],
+            name="fk_generation_jobs_org_project",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "(job_type = 'production' AND design_version_id IS NOT NULL "
+            "AND project_id IS NULL) OR "
+            "(job_type = 'furniture_review' AND design_version_id IS NULL "
+            "AND project_id IS NOT NULL)",
+            name="ck_generation_jobs_type_owner",
+        ),
         Index("ix_generation_jobs_status_lease_expires_at", "status", "lease_expires_at"),
         Index("ix_generation_jobs_status_next_attempt_at", "status", "next_attempt_at"),
+        Index("ix_generation_jobs_project_type_created", "project_id", "job_type", "created_at"),
     )
 
-    design_version_id: Mapped[str] = mapped_column(String(36), index=True)
+    design_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    project_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    job_type: Mapped[GenerationJobType] = mapped_column(
+        Enum(GenerationJobType, native_enum=False, length=32),
+        default=GenerationJobType.production,
+        server_default=GenerationJobType.production.value,
+    )
     status: Mapped[JobStatus] = mapped_column(
         Enum(JobStatus, native_enum=False), default=JobStatus.queued, index=True
     )
@@ -1123,9 +1148,7 @@ class WorkshopTrustState(Base):
     """Per-tenant serialization boundary for workshop trust mutations."""
 
     __tablename__ = "workshop_trust_states"
-    __table_args__ = (
-        CheckConstraint("trust_epoch >= 0", name="ck_workshop_trust_states_epoch"),
-    )
+    __table_args__ = (CheckConstraint("trust_epoch >= 0", name="ck_workshop_trust_states_epoch"),)
 
     organization_id: Mapped[str] = mapped_column(
         String(36),
@@ -1213,8 +1236,7 @@ class WorkshopSignerPrincipal(IdMixin, TenantMixin, Base):
             ondelete="RESTRICT",
         ),
         CheckConstraint(
-            "signer_role IN "
-            "('workshop_maker', 'workshop_checker', 'workshop_supervisor')",
+            "signer_role IN ('workshop_maker', 'workshop_checker', 'workshop_supervisor')",
             name="ck_workshop_signer_principals_role",
         ),
         CheckConstraint(
@@ -1267,8 +1289,7 @@ class WorkshopIssuerKey(IdMixin, TenantMixin, Base):
             name="ck_workshop_issuer_keys_identity",
         ),
         CheckConstraint(
-            "length(public_key_sha256) = 64 "
-            "AND public_key_sha256 = lower(public_key_sha256)",
+            "length(public_key_sha256) = 64 AND public_key_sha256 = lower(public_key_sha256)",
             name="ck_workshop_issuer_keys_sha256",
         ),
         CheckConstraint(
@@ -1326,8 +1347,7 @@ class WorkshopPolicyRecord(IdMixin, TenantMixin, Base):
             ondelete="RESTRICT",
         ),
         CheckConstraint(
-            "length(policy_id) > 0 AND length(policy_version) > 0 "
-            "AND length(schema_version) > 0",
+            "length(policy_id) > 0 AND length(policy_version) > 0 AND length(schema_version) > 0",
             name="ck_workshop_policies_identity",
         ),
         CheckConstraint(
@@ -1480,9 +1500,7 @@ class WorkshopRunRecord(IdMixin, TenantMixin, Base):
 class WorkshopRunProgram(IdMixin, TenantMixin, Base):
     __tablename__ = "workshop_run_programs"
     __table_args__ = (
-        UniqueConstraint(
-            "organization_id", "id", name="uq_workshop_run_programs_org_id"
-        ),
+        UniqueConstraint("organization_id", "id", name="uq_workshop_run_programs_org_id"),
         UniqueConstraint(
             "organization_id",
             "workshop_run_id",
@@ -1637,8 +1655,7 @@ class WorkshopNonceSet(IdMixin, TenantMixin, Base):
             name="ck_workshop_nonce_sets_consumption",
         ),
         CheckConstraint(
-            "invalidated_at IS NULL OR "
-            "(invalidated_at >= issued_at AND consumed_at IS NULL)",
+            "invalidated_at IS NULL OR (invalidated_at >= issued_at AND consumed_at IS NULL)",
             name="ck_workshop_nonce_sets_invalidation",
         ),
         Index(
@@ -1661,9 +1678,7 @@ class WorkshopNonceSet(IdMixin, TenantMixin, Base):
     nonce_derivation_context: Mapped[bytes] = mapped_column(LargeBinary(32))
     issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    invalidated_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    invalidated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consumed_chain_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     issued_by_actor_id: Mapped[str] = mapped_column(String(36))
@@ -1705,8 +1720,7 @@ class WorkshopNonce(Base):
             name="ck_workshop_nonces_stage",
         ),
         CheckConstraint(
-            "length(nonce_digest_sha256) = 64 "
-            "AND nonce_digest_sha256 = lower(nonce_digest_sha256)",
+            "length(nonce_digest_sha256) = 64 AND nonce_digest_sha256 = lower(nonce_digest_sha256)",
             name="ck_workshop_nonces_digest",
         ),
     )
@@ -1731,9 +1745,7 @@ class WorkshopChainAcceptance(IdMixin, TenantMixin, Base):
 
     __tablename__ = "workshop_chain_acceptances"
     __table_args__ = (
-        UniqueConstraint(
-            "organization_id", "id", name="uq_workshop_chain_acceptances_org_id"
-        ),
+        UniqueConstraint("organization_id", "id", name="uq_workshop_chain_acceptances_org_id"),
         UniqueConstraint(
             "organization_id",
             "nonce_set_id",
@@ -1792,8 +1804,7 @@ class WorkshopChainAcceptance(IdMixin, TenantMixin, Base):
             name="ck_workshop_chain_acceptances_eligibility",
         ),
         CheckConstraint(
-            "trust_epoch >= 0 AND nonce_set_generation > 0 "
-            "AND verified_at < valid_until",
+            "trust_epoch >= 0 AND nonce_set_generation > 0 AND verified_at < valid_until",
             name="ck_workshop_chain_acceptances_validity",
         ),
         CheckConstraint(
@@ -1910,9 +1921,7 @@ class WorkshopRevocation(IdMixin, TenantMixin, Base):
 
     __tablename__ = "workshop_revocations"
     __table_args__ = (
-        UniqueConstraint(
-            "organization_id", "id", name="uq_workshop_revocations_org_id"
-        ),
+        UniqueConstraint("organization_id", "id", name="uq_workshop_revocations_org_id"),
         UniqueConstraint(
             "organization_id",
             "target_kind",
@@ -1945,8 +1954,7 @@ class WorkshopRevocation(IdMixin, TenantMixin, Base):
             name="ck_workshop_revocations_target_sha256",
         ),
         CheckConstraint(
-            "revocation_epoch > 0 AND length(reason) > 0 "
-            "AND length(idempotency_key) > 0",
+            "revocation_epoch > 0 AND length(reason) > 0 AND length(idempotency_key) > 0",
             name="ck_workshop_revocations_identity",
         ),
     )

@@ -252,6 +252,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/furniture/projects/{project_id}/exports/{job_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Export */
+        get: operations["download_export_v1_furniture_projects__project_id__exports__job_id__download_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/furniture/projects/{project_id}/history": {
         parameters: {
             query?: never;
@@ -727,6 +744,62 @@ export interface components {
             size_bytes: number;
         };
         /**
+         * AssemblyDirection
+         * @enum {string}
+         */
+        AssemblyDirection: "+x" | "-x" | "+y" | "-y" | "+z" | "-z";
+        /** AssemblyEdge */
+        AssemblyEdge: {
+            /** From Part Id */
+            from_part_id: string;
+            /** Joint Id */
+            joint_id: string;
+            /** To Part Id */
+            to_part_id: string;
+        };
+        /** AssemblyGraph */
+        AssemblyGraph: {
+            /** Edges */
+            edges: components["schemas"]["AssemblyEdge"][];
+            /** Nodes */
+            nodes: components["schemas"]["AssemblyNode"][];
+            /** Steps */
+            steps: components["schemas"]["AssemblyStep"][];
+        };
+        /** AssemblyNode */
+        AssemblyNode: {
+            /** Part Id */
+            part_id: string;
+            /** Semantic Key */
+            semantic_key: string;
+        };
+        /**
+         * AssemblyStep
+         * @description One deterministic operator action derived from the assembly graph.
+         */
+        AssemblyStep: {
+            /** Checkpoint */
+            checkpoint: string;
+            direction: components["schemas"]["AssemblyDirection"];
+            /** Joint Ids */
+            joint_ids: string[];
+            /** Motion Path */
+            motion_path: components["schemas"]["AssemblyDirection"][];
+            /** Moving Part Ids */
+            moving_part_ids: string[];
+            /** Part Ids */
+            part_ids: string[];
+            /** Step Id */
+            step_id: string;
+            /** Step Number */
+            step_number: number;
+            /**
+             * Tool Ids
+             * @default []
+             */
+            tool_ids: string[];
+        };
+        /**
          * BackPanelType
          * @enum {string}
          */
@@ -755,6 +828,154 @@ export interface components {
             expires_at?: string | null;
             /** Rule Id */
             rule_id: string;
+        };
+        /** BookcaseDesignSpec */
+        BookcaseDesignSpec: {
+            back_material?: components["schemas"]["MaterialVersion"] | null;
+            /** Design Id */
+            design_id: string;
+            /**
+             * Engine Version
+             * @default 0.9.0
+             */
+            engine_version: string;
+            joint_retention?: components["schemas"]["JointRetentionContract"] | null;
+            material: components["schemas"]["MaterialVersion"];
+            parameters: components["schemas"]["BookcaseParameters"];
+            /**
+             * Revision
+             * @default 1
+             */
+            revision: number;
+            /** @default draft */
+            status: components["schemas"]["DesignStatus"];
+            /**
+             * Template Id
+             * @default bookcase
+             */
+            template_id: string;
+            /**
+             * Template Version
+             * @default 2.2.0
+             */
+            template_version: string;
+        };
+        /** BookcaseParameters */
+        BookcaseParameters: {
+            /**
+             * Actual Thickness Um
+             * @default 18000
+             */
+            actual_thickness_um: number;
+            /**
+             * Assumed Horizontal Force N
+             * @default 50
+             */
+            assumed_horizontal_force_n: number;
+            /** @default inset_groove */
+            back_panel: components["schemas"]["BackPanelType"];
+            /**
+             * Back Thickness Um
+             * @default 6000
+             */
+            back_thickness_um: number;
+            /**
+             * Base Cabinet Count
+             * @default 0
+             */
+            base_cabinet_count: number;
+            /**
+             * Base Cabinet Depth Um
+             * @default 0
+             */
+            base_cabinet_depth_um: number;
+            /**
+             * Base Cabinet Height Um
+             * @default 0
+             */
+            base_cabinet_height_um: number;
+            /**
+             * Bay Width Ratios Ppm
+             * @default []
+             */
+            bay_width_ratios_ppm: number[];
+            /**
+             * Deflection Span Ratio
+             * @default 200
+             */
+            deflection_span_ratio: number;
+            /**
+             * Depth Um
+             * @default 320000
+             */
+            depth_um: number;
+            /**
+             * Edge Band Thickness Um
+             * @default 0
+             */
+            edge_band_thickness_um: number;
+            /**
+             * Height Um
+             * @default 2000000
+             */
+            height_um: number;
+            /** @default dado */
+            joint_system: components["schemas"]["JointType"];
+            /**
+             * Max Deflection Um
+             * @default 3000
+             */
+            max_deflection_um: number;
+            /**
+             * Nominal Thickness Um
+             * @default 18000
+             */
+            nominal_thickness_um: number;
+            /**
+             * Plinth Height Um
+             * @default 80000
+             */
+            plinth_height_um: number;
+            /** @default manual */
+            reinforcement_mode: components["schemas"]["ReinforcementMode"];
+            /**
+             * Shelf Count
+             * @default 5
+             */
+            shelf_count: number;
+            /**
+             * Shelf Height Ratios Ppm
+             * @default []
+             */
+            shelf_height_ratios_ppm: number[];
+            /**
+             * Shelf Load N
+             * @default 300
+             */
+            shelf_load_n: number;
+            /** @default fixed */
+            shelf_mount: components["schemas"]["ShelfMount"];
+            /**
+             * Shelf Side Clearance Um
+             * @default 1000
+             */
+            shelf_side_clearance_um: number;
+            /**
+             * Structural Safety Factor Permille
+             * @default 1800
+             */
+            structural_safety_factor_permille: number;
+            /**
+             * Vertical Divider Count
+             * @default 0
+             */
+            vertical_divider_count: number;
+            wall_anchor?: components["schemas"]["WallAnchorSpec"];
+            /**
+             * Width Um
+             * @default 900000
+             */
+            width_um: number;
         };
         /** BookcasePreviewInput */
         BookcasePreviewInput: {
@@ -968,6 +1189,23 @@ export interface components {
              */
             width_um: number;
         };
+        /** DesignResult */
+        DesignResult: {
+            assembly_graph: components["schemas"]["AssemblyGraph"];
+            /** Design Hash */
+            design_hash: string;
+            /** Engine Version */
+            engine_version: string;
+            /** Joints */
+            joints: components["schemas"]["Joint"][];
+            /** Parts */
+            parts: components["schemas"]["PartInstance"][];
+            spec: components["schemas"]["BookcaseDesignSpec"];
+            /** Template Version */
+            template_version: string;
+            /** Total Weight G */
+            total_weight_g: number;
+        };
         /** DesignReviewBundleReceipt */
         DesignReviewBundleReceipt: {
             /** Bundle Sha256 */
@@ -1074,6 +1312,21 @@ export interface components {
             /** Template Version */
             template_version: string;
         };
+        /** Dimensions3D */
+        Dimensions3D: {
+            /** Depth Um */
+            depth_um: number;
+            /** Height Um */
+            height_um: number;
+            /** Width Um */
+            width_um: number;
+        };
+        /** EdgeBand */
+        EdgeBand: {
+            edge: components["schemas"]["FaceName"];
+            /** Thickness Um */
+            thickness_um: number;
+        };
         /** ExecutableCAMReceipt */
         ExecutableCAMReceipt: {
             cam_approval: components["schemas"]["CAMApprovalReleaseBinding"];
@@ -1157,6 +1410,106 @@ export interface components {
             /** Size Bytes */
             size_bytes: number;
         };
+        /**
+         * FaceName
+         * @enum {string}
+         */
+        FaceName: "a" | "b" | "front" | "back" | "left" | "right" | "top" | "bottom";
+        /** FeatureDimensions */
+        FeatureDimensions: {
+            /** Depth Um */
+            depth_um?: number | null;
+            /** Diameter Um */
+            diameter_um?: number | null;
+            /** Length Um */
+            length_um?: number | null;
+            /** Radius Um */
+            radius_um?: number | null;
+            /** Width Um */
+            width_um?: number | null;
+        };
+        /**
+         * FeatureKind
+         * @enum {string}
+         */
+        FeatureKind: "drill" | "drill_pattern" | "countersink" | "pocket" | "groove" | "rabbet" | "tenon" | "edge_relief" | "outer_contour" | "mark";
+        /** FurnitureBayDimensionsRead */
+        FurnitureBayDimensionsRead: {
+            /** Bay Count */
+            bay_count: number;
+            /** Clear Widths Um */
+            clear_widths_um: number[];
+            /** Divider Count */
+            divider_count: number;
+        };
+        /** FurnitureBlankFitRead */
+        FurnitureBlankFitRead: {
+            /** Across Grain Um */
+            across_grain_um: number | null;
+            /** Along Grain Um */
+            along_grain_um: number | null;
+            /** Fits Stock */
+            fits_stock: boolean | null;
+            /**
+             * Grain Direction
+             * @enum {string}
+             */
+            grain_direction: "X" | "Y" | "Z" | "NONE";
+            /** Orientations */
+            orientations: components["schemas"]["FurnitureOrientationRead"][];
+            /** Part Id */
+            part_id: string;
+            /** Raw Height Um */
+            raw_height_um: number;
+            /** Raw Width Um */
+            raw_width_um: number;
+            /** Semantic Key */
+            semantic_key: string;
+        };
+        /** FurnitureBlankRead */
+        FurnitureBlankRead: {
+            /** Across Grain Um */
+            across_grain_um: number | null;
+            /** Along Grain Um */
+            along_grain_um: number | null;
+            /**
+             * Grain Direction
+             * @enum {string}
+             */
+            grain_direction: "X" | "Y" | "Z" | "NONE";
+            /** Part Id */
+            part_id: string;
+            /** Raw Height Um */
+            raw_height_um: number;
+            /** Raw Width Um */
+            raw_width_um: number;
+            /** Semantic Key */
+            semantic_key: string;
+        };
+        /** FurnitureCatalogRead */
+        FurnitureCatalogRead: {
+            /** Families */
+            families: components["schemas"]["FurnitureFamilyRead"][];
+            /** Fingerprint */
+            fingerprint: string;
+            /** Hardware */
+            hardware: components["schemas"]["HardwareProfile"][];
+            /** Machines */
+            machines: components["schemas"]["FurnitureMachineRead"][];
+            /** Materials */
+            materials: components["schemas"]["MaterialVersion"][];
+            /** Version */
+            version: string;
+        };
+        /** FurnitureChangedFieldRead */
+        FurnitureChangedFieldRead: {
+            /** After */
+            after: number;
+            /** Before */
+            before: number;
+            /** Field */
+            field: string;
+        };
         /** FurnitureDesign */
         FurnitureDesign: {
             back_material?: components["schemas"]["MaterialSelection"];
@@ -1182,11 +1535,80 @@ export interface components {
              */
             schema_version: "custombuild.furniture-design.v1";
         };
+        /** FurnitureDimensionsRead */
+        FurnitureDimensionsRead: {
+            /** Carcass Dimensions Um */
+            carcass_dimensions_um: {
+                [key: string]: number;
+            };
+            installation: components["schemas"]["InstallationSpace"] | null;
+            /** Issues */
+            issues: components["schemas"]["FurnitureIssueRead"][];
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            /** Required Carcass Dimensions Um */
+            required_carcass_dimensions_um: {
+                [key: string]: number;
+            } | null;
+            /** Room Trim Clearances */
+            room_trim_clearances: components["schemas"]["FurnitureTrimClearanceRead"][];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "requires_resolution" | "reconciled" | "not_specified";
+            /** Version */
+            version: string;
+        };
+        /** FurnitureDraftRead */
+        FurnitureDraftRead: {
+            preview: components["schemas"]["FurniturePreviewRead"] | null;
+            /** Project Id */
+            project_id: string;
+            /** Revision */
+            revision: number;
+            workspace: components["schemas"]["FurnitureWorkspace"] | null;
+        };
         /** FurnitureDraftSave */
         FurnitureDraftSave: {
             /** Expected Revision */
             expected_revision: number;
             workspace: components["schemas"]["FurnitureWorkspace"];
+        };
+        /** FurnitureExportAccepted */
+        FurnitureExportAccepted: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "running" | "succeeded";
+        };
+        /** FurnitureExportFailed */
+        FurnitureExportFailed: {
+            /** Job Id */
+            job_id: string;
+            /** Message */
+            message: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            state: "cancelled" | "failed";
+        };
+        /** FurnitureExportPending */
+        FurnitureExportPending: {
+            /** Job Id */
+            job_id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            state: "queued" | "running";
         };
         /** FurnitureExportRequest */
         FurnitureExportRequest: {
@@ -1194,6 +1616,187 @@ export interface components {
             expected_design_hash: string;
             /** Expected Revision */
             expected_revision: number;
+        };
+        /** FurnitureExportSucceeded */
+        FurnitureExportSucceeded: {
+            /** Artifact Id */
+            artifact_id: string;
+            /**
+             * Content Type
+             * @constant
+             */
+            content_type: "application/zip";
+            /** Design Hash */
+            design_hash: string;
+            /** Download Path */
+            download_path: string;
+            /** File Name */
+            file_name: string;
+            /** Job Id */
+            job_id: string;
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /** Revision */
+            revision: number;
+            /** Sha256 */
+            sha256: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            state: "succeeded";
+        };
+        /** FurnitureFamilyRead */
+        FurnitureFamilyRead: {
+            /** Geometry Supported */
+            geometry_supported: boolean;
+            /**
+             * Id
+             * @enum {string}
+             */
+            id: "shelving" | "table" | "chest_of_drawers";
+            /** Name */
+            name: string;
+            /**
+             * Qualification
+             * @enum {string}
+             */
+            qualification: "structural_screening" | "layout_only";
+        };
+        /** FurnitureHandoffRead */
+        FurnitureHandoffRead: {
+            /** Design Hash */
+            design_hash: string;
+            dimensions: components["schemas"]["FurnitureDimensionsRead"];
+            /**
+             * Family
+             * @enum {string}
+             */
+            family: "shelving" | "table" | "chest_of_drawers";
+            /** Hardware Requirements */
+            hardware_requirements: string[];
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            /** Required Workshop Inputs */
+            required_workshop_inputs: string[];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "custombuild.furniture-workshop-handoff.v1";
+            /** Scope */
+            scope: string;
+            shelf_load: components["schemas"]["FurnitureShelfLoadRead"] | null;
+            stock_plan: components["schemas"]["FurnitureManufacturingRead"];
+            /** Stock Requirements */
+            stock_requirements: components["schemas"]["FurnitureStockRequirementRead"][];
+            /** Version */
+            version: string;
+        };
+        /** FurnitureHistoryItemRead */
+        FurnitureHistoryItemRead: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Dependencies */
+            dependencies: {
+                [key: string]: string;
+            };
+            /** Design Hash */
+            design_hash: string;
+            /** Engine Version */
+            engine_version: string;
+            /** Id */
+            id: string;
+            /** Revision */
+            revision: number;
+            workspace: components["schemas"]["FurnitureWorkspace"];
+        };
+        /** FurnitureHistoryRead */
+        FurnitureHistoryRead: {
+            /** Items */
+            items: components["schemas"]["FurnitureHistoryItemRead"][];
+            /** Next Offset */
+            next_offset: number | null;
+        };
+        /** FurnitureIssueRead */
+        FurnitureIssueRead: {
+            /** Code */
+            code: string;
+            /** Material Id */
+            material_id?: string | null;
+            /** Material Version */
+            material_version?: string | null;
+            /** Measured Thickness Um */
+            measured_thickness_um?: number | null;
+            /** Message */
+            message: string;
+            /** Part Id */
+            part_id?: string | null;
+        };
+        /** FurnitureMachineRead */
+        FurnitureMachineRead: {
+            /** Fingerprint */
+            fingerprint: string;
+            /** Name */
+            name: string;
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            /** Profile Id */
+            profile_id: string;
+            /** Version */
+            version: string;
+            /** Work Height Um */
+            work_height_um: number;
+            /** Work Width Um */
+            work_width_um: number;
+        };
+        /** FurnitureManufacturingRead */
+        FurnitureManufacturingRead: {
+            /** Detail */
+            detail?: string | null;
+            /** Fingerprint */
+            fingerprint: string | null;
+            /** Format Scope */
+            format_scope?: string | null;
+            /** Geometry Compatible */
+            geometry_compatible: boolean | null;
+            /** Issues */
+            issues: components["schemas"]["FurnitureIssueRead"][];
+            /** Machine Work Area Um */
+            machine_work_area_um?: {
+                [key: string]: number;
+            } | null;
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "not_selected" | "requires_change" | "not_qualified";
+            /** Stock Groups */
+            stock_groups?: components["schemas"]["FurnitureStockGroupRead"][] | null;
         };
         /** FurnitureMaterialStock */
         FurnitureMaterialStock: {
@@ -1249,6 +1852,53 @@ export interface components {
             grid: components["schemas"]["FurnitureModuleGrid"];
             workspace: components["schemas"]["FurnitureWorkspace"];
         };
+        /** FurnitureOrientationRead */
+        FurnitureOrientationRead: {
+            /** Fits Machine */
+            fits_machine: boolean;
+            /** Fits Stock */
+            fits_stock: boolean;
+            /** Height Shortfall Um */
+            height_shortfall_um: number;
+            /** Required Stock Height Um */
+            required_stock_height_um: number;
+            /** Required Stock Width Um */
+            required_stock_width_um: number;
+            /**
+             * Rotation Deg
+             * @enum {integer}
+             */
+            rotation_deg: 0 | 90;
+            /** Width Shortfall Um */
+            width_shortfall_um: number;
+        };
+        /** FurniturePreviewRead */
+        FurniturePreviewRead: {
+            /** Dependencies */
+            dependencies: {
+                [key: string]: string;
+            };
+            design: components["schemas"]["FurnitureResult"];
+            manufacturing: components["schemas"]["FurnitureManufacturingRead"];
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            rules: components["schemas"]["FurnitureRulesRead"];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "custombuild.furniture-preview.v1";
+            workshop_handoff: components["schemas"]["FurnitureHandoffRead"];
+            workspace: components["schemas"]["FurnitureWorkspace"];
+        };
         /** FurnitureProductionPreviewRequest */
         FurnitureProductionPreviewRequest: {
             /** Expected Design Hash */
@@ -1277,6 +1927,292 @@ export interface components {
             workspace: components["schemas"]["FurnitureWorkspace"];
             /** Workspace Sha256 */
             workspace_sha256: string;
+        };
+        /** FurnitureProfileChangeRead */
+        FurnitureProfileChangeRead: {
+            /** Can Apply */
+            can_apply: boolean;
+            /** Changed Dependencies */
+            changed_dependencies: string[];
+            /** Changed Part Ids */
+            changed_part_ids?: string[] | null;
+            /** Intent Preserved */
+            intent_preserved?: boolean | null;
+            /** Invalidated Reviews */
+            invalidated_reviews: string[];
+            /** Message */
+            message: string;
+            /** Original Design Hash */
+            original_design_hash: string;
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            proposed: components["schemas"]["FurniturePreviewRead"] | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "requires_change" | "not_qualified";
+        };
+        /** FurnitureRemainingIssuesRead */
+        FurnitureRemainingIssuesRead: {
+            /** Manufacturing */
+            manufacturing: components["schemas"]["FurnitureIssueRead"][];
+            /** Rules */
+            rules: components["schemas"]["FurnitureRuleRead"][];
+        };
+        /** FurnitureRequiredFormatRead */
+        FurnitureRequiredFormatRead: {
+            /** Fits Machine */
+            fits_machine: boolean;
+            /** Stock Height Um */
+            stock_height_um: number;
+            /** Stock Width Um */
+            stock_width_um: number;
+        };
+        /** FurnitureResult */
+        FurnitureResult: {
+            /** Design Hash */
+            design_hash: string;
+            /**
+             * Engine Version
+             * @default furniture-families-1.0.0
+             */
+            engine_version: string;
+            hardware_profile?: components["schemas"]["HardwareProfile"] | null;
+            /** Intent Hash */
+            intent_hash: string;
+            /**
+             * Joints
+             * @default []
+             */
+            joints: components["schemas"]["Joint"][];
+            /**
+             * Moving Groups
+             * @default []
+             */
+            moving_groups: components["schemas"]["MovingGroup"][];
+            /** Parts */
+            parts: components["schemas"]["PartInstance"][];
+            spec: components["schemas"]["FurnitureDesign"];
+            /**
+             * Template Version
+             * @default 1.0.0
+             */
+            template_version: string;
+            /** Total Weight G */
+            total_weight_g: number;
+        };
+        /** FurnitureRuleRead */
+        FurnitureRuleRead: {
+            /** Detail */
+            detail: string;
+            /** Rule Id */
+            rule_id: string;
+            /** Rules Version */
+            rules_version: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PASS" | "WARNING" | "BLOCK";
+            /** Title */
+            title: string;
+            /** Values */
+            values: {
+                [key: string]: number | string | null;
+            };
+        };
+        /** FurnitureRulesRead */
+        FurnitureRulesRead: {
+            /** Design Hash */
+            design_hash: string;
+            /** Disclaimer */
+            disclaimer: string;
+            /** Evaluations */
+            evaluations: components["schemas"]["FurnitureRuleRead"][];
+            /**
+             * Overall Status
+             * @enum {string}
+             */
+            overall_status: "PASS" | "WARNING" | "BLOCK";
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            /** Rules Version */
+            rules_version: string;
+        };
+        /** FurnitureScreeningCheckRead */
+        FurnitureScreeningCheckRead: {
+            /** Allowed */
+            allowed: number | null;
+            /** Calculated */
+            calculated: number | null;
+            /**
+             * Numeric Status
+             * @enum {string}
+             */
+            numeric_status: "PASS" | "WARNING" | "BLOCK" | "UNAVAILABLE";
+            /** Rule Id */
+            rule_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PASS" | "WARNING" | "BLOCK" | "UNAVAILABLE";
+            /** Unit */
+            unit: string | null;
+        };
+        /** FurnitureScreeningComparisonRead */
+        FurnitureScreeningComparisonRead: {
+            /** Current */
+            current: components["schemas"]["FurnitureScreeningCheckRead"][];
+            /** Proposed */
+            proposed: components["schemas"]["FurnitureScreeningCheckRead"][] | null;
+        };
+        /** FurnitureShelfLoadRead */
+        FurnitureShelfLoadRead: {
+            /**
+             * Basis
+             * @enum {string}
+             */
+            basis: "per_row" | "per_metre";
+            /** Load Per Metre N */
+            load_per_metre_n: number | null;
+            /** Total Row Load N */
+            total_row_load_n: number;
+            /** Width Um */
+            width_um: number;
+        };
+        /** FurnitureShelfSuggestionRead */
+        FurnitureShelfSuggestionRead: {
+            /** Can Apply */
+            can_apply: boolean;
+            /** Changed Fields */
+            changed_fields: components["schemas"]["FurnitureChangedFieldRead"][];
+            /** Code */
+            code: string;
+            current: components["schemas"]["FurniturePreviewRead"];
+            current_bays: components["schemas"]["FurnitureBayDimensionsRead"] | null;
+            /** Message */
+            message: string;
+            /**
+             * Physical Cutting Authorized
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /**
+             * Production Qualified
+             * @constant
+             */
+            production_qualified: false;
+            proposed: components["schemas"]["FurniturePreviewRead"] | null;
+            proposed_bays: components["schemas"]["FurnitureBayDimensionsRead"] | null;
+            remaining_issues: components["schemas"]["FurnitureRemainingIssuesRead"];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "custombuild.furniture-shelf-suggestion.v1";
+            /** Scope */
+            scope: string;
+            screening_checks: components["schemas"]["FurnitureScreeningComparisonRead"];
+            search: components["schemas"]["FurnitureSuggestionSearchRead"];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "available" | "already_pass" | "unavailable";
+            /** Version */
+            version: string;
+        };
+        /** FurnitureStockFormatRead */
+        FurnitureStockFormatRead: {
+            /** Edge Margin Um */
+            edge_margin_um: number;
+            /** Stock Grain Axis */
+            stock_grain_axis: ("x" | "y") | null;
+            /** Stock Height Um */
+            stock_height_um: number;
+            /** Stock Width Um */
+            stock_width_um: number;
+        };
+        /** FurnitureStockGroupRead */
+        FurnitureStockGroupRead: {
+            /** Geometry Compatible */
+            geometry_compatible: boolean;
+            /** Issues */
+            issues: components["schemas"]["FurnitureIssueRead"][];
+            /** Material Id */
+            material_id: string;
+            /** Material Version */
+            material_version: string;
+            /** Measured Thickness Um */
+            measured_thickness_um: number;
+            /** Parts */
+            parts: components["schemas"]["FurnitureBlankFitRead"][];
+            /** Required Formats */
+            required_formats: components["schemas"]["FurnitureRequiredFormatRead"][];
+            /**
+             * Selection Source
+             * @enum {string}
+             */
+            selection_source: "default" | "material";
+            stock: components["schemas"]["FurnitureStockFormatRead"];
+            /** Usable Height Um */
+            usable_height_um: number;
+            /** Usable Width Um */
+            usable_width_um: number;
+        };
+        /** FurnitureStockRequirementRead */
+        FurnitureStockRequirementRead: {
+            /** Material Id */
+            material_id: string;
+            /** Material Version */
+            material_version: string;
+            /** Measured Thickness Um */
+            measured_thickness_um: number;
+            /** Minimum Across Grain Um */
+            minimum_across_grain_um: number;
+            /** Minimum Along Grain Um */
+            minimum_along_grain_um: number;
+            /** Minimum Long Edge Um */
+            minimum_long_edge_um: number;
+            /** Minimum Short Edge Um */
+            minimum_short_edge_um: number;
+            /** Part Count */
+            part_count: number;
+            /** Parts */
+            parts: components["schemas"]["FurnitureBlankRead"][];
+            /** Raw Area Um2 */
+            raw_area_um2: number;
+        };
+        /** FurnitureSuggestionSearchRead */
+        FurnitureSuggestionSearchRead: {
+            /** Attempted Candidate Count */
+            attempted_candidate_count: number;
+            /** Evaluated Candidate Count */
+            evaluated_candidate_count: number;
+            /** Max Divider Count */
+            max_divider_count: number;
+        };
+        /** FurnitureTrimClearanceRead */
+        FurnitureTrimClearanceRead: {
+            /** Height Um */
+            height_um: number | null;
+            /** Required Clearance Um */
+            required_clearance_um: number | null;
+            /** Reserved Clearance Um */
+            reserved_clearance_um: number | null;
+            /**
+             * Wall
+             * @enum {string}
+             */
+            wall: "left" | "right" | "rear";
         };
         /** FurnitureWorkspace */
         FurnitureWorkspace: {
@@ -1360,10 +2296,75 @@ export interface components {
             /** Two Sided Registrations */
             two_sided_registrations?: components["schemas"]["WorkshopTwoSidedRegistration"][] | null;
         };
+        /**
+         * GrainDirection
+         * @enum {string}
+         */
+        GrainDirection: "x" | "y" | "z" | "none";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** HardwareProfile */
+        HardwareProfile: {
+            /** Catalog Id */
+            catalog_id: string;
+            /**
+             * Family
+             * @enum {string}
+             */
+            family: "table" | "chest_of_drawers";
+            /**
+             * Maximum Thickness Um
+             * @default 19000
+             */
+            maximum_thickness_um: number;
+            /**
+             * Minimum Thickness Um
+             * @default 17000
+             */
+            minimum_thickness_um: number;
+            /** Name */
+            name: string;
+            /**
+             * Production Qualified
+             * @default false
+             * @constant
+             */
+            production_qualified: false;
+            /**
+             * Rear Clearance Um
+             * @default 10000
+             */
+            rear_clearance_um: number;
+            /** Required Evidence */
+            required_evidence: string[];
+            /**
+             * Runner Length Um
+             * @default 0
+             */
+            runner_length_um: number;
+            /**
+             * Side Clearance Um
+             * @default 0
+             */
+            side_clearance_um: number;
+            /**
+             * Source
+             * @default Dimensional planning fixture; no manufacturer qualification
+             */
+            source: string;
+            /**
+             * Travel Um
+             * @default 0
+             */
+            travel_um: number;
+            /**
+             * Version
+             * @default layout-1.0.0
+             */
+            version: string;
         };
         /** HardwareSelection */
         HardwareSelection: {
@@ -1484,6 +2485,206 @@ export interface components {
          */
         JobStatus: "queued" | "running" | "succeeded" | "failed" | "cancelled";
         /**
+         * Joint
+         * @description Paired feature relationship.
+         *
+         *     ``assembly_direction`` is the canonical mating axis relative to the first
+         *     joint member.  The operator's actual movement is authoritatively represented
+         *     by ``AssemblyStep.motion_path`` and its explicit moving group.
+         */
+        Joint: {
+            assembly_direction: components["schemas"]["AssemblyDirection"];
+            /**
+             * Hardware Count
+             * @default 0
+             */
+            hardware_count: number;
+            /** Hardware Sku */
+            hardware_sku?: string | null;
+            /** Joint Id */
+            joint_id: string;
+            joint_type: components["schemas"]["JointType"];
+            mating_origin: components["schemas"]["Point3D"];
+            /** Members */
+            members: components["schemas"]["JointMember"][];
+            retention?: components["schemas"]["JointRetentionContract"] | null;
+            retention_application_class?: components["schemas"]["JointRetentionApplicationClass"] | null;
+            /**
+             * Tolerance Um
+             * @default 200
+             */
+            tolerance_um: number;
+        };
+        /** JointMember */
+        JointMember: {
+            /** Feature Ids */
+            feature_ids: string[];
+            mating_face: components["schemas"]["FaceName"];
+            /** Part Id */
+            part_id: string;
+        };
+        /**
+         * JointRetentionApplicationClass
+         * @description Physical application governed by one retention decision.
+         *
+         *     A machining feature name is not an application claim.  In particular, a
+         *     load-bearing carcass DADO and the shallow groove that captures a 6 mm back
+         *     panel are both represented by ``JointType.DADO`` but have different
+         *     retention semantics.
+         * @enum {string}
+         */
+        JointRetentionApplicationClass: "load_bearing_carcass_dado" | "captive_inset_back_groove";
+        /**
+         * JointRetentionContract
+         * @description Frozen result of an authenticated joint-retention selection.
+         *
+         *     Validation proves structural completeness, exact application geometry and
+         *     conservative capacity arithmetic. The model itself does *not* authenticate
+         *     catalogue/evidence bytes: the service trust boundary must verify a signed,
+         *     server-approved immutable statement before constructing and freezing this
+         *     payload. Clients can select an evidence ID but cannot submit this contract.
+         *     It never authorizes physical work on its own.
+         */
+        JointRetentionContract: {
+            /** Applicable Materials */
+            applicable_materials: components["schemas"]["JointRetentionMaterialIdentity"][];
+            /** @default load_bearing_carcass_dado */
+            application_class: components["schemas"]["JointRetentionApplicationClass"];
+            /**
+             * Bound Feature Ids
+             * @default []
+             */
+            bound_feature_ids: string[];
+            /** Catalog Entry Sha256 */
+            catalog_entry_sha256: string;
+            /** Evidence Id */
+            evidence_id: string;
+            /** Evidence Sha256 */
+            evidence_sha256: string;
+            /** Hardware Count Per Joint */
+            hardware_count_per_joint: number;
+            /** Hardware Sku */
+            hardware_sku: string;
+            /** Installation Instruction Id */
+            installation_instruction_id: string;
+            /** Installation Instruction Sha256 */
+            installation_instruction_sha256: string;
+            /** Installation Instruction Version */
+            installation_instruction_version: string;
+            /** Joint Geometry Sha256 */
+            joint_geometry_sha256: string;
+            /** @default dado */
+            joint_type: components["schemas"]["JointType"];
+            /** Load Cases */
+            load_cases: components["schemas"]["JointRetentionLoadCase"][];
+            machining_scope: components["schemas"]["JointRetentionMachiningScope"];
+            /** Maximum Applicable Thickness Um */
+            maximum_applicable_thickness_um: number;
+            method: components["schemas"]["JointRetentionMethod"];
+            /** Minimum Applicable Thickness Um */
+            minimum_applicable_thickness_um: number;
+            /** Safety Factor Permille */
+            safety_factor_permille: number;
+            /** System Id */
+            system_id: string;
+            /** System Version */
+            system_version: string;
+        };
+        /**
+         * JointRetentionLoadCase
+         * @description One evidence-backed retention capacity for an explicit load mode.
+         */
+        JointRetentionLoadCase: {
+            mode: components["schemas"]["JointRetentionLoadMode"];
+            /** Rated Design Load N */
+            rated_design_load_n: number;
+            /** Verified Capacity N */
+            verified_capacity_n: number;
+        };
+        /**
+         * JointRetentionLoadMode
+         * @description Independent load modes covered by one retention application.
+         * @enum {string}
+         */
+        JointRetentionLoadMode: "shear" | "withdrawal";
+        /**
+         * JointRetentionMachiningScope
+         * @description Whether the selected retention system needs additional CNC geometry.
+         * @enum {string}
+         */
+        JointRetentionMachiningScope: "no_additional_cnc" | "features_bound_to_joint";
+        /**
+         * JointRetentionMaterialIdentity
+         * @description Exact material/version pair covered by retention evidence.
+         */
+        JointRetentionMaterialIdentity: {
+            /** Material Id */
+            material_id: string;
+            /** Material Version */
+            material_version: string;
+        };
+        /**
+         * JointRetentionMethod
+         * @description Adhesive-free ways a joint may be retained after mating.
+         *
+         *     This is an identity carried by a versioned external catalogue contract. It
+         *     is not, by itself, a strength or workshop-approval claim.
+         * @enum {string}
+         */
+        JointRetentionMethod: "dry_self_locking" | "mechanical";
+        /**
+         * JointType
+         * @enum {string}
+         */
+        JointType: "dowel" | "confirmat" | "cam_dowel" | "shelf_pin" | "rabbet" | "dado" | "tenon";
+        /** ManufacturingFeature */
+        ManufacturingFeature: {
+            /** Corner Strategy */
+            corner_strategy?: string | null;
+            dimensions: components["schemas"]["FeatureDimensions"];
+            face: components["schemas"]["FaceName"];
+            /** Feature Id */
+            feature_id: string;
+            /**
+             * Fit Clearance Um
+             * @default 0
+             */
+            fit_clearance_um: number;
+            /** Joint Id */
+            joint_id?: string | null;
+            kind: components["schemas"]["FeatureKind"];
+            /**
+             * Open End Reliefs
+             * @default []
+             */
+            open_end_reliefs: components["schemas"]["OpenEndRelief"][];
+            origin: components["schemas"]["Point3D"];
+            /** Part Id */
+            part_id: string;
+            /**
+             * Pattern Count
+             * @default 1
+             */
+            pattern_count: number;
+            /** Pitch Um */
+            pitch_um?: number | null;
+            /**
+             * Requires Square Corners
+             * @default false
+             */
+            requires_square_corners: boolean;
+            /**
+             * Through
+             * @default false
+             */
+            through: boolean;
+            /**
+             * Tolerance Um
+             * @default 150
+             */
+            tolerance_um: number;
+        };
+        /**
          * ManufacturingSelection
          * @description A separate planning profile. It grants no physical machine approval.
          */
@@ -1531,6 +2732,192 @@ export interface components {
              * @default screening-2026.1
              */
             version: string;
+        };
+        /**
+         * MaterialType
+         * @enum {string}
+         */
+        MaterialType: "sheet_good" | "solid_wood";
+        /** MaterialVersion */
+        MaterialVersion: {
+            /** Bending Strength Mpa */
+            bending_strength_mpa: number;
+            /**
+             * Creep Factor Permille
+             * @default 600
+             */
+            creep_factor_permille: number;
+            /** Density Kg M3 */
+            density_kg_m3: number;
+            /** Elastic Modulus Mpa */
+            elastic_modulus_mpa: number;
+            /** @default x */
+            grain_direction: components["schemas"]["GrainDirection"];
+            /**
+             * Machining Allowance Um
+             * @default 0
+             */
+            machining_allowance_um: number;
+            /** Material Id */
+            material_id: string;
+            /** @default sheet_good */
+            material_type: components["schemas"]["MaterialType"];
+            /**
+             * Max Supported Thickness Um
+             * @default 40000
+             */
+            max_supported_thickness_um: number;
+            /**
+             * Min Supported Thickness Um
+             * @default 6000
+             */
+            min_supported_thickness_um: number;
+            /** Name */
+            name: string;
+            /** Nominal Thickness Um */
+            nominal_thickness_um: number;
+            /**
+             * Property Uncertainty Permille
+             * @default 150
+             */
+            property_uncertainty_permille: number;
+            /** Shear Strength Mpa */
+            shear_strength_mpa: number;
+            source: components["schemas"]["PropertySource"];
+            /** Version */
+            version: string;
+        };
+        /** MovingGroup */
+        MovingGroup: {
+            /**
+             * Axis
+             * @default y
+             * @constant
+             */
+            axis: "y";
+            /** Group Id */
+            group_id: string;
+            /** Part Ids */
+            part_ids: string[];
+            /** Rated Load N */
+            rated_load_n: number;
+            /** Travel Um */
+            travel_um: number;
+        };
+        /**
+         * OpenEndRelief
+         * @description A cutter exit that is intentionally open at a nominal feature boundary.
+         * @enum {string}
+         */
+        OpenEndRelief: "u_min" | "u_max" | "v_min" | "v_max";
+        /** PartInstance */
+        PartInstance: {
+            /** @default a */
+            a_side: components["schemas"]["FaceName"];
+            /** Actual Thickness Um */
+            actual_thickness_um: number;
+            /** @default b */
+            b_side: components["schemas"]["FaceName"];
+            /**
+             * Edge Bands
+             * @default []
+             */
+            edge_bands: components["schemas"]["EdgeBand"][];
+            /**
+             * Features
+             * @default []
+             */
+            features: components["schemas"]["ManufacturingFeature"][];
+            finished_size: components["schemas"]["Dimensions3D"];
+            grain_direction: components["schemas"]["GrainDirection"];
+            /** Instance Index */
+            instance_index: number;
+            /** Material Id */
+            material_id: string;
+            /** Material Version */
+            material_version: string;
+            /**
+             * Named Edges
+             * @default [
+             *       "front",
+             *       "back",
+             *       "left",
+             *       "right"
+             *     ]
+             */
+            named_edges: components["schemas"]["FaceName"][];
+            /** Part Id */
+            part_id: string;
+            placement: components["schemas"]["Placement"];
+            raw_size: components["schemas"]["Dimensions3D"];
+            /** Revision */
+            revision: number;
+            role: components["schemas"]["PartRole"];
+            /** Semantic Key */
+            semantic_key: string;
+            /**
+             * Visible Faces
+             * @default []
+             */
+            visible_faces: components["schemas"]["FaceName"][];
+            /** Weight G */
+            weight_g: number;
+        };
+        /**
+         * PartRole
+         * @enum {string}
+         */
+        PartRole: "left_side" | "right_side" | "top" | "bottom" | "shelf" | "back" | "plinth" | "divider" | "base_side" | "base_bottom" | "base_top" | "cabinet_front" | "table_end" | "table_stretcher" | "drawer_side" | "drawer_front" | "drawer_back" | "drawer_bottom";
+        /** Placement */
+        Placement: {
+            /**
+             * Rotation X Mdeg
+             * @default 0
+             */
+            rotation_x_mdeg: number;
+            /**
+             * Rotation Y Mdeg
+             * @default 0
+             */
+            rotation_y_mdeg: number;
+            /**
+             * Rotation Z Mdeg
+             * @default 0
+             */
+            rotation_z_mdeg: number;
+            /**
+             * X Um
+             * @default 0
+             */
+            x_um: number;
+            /**
+             * Y Um
+             * @default 0
+             */
+            y_um: number;
+            /**
+             * Z Um
+             * @default 0
+             */
+            z_um: number;
+        };
+        /** Point3D */
+        Point3D: {
+            /**
+             * X Um
+             * @default 0
+             */
+            x_um: number;
+            /**
+             * Y Um
+             * @default 0
+             */
+            y_um: number;
+            /**
+             * Z Um
+             * @default 0
+             */
+            z_um: number;
         };
         /**
          * ProductionStateRead
@@ -1634,6 +3021,21 @@ export interface components {
              */
             updated_at: string;
         };
+        /** PropertySource */
+        PropertySource: {
+            /** Note */
+            note?: string | null;
+            /** Revision */
+            revision: string;
+            /** Source Id */
+            source_id: string;
+            /** Title */
+            title: string;
+            /** Uri */
+            uri?: string | null;
+            /** Valid From */
+            valid_from?: string | null;
+        };
         /** ReferenceImageConfirmedInputs */
         ReferenceImageConfirmedInputs: {
             /**
@@ -1693,6 +3095,11 @@ export interface components {
             /** Warnings */
             warnings?: string[];
         };
+        /**
+         * ReinforcementMode
+         * @enum {string}
+         */
+        ReinforcementMode: "manual" | "auto";
         /**
          * ReleaseArtifactRead
          * @description One immutable artifact resolved through its historical release.
@@ -1908,6 +3315,25 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** WallAnchorSpec */
+        WallAnchorSpec: {
+            /** Anchor System Id */
+            anchor_system_id?: string | null;
+            /** Evidence Id */
+            evidence_id?: string | null;
+            /**
+             * Required
+             * @default false
+             */
+            required: boolean;
+            /**
+             * Verified
+             * @default false
+             */
+            verified: boolean;
+            /** Wall Substrate */
+            wall_substrate?: string | null;
         };
         /** WarningOverrideCreate */
         WarningOverrideCreate: {
@@ -2424,9 +3850,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurnitureCatalogRead"];
                 };
             };
         };
@@ -2485,9 +3909,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurniturePreviewRead"];
                 };
             };
             /** @description Validation Error */
@@ -2520,9 +3942,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurnitureProfileChangeRead"];
                 };
             };
             /** @description Validation Error */
@@ -2553,9 +3973,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurnitureDraftRead"];
                 };
             };
             /** @description Validation Error */
@@ -2590,9 +4008,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurnitureDraftRead"];
                 };
             };
             /** @description Validation Error */
@@ -2627,9 +4043,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["FurnitureExportAccepted"];
                 };
             };
             /** @description Validation Error */
@@ -2661,9 +4075,39 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurnitureExportPending"] | components["schemas"]["FurnitureExportFailed"] | components["schemas"]["FurnitureExportSucceeded"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_export_v1_furniture_projects__project_id__exports__job_id__download_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Fully verified furniture review archive */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
                 };
             };
             /** @description Validation Error */
@@ -2696,9 +4140,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurnitureHistoryRead"];
                 };
             };
             /** @description Validation Error */
@@ -2768,9 +4210,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["FurnitureShelfSuggestionRead"];
                 };
             };
             /** @description Validation Error */

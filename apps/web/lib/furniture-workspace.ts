@@ -1,4 +1,5 @@
 import type { ResolvedPart } from "./design-types";
+import type { paths } from "./api-schema";
 
 export type FurnitureFamily = "shelving" | "table" | "chest_of_drawers";
 export interface FurnitureIntent {
@@ -197,14 +198,13 @@ export interface FurnitureCatalog {
     production_qualified: false }[];
   machines: { profile_id: string; version: string; name: string; production_qualified: false }[];
 }
-export interface FurnitureExportResult {
-  state: "queued" | "running" | "failed" | "expired" | "succeeded";
-  message?: string;
-  file_name?: string;
-  content_base64?: string;
-  sha256?: string;
-  design_hash?: string;
-}
+export type FurnitureExportResult = paths[
+  "/v1/furniture/projects/{project_id}/exports/{job_id}"
+]["get"]["responses"][200]["content"]["application/json"];
+export type FurnitureExportAccepted = paths[
+  "/v1/furniture/projects/{project_id}/exports"
+]["post"]["responses"][202]["content"]["application/json"];
+export type FurnitureExportReady = Extract<FurnitureExportResult, { state: "succeeded" }>;
 
 export interface FurnitureProductionSource {
   schema_version: "custombuild.furniture-production-source.v1";
@@ -307,15 +307,4 @@ export function assertFurniturePreview(value: FurniturePreview): FurniturePrevie
       || !group.part_ids.every(id => ids.has(id))) throw new Error("Lådrörelsen saknar giltiga delar.");
   }
   return value;
-}
-
-export async function verifiedFurnitureDownload(result: FurnitureExportResult): Promise<Uint8Array<ArrayBuffer>> {
-  if (result.state !== "succeeded" || !result.content_base64 || !/^[a-f0-9]{64}$/.test(result.sha256 ?? "")) {
-    throw new Error("Exporten är inte klar för nedladdning.");
-  }
-  const bytes = Uint8Array.from(atob(result.content_base64), char => char.charCodeAt(0));
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const hash = [...new Uint8Array(digest)].map(n => n.toString(16).padStart(2, "0")).join("");
-  if (hash !== result.sha256) throw new Error("Exportens kontrollsumma stämmer inte.");
-  return bytes;
 }

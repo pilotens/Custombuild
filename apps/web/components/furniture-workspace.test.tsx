@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustombuildApiClient, type CurrentPrincipal } from "@/lib/api-client";
-import { newFurnitureWorkspace, type FurniturePreview, type FurnitureWorkspace } from "@/lib/furniture-workspace";
+import { newFurnitureWorkspace, type FurnitureExportReady, type FurniturePreview, type FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { FurnitureStudio } from "./furniture-workspace";
 
 vi.mock("next/dynamic", () => ({ default: () => function Viewer() { return <div>Modell</div>; } }));
@@ -35,6 +35,80 @@ function setup() {
   return api;
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+describe("durable furniture export downloads", () => {
+  const jobId = "d4fe7ac5-a886-4294-8fb0-c0c7fc36175c";
+  const ready: FurnitureExportReady = {
+    job_id: jobId, state: "succeeded", artifact_id: "392bc496-f75c-4474-abd9-453f40a17561",
+    file_name: "custombuild-review.zip", download_path: `/v1/furniture/projects/project/exports/${jobId}/download`,
+    design_hash: "a".repeat(64), revision: 1, sha256: "b".repeat(64),
+    size_bytes: 3, content_type: "application/zip", physical_cutting_authorized: false,
+  };
+  async function savedStudio() {
+    const api = setup();
+    vi.spyOn(api, "createProject").mockResolvedValue({ id: "project", name: "Mitt bord", furniture_type: "table",
+      current_revision: 0, description: "", archived: false, created_at: "2026-09-07T12:00:00Z",
+      updated_at: "2026-09-07T12:00:00Z" });
+    vi.spyOn(api, "saveFurnitureDraft").mockImplementation(async (id, revision, workspace) => {
+      const saved = { ...workspace, design: { ...workspace.design, design_id: id, revision: revision + 1 } };
+      return { project_id: id, revision: revision + 1, workspace: saved, preview: preview(saved) };
+    });
+    vi.spyOn(api, "requestFurnitureExport").mockResolvedValue({ job_id: jobId, state: "queued" });
+    render(<FurnitureStudio api={api} principal={principal} />);
+    await screen.findByText("5 delar");
+    fireEvent.click(screen.getByRole("button", { name: "Spara revision" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeEnabled());
+    return api;
+  }
+
+  it("only links verified binary downloads and revokes them when the design changes", async () => {
+    const api = await savedStudio();
+    const blob = new Blob(["zip"], { type: "application/zip" });
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue(ready);
+    const download = vi.spyOn(api, "downloadFurnitureExport").mockResolvedValue(blob);
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-review");
+    const revokeUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Skapa granskningspaket" }));
+    const link = await screen.findByRole("link", { name: /Hämta STEP/ });
+    expect(link).toHaveAttribute("href", "blob:verified-review");
+    expect(link).toHaveAttribute("download", ready.file_name);
+    expect(download).toHaveBeenCalledWith("project", jobId, 1, ready.design_hash, ready, expect.any(AbortSignal));
+    expect(createUrl).toHaveBeenCalledWith(blob);
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1200" } });
+    expect(screen.queryByRole("link", { name: /Hämta STEP/ })).toBeNull();
+    expect(revokeUrl).toHaveBeenCalledWith("blob:verified-review");
+  });
+
+  it("aborts a download and ignores late bytes after editing the design", async () => {
+    const api = await savedStudio();
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue(ready);
+    let finish!: (blob: Blob) => void;
+    const download = vi.spyOn(api, "downloadFurnitureExport").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:stale-review");
+    fireEvent.click(screen.getByRole("button", { name: "Skapa granskningspaket" }));
+    await waitFor(() => expect(download).toHaveBeenCalledOnce());
+    const signal = download.mock.calls[0]![5]!;
+    expect(signal.aborted).toBe(false);
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1200" } });
+    expect(signal.aborted).toBe(true);
+    await act(async () => finish(new Blob(["zip"])));
+    expect(createUrl).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: /Hämta STEP/ })).toBeNull();
+  });
+
+  it("stops on cancelled exports without requesting a binary download", async () => {
+    const api = await savedStudio();
+    const status = vi.spyOn(api, "furnitureExportResult").mockResolvedValue({
+      job_id: jobId, state: "cancelled", message: "Revisionen har ändrats.",
+    });
+    const download = vi.spyOn(api, "downloadFurnitureExport");
+    fireEvent.click(screen.getByRole("button", { name: "Skapa granskningspaket" }));
+    await screen.findByText("Revisionen har ändrats.");
+    expect(status).toHaveBeenCalledOnce();
+    expect(download).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: /Hämta STEP/ })).toBeNull();
+  });
+});
 
 describe("möbelstudions revisions- och profilflöde", () => {
   it("behåller materialens råformat och ogiltiga måttfält vid maskinbyte tills profilen granskas", async () => {

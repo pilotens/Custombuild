@@ -154,6 +154,7 @@ def test_current_repository_manifest_contains_release_workflows() -> None:
         "services/api/alembic/versions/0019_cam_approval_candidate_sha.py",
         "services/api/alembic/versions/0020_release_cam_approval_identity.py",
         "services/api/alembic/versions/0021_furniture_review_reads.py",
+        "services/api/alembic/versions/0022_durable_furniture_review_exports.py",
         "scripts/activate_joint_retention_registry.py",
         "services/api/app/artifact_operations.py",
         "services/api/app/joint_retention_registry.py",
@@ -398,12 +399,28 @@ def _content_repo(tmp_path: Path, *, object_format: str = "sha1") -> Path:
     result = _git(repo, "init", "-q", f"--object-format={object_format}", check=False)
     if result.returncode != 0:
         pytest.skip(f"installed Git does not support {object_format} repositories")
-    (repo / ".gitignore").write_text("ignored/\n", encoding="utf-8")
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / ".gitignore").write_text("ignored/\n", encoding="utf-8", newline="\n")
     source = repo / "scripts" / "source.bin"
     source.parent.mkdir()
     source.write_bytes(b"raw\x00content\n")
     _git(repo, "add", ".gitignore", "scripts/source.bin")
     return repo
+
+
+@pytest.mark.parametrize("payload", [b"first\r\nsecond\r\n", b"before\x1aafter\n"])
+def test_index_bound_read_preserves_exact_binary_bytes(tmp_path: Path, payload: bytes) -> None:
+    (tmp_path / "source.bin").write_bytes(payload)
+    object_id = hashlib.sha256(f"blob {len(payload)}\0".encode("ascii") + payload).hexdigest()
+    actual, state = source_manifest._read_index_bound_regular_file(
+        tmp_path,
+        b"source.bin",
+        git_mode="100644",
+        object_id=object_id,
+        object_format="sha256",
+    )
+    assert actual == payload
+    assert state[1] == len(payload)
 
 
 def test_repository_content_root_is_index_bound_stable_and_self_excluding(

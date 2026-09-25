@@ -239,11 +239,11 @@ def test_all_external_container_images_are_digest_pinned() -> None:
     ) in web
     assert (
         "cgr.dev/chainguard/glibc-dynamic:latest@sha256:"
-        "205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b"
+        "6acf5a19a988abdaf0f3d30247561431a206034e702871442bed66a2c68cc1a2"
     ) in web
     assert (
         "cgr.dev/chainguard/python:latest-dev@sha256:"
-        "f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd"
+        "2d5551e22013aa1bb69c070398273171941c4a0d80414e7f786db8e6d966bb83"
     ) in web
     for package in (
         "c-ares=1.34.8-r1",
@@ -256,7 +256,7 @@ def test_all_external_container_images_are_digest_pinned() -> None:
         "libnghttp2-14=1.70.0-r2",
         "libssl3=3.6.4-r0",
         "libuv=1.52.1-r1",
-        "zlib=1.3.2-r4",
+        "zlib=1.3.2.1_rc20260601-r0",
         "nodejs-24=24.19.0-r0",
     ):
         assert package in web
@@ -267,6 +267,32 @@ def test_all_external_container_images_are_digest_pinned() -> None:
     assert "require('node:inspector')" in web
     assert "process.version !== 'v24.19.0'" in web
     assert "apt-get" not in web
+
+
+def test_external_runtime_pins_match_scans_backups_and_release_descriptors() -> None:
+    from scripts.compose_backup import POSTGRES_IMAGE, VOLUME_INIT_IMAGE
+    from scripts.deploy_descriptor import (
+        PINNED_RUNTIME_IMAGES,
+        PINNED_RUNTIME_SCAN_REFERENCES,
+    )
+    from scripts.release_evidence_gate import EXTERNAL_IMAGE_REFERENCES
+
+    compose = yaml.safe_load(Path("compose.yml").read_text(encoding="utf-8"))
+    registry = yaml.safe_load(Path("compose.registry.yml").read_text(encoding="utf-8"))
+    workflow_path = Path(".github/workflows/supply-chain.yml")
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    scan_matrix = workflow["jobs"]["pinned-runtime-images"]["strategy"]["matrix"]["include"]
+    scan_images = {entry["component"]: entry["image"] for entry in scan_matrix}
+
+    assert scan_images == PINNED_RUNTIME_SCAN_REFERENCES == EXTERNAL_IMAGE_REFERENCES
+    assert scan_images["postgres"] == POSTGRES_IMAGE
+    assert scan_images["volume-init"] == VOLUME_INIT_IMAGE
+    for component, scan_reference in scan_images.items():
+        service = "object-storage-init" if component == "volume-init" else component
+        assert compose["services"][service]["image"] == scan_reference
+        assert registry["services"][service]["image"] == PINNED_RUNTIME_IMAGES[component]
+        release_digest = PINNED_RUNTIME_IMAGES[component].partition("@")[2]
+        assert scan_reference.partition("@")[2] == release_digest
 
 
 def test_web_runtime_uid_owns_its_only_writable_application_cache() -> None:
@@ -286,11 +312,11 @@ def test_python_runtimes_are_minimal_pinned_and_keep_python_313(dockerfile: str)
 
     assert (
         "cgr.dev/chainguard/glibc-dynamic:latest@sha256:"
-        "205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b"
+        "6acf5a19a988abdaf0f3d30247561431a206034e702871442bed66a2c68cc1a2"
     ) in source
     assert (
         "cgr.dev/chainguard/python:latest-dev@sha256:"
-        "f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd"
+        "2d5551e22013aa1bb69c070398273171941c4a0d80414e7f786db8e6d966bb83"
     ) in source
     for package in (
         "py3-pip-wheel=26.2.1-r0",
@@ -307,9 +333,9 @@ def test_python_runtimes_are_minimal_pinned_and_keep_python_313(dockerfile: str)
         "sqlite-libs=3.53.4-r0",
         "libssl3=3.6.4-r0",
         "libuuid=2.42.2-r3",
-        "zlib=1.3.2-r4",
-        "python-3.13-base=3.13.15-r2",
-        "python-3.13=3.13.15-r2",
+        "zlib=1.3.2.1_rc20260601-r0",
+        "python-3.13-base=3.13.15_git20260918-r2",
+        "python-3.13=3.13.15_git20260918-r2",
     ):
         assert package in source
     builder_copy_lines = [
@@ -360,17 +386,17 @@ def test_python_runtime_build_probes_import_the_real_entrypoint_dependencies() -
         (
             "apps/web/Dockerfile",
             19,
-            "f44e2ee8aacd1d2fbe9c51b2e354973ef3d1ef1b82a202be483c3bedab17879f",
+            "77bcd8a611e2039b4030b330c3b2737f09fbd37792b5178bd56f9bcd5c76de23",
         ),
         (
             "services/api/Dockerfile",
             24,
-            "b877ad764a4b02b376bf61c2b62ebfc5044c1b1b70fb4a3a5ffca089be06bffb",
+            "3ff9f734716757ab88abf71fd3c537a9aa9c0f807847d665657c60be3a3a1b6a",
         ),
         (
             "services/worker/Dockerfile",
             49,
-            "7d48b979148c77fbd4383671b6f0a79156fd85518840f217ef564091230f596e",
+            "6eb0acb53fe189cec9c9c36414a544b1b160a2403ec053cd851e1076d65b52f3",
         ),
     ),
 )
@@ -391,7 +417,7 @@ def test_worker_runtime_packages_are_scanner_visible_and_exact() -> None:
 
     assert (
         "cgr.dev/chainguard/python:latest-dev@sha256:"
-        "f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd"
+        "2d5551e22013aa1bb69c070398273171941c4a0d80414e7f786db8e6d966bb83"
     ) in worker
     assert "COPY --from=runtime-base / /base-chroot" in worker
     assert "apk add --no-cache --no-scripts --root /base-chroot" in worker

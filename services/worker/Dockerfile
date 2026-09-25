@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b AS runtime-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:6acf5a19a988abdaf0f3d30247561431a206034e702871442bed66a2c68cc1a2 AS runtime-base
 
 
 FROM python:3.13.15-slim-trixie@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4 AS builder
@@ -64,7 +64,7 @@ RUN python -m compileall -f -q packages cad cam postprocessors services \
       /usr/local/bin/uv /usr/local/bin/uvx
 
 
-FROM cgr.dev/chainguard/python:latest-dev@sha256:f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd AS runtime-assembler
+FROM cgr.dev/chainguard/python:latest-dev@sha256:2d5551e22013aa1bb69c070398273171941c4a0d80414e7f786db8e6d966bb83 AS runtime-assembler
 
 USER root
 COPY --from=runtime-base / /base-chroot
@@ -83,9 +83,9 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
       sqlite-libs=3.53.4-r0 \
       libssl3=3.6.4-r0 \
       libuuid=2.42.2-r3 \
-      zlib=1.3.2-r4 \
-      python-3.13-base=3.13.15-r2 \
-      python-3.13=3.13.15-r2 \
+      zlib=1.3.2.1_rc20260601-r0 \
+      python-3.13-base=3.13.15_git20260918-r2 \
+      python-3.13=3.13.15_git20260918-r2 \
       mesa-gl=26.2.1-r0 \
       libx11=1.8.13-r5 \
       libxau=1.0.12-r7 \
@@ -115,7 +115,7 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
     && test "$(wc -l < /tmp/runtime-package-closure)" = "49" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "7d48b979148c77fbd4383671b6f0a79156fd85518840f217ef564091230f596e"
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "6eb0acb53fe189cec9c9c36414a544b1b160a2403ec053cd851e1076d65b52f3"
 
 COPY --from=builder /opt/custombuild-venv /base-chroot/opt/custombuild-venv
 COPY --from=builder /app/packages /base-chroot/app/packages
