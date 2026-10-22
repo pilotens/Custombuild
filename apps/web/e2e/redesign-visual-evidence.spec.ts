@@ -695,13 +695,19 @@ async function verifyCanvasStateBannerStack(page: Page): Promise<void> {
 async function verifyMobileComponentPalette(page: Page): Promise<void> {
   if ((page.viewportSize()?.width ?? Number.POSITIVE_INFINITY) > 760) return;
 
-  const palette = page.getByRole("region", { name: "Lägg till delar" });
+  const palette = page.getByRole("region", { name: "Hantera delar" });
   const shelf = palette.getByRole("button", { name: /Hyllplan/ });
   const divider = palette.getByRole("button", { name: /Avdelare/ });
-  const row = shelf.locator("..");
+  const removeShelf = palette.getByRole("button", { name: "Ta bort hyllplan", exact: true });
+  const removeDivider = palette.getByRole("button", { name: "Ta bort avdelare", exact: true });
+  const row = shelf.locator("../..");
   await expect(palette).toBeVisible();
   await expect(shelf).toBeVisible();
   await expect(divider).toBeVisible();
+  await expect(removeShelf).toBeVisible();
+  await expect(removeShelf).toBeEnabled();
+  await expect(removeDivider).toBeVisible();
+  await expect(removeDivider).toBeEnabled();
 
   const paletteBox = await palette.boundingBox();
   const shelfBox = await shelf.boundingBox();
@@ -716,6 +722,19 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
     expect(box.height).toBeGreaterThanOrEqual(64);
     expect(box.y).toBeGreaterThanOrEqual(paletteBox.y);
     expect(box.y + box.height).toBeLessThanOrEqual(paletteBox.y + paletteBox.height);
+  }
+
+  for (const control of [removeShelf, removeDivider]) {
+    const box = await control.boundingBox();
+    if (!box) throw new Error("A mobile component removal control has no visible layout box.");
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    expect(box.y).toBeGreaterThanOrEqual(paletteBox.y);
+    expect(box.y + box.height).toBeLessThanOrEqual(paletteBox.y + paletteBox.height);
+    const exposedLabel = await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest("button")?.getAttribute("aria-label") ?? null
+    ), { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+    expect(exposedLabel).toBe(await control.getAttribute("aria-label"));
   }
 
   const overflow = await row.evaluate((element) => ({
@@ -735,8 +754,12 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   await shelf.focus();
   await expect(shelf).toBeFocused();
   await page.keyboard.press("Tab");
+  await expect(removeShelf).toBeFocused();
+  await page.keyboard.press("Tab");
   await expect(divider).toBeFocused();
-  await divider.evaluate((element) => element.blur());
+  await page.keyboard.press("Tab");
+  await expect(removeDivider).toBeFocused();
+  await removeDivider.evaluate((element) => element.blur());
   await row.evaluate((element) => {
     (element as HTMLElement).style.scrollBehavior = "auto";
     element.scrollLeft = 0;

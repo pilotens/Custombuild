@@ -22,6 +22,18 @@ import {
 } from "./design-system";
 
 describe("design system primitives", () => {
+  it.each(["clamp", "reject"] as const)("restores the committed value when the design planner rejects a %s input", (commitMode) => {
+    const onCommit = vi.fn(() => false);
+    render(<DimensionInput label="Bredd" value={1200} min={250} max={6000} commitMode={commitMode} onCommit={onCommit} />);
+    const input = screen.getByRole("spinbutton", { name: "Bredd" });
+    fireEvent.change(input, { target: { value: "5000" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onCommit).toHaveBeenCalledWith(5000);
+    expect(input).toHaveValue(1200);
+    expect(input).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByText("Ändringen kunde inte genomföras. Det tidigare måttet behålls.")).toBeVisible();
+  });
+
   it("exposes semantic regions for the persistent editor layout", () => {
     render(
       <>

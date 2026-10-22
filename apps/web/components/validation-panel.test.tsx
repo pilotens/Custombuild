@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
-import { DEFAULT_DESIGN_SPEC, type RuleEvaluation } from "@/lib/design-types";
+import { DEFAULT_DESIGN_SPEC, type DesignSpec, type RuleEvaluation } from "@/lib/design-types";
 import { automaticValidationFixPreview } from "@/lib/validation-guidance";
 import { ValidationPanel, type ActiveValidationFixPreview } from "./validation-panel";
 
@@ -33,6 +33,7 @@ const evaluation: RuleEvaluation = {
 function renderPanel(
   evaluations: RuleEvaluation[],
   options: {
+    spec?: DesignSpec;
     onRequest?: (item: RuleEvaluation) => void;
     onCancel?: () => void;
     onConfirm?: () => void;
@@ -41,6 +42,7 @@ function renderPanel(
     onOpenProduction?: () => void;
   } = {},
 ) {
+  const spec = options.spec ?? DEFAULT_DESIGN_SPEC;
   const status = evaluations.some((item) => item.status === "BLOCK")
     ? "BLOCK"
     : evaluations.some((item) => item.status === "WARNING")
@@ -52,11 +54,11 @@ function renderPanel(
       <ValidationPanel
         evaluations={evaluations}
         status={status}
-        spec={DEFAULT_DESIGN_SPEC}
+        spec={spec}
         activePreview={activePreview}
         onRequestPreview={(item) => {
           options.onRequest?.(item);
-          const preview = automaticValidationFixPreview(item, DEFAULT_DESIGN_SPEC);
+          const preview = automaticValidationFixPreview(item, spec);
           if (!preview) return;
           setActivePreview({
             ruleId: item.rule_id,
@@ -85,7 +87,7 @@ function renderPanel(
 }
 
 describe("ValidationPanel", () => {
-  it("shows BLOCK, WARNING and PASS truthfully, with source values only when present", () => {
+  it("keeps problems and status counts visible while collapsing passed checks and detailed evidence", () => {
     const blocked: RuleEvaluation = {
       ...evaluation,
       rule_id: "GEO-001",
@@ -113,24 +115,47 @@ describe("ValidationPanel", () => {
     renderPanel([passed, evaluation, blocked]);
 
     const cards = screen.getAllByRole("article");
-    expect(within(cards[0]!).getByText("Ogiltig geometri")).toBeVisible();
-    expect(within(cards[1]!).getByText("Hyllnedböjning")).toBeVisible();
-    expect(within(cards[2]!).getByText("Skivtjocklek")).toBeVisible();
+    expect(cards).toHaveLength(3);
+    expect(cards[0]).toBeVisible();
+    expect(cards[1]).toBeVisible();
+    expect(cards[2]).not.toBeVisible();
+    expect(cards[0]).toHaveAccessibleName("Ogiltig geometri");
+    expect(cards[1]).toHaveAccessibleName("Hyllnedböjning");
+    expect(within(cards[0]!).getByText("Justera måtten")).toBeVisible();
+    expect(within(cards[1]!).getByText("Hyllorna behöver mer stöd")).toBeVisible();
+    for (const title of screen.getAllByText("Skivtjocklek")) expect(title).not.toBeVisible();
     expect(screen.getAllByText("Måste lösas").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Behöver beslut").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Godkänt").length).toBeGreaterThan(0);
+    const summary = screen.getByLabelText("1 måste lösas och 1 behöver beslut");
+    expect(summary).toBeVisible();
+    expect(summary).toHaveTextContent("1 godkända");
+    const passedSummary = screen.getByText("Godkända kontroller (1)");
+    expect(passedSummary.closest("details")).not.toHaveAttribute("open");
 
     expect(within(cards[0]!).queryByText("Aktuellt verifierat värde")).not.toBeInTheDocument();
     expect(within(cards[0]!).queryByText("Gränsvärde")).not.toBeInTheDocument();
     const warningEvidence = cards[1]!.querySelector<HTMLElement>(".validation-evidence");
     expect(warningEvidence).not.toBeNull();
+    expect(warningEvidence).not.toBeVisible();
+    expect(within(cards[1]!).getByText("Jämnt fördelad last")).not.toBeVisible();
+    expect(within(cards[1]!).getByText(evaluation.calculation)).not.toBeVisible();
+    expect(within(cards[1]!).getByText(/Regel STR-DEF-001 · version 1.1.0/)).not.toBeVisible();
+    expect(within(cards[1]!).getByText("Visa detaljer").closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(within(cards[1]!).getByText("Visa detaljer"));
     expect(within(warningEvidence!).getByText("6.2 mm")).toBeVisible();
     expect(within(warningEvidence!).getByText("5 mm")).toBeVisible();
     expect(within(warningEvidence!).getByText("900 mm")).toBeVisible();
     expect(within(warningEvidence!).getByText("Jämnt fördelad last")).toBeVisible();
-    expect(within(cards[2]!).getByText("Verifierat resultat")).toBeVisible();
-    expect(within(cards[2]!).getByText(/Ingen ändring krävs/)).toBeVisible();
-    expect(within(cards[2]!).queryByRole("button", { name: /förhandsgranska/i })).not.toBeInTheDocument();
+    expect(within(cards[1]!).getByText(evaluation.calculation)).toBeVisible();
+    expect(within(cards[1]!).getByText(/Regel STR-DEF-001 · version 1.1.0/)).toBeVisible();
+    fireEvent.click(passedSummary);
+    const passedCard = screen.getByRole("article", { name: "Skivtjocklek" });
+    expect(passedCard).toBeVisible();
+    expect(within(passedCard).getByText("Godkänt")).toBeVisible();
+    expect(within(passedCard).queryByRole("button", { name: /Visa förslag/i })).not.toBeInTheDocument();
+    fireEvent.click(within(passedCard).getByText("Visa detaljer"));
+    expect(within(passedCard).getByText("Verifierat resultat")).toBeVisible();
+    expect(within(passedCard).getByText(/Ingen ändring krävs/)).toBeVisible();
   });
 
   it("labels maximum, minimum and trigger thresholds with their real direction", () => {
@@ -140,6 +165,7 @@ describe("ValidationPanel", () => {
 
     renderPanel([maximum, minimum, trigger]);
 
+    for (const details of screen.getAllByText("Visa detaljer")) fireEvent.click(details);
     expect(screen.getAllByText("Högsta tillåtna").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Minimikrav").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Förankring krävs från").length).toBeGreaterThan(0);
@@ -152,12 +178,23 @@ describe("ValidationPanel", () => {
     const onConfirm = vi.fn();
     renderPanel([evaluation], { onRequest, onCancel, onConfirm });
 
-    const previewButton = screen.getByRole("button", { name: /förhandsgranska: inför 1 vertikal avdelare/i });
+    const previewButton = screen.getByRole("button", { name: /Visa förslag: inför 1 vertikal avdelare/i });
+    expect(previewButton).toBeVisible();
+    expect(screen.getByText("Visa detaljer").closest("details")).not.toHaveAttribute("open");
     fireEvent.click(previewButton);
     expect(onRequest).toHaveBeenCalledWith(evaluation);
     expect(onConfirm).not.toHaveBeenCalled();
 
     const preview = screen.getByRole("region", { name: "Kontrollera ändringen före tillämpning" });
+    expect(within(preview).getByText("divider_count")).not.toBeVisible();
+    expect(within(preview).getByText("reinforcement_mode")).not.toBeVisible();
+    expect(within(preview).getByText("Avdelare")).toBeVisible();
+    expect(within(preview).getByText("Förstärkning")).toBeVisible();
+    expect(within(preview).getByText("Automatiskt")).toBeVisible();
+    expect(within(preview).getByText("Manuellt")).toBeVisible();
+    const exactChanges = within(preview).getByText("Exakta ändringsvärden");
+    expect(exactChanges.closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(exactChanges);
     expect(within(preview).getByText("divider_count")).toBeVisible();
     expect(within(preview).getByText("reinforcement_mode")).toBeVisible();
     expect(within(preview).getByText("0", { selector: "code" })).toBeVisible();
@@ -202,9 +239,9 @@ describe("ValidationPanel", () => {
     renderPanel([blockingEvaluation], { onRequest, onOpenProduction });
 
     const repair = screen.getByRole("button", {
-      name: `Åtgärda problem för ${title}: öppna Lagerobundet granskningspaket`,
+      name: `Öppna underlag för ${title}`,
     });
-    expect(repair).toHaveTextContent("Åtgärda problem");
+    expect(repair).toHaveTextContent("Öppna underlag");
     fireEvent.click(repair);
 
     expect(onOpenProduction).toHaveBeenCalledTimes(1);
@@ -230,7 +267,7 @@ describe("ValidationPanel", () => {
 
     renderPanel([capacityOnly], { onOpenProduction });
 
-    expect(screen.queryByRole("button", { name: /Åtgärda problem/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Öppna underlag|Visa förslag|Ändra i Studio/i })).not.toBeInTheDocument();
     expect(onOpenProduction).not.toHaveBeenCalled();
   });
 
@@ -253,7 +290,57 @@ describe("ValidationPanel", () => {
 
     renderPanel([machineOnly], { onOpenProduction });
 
-    expect(screen.queryByRole("button", { name: /Åtgärda problem/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Öppna underlag|Visa förslag|Ändra i Studio/i })).not.toBeInTheDocument();
+    expect(onOpenProduction).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a stockless review suggestion into a workaround for unrelated blocking checks", () => {
+    const onOpenProduction = vi.fn();
+    const stock: RuleEvaluation = {
+      ...evaluation,
+      rule_id: "DFM-STOCK-001",
+      status: "BLOCK",
+      title: "Delar ryms i råmaterial",
+      suggestion: {
+        action: "create_stockless_review_package",
+        label: "Skapa lagerobundet granskningsunderlag",
+        value: true,
+        explanation: "Behåll verkliga mått och blockera nesting och CAM.",
+      },
+    };
+    const blockedJoint: RuleEvaluation = {
+      ...evaluation,
+      rule_id: "CB-JOINT-001",
+      status: "BLOCK",
+      title: "Lokalt upplag i hyllspår och hyllbärare",
+      suggestion: undefined,
+    };
+    renderPanel([stock, blockedJoint], { onOpenProduction });
+
+    expect(screen.queryByRole("button", { name: /Öppna underlag/i })).not.toBeInTheDocument();
+    expect(onOpenProduction).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("2 måste lösas och 0 behöver beslut")).toBeVisible();
+  });
+
+  it("keeps external checks visible without offering an unsupported wall-library production route", () => {
+    const onRequest = vi.fn();
+    const onOpenProduction = vi.fn();
+    const externalCheck: RuleEvaluation = {
+      ...evaluation,
+      rule_id: "STAB-TIP-002",
+      status: "WARNING",
+      title: "Tipprisk och väggförankring",
+      suggestion: undefined,
+    };
+    renderPanel([externalCheck], {
+      spec: { ...DEFAULT_DESIGN_SPEC, furniture_type: "wall_library" },
+      onRequest,
+      onOpenProduction,
+    });
+
+    expect(screen.getByRole("article", { name: externalCheck.title })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /Öppna underlag|Visa förslag|Ändra i Studio/i })).not.toBeInTheDocument();
+    expect(onRequest).not.toHaveBeenCalled();
     expect(onOpenProduction).not.toHaveBeenCalled();
   });
 
@@ -283,14 +370,39 @@ describe("ValidationPanel", () => {
 
     expect(screen.queryByText("Aktuellt verifierat värde")).not.toBeInTheDocument();
     expect(screen.queryByText("Gräns")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /förhandsgranska/i })).not.toBeInTheDocument();
-    const technical = screen.getByText("Tekniska detaljer").closest("details");
+    expect(screen.queryByRole("button", { name: /Visa förslag/i })).not.toBeInTheDocument();
+    const technical = screen.getByText("Visa detaljer").closest("details");
     expect(technical).not.toHaveAttribute("open");
     expect(screen.getByText("saknas")).not.toBeVisible();
-    const repair = screen.getByRole("button", { name: /Åtgärda problem för .*: öppna/i });
-    expect(repair).toHaveTextContent("Åtgärda problem");
+    const repair = screen.getByRole("button", { name: /Öppna underlag för /i });
+    expect(repair).toHaveTextContent("Öppna underlag");
     fireEvent.click(repair);
     expect(onOpenProduction).toHaveBeenCalledTimes(1);
+  });
+
+  it("discloses review information without applying, acknowledging, or navigating anything", () => {
+    const onRequest = vi.fn();
+    const onConfirm = vi.fn();
+    const onSelect = vi.fn();
+    const onNavigate = vi.fn();
+    const onOpenProduction = vi.fn();
+    const passed: RuleEvaluation = {
+      ...evaluation,
+      rule_id: "PASS-001",
+      status: "PASS",
+      title: "Skivtjocklek",
+      suggestion: undefined,
+    };
+    renderPanel([evaluation, passed], { onRequest, onConfirm, onSelect, onNavigate, onOpenProduction });
+
+    fireEvent.click(within(screen.getByRole("article", { name: evaluation.title })).getByText("Visa detaljer"));
+    fireEvent.click(screen.getByText("Godkända kontroller (1)"));
+    fireEvent.click(within(screen.getByRole("article", { name: passed.title })).getByText("Visa detaljer"));
+
+    for (const callback of [onRequest, onConfirm, onSelect, onNavigate, onOpenProduction]) {
+      expect(callback).not.toHaveBeenCalled();
+    }
+    expect(screen.queryByRole("button", { name: /ignorera|fortsätt ändå|markera.*godkän/i })).not.toBeInTheDocument();
   });
 
   it("states explicitly when a controlled preview has no geometry change", () => {
@@ -323,6 +435,11 @@ describe("ValidationPanel", () => {
     const onSelect = vi.fn();
     renderPanel([{ ...evaluation, affected_part_ids: ["side-left", "side-right", "side-left", ""] }], { onSelect });
 
+    for (const action of screen.getAllByRole("button", { name: /Fokusera delen/ })) {
+      expect(action).not.toBeVisible();
+    }
+    expect(screen.getByText("side-left")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Visa detaljer"));
     const left = screen.getByRole("button", { name: "Fokusera delen side-left i modellen" });
     const right = screen.getByRole("button", { name: "Fokusera delen side-right i modellen" });
     expect(left.tagName).toBe("BUTTON");
@@ -348,9 +465,11 @@ describe("ValidationPanel", () => {
     };
     renderPanel([block], { onNavigate });
 
-    expect(screen.getByText(/Välj och versionslås ett självlåsande torrförband/i)).toBeVisible();
-    expect(screen.queryByRole("button", { name: /Åtgärda problem/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/Välj och versionslås ett självlåsande torrförband/i)).not.toBeVisible();
+    expect(screen.queryByRole("button", { name: /Öppna underlag|Visa förslag|Ändra i Studio/i })).not.toBeInTheDocument();
     expect(onNavigate).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /ignorera|fortsätt ändå/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText("Visa detaljer"));
+    expect(screen.getByText(/Välj och versionslås ett självlåsande torrförband/i)).toBeVisible();
   });
 });

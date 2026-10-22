@@ -52,7 +52,7 @@ const CANVAS_IDENTITY = "validation-ghost-preview-canvas";
 const CANVAS_IDENTITY_ATTRIBUTE = "data-validation-ghost-canvas";
 const RENDER_COMMIT_ATTRIBUTE = "data-custombuild-render-commit";
 const MODEL_ROOT_ATTRIBUTE = "data-custombuild-model-root";
-const FIX_TRIGGER_NAME = "Åtgärda problem för Lodrät lastväg genom underskåpen: Rikta in 5 underskåpsmoduler";
+const FIX_TRIGGER_NAME = "Visa förslag: Återställ parametrisk konstruktion";
 const GHOST_PIXEL_TOLERANCE = 24;
 // The bounded in-flow server-state row intentionally shortens the canvas. A
 // fitted wall library therefore occupies about 67.4% of the cropped analysis
@@ -77,6 +77,9 @@ const sourceSpec = {
   base_cabinet_depth_mm: 320,
   base_cabinet_count: 4,
   reinforcement_mode: "manual",
+  // New edits are admitted automatically. A historical free-part override is
+  // deliberately retained on load, since discarding it requires consent.
+  part_overrides: { "side-right": { depth_mm: 300 } },
   back_panel: true,
   plinth: true,
   stock_width_mm: 5_000,
@@ -491,7 +494,7 @@ async function expectComparisonLegend(legend: Locator): Promise<{
   source: { borderTopColor: string; borderTopStyle: string };
 }> {
   await expect(legend).toHaveCount(1);
-  await expect(legend).toContainText("Regel BASE-SUPPORT-001 · version 1.0.0");
+  await expect(legend).toContainText("Regel PART-CUSTOM-001 · version 1.1.0");
   await expect(legend).toContainText("streckad ockra kontur");
   await expect(legend).toContainText("prickad turkos kontur");
   const source = await readLegendStyle(legend, "Nuvarande");
@@ -582,6 +585,12 @@ test("previews and confirms one real local fix without mutating before consent",
   await trigger.click();
   const previewRegion = page.getByRole("region", { name: "Kontrollera ändringen före tillämpning" });
   await expect(previewRegion).toBeVisible();
+  const exactChanges = previewRegion.locator("summary")
+    .filter({ hasText: /^Exakta ändringsvärden$/ }).locator("..");
+  await expect(exactChanges).not.toHaveAttribute("open", "");
+  await expect(previewRegion.getByText("base_cabinet_count", { exact: true })).not.toBeVisible();
+  await exactChanges.getByText("Exakta ändringsvärden", { exact: true }).click();
+  await expect(exactChanges).toHaveAttribute("open", "");
   await expect(previewRegion.locator("dl > div").filter({ hasText: "base_cabinet_count" }))
     .toContainText(/Före\s*4\s*→\s*Efter\s*5/);
   const previewCheckpoint = await waitForNextViewerCommit(
@@ -684,27 +693,20 @@ test("previews and confirms one real local fix without mutating before consent",
 
   await resetProbe(page);
   await undo.click();
-  const undoCheckpoint = await waitForNextViewerCommit(
-    canvas,
-    confirmCheckpoint.renderCommit,
-    initialCheckpoint.modelRoot,
-  );
-  await expect.poll(async () => draftBaseCabinetCount(await readDraft(page)), {
-    message: "One undo must restore the exact four-module source draft.",
-    timeout: 5_000,
-  }).toBe(4);
-  await expect.poll(async () => (await readProbe(page)).storageMutations.length, {
-    message: "Undo must create exactly one offline autosave.",
-    timeout: 5_000,
-  }).toBe(1);
+  await expect(page.getByRole("alert").filter({ hasText: "Den äldre ändringen kan inte återställas" })).toBeVisible();
+  // History must not re-admit the unsupported legacy design after it is fixed.
+  expect(draftBaseCabinetCount(await readDraft(page))).toBe(5);
+  const undoCheckpoint = await readViewerCheckpoint(canvas);
+  if (!undoCheckpoint) throw new Error("The unchanged model checkpoint disappeared after rejected undo.");
+  expect(undoCheckpoint.modelRoot).toBe(initialCheckpoint.modelRoot);
   await page.waitForTimeout(550);
   const undoProbe = await readProbe(page);
   expect(undoProbe).toEqual({
-    storageMutations: [{ storage: "local", operation: "set", key: DRAFT_KEY }],
+    storageMutations: [],
     historyPushes: 0,
     historyReplaces: 0,
   });
-  await expect(undo).toBeDisabled();
+  await expect(undo).toBeEnabled();
   await expect(front).toHaveAttribute("aria-pressed", "true");
   await expect(partPicker).toHaveValue("side-left");
   expect(page.url()).toBe(baselineUrl);
@@ -721,7 +723,7 @@ test("previews and confirms one real local fix without mutating before consent",
     },
     fixture: {
       id: sourceSpec.design_id,
-      rule_id: "BASE-SUPPORT-001",
+      rule_id: "PART-CUSTOM-001",
       source_base_cabinet_count: 4,
       proposed_base_cabinet_count: 5,
     },
@@ -845,7 +847,7 @@ test("keeps the same real fix truthful and non-interactive in the forced SVG fal
     },
     fixture: {
       id: sourceSpec.design_id,
-      rule_id: "BASE-SUPPORT-001",
+      rule_id: "PART-CUSTOM-001",
       source_base_cabinet_count: 4,
       proposed_base_cabinet_count: 5,
     },

@@ -64,6 +64,16 @@ describe("SelectedPartInspector", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it("restores the committed thickness when the construction rejects the edit", () => {
+    render(<SelectedPartInspector part={part} spec={DEFAULT_DESIGN_SPEC}
+      onChange={() => false} onRemove={vi.fn()} onReset={vi.fn()} onClose={vi.fn()} />);
+    const thickness = screen.getByLabelText("Materialtjocklek, hela möbeln");
+    fireEvent.change(thickness, { target: { value: "17.1" } });
+    fireEvent.blur(thickness);
+    expect(thickness).toHaveValue(DEFAULT_DESIGN_SPEC.measured_thickness_mm);
+    expect(thickness).toHaveAttribute("aria-invalid", "true");
+  });
+
   it("shows the canonical edge-band input only on parts with a bandable front edge", () => {
     const onEdgeBandChange = vi.fn();
     const { rerender } = render(

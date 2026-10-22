@@ -81,11 +81,28 @@
 .componentList {
   display: grid;
   min-height: 0;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 10px;
   padding-right: 2px;
   overflow-y: auto;
   scrollbar-color: #bbb7af transparent;
   scrollbar-width: thin;
+}
+
+.componentCard {
+  display: grid;
+  min-width: 0;
+  min-height: min-content;
+  grid-template-rows: minmax(min-content, 1fr) auto;
+  background: #fefdfb;
+  border: 1px solid #dedbd4;
+  border-radius: 10px;
+}
+
+.componentCard:focus-within {
+  border-color: #6c8276;
+  box-shadow: 0 0 0 2px rgba(46, 92, 68, 0.14);
 }
 
 .componentButton {
@@ -97,8 +114,8 @@
   padding: 10px;
   color: #292a28;
   background: #fefdfb;
-  border: 1px solid #dedbd4;
-  border-radius: 10px;
+  border: 0;
+  border-radius: 9px 9px 0 0;
   cursor: grab;
   text-align: left;
   transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease, background 140ms ease;
@@ -110,7 +127,6 @@
   border-color: #aaa59b;
   outline: none;
   box-shadow: 0 8px 20px rgba(43, 40, 34, 0.08);
-  transform: translateY(-1px);
 }
 
 .componentButton:active { cursor: grabbing; }
@@ -229,6 +245,40 @@
 }
 
 .componentButton:disabled .addIcon { display: none; }
+
+.removeComponentButton {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 5px 8px;
+  color: #704438;
+  background: #faf7f3;
+  border: 0;
+  border-top: 1px solid #e5e0d8;
+  border-radius: 0 0 9px 9px;
+  font-size: 10px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.removeComponentButton:hover:not(:disabled),
+.removeComponentButton:focus-visible {
+  color: #573026;
+  background: #f0e7df;
+}
+
+.removeComponentButton:focus-visible {
+  outline: 2px solid #6c8276;
+  outline-offset: -3px;
+}
+
+.removeComponentButton:disabled {
+  color: #908b83;
+  background: #f8f7f4;
+  cursor: default;
+}
 
 .paletteFootnote {
   margin-top: auto;
@@ -584,7 +634,7 @@
 }
 
 @media (max-width: 760px) {
-  .builderStage { grid-template-rows: 118px minmax(0, 1fr); }
+  .builderStage { grid-template-rows: 150px minmax(0, 1fr); }
   .builderStageLibraryClosed { grid-template-rows: minmax(0, 1fr); }
   .palette { padding: 6px 8px; }
   .paletteHeading { gap: 8px; padding: 0 2px 6px; }
@@ -599,7 +649,7 @@
   }
   .componentButton {
     height: 100%;
-    min-height: 0;
+    min-height: 64px;
     grid-template-columns: 40px minmax(0, 1fr) 14px;
     gap: 6px;
     padding: 6px;
@@ -609,6 +659,7 @@
   .componentCopy strong { font-size: 11px; }
   .componentCopy small { display: none; }
   .componentAction { padding-top: 2px; font-size: 9px; }
+  .removeComponentButton { min-height: 44px; padding: 4px 6px; font-size: 9px; }
   .inspectorActions { grid-template-columns: 1fr; }
 
   .dropSurface :global(.webgl-fallback) {

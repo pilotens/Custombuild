@@ -66,7 +66,7 @@ async function configureWallLibrary(page: Page): Promise<void> {
   const explore = page.locator("section.template-picker[data-presentation='embedded']");
   await expect(explore.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible({ timeout: 30_000 });
   await explore.getByRole("button", { name: /Skapa med Custombuild/ }).click();
-  await explore.getByRole("spinbutton", { name: "Planerad bredd" }).fill("4200");
+  await explore.getByRole("spinbutton", { name: "Planerad bredd" }).fill("2400");
   await explore.getByRole("spinbutton", { name: "Planerad höjd" }).fill("2400");
   await explore.getByRole("spinbutton", { name: "Planerad djup" }).fill("320");
   await explore.getByRole("button", { name: /^Mot en vägg/ }).click();
@@ -164,7 +164,7 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
       : undefined;
     const isInitialWallPreview = !wallPreviewHeld
       && payload?.furniture_type === "wall_library"
-      && payload.width_mm === 4_200
+      && payload.width_mm === 2_400
       && payload.height_mm === 2_400;
     if (isInitialWallPreview) {
       wallPreviewHeld = true;
@@ -179,7 +179,7 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
   await waitForLiveWorkspaceReady(page, wallProject.project.id);
   const initialDraftSave = waitForSuccessfulProjectDraftSave(page, wallProject.project.id, {
     furniture_type: "wall_library",
-    width_mm: 4_200,
+    width_mm: 2_400,
     height_mm: 2_400,
     depth_mm: 320,
   });
@@ -187,12 +187,12 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
     if (candidate.method() !== "POST" || requestPath(candidate.url()) !== "/v1/designs/autofix") return false;
     const payload = candidate.postDataJSON() as Record<string, unknown>;
     return payload.furniture_type === "wall_library"
-      && payload.width_mm === 4_200
+      && payload.width_mm === 2_400
       && payload.height_mm === 2_400;
   });
   await configureWallLibrary(page);
   const wallPreviewRequest = await initialWallPreview;
-  await expect(page.getByRole("spinbutton", { name: "Bredd", exact: true })).toHaveValue("4200");
+  await expect(page.getByRole("spinbutton", { name: "Bredd", exact: true })).toHaveValue("2400");
   await expect(page.getByRole("spinbutton", { name: "Höjd", exact: true })).toHaveValue("2400");
 
   const threeDimensionalView = page.getByRole("button", { name: "3D", exact: true });

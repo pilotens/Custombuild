@@ -21,6 +21,10 @@ import {
   targetBayLayout,
 } from "./design-engine";
 import { DEFAULT_DESIGN_SPEC, type DesignSpec } from "./design-types";
+import { hasPartCustomization } from "./furniture-templates";
+import { defaultSemanticDropRequest, resolveSemanticDrop, resolveSemanticRemoval } from "./semantic-design";
+import { parseLocalDesignSpec } from "./workspace-design-envelope";
+import { normalizeWorkspaceDesignTransaction } from "./workspace-design-transaction";
 
 describe("deterministic bookcase preview", () => {
   it("keeps plain DADO under manual dry-joining review in the local fallback", () => {
@@ -61,6 +65,25 @@ describe("deterministic bookcase preview", () => {
     expect(jointRule?.assumptions).toContain(
       "Ingen hyllbärar-SKU, katalogversion, kapacitet eller borrbild är verifierad.",
     );
+  });
+
+  it.each([
+    { height_mm: 1_599, depth_mm: 400, wall_anchor_required: false, expectedStatus: "PASS" },
+    { height_mm: 1_600, depth_mm: 400, wall_anchor_required: false, expectedStatus: "WARNING" },
+    { height_mm: 1_601, depth_mm: 400, wall_anchor_required: false, expectedStatus: "WARNING" },
+    { height_mm: 1_799, depth_mm: 600, wall_anchor_required: false, expectedStatus: "PASS" },
+    { height_mm: 1_800, depth_mm: 600, wall_anchor_required: false, expectedStatus: "WARNING" },
+    { height_mm: 800, depth_mm: 400, wall_anchor_required: true, expectedStatus: "WARNING" },
+  ])("honours local anchor requirements at their exact boundaries: $height_mm × $depth_mm, required=$wall_anchor_required", ({ expectedStatus, ...dimensions }) => {
+    const spec = { ...DEFAULT_DESIGN_SPEC, ...dimensions, wall_anchor_verified: false };
+    const result = resolveDesign(spec);
+    const rule = result.rule_evaluations.find((candidate) => candidate.rule_id === "STAB-TIP-002");
+
+    expect(rule).toMatchObject({ rule_version: "1.1.0", status: expectedStatus });
+    expect(result.spec.wall_anchor_required).toBe(dimensions.wall_anchor_required);
+    expect(result.spec.wall_anchor_verified).toBe(false);
+    expect(spec.wall_anchor_verified).toBe(false);
+    expect(rule?.suggestion).toBeUndefined();
   });
 
   it("keeps explicit legacy repair opt-in and blocks unresolved base-depth mismatches", () => {
@@ -1018,7 +1041,95 @@ describe("deterministic bookcase preview", () => {
       3,
     );
     expect(result.rule_evaluations.find((rule) => rule.rule_id === "STR-DEF-001")?.status).toBe("BLOCK");
-    expect(result.rule_evaluations.find((rule) => rule.rule_id === "PART-CUSTOM-001")?.status).toBe("WARNING");
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "PART-CUSTOM-001")).toBeUndefined();
+  });
+
+  it.each(["divider", "shelf_row"] as const)("does not classify ordinary palette %s removal or readdition as a freeform edit", (kind) => {
+    const original: DesignSpec = {
+      ...DEFAULT_DESIGN_SPEC,
+      divider_count: 3,
+      reinforcement_mode: "manual",
+    };
+    const removal = resolveSemanticRemoval(original, kind);
+    const removed = normalizeWorkspaceDesignTransaction(original, removal.spec, removal.diff).normalizedSpec;
+    const restoredDraft = parseLocalDesignSpec(JSON.parse(JSON.stringify(removed)));
+    const addition = resolveSemanticDrop(restoredDraft, defaultSemanticDropRequest(restoredDraft, kind));
+    const readded = normalizeWorkspaceDesignTransaction(restoredDraft, addition.spec, addition.diff).normalizedSpec;
+
+    for (const current of [removed, restoredDraft, readded]) {
+      expect(current.topology_baseline).toBeDefined();
+      expect(current.part_overrides).toEqual({});
+      expect(current.removed_part_ids).toEqual([]);
+      expect(hasPartCustomization(current)).toBe(false);
+      const design = resolveDesign(current);
+      const withoutResetHistory = resolveDesign({ ...current, topology_baseline: undefined });
+      expect(design.rule_evaluations.find((rule) => rule.rule_id === "PART-CUSTOM-001")).toBeUndefined();
+      expect(design.rule_evaluations.find((rule) => rule.rule_id === "STR-TOPO-001")?.status).toBe("PASS");
+      expect(design.parts).toEqual(withoutResetHistory.parts);
+      expect(design.rule_evaluations).toEqual(withoutResetHistory.rule_evaluations);
+      expect(design.status).toBe(withoutResetHistory.status);
+    }
+  });
+
+  it.each<Pick<DesignSpec, "part_overrides" | "removed_part_ids">>([
+    { part_overrides: { "side-left": { width_mm: 1_500 } }, removed_part_ids: [] },
+    { part_overrides: {}, removed_part_ids: ["top"] },
+  ])("still blocks explicit board customizations after a parametric removal", (customizations) => {
+    const removal = resolveSemanticRemoval({
+      ...DEFAULT_DESIGN_SPEC,
+      divider_count: 3,
+      reinforcement_mode: "manual",
+      ...customizations,
+    }, "divider");
+    const result = resolveDesign(removal.spec);
+
+    expect(removal.spec.topology_baseline).toBeDefined();
+    expect(hasPartCustomization(removal.spec)).toBe(true);
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "PART-CUSTOM-001")).toMatchObject({
+      rule_version: "1.1.0",
+      status: "BLOCK",
+      affected_part_ids: [...Object.keys(customizations.part_overrides), ...customizations.removed_part_ids],
+    });
+    expect(result.status).toBe("BLOCK");
+    if (customizations.removed_part_ids.length > 0) {
+      expect(result.rule_evaluations.find((rule) => rule.rule_id === "STR-TOPO-001")).toMatchObject({
+        status: "BLOCK",
+        affected_part_ids: ["top"],
+      });
+    }
+  });
+
+  it("retains geometry blockers when reset history is the only customization metadata", () => {
+    const removal = resolveSemanticRemoval({ ...DEFAULT_DESIGN_SPEC, divider_count: 3 }, "divider");
+    const result = resolveDesign({ ...removal.spec, width_mm: 20 });
+
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "PART-CUSTOM-001")).toBeUndefined();
+    expect(result.rule_evaluations.find((rule) => rule.rule_id === "GEO-001")?.status).toBe("BLOCK");
+    expect(result.status).toBe("BLOCK");
+  });
+
+  it("preserves an authoritative server customization decision after a local parametric edit", () => {
+    const removal = resolveSemanticRemoval({ ...DEFAULT_DESIGN_SPEC, divider_count: 3 }, "divider");
+    const local = resolveDesign(removal.spec);
+    const serverRule = {
+      rule_id: "PART-CUSTOM-001",
+      rule_version: "server-1",
+      status: "BLOCK" as const,
+      title: "Serverns konstruktionsgranskning",
+      summary: "Servern kräver kompletterande verifiering av förbandet.",
+      calculation: "Serverns verifiering saknas",
+      assumptions: [],
+      affected_part_ids: ["divider-1"],
+    };
+    const merged = mergeServerDesignWithLocalDfm({
+      ...local,
+      source: "server-preview",
+      status: "BLOCK",
+      rule_evaluations: [...local.rule_evaluations, serverRule],
+    }, local);
+
+    expect(merged.rule_evaluations.filter((rule) => rule.rule_id === "PART-CUSTOM-001")).toEqual([serverRule]);
+    expect(merged.status).toBe("BLOCK");
   });
 
   it("removes a complete shelf row instead of leaving a bay-sized hole", () => {

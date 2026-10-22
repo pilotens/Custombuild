@@ -11,8 +11,8 @@ interface SelectedPartInspectorProps {
   part: ResolvedPart;
   spec: DesignSpec;
   override?: PartOverride;
-  onChange: (patch: PartOverride) => void;
-  onEdgeBandChange?: (edgeBandMm: number) => void;
+  onChange: (patch: PartOverride) => boolean | void;
+  onEdgeBandChange?: (edgeBandMm: number) => boolean | void;
   onShelfOpeningChange?: (openingIndex: number, valueMm: number) => void;
   onRemove: () => void;
   onReset: () => void;
@@ -150,7 +150,7 @@ export function SelectedPartInspector({
       ? "Hela hyllraden tas bort så att inga avbrutna hyllplan eller hål lämnas."
       : topologyRemoval
         ? "Angränsande skåpsmoduler slås ihop och stomdelarna genereras om."
-        : "Delen tas bort direkt. Om den är bärande visas en integritetsvarning i modellen.";
+        : "Delen kan bara tas bort om konstruktionen fortfarande fungerar. Nödvändiga bärande delar behålls.";
 
   return (
     <section className={`${styles.inspector} selected-part-inspector`} aria-label={`Redigera fysisk del ${part.name}`}>

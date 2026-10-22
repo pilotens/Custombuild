@@ -429,12 +429,22 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(validationPanel.locator(".validation-card.validation-block")).toHaveCount(0);
   const screenedStockPasses = validationPanel.locator(".validation-card.validation-pass");
+  const approvedChecks = validationPanel.locator("summary")
+    .filter({ hasText: /^Godkända kontroller \(\d+\)$/ });
+  await expect(approvedChecks).toHaveCount(1);
+  await expect(approvedChecks.locator("..")).not.toHaveAttribute("open", "");
+  await expect(screenedStockPasses.first()).not.toBeVisible();
+  await approvedChecks.click();
+  await expect(approvedChecks.locator("..")).toHaveAttribute("open", "");
   for (const screenedPath of SCREENED_STOCK_PASS_PATHS) {
     const card = screenedStockPasses.filter({
       hasText: `Regel ${screenedPath.ruleId} · version ${screenedPath.ruleVersion}`,
     });
     await expect(card).toHaveCount(1);
-    await expect(card.getByText(screenedPath.title, { exact: true })).toBeVisible();
+    await expect(card).toHaveAccessibleName(screenedPath.title);
+    const technicalDetails = card.locator("details.validation-technical");
+    await technicalDetails.getByText("Visa detaljer", { exact: true }).click();
+    await expect(technicalDetails.getByText(screenedPath.title, { exact: true })).toBeVisible();
   }
   const reviewWarnings = validationPanel.locator(".validation-card.validation-warning");
   await expect(reviewWarnings).toHaveCount(REVIEW_WARNING_PATHS.length);
@@ -443,7 +453,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
       hasText: `Regel ${warningPath.ruleId} · version ${warningPath.ruleVersion}`,
     });
     await expect(warning).toHaveCount(1);
-    await expect(warning.getByText(warningPath.title, { exact: true })).toBeVisible();
+    await expect(warning).toHaveAccessibleName(warningPath.title);
+    const technicalDetails = warning.locator("details.validation-technical");
+    await technicalDetails.getByText("Visa detaljer", { exact: true }).click();
+    await expect(technicalDetails.getByText(warningPath.title, { exact: true })).toBeVisible();
     if (warningPath.ruleId === "DFM-GRAIN-001") {
       await expect(warning.locator(".validation-actions").getByRole("button")).toHaveCount(0);
     }
