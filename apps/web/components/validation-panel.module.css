@@ -1,0 +1,117 @@
+.panel {
+  color: #292a28;
+  background: #fffefa;
+}
+
+.panel .heading {
+  padding: 18px 16px 12px;
+  border-bottom: 0;
+}
+
+.panel .summary {
+  margin: 0 16px;
+  padding: 12px 0;
+  border-top: 1px solid #e4e0d8;
+  border-bottom: 1px solid #e4e0d8;
+  background: transparent;
+}
+
+.content { padding: 16px; }
+.group + .group { margin-top: 22px; }
+.group > h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.group > p { margin: 5px 0 12px; color: #68645c; font-size: 12px; line-height: 1.45; }
+.panel :global(.validation-list) { display: grid; gap: 8px; padding: 0; }
+
+.panel .card {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #dfdcd4;
+  border-left-width: 3px;
+  border-radius: 9px;
+}
+
+.panel .card:global(.validation-block) { border-left-color: #ce5248; }
+.panel .card:global(.validation-warning) { border-left-color: #d59a36; }
+.panel .card:global(.validation-pass) { border-left-color: #44876a; }
+
+.cardHeader { display: flex; align-items: flex-start; gap: 10px; padding: 12px 12px 0; }
+.titleWrap { min-width: 0; flex: 1; }
+.titleWrap strong { display: block; color: #282a26; font-size: 13px; font-weight: 700; line-height: 1.35; }
+.titleWrap small { display: block; margin-top: 4px; color: #68645c; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.cardHeader :global(.status-badge) { flex-shrink: 0; gap: 4px; padding: 4px 6px; font-size: 8px; }
+.cardHeader :global(.status-badge) svg { width: 12px; height: 12px; }
+.cardBody { padding: 0 12px; }
+
+.panel .actions { justify-content: flex-start; gap: 8px; margin: 10px 0 0; padding: 0; }
+.actions:empty { display: none; }
+.panel .actions button { min-height: 40px; width: auto; max-width: 100%; padding: 8px 12px; font-size: 12px; }
+
+.panel .card .details { margin: 0; padding: 0; border-top: 0; }
+.panel .card .details > summary {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  color: #676258;
+  font-size: 11px;
+  font-weight: 550;
+  cursor: pointer;
+  list-style: none;
+}
+.details[open] > summary { margin-top: 8px; border-top: 1px solid #e5e1d9; }
+.details[open] > summary svg { transform: rotate(180deg); }
+.details :global(.validation-technical-body) { padding-bottom: 12px; }
+.details :global(.validation-guidance) { gap: 8px; margin-top: 10px; }
+.details :global(.validation-evidence) { overflow-wrap: anywhere; }
+.details :global(.validation-part-actions) { max-height: 220px; overflow-y: auto; }
+
+.exactChanges { margin-top: 12px; }
+.exactChanges > summary { min-height: 36px; padding: 8px 0; cursor: pointer; font-size: 11px; }
+.exactChanges dl { display: grid; gap: 8px; }
+.exactChanges dl > div { display: grid; gap: 4px; padding-bottom: 8px; border-bottom: 1px solid #ddd; }
+.exactChanges code { overflow-wrap: anywhere; }
+
+.passed { margin-top: 18px; border-top: 1px solid #e4e0d8; }
+.passed > summary {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  color: #35694f;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  list-style: none;
+}
+.passed > summary span { flex: 1; }
+.passed > summary::-webkit-details-marker { display: none; }
+.passed[open] > summary > svg:last-child { transform: rotate(180deg); }
+.panel summary:focus-visible { outline: 2px solid #267456; outline-offset: 2px; border-radius: 4px; }
+.empty { display: flex; align-items: center; gap: 8px; margin: 0; color: #35694f; font-size: 13px; line-height: 1.5; }
+.disclaimer { margin: 14px 0 0; color: #716b61; font-size: 11px; line-height: 1.5; }
+
+.materialPlan { margin-top: 12px; padding: 12px; background: #f4f6f2; border: 1px solid #d8e0d4; border-radius: 8px; }
+.materialPlan strong { font-size: 12px; }
+.materialPlan dl { display: grid; gap: 10px; margin: 10px 0; }
+.materialPlan dt { font-size: 12px; font-weight: 650; }
+.materialPlan dd { margin: 3px 0 0; font-size: 12px; }
+.materialPlan p { margin: 8px 0 0; color: #656257; font-size: 11px; line-height: 1.45; }
+.capability { margin-top: 20px; padding: 14px; background: #fff6e7; border: 1px solid #e8cfaa; border-radius: 9px; }
+.capability h3 { margin: 0; font-size: 13px; }
+.capability p { margin: 7px 0; color: #695538; font-size: 12px; line-height: 1.5; }
+.capability > strong { font-size: 12px; }
+.capability summary { min-height: 44px; padding: 12px 0; font-size: 12px; cursor: pointer; }
+
+@media (max-width: 760px) {
+  .content { padding: 12px; }
+  .cardHeader { flex-wrap: wrap; gap: 6px; }
+  .titleWrap { flex-basis: 100%; }
+  .panel .card .details > summary,
+  .panel .actions button,
+  .exactChanges > summary { min-height: 44px; }
+}

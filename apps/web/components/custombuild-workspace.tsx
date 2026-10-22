@@ -93,6 +93,7 @@ import type { ReferenceImageResult } from "@/lib/reference-image";
 import {
   defaultSemanticDropRequest,
   resolveSemanticDrop,
+  resolveSemanticRemoval,
   type SemanticComponentKind,
   type SemanticDropRequest,
 } from "@/lib/semantic-design";
@@ -111,10 +112,10 @@ import {
   workspaceIntentEnvelopeFromSpec,
 } from "@/lib/workspace-design-envelope";
 import {
-  normalizeWorkspaceDesignTransaction,
   previewWorkspaceDesignTransaction,
   type WorkspaceDesignFieldChange,
 } from "@/lib/workspace-design-transaction";
+import { DesignChangeRejected, planWorkspaceDesignTransaction } from "@/lib/workspace-design-planner";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { DEFAULT_WORKSPACE_UI_STATE, type WorkspaceUiState } from "@/lib/workspace-ui-state";
 import {
@@ -311,7 +312,7 @@ function isFurnitureTemplateId(value: unknown): value is FurnitureTemplateId {
 }
 
 function normalizedDefaultSpec(): DesignSpec {
-  return balanceDesignSymmetry(adaptStructuralSupports(DEFAULT_DESIGN_SPEC).spec);
+  return planWorkspaceDesignTransaction(DEFAULT_DESIGN_SPEC, DEFAULT_DESIGN_SPEC).normalizedSpec;
 }
 
 function normalizedProjectDefaultSpec(projectId: string): DesignSpec {
@@ -328,6 +329,14 @@ function normalizeStoredWorkspace(value: unknown): { spec: DesignSpec; diff: Cha
   const migrated = migrateLegacyStructuralRemovals(bounded);
   const adapted = adaptStructuralSupports(migrated.spec);
   const normalized = parseLocalDesignSpec(balanceDesignSymmetry(adapted.spec));
+  try {
+    const planned = planWorkspaceDesignTransaction(normalized, normalized, [...migrated.diff, ...adapted.diff]);
+    return { spec: planned.normalizedSpec, diff: planned.changeDiff };
+  } catch (error) {
+    // Preserve unrepairable historical drafts for inspection; never replace or
+    // discard saved geometry. New edits still have to pass the planner.
+    if (!(error instanceof DesignChangeRejected)) throw error;
+  }
   return {
     spec: normalized,
     diff: [...migrated.diff, ...adapted.diff],
@@ -469,6 +478,17 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     if (!partId) setIsolateSelection(false);
   }, []);
 
+  const syncFurnitureTemplate = useCallback((furnitureType: DesignSpec["furniture_type"]) => {
+    const compatibleTemplate = compatibleFurnitureTemplateId(selectedTemplateId, furnitureType);
+    if (compatibleTemplate === selectedTemplateId) return;
+    setSelectedTemplateId(compatibleTemplate);
+    setPlanningBrief((current) => ({
+      ...current,
+      startMode: "template",
+      selectedTemplateId: compatibleTemplate,
+    }));
+  }, [selectedTemplateId]);
+
   const currentUiState = useCallback((): WorkspaceUiState => ({
     ...DEFAULT_WORKSPACE_UI_STATE,
     mode: workspaceStage,
@@ -562,6 +582,17 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     specRef.current = spec;
   }, [spec]);
 
+  const canRestoreHistory = useCallback((candidate: DesignSpec) => {
+    try {
+      const checked = planWorkspaceDesignTransaction(candidate, candidate);
+      if (workspaceSpecSignature(checked.normalizedSpec) === workspaceSpecSignature(candidate)) return true;
+    } catch (error) {
+      if (!(error instanceof DesignHydrationError)) throw error;
+    }
+    setSemanticNotice({ title: "Den äldre ändringen kan inte återställas", detail: "Den klarar inte de aktuella konstruktionsgränserna. Den fungerande modellen behålls.", error: true });
+    return false;
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
@@ -572,33 +603,39 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       if (key === "z" && !event.shiftKey && past.length > 0) {
         event.preventDefault();
         const previous = past.at(-1);
-        if (!previous) return;
+        if (!previous || !canRestoreHistory(previous)) return;
+        const current = specRef.current;
         setPast((items) => items.slice(0, -1));
-        setFuture((items) => [specRef.current, ...items].slice(0, 50));
+        setFuture((items) => [current, ...items].slice(0, 50));
         specRef.current = previous;
         setSpec(previous);
+        syncFurnitureTemplate(previous.furniture_type);
         setChangeDiff([]);
         setPartEditNotice(undefined);
+        setSemanticNotice(undefined);
         setSaveState("saving");
         if (serverAvailable) setApiState("syncing");
       }
       if ((key === "y" || (key === "z" && event.shiftKey)) && future.length > 0) {
         event.preventDefault();
         const next = future[0];
-        if (!next) return;
+        if (!next || !canRestoreHistory(next)) return;
+        const current = specRef.current;
         setFuture((items) => items.slice(1));
-        setPast((items) => [...items, specRef.current].slice(-50));
+        setPast((items) => [...items, current].slice(-50));
         specRef.current = next;
         setSpec(next);
+        syncFurnitureTemplate(next.furniture_type);
         setChangeDiff([]);
         setPartEditNotice(undefined);
+        setSemanticNotice(undefined);
         setSaveState("saving");
         if (serverAvailable) setApiState("syncing");
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [future, past, serverAvailable]);
+  }, [canRestoreHistory, future, past, serverAvailable, syncFurnitureTemplate]);
 
   const applyHydratedWorkspace = useCallback((
     storedSpec: unknown,
@@ -1166,8 +1203,36 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     ? design.parts.find((part) => part.part_id === effectiveSelectedPartId)
     : undefined;
 
+  const removalConstraints = useMemo(() => {
+    const constraints: Partial<Record<SemanticComponentKind, string>> = {};
+    if (!hydrated || hydrationBlocker || workspaceStage !== "studio" || !workspacePanels.componentLibraryOpen) return constraints;
+    for (const kind of ["shelf_row", "divider", "base_cabinet", "back_panel", "plinth"] as const) {
+      try {
+        const removal = resolveSemanticRemoval(spec, kind, effectiveSelectedPartId);
+        const planned = planWorkspaceDesignTransaction(spec, removal.spec);
+        if (kind === "divider" && planned.normalizedSpec.divider_count > removal.spec.divider_count) {
+          constraints[kind] = "Behövs som bärande stöd.";
+        }
+      } catch (error) {
+        if (error instanceof DesignHydrationError) {
+          constraints[kind] = kind === "back_panel" ? "Behövs för sidostabiliteten."
+            : kind === "divider" ? "Behövs som bärande stöd." : "Behövs i den aktuella konstruktionen.";
+        }
+      }
+    }
+    return constraints;
+  }, [effectiveSelectedPartId, hydrated, hydrationBlocker, spec, workspacePanels.componentLibraryOpen, workspaceStage]);
+
   const replaceSpec = useCallback((next: DesignSpec, diff: ChangeDiff[] = []): boolean => {
-    const transaction = normalizeWorkspaceDesignTransaction(spec, next, diff);
+    let transaction;
+    try {
+      transaction = planWorkspaceDesignTransaction(spec, next, diff);
+    } catch (error) {
+      if (!(error instanceof DesignHydrationError)) throw error;
+      setPartEditNotice(undefined);
+      setSemanticNotice({ title: "Ändringen stoppades", detail: error.message, error: true });
+      return false;
+    }
     const normalized = transaction.normalizedSpec;
     if (transaction.changedFields.length === 0) return false;
     specRef.current = normalized;
@@ -1175,6 +1240,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     setFuture([]);
     setSpec(normalized);
     setChangeDiff(transaction.changeDiff);
+    setSemanticNotice(undefined);
     setSaveState("saving");
     if (serverAvailable) {
       setApiState("syncing");
@@ -1185,8 +1251,14 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
 
   const updateSpec = useCallback((patch: Partial<DesignSpec>, reason?: string) => {
     try {
-      replaceSpec(parseLocalDesignPatch(spec, patch), []);
-      if (reason) setPartEditNotice(reason);
+      const candidate = parseLocalDesignPatch(spec, patch);
+      if (workspaceSpecSignature(candidate) === workspaceSpecSignature(spec)) {
+        setSemanticNotice(undefined);
+        return true;
+      }
+      const applied = replaceSpec(candidate, []);
+      if (reason && applied) setPartEditNotice(reason);
+      return applied;
     } catch (error) {
       if (!(error instanceof DesignHydrationError)) throw error;
       setPartEditNotice(undefined);
@@ -1195,6 +1267,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         detail: error.message,
         error: true,
       });
+      return false;
     }
   }, [replaceSpec, spec]);
 
@@ -1204,7 +1277,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       if (!fix) return;
       const candidate = parseLocalDesignPatch(spec, fix.patch);
       const requestedDiff = requestedValidationDiff(spec, fix.patch, fix.reason);
-      const transaction = previewWorkspaceDesignTransaction(spec, candidate, requestedDiff);
+      const planned = planWorkspaceDesignTransaction(spec, candidate, requestedDiff);
+      const transaction = previewWorkspaceDesignTransaction(spec, planned.normalizedSpec, planned.changeDiff);
       const token = `${evaluation.rule_id}:${evaluation.rule_version}:${++validationPreviewSequenceRef.current}`;
       setValidationFixPreview({
         token,
@@ -1297,24 +1371,12 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const applySemanticDrop = useCallback((request: SemanticDropRequest) => {
     try {
       const outcome = resolveSemanticDrop(spec, request);
-      replaceSpec(outcome.spec, outcome.diff);
-      if (outcome.spec.furniture_type !== spec.furniture_type) {
-        const compatibleTemplate = compatibleFurnitureTemplateId(
-          selectedTemplateId,
-          outcome.spec.furniture_type,
-        );
-        setSelectedTemplateId(compatibleTemplate);
-        setPlanningBrief((current) => ({
-          ...current,
-          startMode: "template",
-          selectedTemplateId: compatibleTemplate,
-        }));
-      }
+      if (!replaceSpec(outcome.spec, outcome.diff)) return;
+      syncFurnitureTemplate(outcome.spec.furniture_type);
       setSemanticNotice({ title: outcome.message, detail: outcome.detail });
       setSemanticDragKind(undefined);
+      setPartEditNotice(undefined);
       changeSelectedPart(undefined);
-      if (request.kind === "shelf_row" || request.kind === "divider" || request.kind === "base_cabinet") {
-      }
     } catch (error) {
       setSemanticNotice({
         title: "Delen kunde inte placeras",
@@ -1323,12 +1385,33 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       });
       setSemanticDragKind(undefined);
     }
-  }, [changeSelectedPart, replaceSpec, selectedTemplateId, spec]);
+  }, [changeSelectedPart, replaceSpec, spec, syncFurnitureTemplate]);
+
+  const removeSemanticComponent = useCallback((kind: SemanticComponentKind) => {
+    try {
+      const outcome = resolveSemanticRemoval(spec, kind, effectiveSelectedPartId);
+      if (!replaceSpec(outcome.spec, outcome.diff)) return;
+      syncFurnitureTemplate(outcome.spec.furniture_type);
+      setSemanticNotice({ title: outcome.message, detail: outcome.detail });
+      setSemanticDragKind(undefined);
+      setPartEditNotice(undefined);
+      changeSelectedPart(undefined);
+    } catch (error) {
+      setSemanticNotice({
+        title: "Delen kunde inte tas bort",
+        detail: error instanceof Error ? error.message : "Försök att markera delen i modellen.",
+        error: true,
+      });
+      setSemanticDragKind(undefined);
+    }
+  }, [changeSelectedPart, effectiveSelectedPartId, replaceSpec, spec, syncFurnitureTemplate]);
 
   const updateSelectedPart = useCallback((partId: string, patch: PartOverride) => {
     const edited = editPartParametrically(spec, partId, patch);
     setPartEditNotice(edited.notice);
-    if (edited.supported) replaceSpec(edited.spec);
+    if (!edited.supported) return false;
+    if (workspaceSpecSignature(edited.spec) === workspaceSpecSignature(spec)) return true;
+    return replaceSpec(edited.spec);
   }, [replaceSpec, spec]);
 
   const resetSelectedPart = useCallback((partId: string) => {
@@ -1360,39 +1443,43 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
 
   const removeSelectedPart = useCallback((partId: string) => {
     const removal = removePartFromDesign(spec, partId);
+    if (!replaceSpec(removal.spec, removal.diff)) return;
     setPartEditNotice(removal.notice);
-    replaceSpec(removal.spec, removal.diff);
     changeSelectedPart(undefined);
   }, [changeSelectedPart, replaceSpec, spec]);
 
   const resetAllPartCustomizations = useCallback(() => {
-    replaceSpec(restorePartCustomizations(spec));
+    if (!replaceSpec(restorePartCustomizations(spec))) return;
     setPartEditNotice("Alla individuella del- och indelningsändringar återställdes.");
     changeSelectedPart(undefined);
   }, [changeSelectedPart, replaceSpec, spec]);
 
   const undo = () => {
     const previous = past.at(-1);
-    if (!previous) return;
+    if (!previous || !canRestoreHistory(previous)) return;
     setPast((items) => items.slice(0, -1));
     setFuture((items) => [spec, ...items].slice(0, 50));
     specRef.current = previous;
     setSpec(previous);
+    syncFurnitureTemplate(previous.furniture_type);
     setChangeDiff([]);
     setPartEditNotice(undefined);
+    setSemanticNotice(undefined);
     setSaveState("saving");
     if (serverAvailable) setApiState("syncing");
   };
 
   const redo = () => {
     const next = future[0];
-    if (!next) return;
+    if (!next || !canRestoreHistory(next)) return;
     setFuture((items) => items.slice(1));
     setPast((items) => [...items, spec].slice(-50));
     specRef.current = next;
     setSpec(next);
+    syncFurnitureTemplate(next.furniture_type);
     setChangeDiff([]);
     setPartEditNotice(undefined);
+    setSemanticNotice(undefined);
     setSaveState("saving");
     if (serverAvailable) setApiState("syncing");
   };
@@ -1425,6 +1512,18 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, [persistLocalWorkspace, selectedTemplateId, workspaceSelected]);
 
   const selectFurnitureTemplate = useCallback((template: FurnitureTemplate, brief: FurniturePlanningBrief) => {
+    if (template.designUnavailableReason) throw new Error(template.designUnavailableReason);
+    const candidate = {
+      ...DEFAULT_DESIGN_SPEC,
+      design_id: specRef.current.design_id,
+      revision: specRef.current.revision,
+      ...template.patch,
+    };
+    // Template quantities are starting estimates, not an explicit inventory
+    // edit or a request to remove supports from the previous furniture.
+    const planned = planWorkspaceDesignTransaction(candidate, candidate);
+    replaceSpec(planned.normalizedSpec, planned.changeDiff);
+    setSemanticNotice(undefined);
     setPlanningBrief(brief);
     setWorkspaceSelected(true);
     setSelectedTemplateId(template.id);
@@ -1432,16 +1531,17 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     changeWorkspaceStage("studio", { allowWithoutStartPoint: true });
     setCameraResetNonce((value) => value + 1);
     setPartEditNotice(undefined);
-    replaceSpec({
-      ...DEFAULT_DESIGN_SPEC,
-      design_id: specRef.current.design_id,
-      revision: specRef.current.revision,
-      ...template.patch,
-    }, []);
     persistLocalWorkspace(specRef.current, template.id, true, brief);
   }, [changeWorkspaceStage, persistLocalWorkspace, replaceSpec]);
 
   const applyReferenceImage = useCallback((result: ReferenceImageResult) => {
+    if (!replaceSpec({
+      ...DEFAULT_DESIGN_SPEC,
+      design_id: specRef.current.design_id,
+      revision: specRef.current.revision,
+      ...result.patch,
+      reference_image_import: result.metadata,
+    }, [])) return;
     setWorkspaceSelected(true);
     const templateId: FurnitureTemplateId = result.patch.furniture_type === "wall_library" ? "wall-library" : "shelving";
     setSelectedTemplateId(templateId);
@@ -1449,13 +1549,6 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     changeWorkspaceStage("studio", { allowWithoutStartPoint: true });
     setCameraResetNonce((value) => value + 1);
     setPartEditNotice(undefined);
-    replaceSpec({
-      ...DEFAULT_DESIGN_SPEC,
-      design_id: specRef.current.design_id,
-      revision: specRef.current.revision,
-      ...result.patch,
-      reference_image_import: result.metadata,
-    }, []);
     persistLocalWorkspace(specRef.current, templateId, true, {
       ...planningBrief,
       startMode: "reference",
@@ -1498,11 +1591,12 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const resizeDimension = useCallback((patch: Partial<Pick<DesignSpec, "width_mm" | "height_mm" | "depth_mm">>) => {
     try {
       const boundedNext = parseLocalDesignPatch(specRef.current, patch);
-      const adapted = adaptStructuralSupports(balanceDesignSymmetry(boundedNext));
-      const normalized = parseLocalDesignSpec(balanceDesignSymmetry(adapted.spec));
+      const transaction = planWorkspaceDesignTransaction(specRef.current, boundedNext);
+      const normalized = transaction.normalizedSpec;
       specRef.current = normalized;
       setSpec(normalized);
-      setChangeDiff(adapted.diff);
+      setChangeDiff(transaction.changeDiff);
+      setSemanticNotice(undefined);
       setSaveState("saving");
       if (serverAvailable) setApiState("syncing");
     } catch (error) {
@@ -1532,12 +1626,20 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
 
   const movePart = useCallback((partId: string, positionZMm: number) => {
     const moved = movePartVertically(specRef.current, partId, positionZMm);
-    const adapted = adaptStructuralSupports(balanceDesignSymmetry(moved.spec));
-    const normalized = balanceDesignSymmetry(adapted.spec);
+    let transaction;
+    try {
+      transaction = planWorkspaceDesignTransaction(specRef.current, moved.spec);
+    } catch (error) {
+      if (!(error instanceof DesignHydrationError)) throw error;
+      setSemanticNotice({ title: "Flytten stoppades", detail: error.message, error: true });
+      return;
+    }
+    const normalized = transaction.normalizedSpec;
     specRef.current = normalized;
     partMoveNoticeRef.current = moved.notice;
     setSpec(normalized);
-    setChangeDiff(adapted.diff);
+    setChangeDiff(transaction.changeDiff);
+    setSemanticNotice(undefined);
     setSaveState("saving");
     if (serverAvailable) setApiState("syncing");
   }, [serverAvailable]);
@@ -1545,12 +1647,20 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const movePartHorizontally = useCallback((partId: string, positionXMm: number) => {
     const moved = editPartParametrically(specRef.current, partId, { position_x_mm: positionXMm });
     if (!moved.supported) return;
-    const adapted = adaptStructuralSupports(balanceDesignSymmetry(moved.spec));
-    const normalized = balanceDesignSymmetry(adapted.spec);
+    let transaction;
+    try {
+      transaction = planWorkspaceDesignTransaction(specRef.current, moved.spec);
+    } catch (error) {
+      if (!(error instanceof DesignHydrationError)) throw error;
+      setSemanticNotice({ title: "Flytten stoppades", detail: error.message, error: true });
+      return;
+    }
+    const normalized = transaction.normalizedSpec;
     specRef.current = normalized;
     partMoveNoticeRef.current = moved.notice;
     setSpec(normalized);
-    setChangeDiff(adapted.diff);
+    setChangeDiff(transaction.changeDiff);
+    setSemanticNotice(undefined);
     setSaveState("saving");
     if (serverAvailable) setApiState("syncing");
   }, [serverAvailable]);
@@ -2188,7 +2298,9 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
               {workspaceStage === "studio" && workspacePanels.componentLibraryOpen ? (
                 <ComponentPalette
                   spec={spec}
+                  removalConstraints={removalConstraints}
                   onInsert={(kind) => applySemanticDrop(defaultSemanticDropRequest(spec, kind))}
+                  onRemove={removeSemanticComponent}
                   onDragStartKind={setSemanticDragKind}
                   onDragEnd={() => setSemanticDragKind(undefined)}
                 />
@@ -2330,6 +2442,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                   evaluations={design.rule_evaluations}
                   status={design.status}
                   spec={spec}
+                  parts={design.parts}
+                  source={design.source}
                   activePreview={activeValidationFixPreview}
                   onRequestPreview={requestValidationFixPreview}
                   onCancelPreview={cancelValidationFixPreview}

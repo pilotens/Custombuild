@@ -294,6 +294,8 @@ function TemplateCard({
       type="button"
       className={classes(styles.templateCard, "template-card", selected && styles.templateCardSelected)}
       aria-pressed={selected}
+      disabled={Boolean(template.designUnavailableReason)}
+      title={template.designUnavailableReason}
       onClick={onChoose}
     >
       <InspirationVisual template={template} src={TEMPLATE_IMAGE_PATHS[template.id]} />
@@ -309,6 +311,7 @@ function TemplateCard({
           <span>{template.feature}</span>
         </span>
         {template.limitation ? <small className={styles.limitation}>{template.limitation}</small> : null}
+        {template.designUnavailableReason ? <small>{template.designUnavailableReason}</small> : null}
       </span>
     </button>
   );
@@ -405,6 +408,9 @@ function OpenTemplatePicker({
     setBrief(next);
     onBriefChange?.(next);
     try {
+      if (furnitureTemplate(templateId).designUnavailableReason) {
+        throw new Error(furnitureTemplate(templateId).designUnavailableReason);
+      }
       onSelect(templateWithPlanningBrief(furnitureTemplate(templateId), next), next);
       setPlanningError(undefined);
     } catch (error) {
@@ -419,7 +425,12 @@ function OpenTemplatePicker({
 
   const startFromScratch = () => {
     const next = updateBrief({ startMode: "scratch", selectedTemplateId: "shelving" });
-    onSelect(templateWithPlanningBrief(furnitureTemplate("shelving"), next), next);
+    try {
+      onSelect(templateWithPlanningBrief(furnitureTemplate("shelving"), next), next);
+      setPlanningError(undefined);
+    } catch (error) {
+      setPlanningError(error instanceof Error ? error.message : "Stommen kan inte skapas med de valda måtten.");
+    }
   };
 
   const showSuggestions = () => {
@@ -531,7 +542,7 @@ function OpenTemplatePicker({
           </div>
           <footer className={styles.pageFooter}>
             <p><Check aria-hidden="true" size={17} /> Inget produktionsunderlag skapas från inspirationsbilden. Studio använder alltid den verkliga modellen.</p>
-            <button type="button" className={styles.primaryButton} onClick={() => openInStudio()}>
+            <button type="button" className={styles.primaryButton} disabled={Boolean(selectedTemplate.designUnavailableReason)} onClick={() => openInStudio()}>
               Öppna {selectedTemplate.name} i Studio <ArrowRight aria-hidden="true" size={18} />
             </button>
           </footer>
@@ -632,15 +643,16 @@ function OpenTemplatePicker({
                         type="button"
                         className={classes(styles.suggestionCard, selectedTemplateId === template.id && styles.suggestionCardSelected)}
                         aria-pressed={selectedTemplateId === template.id}
+                        disabled={Boolean(template.designUnavailableReason)}
                         onClick={() => chooseDesign(template.id)}
                       >
                         <span className={styles.suggestionNumber}>{String(index + 1).padStart(2, "0")}</span>
-                        <span><strong>{template.name}</strong><small>{template.description}</small></span>
+                        <span><strong>{template.name}</strong><small>{template.designUnavailableReason ?? template.description}</small></span>
                         {selectedTemplateId === template.id ? <Check aria-label="Vald" size={17} /> : <ArrowRight aria-hidden="true" size={17} />}
                       </button>
                     ))}
                   </div>
-                  <button type="button" className={styles.primaryButton} onClick={() => openInStudio()}>
+                  <button type="button" className={styles.primaryButton} disabled={Boolean(selectedTemplate.designUnavailableReason)} onClick={() => openInStudio()}>
                     Öppna vald modell i Studio <ArrowRight aria-hidden="true" size={18} />
                   </button>
                   <p className={styles.truthNote}>Förslaget är en startpunkt. Den parametriska motorn och konstruktionskontrollen är fortsatt auktoritativa.</p>

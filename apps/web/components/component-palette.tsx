@@ -6,6 +6,7 @@ import {
   Archive,
   GripVertical,
   Layers3,
+  Minus,
   PanelBottom,
   PanelTop,
   Plus,
@@ -26,28 +27,38 @@ const icons = {
   plinth: PanelBottom,
 } satisfies Record<SemanticComponentKind, typeof BetweenHorizontalStart>;
 
-function componentState(spec: DesignSpec, kind: SemanticComponentKind): { count: string; disabled: boolean } {
-  if (kind === "shelf_row") return { count: `${spec.shelf_count} st`, disabled: spec.shelf_count >= 40 };
-  if (kind === "divider") return { count: `${spec.divider_count} st`, disabled: spec.divider_count >= 16 };
-  if (kind === "base_cabinet") return { count: spec.base_cabinet_count > 0 ? `${spec.base_cabinet_count} st` : "", disabled: spec.base_cabinet_count > 0 };
-  if (kind === "back_panel") return { count: spec.back_panel ? "Monterat" : "", disabled: spec.back_panel };
-  return { count: spec.plinth ? "Monterad" : "", disabled: spec.plinth };
+function componentState(spec: DesignSpec, kind: SemanticComponentKind): { count: string; disabled: boolean; removable: boolean } {
+  if (kind === "shelf_row") return { count: `${spec.shelf_count} st`, disabled: spec.shelf_count >= 40, removable: spec.shelf_count > 0 };
+  if (kind === "divider") return { count: `${spec.divider_count} st`, disabled: spec.divider_count >= 16, removable: spec.divider_count > 0 };
+  if (kind === "base_cabinet") return { count: spec.base_cabinet_count > 0 ? `${spec.base_cabinet_count} st` : "", disabled: spec.base_cabinet_count > 0, removable: spec.base_cabinet_count > 0 };
+  if (kind === "back_panel") return { count: spec.back_panel ? "Monterat" : "", disabled: spec.back_panel, removable: spec.back_panel };
+  return { count: spec.plinth ? "Monterad" : "", disabled: spec.plinth, removable: spec.plinth };
 }
+
+const removalLabels: Record<SemanticComponentKind, string> = {
+  shelf_row: "Ta bort hyllplan",
+  divider: "Ta bort avdelare",
+  base_cabinet: "Ta bort underskåpsrad",
+  back_panel: "Ta bort bakstycke",
+  plinth: "Ta bort sockel",
+};
 
 interface ComponentPaletteProps {
   spec: DesignSpec;
+  removalConstraints?: Partial<Record<SemanticComponentKind, string>>;
   onInsert: (kind: SemanticComponentKind) => void;
+  onRemove: (kind: SemanticComponentKind) => void;
   onDragStartKind: (kind: SemanticComponentKind) => void;
   onDragEnd: () => void;
 }
 
-export function ComponentPalette({ spec, onInsert, onDragStartKind, onDragEnd }: ComponentPaletteProps) {
+export function ComponentPalette({ spec, removalConstraints, onInsert, onRemove, onDragStartKind, onDragEnd }: ComponentPaletteProps) {
   return (
     <section className={styles.palette} aria-labelledby="component-palette-heading">
       <header className={styles.paletteHeading}>
         <span className={styles.paletteEyebrow}>Komponentbibliotek</span>
-        <h2 id="component-palette-heading">Lägg till delar</h2>
-        <p>Välj en del eller dra den till modellen.</p>
+        <h2 id="component-palette-heading">Hantera delar</h2>
+        <p>Lägg till eller ta bort delar. Du kan också dra en del till modellen.</p>
       </header>
       <div className={styles.componentGroupHeading}>
         <h3>Stomme och inredning</h3>
@@ -57,39 +68,54 @@ export function ComponentPalette({ spec, onInsert, onDragStartKind, onDragEnd }:
         {SEMANTIC_COMPONENTS.map((component) => {
           const Icon = icons[component.kind];
           const state = componentState(spec, component.kind);
+          const removalConstraint = removalConstraints?.[component.kind];
           return (
-            <button
-              key={component.kind}
-              type="button"
-              className={styles.componentButton}
-              draggable={!state.disabled}
-              disabled={state.disabled}
-              onDragStart={(event: DragEvent<HTMLButtonElement>) => {
-                writeSemanticDragPayload(event.dataTransfer, component.kind);
-                onDragStartKind(component.kind);
-              }}
-              onDragEnd={onDragEnd}
-              onClick={() => onInsert(component.kind)}
-            >
-              <span className={styles.componentThumbnail} data-component-kind={component.kind}>
-                <Icon aria-hidden="true" size={27} strokeWidth={1.45} />
-              </span>
-              <span className={styles.componentCopy}>
-                <span className={styles.componentMeta}>
-                  <span>Parametrisk</span>
-                  {state.count ? <em>{state.count}</em> : null}
+            <div key={component.kind} className={styles.componentCard} role="group" aria-label={component.label}>
+              <button
+                type="button"
+                className={styles.componentButton}
+                draggable={!state.disabled}
+                disabled={state.disabled}
+                onDragStart={(event: DragEvent<HTMLButtonElement>) => {
+                  writeSemanticDragPayload(event.dataTransfer, component.kind);
+                  onDragStartKind(component.kind);
+                }}
+                onDragEnd={onDragEnd}
+                onClick={() => onInsert(component.kind)}
+              >
+                <span className={styles.componentThumbnail} data-component-kind={component.kind}>
+                  <Icon aria-hidden="true" size={27} strokeWidth={1.45} />
                 </span>
-                <strong>{component.label}</strong>
-                <small>{component.description}</small>
-                <span className={styles.componentAction}>
-                  {state.disabled ? "Tillagd" : "Lägg till"}
+                <span className={styles.componentCopy}>
+                  <span className={styles.componentMeta}>
+                    <span>Parametrisk</span>
+                    {state.count ? <em>{state.count}</em> : null}
+                  </span>
+                  <strong>{component.label}</strong>
+                  <small>{component.description}</small>
+                  <span className={styles.componentAction}>
+                    {state.disabled ? (component.kind === "shelf_row" || component.kind === "divider" ? "Max antal" : "Tillagd") : "Lägg till"}
+                  </span>
                 </span>
-              </span>
-              <span className={styles.componentControl} aria-hidden="true">
-                {state.disabled ? null : <GripVertical size={14} />}
-                <span className={styles.addIcon}><Plus size={15} /></span>
-              </span>
-            </button>
+                <span className={styles.componentControl} aria-hidden="true">
+                  {state.disabled ? null : <GripVertical size={14} />}
+                  <span className={styles.addIcon}><Plus size={15} /></span>
+                </span>
+              </button>
+              <button
+                type="button"
+                className={styles.removeComponentButton}
+                aria-label={removalLabels[component.kind]}
+                disabled={!state.removable || Boolean(removalConstraint)}
+                title={removalConstraint ?? (component.kind === "shelf_row" || component.kind === "divider"
+                  ? "Tar bort den markerade delen av denna typ, annars den sista. Kan ångras."
+                  : `${removalLabels[component.kind]}. Kan ångras.`)}
+                onClick={() => onRemove(component.kind)}
+              >
+                <Minus aria-hidden="true" size={14} />
+                {removalConstraint ? "Behövs i konstruktionen" : component.kind === "base_cabinet" ? "Ta bort raden" : "Ta bort"}
+              </button>
+            </div>
           );
         })}
       </div>

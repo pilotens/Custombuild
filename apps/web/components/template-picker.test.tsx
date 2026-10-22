@@ -54,7 +54,7 @@ describe("TemplatePicker Explore entry", () => {
         productionLevel: "concept",
         patch: expect.objectContaining({
           furniture_type: "wall_library",
-          width_mm: 4_200,
+          width_mm: 2_400,
           height_mm: 2_400,
           depth_mm: 320,
         }),
@@ -263,6 +263,24 @@ describe("TemplatePicker Explore entry", () => {
       }),
       expect.objectContaining({ startMode: "scratch", selectedTemplateId: "shelving" }),
     );
+  });
+
+  it("does not offer an unbraced room divider as an editable start model", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", { name: /Välj en design/ }));
+    const divider = screen.getByRole("button", { name: /Rumsavdelare/ });
+    expect(divider).toBeDisabled();
+    expect(divider).toHaveTextContent(/när alternativ stagning stöds/);
+    fireEvent.click(divider);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows an admission error without crashing or closing the scratch entry", () => {
+    renderPicker({ onSelect: () => { throw new Error("Måtten ryms inte i skivformatet."); } });
+    fireEvent.click(screen.getByRole("button", { name: /Börja tomt/ }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Måtten ryms inte i skivformatet.");
+    expect(screen.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible();
   });
 
   it("renders embedded Explore as a regular section without modal behavior", () => {

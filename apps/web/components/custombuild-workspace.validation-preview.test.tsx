@@ -286,12 +286,17 @@ describe("workspace validation ghost transaction", () => {
   it("previews normalization without mutation, history or API calls, then cancels and invalidates on stage change", async () => {
     const viewer = await renderWorkspace();
     const undo = screen.getByRole("button", { name: "Ångra" });
-    const trigger = await screen.findByRole("button", { name: /Förhandsgranska: Räkna om konstruktionen/i });
+    const trigger = await screen.findByRole("button", { name: /Visa förslag: Räkna om konstruktionen/i });
     expect(undo).toBeDisabled();
 
     fireEvent.click(trigger);
     const preview = await screen.findByRole("region", { name: "Kontrollera ändringen före tillämpning" });
     expect(transactionMock.preview).toHaveBeenCalledTimes(1);
+    const exactChanges = within(preview).getByText("Exakta ändringsvärden").closest("details");
+    expect(exactChanges).not.toHaveAttribute("open");
+    expect(within(preview).getByText("divider_count")).not.toBeVisible();
+    fireEvent.click(within(preview).getByText("Exakta ändringsvärden"));
+    expect(exactChanges).toHaveAttribute("open");
     expect(within(preview).getByText("divider_count")).toBeVisible();
     expect(within(preview).getByText("0", { selector: "code" })).toBeVisible();
     expect(within(preview).getByText("4", { selector: "code" })).toBeVisible();
@@ -318,7 +323,7 @@ describe("workspace validation ghost transaction", () => {
   it("commits the exact stored normalized spec once and creates exactly one undo step", async () => {
     const viewer = await renderWorkspace();
     const undo = screen.getByRole("button", { name: "Ångra" });
-    fireEvent.click(await screen.findByRole("button", { name: /Förhandsgranska: Räkna om konstruktionen/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Visa förslag: Räkna om konstruktionen/i }));
     const confirm = await screen.findByRole("button", { name: "Bekräfta och tillämpa" });
 
     fireEvent.click(confirm);
@@ -337,7 +342,7 @@ describe("workspace validation ghost transaction", () => {
 
   it("invalidates an active preview when any evaluation evidence changes", async () => {
     const viewer = await renderWorkspace();
-    fireEvent.click(await screen.findByRole("button", { name: /Förhandsgranska:/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Visa förslag:/i }));
     expect(viewer).toHaveAttribute("data-comparison-active", "true");
     expect(evaluationMock.current).toBeDefined();
 
@@ -360,7 +365,7 @@ describe("workspace validation ghost transaction", () => {
     expect(viewer).toHaveAttribute("data-bay-sizing-mode", "count");
     expect(viewer).toHaveAttribute("data-target-bay-width", "300");
 
-    fireEvent.click(await screen.findByRole("button", { name: /Förhandsgranska: Byt indelningsavsikt/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Visa förslag: Byt indelningsavsikt/i }));
     const preview = await screen.findByRole("region", { name: "Kontrollera ändringen före tillämpning" });
     expect(preview).toHaveTextContent("Ingen geometriförändring");
     const confirm = within(preview).getByRole("button", { name: "Bekräfta och tillämpa" });
@@ -384,7 +389,7 @@ describe("workspace validation ghost transaction", () => {
     fixMock.mode = "noop";
     const viewer = await renderWorkspace();
     const undo = screen.getByRole("button", { name: "Ångra" });
-    fireEvent.click(await screen.findByRole("button", { name: /Förhandsgranska: Behåll nuvarande avsikt/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /Visa förslag: Behåll nuvarande avsikt/i }));
     const preview = await screen.findByRole("region", { name: "Kontrollera ändringen före tillämpning" });
     fireEvent.click(within(preview).getByRole("button", { name: "Bekräfta och tillämpa" }));
 

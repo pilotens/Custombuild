@@ -2,8 +2,8 @@ import {
   DESIGN_CONSTRAINTS,
   maximumBaseCabinetHeightMm,
 } from "./design-constraints";
-import { resolveDesign } from "./design-engine";
-import type { ChangeDiff, DesignSpec } from "./design-types";
+import { removePartFromDesign, resolveDesign } from "./design-engine";
+import { DEFAULT_DESIGN_SPEC, type ChangeDiff, type DesignSpec } from "./design-types";
 
 export const SEMANTIC_COMPONENT_MIME = "application/x-custombuild-component";
 
@@ -52,6 +52,13 @@ export interface SemanticDropOutcome {
   preview: SemanticSnapPreview;
 }
 
+export interface SemanticRemovalOutcome {
+  spec: DesignSpec;
+  diff: ChangeDiff[];
+  message: string;
+  detail: string;
+}
+
 export const SEMANTIC_COMPONENTS: readonly SemanticComponentDefinition[] = [
   {
     kind: "shelf_row",
@@ -86,6 +93,38 @@ export const SEMANTIC_COMPONENTS: readonly SemanticComponentDefinition[] = [
 ] as const;
 
 const COMPONENT_KINDS = new Set<SemanticComponentKind>(SEMANTIC_COMPONENTS.map(({ kind }) => kind));
+
+function withoutComponentCustomizations(spec: DesignSpec, prefixes: readonly string[]): DesignSpec {
+  const matches = (partId: string) => prefixes.some((prefix) => partId.startsWith(prefix));
+  return {
+    ...spec,
+    part_overrides: Object.fromEntries(Object.entries(spec.part_overrides).filter(([partId]) => !matches(partId))),
+    removed_part_ids: spec.removed_part_ids.filter((partId) => !matches(partId)),
+  };
+}
+
+/** Keep the reset target compatible as semantic additions extend the current layout. */
+function compatibleTopologyBaseline(spec: DesignSpec, familyChanged = false): DesignSpec {
+  const baseline = spec.topology_baseline;
+  if (!baseline) return spec;
+  return {
+    ...spec,
+    topology_baseline: {
+      ...baseline,
+      ...(spec.divider_count > baseline.divider_count ? {
+        divider_count: spec.divider_count,
+        bay_width_ratios: [...spec.bay_width_ratios],
+      } : {}),
+      ...(spec.shelf_count > baseline.shelf_count ? {
+        shelf_count: spec.shelf_count,
+        shelf_height_ratios: [...spec.shelf_height_ratios],
+      } : {}),
+      // Family switches cannot restore an old base count without its old family
+      // and dimensions; those are deliberately not part of the topology baseline.
+      ...(familyChanged ? { base_cabinet_count: spec.base_cabinet_count } : {}),
+    },
+  };
+}
 
 function clamp(value: number, minimum = 0, maximum = 1): number {
   if (!Number.isFinite(value)) return (minimum + maximum) / 2;
@@ -278,7 +317,7 @@ export function resolveSemanticDrop(spec: DesignSpec, request: SemanticDropReque
     const added = levels.length - spec.shelf_count;
     const next = { ...spec, shelf_count: levels.length, shelf_height_ratios: levels, fixed_shelves: true };
     return {
-      spec: next,
+      spec: compatibleTopologyBaseline(next),
       diff: [{ field: "shelf_count", before: spec.shelf_count, after: levels.length, reason: "Hyllplan placerades semantiskt i stommen." }],
       message: added > 1 ? "Två speglade hyllplan lades till." : "Hyllplanet lades till.",
       detail: `${preview.detail}. Alla fack, förband och stöd räknades om.`,
@@ -299,7 +338,7 @@ export function resolveSemanticDrop(spec: DesignSpec, request: SemanticDropReque
       reinforcement_mode: "manual" as const,
     };
     return {
-      spec: next,
+      spec: compatibleTopologyBaseline(next),
       diff: [{ field: "divider_count", before: spec.divider_count, after: positions.length, reason: "Avdelare placerades semantiskt och hyllorna segmenterades om." }],
       message: added > 1 ? "Två speglade avdelare lades till." : "Avdelaren lades till.",
       detail: `${preview.detail}. Alla hyllsegment följer nu den nya fackindelningen.`,
@@ -308,6 +347,7 @@ export function resolveSemanticDrop(spec: DesignSpec, request: SemanticDropReque
   }
 
   if (request.kind === "base_cabinet") {
+    if (spec.base_cabinet_count > 0) throw new Error("Möbeln har redan en underskåpsrad.");
     const count = spec.divider_count + 1;
     const maximumBaseHeightMm = maximumBaseCabinetHeightMm(
       spec.height_mm,
@@ -340,7 +380,7 @@ export function resolveSemanticDrop(spec: DesignSpec, request: SemanticDropReque
       );
     }
     return {
-      spec: next,
+      spec: compatibleTopologyBaseline(next, true),
       diff: [{ field: "base_cabinet_count", before: spec.base_cabinet_count, after: count, reason: "Underskåpsraden kopplades till den bärande fackindelningen." }],
       message: "Underskåpsraden lades till.",
       detail: `${count} moduler följer överdelens symmetri och bredd.`,
@@ -351,7 +391,7 @@ export function resolveSemanticDrop(spec: DesignSpec, request: SemanticDropReque
   if (request.kind === "back_panel") {
     if (spec.back_panel) throw new Error("Möbeln har redan ett bakstycke.");
     return {
-      spec: { ...spec, back_panel: true },
+      spec: { ...spec, back_panel: true, workshop_context: undefined },
       diff: [{ field: "back_panel", before: false, after: true, reason: "Bakstycket snappades till stommens baksida." }],
       message: "Bakstycket lades till.",
       detail: "Noter och stabilitetskontroll regenererades.",
@@ -361,10 +401,93 @@ export function resolveSemanticDrop(spec: DesignSpec, request: SemanticDropReque
 
   if (spec.plinth) throw new Error("Möbeln har redan en sockel.");
   return {
-    spec: { ...spec, plinth: true },
+    spec: {
+      ...spec,
+      plinth: true,
+      plinth_height_mm: spec.plinth_height_mm > 0
+        ? spec.plinth_height_mm
+        : DEFAULT_DESIGN_SPEC.plinth_height_mm,
+    },
     diff: [{ field: "plinth", before: false, after: true, reason: "Sockeln snappades till stommens undersida." }],
     message: "Sockeln lades till.",
     detail: "Totalhöjd och fria öppningar räknades om.",
     preview,
+  };
+}
+
+/** Remove a semantic unit, never just hide one board from a connected assembly. */
+export function resolveSemanticRemoval(
+  spec: DesignSpec,
+  kind: SemanticComponentKind,
+  preferredPartId?: string,
+): SemanticRemovalOutcome {
+  if (kind === "divider" || kind === "shelf_row") {
+    const isDivider = kind === "divider";
+    const count = isDivider ? spec.divider_count : spec.shelf_count;
+    if (count <= 0) throw new Error(isDivider ? "Det finns inga avdelare att ta bort." : "Det finns inga hyllplan att ta bort.");
+    const match = (isDivider ? /^divider-(\d+)$/ : /^shelf-(\d+)-bay-\d+$/).exec(preferredPartId ?? "");
+    const selectedIndex = match ? Number(match[1]) : 0;
+    const index = selectedIndex >= 1 && selectedIndex <= count ? selectedIndex : count;
+    const partId = isDivider ? `divider-${index}` : `shelf-${index}-bay-1`;
+    const removal = removePartFromDesign(spec, partId);
+    let next = removal.spec;
+    let redistributed = false;
+    if (isDivider) {
+      const total = next.bay_width_ratios.reduce((sum, ratio) => sum + ratio, 0);
+      if (next.bay_width_ratios.some((ratio) => ratio / total < 0.08)) {
+        next = { ...next, bay_width_ratios: [] };
+        redistributed = true;
+      }
+    } else if (next.shelf_height_ratios.some((ratio, shelfIndex, ratios) => (
+      ratio < 0.05 || ratio > 0.95 || (shelfIndex > 0 && ratio - ratios[shelfIndex - 1]! < 0.05 - 1e-9)
+    ))) {
+      next = { ...next, shelf_height_ratios: [] };
+      redistributed = true;
+    }
+    return {
+      spec: next,
+      diff: removal.diff,
+      message: isDivider ? "Avdelaren togs bort." : "Hyllraden togs bort.",
+      detail: `${removal.notice}${redistributed ? " Den täta indelningen fördelas jämnt på nytt." : ""}`,
+    };
+  }
+
+  if (kind === "base_cabinet") {
+    if (spec.base_cabinet_count <= 0) throw new Error("Det finns ingen underskåpsrad att ta bort.");
+    const next = compatibleTopologyBaseline({
+      ...withoutComponentCustomizations(spec, ["base-side-", "base-bottom-", "base-top-", "cabinet-front-"]),
+      furniture_type: "bookcase",
+      base_cabinet_count: 0,
+      base_cabinet_height_mm: 0,
+      base_cabinet_depth_mm: 0,
+    }, true);
+    return {
+      spec: next,
+      diff: [{ field: "base_cabinet_count", before: spec.base_cabinet_count, after: 0, reason: "Hela underskåpsraden togs bort och möbeln återgick till en bokhylla." }],
+      message: "Underskåpsraden togs bort.",
+      detail: "Alla underskåp och skåpsfronter togs bort. Hyllorna använder nu hela den inre höjden.",
+    };
+  }
+
+  if (kind === "back_panel") {
+    if (!spec.back_panel) throw new Error("Det finns inget bakstycke att ta bort.");
+    return {
+      spec: {
+        ...withoutComponentCustomizations(spec, ["back-panel"]),
+        back_panel: false,
+        workshop_context: undefined,
+      },
+      diff: [{ field: "back_panel", before: true, after: false, reason: "Bakstycket och dess anslutningar togs bort." }],
+      message: "Bakstycket togs bort.",
+      detail: "Stommen har nu en öppen baksida. Stabiliteten kontrolleras på nytt.",
+    };
+  }
+
+  if (!spec.plinth) throw new Error("Det finns ingen sockel att ta bort.");
+  return {
+    spec: { ...withoutComponentCustomizations(spec, ["plinth-front"]), plinth: false, plinth_height_mm: 0 },
+    diff: [{ field: "plinth", before: true, after: false, reason: "Sockeln togs bort och stommens fria höjd räknades om." }],
+    message: "Sockeln togs bort.",
+    detail: "Möbelns yttermått är oförändrade och stommen når nu golvet.",
   };
 }

@@ -68,13 +68,16 @@ test("kontrollregler är kompakta, begripliga och fokuserar modellen", async ({
   await expect(panel.getByRole("heading", { name: "Kontrollera konstruktionen" }))
     .toBeVisible({ timeout: 30_000 });
   const compactRule = panel
-    .locator("article.validation-card")
-    .filter({ hasText: "Tipprisk och krav på väggförankring" });
+    .getByRole("article", { name: "Tipprisk och krav på väggförankring", exact: true });
   await expect(compactRule).toHaveCount(1);
   const technicalDetails = compactRule.locator("details.validation-technical");
   await expect(technicalDetails).not.toHaveAttribute("open", "");
-  await technicalDetails.getByText("Tekniska detaljer", { exact: true }).click();
+  await expect(compactRule.getByText("Orsak", { exact: true })).not.toBeVisible();
+  await expect(compactRule.getByRole("button", { name: /^Fokusera delen .* i modellen$/ }).first())
+    .not.toBeVisible();
+  await technicalDetails.getByText("Visa detaljer", { exact: true }).click();
   await expect(technicalDetails).toHaveAttribute("open", "");
+  await expect(technicalDetails.getByText("Tipprisk och krav på väggförankring", { exact: true })).toBeVisible();
   await expect(compactRule.getByText("Orsak", { exact: true })).toBeVisible();
   await expect(compactRule.getByText("Rekommenderad lösning", { exact: true })).toBeVisible();
   const focusModel = compactRule.getByRole("button", { name: /^Fokusera delen .* i modellen$/ }).first();

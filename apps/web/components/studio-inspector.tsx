@@ -45,7 +45,7 @@ interface StudioInspectorProps {
   partCount: number;
   templateName?: string;
   productionLevel?: FurnitureTemplate["productionLevel"];
-  onChange: (patch: Partial<DesignSpec>, reason?: string) => void;
+  onChange: (patch: Partial<DesignSpec>, reason?: string) => boolean | void;
   onOpenExplore: () => void;
   onOpenCheck: () => void;
 }
@@ -488,7 +488,7 @@ export function StudioInspector({
           value={spec.reinforcement_mode}
           options={[
             { id: "auto", label: "Automatiskt", description: "Systemet dimensionerar bärande avdelare från bredd och last." },
-            { id: "manual", label: "Manuellt", description: "Din valda indelning behålls och granskas." },
+            { id: "manual", label: "Manuellt", description: "Din indelning används så länge de bärande stöden räcker." },
           ]}
           onChange={(reinforcement_mode) => onChange({ reinforcement_mode }, reinforcement_mode === "auto" ? "Automatiska konstruktionsstöd valdes" : "Manuella konstruktionsstöd valdes")}
         />
@@ -501,8 +501,13 @@ export function StudioInspector({
             ["wall_anchor_required", "Planera väggförankring", "Kravet följer med revisionen; verifiering sker separat"],
           ] as const).map(([field, label, hint]) => (
             <label key={field}>
-              <span><strong>{label}</strong><small>{hint}</small></span>
-              <input type="checkbox" checked={spec[field]} onChange={(event) => onChange({ [field]: event.target.checked }, `${label} ändrades`)} />
+              <span><strong>{label}</strong><small>{field === "back_panel" && spec.back_panel
+                ? "Behövs för sidostabiliteten"
+                : field === "fixed_shelves" && spec.fixed_shelves
+                  ? "Justerbara hyllbärare stöds inte ännu" : hint}</small></span>
+              <input type="checkbox" checked={spec[field]}
+                disabled={(field === "back_panel" || field === "fixed_shelves") && spec[field]}
+                onChange={(event) => onChange({ [field]: event.target.checked }, `${label} ändrades`)} />
             </label>
           ))}
         </div>

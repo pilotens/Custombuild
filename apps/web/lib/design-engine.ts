@@ -7,7 +7,6 @@ import {
   type ChangeDiff,
   type DesignSpec,
   type ManufacturingFeature,
-  type NestingPlacement,
   type NestingResult,
   type PartOverride,
   type ResolvedDesign,
@@ -16,12 +15,12 @@ import {
   type ValidationStatus,
 } from "./design-types";
 import { DESIGN_CONSTRAINTS, maximumBaseCabinetHeightMm } from "./design-constraints";
+import { LOCAL_NESTING_GAP_MM as NESTING_GAP_MM, resolveLocalNesting } from "./local-nesting";
 
 const GRAVITY = 9.80665;
 const BACK_INSET_MM = 12;
 const DOGBONE_BACK_CLEARANCE_MM = 4;
 const OPEN_BACK_EDGE_CLEARANCE_MM = 2;
-const NESTING_GAP_MM = 8;
 const SHELF_SIDE_CLEARANCE_MM = 1;
 const RATIO_COMPARISON_TOLERANCE = 1e-9;
 export const MAX_BAY_COUNT = DESIGN_CONSTRAINTS.bayCount.maximum;
@@ -927,29 +926,23 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
 function individualPartRule(spec: DesignSpec): RuleEvaluation | null {
   const changedIds = Object.keys(spec.part_overrides);
   const affectedIds = [...new Set([...spec.removed_part_ids, ...changedIds])];
-  const topologyChanged = Boolean(spec.topology_baseline);
-  if (affectedIds.length === 0 && !topologyChanged) return null;
+  // The baseline is reset history, not freeform geometry. Parametric removals
+  // regenerate connected parts and are checked by the same geometry, topology
+  // and structural rules as a layout created with those counts from the start.
+  if (affectedIds.length === 0) return null;
   const removedCount = spec.removed_part_ids.length;
   const modifiedCount = changedIds.length;
-  const topologyOnly = topologyChanged && removedCount === 0 && modifiedCount === 0;
   return {
     rule_id: "PART-CUSTOM-001",
-    rule_version: "1.0.0",
-    status: topologyOnly ? "WARNING" : "BLOCK",
-    title: topologyOnly ? "Ombyggd bärande indelning" : "Individuellt ändrade delar",
-    summary: topologyChanged
-      ? `Möbelns bärande indelning har byggts om${removedCount + modifiedCount > 0 ? ` tillsammans med ${removedCount} borttagna och ${modifiedCount} modifierade delar` : ""}. Konstruktionen måste granskas.`
-      : `${removedCount} borttagna och ${modifiedCount} modifierade delar måste konstruktionsgranskas.`,
-    calculation: "Ändrad del eller topologi ≠ verifierad parametrisk förbandskedja",
-    assumptions: topologyOnly
-      ? [
-          "Alla anslutande hyllsegment, fack och stomdelar har byggts om från samma parametriska DesignSpec.",
-          "Den nya indelningen måste fortfarande passera serverns förbands-, bärighets- och CAM-kontroller innan produktion.",
-        ]
-      : [
-          "Fria delmått eller borttagna delar kan inte garantera att angränsande förband följer med.",
-          "Bärighet, kollisioner och nya bearbetningsoperationer måste verifieras innan produktion.",
-        ],
+    rule_version: "1.1.0",
+    status: "BLOCK",
+    title: "Individuellt ändrade delar",
+    summary: `${removedCount} borttagna och ${modifiedCount} modifierade delar måste konstruktionsgranskas.`,
+    calculation: "Individuellt ändrad eller borttagen del ≠ verifierad parametrisk förbandskedja",
+    assumptions: [
+      "Fria delmått eller borttagna delar kan inte garantera att angränsande förband följer med.",
+      "Bärighet, kollisioner och nya bearbetningsoperationer måste verifieras innan produktion.",
+    ],
     affected_part_ids: affectedIds,
   };
 }
@@ -1822,18 +1815,18 @@ function dryJoiningRule(spec: DesignSpec, parts: ResolvedPart[]): RuleEvaluation
 
 function stabilityRule(spec: DesignSpec): RuleEvaluation {
   const slenderness = spec.height_mm / Math.max(spec.depth_mm, 1);
-  const needsAnchor = slenderness > 4 || spec.height_mm >= 1_800;
+  const needsAnchor = spec.wall_anchor_required || slenderness >= 4 || spec.height_mm >= 1_800;
   const status: ValidationStatus = needsAnchor && !spec.wall_anchor_verified ? "WARNING" : "PASS";
   return {
     rule_id: "STAB-TIP-002",
-    rule_version: "1.0.0",
+    rule_version: "1.1.0",
     status,
     title: "Tipprisk och väggförankring",
     summary:
       status === "PASS"
         ? "Geometrin kräver ingen ytterligare varning i denna screening."
-        : "Proportionerna kräver att väggunderlag och ett godkänt förankringssystem verifieras före release.",
-    calculation: `H/D = ${round(slenderness, 2)}; varningsgräns 4,0`,
+        : "Möbeln kräver att väggunderlag och ett godkänt förankringssystem verifieras före release.",
+    calculation: `H/D = ${round(slenderness, 2)}; förankringskrav vid H/D ≥ 4,0, höjd ≥ 1 800 mm eller uttryckligt krav`,
     calculated_value: round(slenderness, 2),
     allowed_value: 4,
     unit: "H/D",
@@ -1914,139 +1907,6 @@ function machineRule(spec: DesignSpec, parts: ResolvedPart[]): RuleEvaluation {
           },
         }
       : {}),
-  };
-}
-
-interface NestedPartGroup {
-  placements: NestingPlacement[];
-  overflow_part_ids: string[];
-  used_sheet_count: number;
-  used_area_mm2: number;
-  available_area_mm2: number;
-}
-
-function nestPartGroup(
-  parts: ResolvedPart[],
-  sheetWidth: number,
-  sheetHeight: number,
-  stockCount: number,
-  sheetOffset: number,
-  stockRole: NestingPlacement["stock_role"],
-): NestedPartGroup {
-  const ordered = [...parts].sort((left, right) => {
-    const areaDifference = right.width_mm * right.depth_mm - left.width_mm * left.depth_mm;
-    return areaDifference === 0 ? left.part_id.localeCompare(right.part_id) : areaDifference;
-  });
-  const placements: NestingPlacement[] = [];
-  const overflow: string[] = [];
-  let sheet = 1;
-  let cursorX = NESTING_GAP_MM;
-  let cursorY = NESTING_GAP_MM;
-  let rowHeight = 0;
-
-  for (const part of ordered) {
-    const rawWidth = part.width_mm;
-    const rawHeight = part.depth_mm;
-    const normalFitsSheet = rawWidth + 2 * NESTING_GAP_MM <= sheetWidth && rawHeight + 2 * NESTING_GAP_MM <= sheetHeight;
-    const rotatedFitsSheet = rawHeight + 2 * NESTING_GAP_MM <= sheetWidth && rawWidth + 2 * NESTING_GAP_MM <= sheetHeight;
-    if (!normalFitsSheet && !rotatedFitsSheet) {
-      overflow.push(part.part_id);
-      continue;
-    }
-
-    let rotated = !normalFitsSheet && rotatedFitsSheet;
-    let placementWidth = rotated ? rawHeight : rawWidth;
-    let placementHeight = rotated ? rawWidth : rawHeight;
-    if (cursorX + placementWidth + NESTING_GAP_MM > sheetWidth && rotatedFitsSheet && cursorX + rawHeight + NESTING_GAP_MM <= sheetWidth) {
-      rotated = true;
-      placementWidth = rawHeight;
-      placementHeight = rawWidth;
-    }
-    if (cursorX + placementWidth + NESTING_GAP_MM > sheetWidth) {
-      cursorX = NESTING_GAP_MM;
-      cursorY += rowHeight + NESTING_GAP_MM;
-      rowHeight = 0;
-      rotated = !normalFitsSheet && rotatedFitsSheet;
-      placementWidth = rotated ? rawHeight : rawWidth;
-      placementHeight = rotated ? rawWidth : rawHeight;
-      if (cursorX + placementWidth + NESTING_GAP_MM > sheetWidth && rotatedFitsSheet) {
-        rotated = true;
-        placementWidth = rawHeight;
-        placementHeight = rawWidth;
-      }
-    }
-    if (cursorY + placementHeight + NESTING_GAP_MM > sheetHeight) {
-      sheet += 1;
-      if (sheet > stockCount) {
-        overflow.push(part.part_id);
-        continue;
-      }
-      cursorX = NESTING_GAP_MM;
-      cursorY = NESTING_GAP_MM;
-      rowHeight = 0;
-      rotated = !normalFitsSheet && rotatedFitsSheet;
-      placementWidth = rotated ? rawHeight : rawWidth;
-      placementHeight = rotated ? rawWidth : rawHeight;
-      if (cursorX + placementWidth + NESTING_GAP_MM > sheetWidth && rotatedFitsSheet) {
-        rotated = true;
-        placementWidth = rawHeight;
-        placementHeight = rawWidth;
-      }
-    }
-    placements.push({
-      part_id: part.part_id,
-      material_id: part.material_id,
-      stock_role: stockRole,
-      sheet: sheetOffset + sheet,
-      x_mm: round(cursorX),
-      y_mm: round(cursorY),
-      width_mm: round(placementWidth),
-      height_mm: round(placementHeight),
-      rotated,
-    });
-    cursorX += placementWidth + NESTING_GAP_MM;
-    rowHeight = Math.max(rowHeight, placementHeight);
-  }
-  const sheetCount = placements.length === 0
-    ? 0
-    : Math.max(...placements.map((placement) => placement.sheet)) - sheetOffset;
-  const usedArea = placements.reduce((sum, placement) => sum + placement.width_mm * placement.height_mm, 0);
-  return {
-    placements,
-    overflow_part_ids: overflow,
-    used_sheet_count: sheetCount,
-    used_area_mm2: usedArea,
-    available_area_mm2: sheetCount * sheetWidth * sheetHeight,
-  };
-}
-
-function nestParts(spec: DesignSpec, parts: ResolvedPart[]): NestingResult {
-  const carcass = nestPartGroup(
-    parts.filter((part) => part.kind !== "back"),
-    Math.max(spec.stock_width_mm, 1),
-    Math.max(spec.stock_height_mm, 1),
-    spec.stock_count,
-    0,
-    "carcass",
-  );
-  const back = nestPartGroup(
-    parts.filter((part) => part.kind === "back"),
-    Math.max(spec.back_stock_width_mm, 1),
-    Math.max(spec.back_stock_height_mm, 1),
-    spec.back_stock_count,
-    carcass.used_sheet_count,
-    "back",
-  );
-  const usedArea = carcass.used_area_mm2 + back.used_area_mm2;
-  const availableArea = Math.max(
-    carcass.available_area_mm2 + back.available_area_mm2,
-    1,
-  );
-  return {
-    placements: [...carcass.placements, ...back.placements],
-    sheet_count: carcass.used_sheet_count + back.used_sheet_count,
-    utilization_percent: round((usedArea / availableArea) * 100, 1),
-    overflow_part_ids: [...carcass.overflow_part_ids, ...back.overflow_part_ids],
   };
 }
 
@@ -2179,7 +2039,7 @@ export function mergeServerDesignWithLocalDfm(
 export function resolveDesign(spec: DesignSpec, changeDiff: ChangeDiff[] = []): ResolvedDesign {
   const resolvedSpec = balanceDesignSymmetry(spec);
   const parts = generateParts(resolvedSpec);
-  const nesting = nestParts(resolvedSpec, parts);
+  const nesting = resolveLocalNesting(resolvedSpec, parts);
   const rules = [
     invalidGeometryRule(resolvedSpec),
     topologyIntegrityRule(resolvedSpec, parts),

@@ -34,7 +34,7 @@ function isVersionGeneration(request: Request): boolean {
     && /^\/v1\/projects\/[^/]+\/versions\/\d+\/generate$/.test(requestPath(request));
 }
 
-test("väggbiblioteket sparas som 4200 × 2400-koncept men kan inte skapa produktionsrevision", async ({
+test("väggbiblioteket sparas som 2400 × 2400-koncept men kan inte skapa produktionsrevision", async ({
   page,
   request,
 }, testInfo) => {
@@ -76,7 +76,7 @@ test("väggbiblioteket sparas som 4200 × 2400-koncept men kan inte skapa produk
   await expect(explore.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible({ timeout: 30_000 });
 
   // The direct gallery route must use the selected template's advertised
-  // dimensions. Generic planning defaults must not mutate this 4200 mm model.
+  // dimensions, now sized to fit the supported sheet and machine envelope.
   await explore.getByRole("button", { name: /Välj en design/ }).click();
   await expect(explore.getByRole("heading", { name: "Välj en startmodell att forma vidare." }))
     .toBeVisible({ timeout: 30_000 });
@@ -86,7 +86,7 @@ test("väggbiblioteket sparas som 4200 × 2400-koncept men kan inte skapa produk
   await Promise.all([
     waitForSuccessfulProjectDraftSave(page, project.project.id, {
       furniture_type: "wall_library",
-      width_mm: 4_200,
+      width_mm: 2_400,
       height_mm: 2_400,
       depth_mm: 320,
     }),
@@ -94,7 +94,7 @@ test("väggbiblioteket sparas som 4200 × 2400-koncept men kan inte skapa produk
   ]);
   await expect(page.getByText("Sparad på servern", { exact: true })).toBeVisible({ timeout: 30_000 });
 
-  await expect(page.getByRole("spinbutton", { name: "Bredd", exact: true })).toHaveValue("4200");
+  await expect(page.getByRole("spinbutton", { name: "Bredd", exact: true })).toHaveValue("2400");
   await expect(page.getByRole("spinbutton", { name: "Höjd", exact: true })).toHaveValue("2400");
   await expect(page.getByRole("spinbutton", { name: "Djup", exact: true })).toHaveValue("320");
   const viewer = page.getByTestId("furniture-viewer");

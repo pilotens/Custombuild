@@ -31,7 +31,7 @@ test("mallbilder och dynamisk 3D-vy passerar den visuella kvalitetskontrollen", 
   await expect(page.locator("html")).toHaveAttribute("lang", "sv");
   await expect(page).toHaveTitle("Custombuild · Konstruktionsarbetsyta");
   const planner = await goToPlanningStart(page, {
-    widthMm: 4_200,
+    widthMm: 2_200,
     heightMm: 2_400,
     depthMm: 340,
   });
@@ -67,12 +67,12 @@ test("mallbilder och dynamisk 3D-vy passerar den visuella kvalitetskontrollen", 
   expect(beforeImage.byteLength).toBeGreaterThan(5_000);
 
   const widthInput = page.getByRole("spinbutton", { name: "Bredd", exact: true });
-  await expect(widthInput).toHaveValue("4200");
+  await expect(widthInput).toHaveValue("2200");
   const widthHandle = page.getByRole("button", { name: "Dra för att ändra bredd" });
   await widthHandle.focus();
   await widthHandle.press("ArrowRight");
 
-  await expect(widthInput).not.toHaveValue("4200");
+  await expect(widthInput).not.toHaveValue("2200");
   const beforeHash = imageHash(beforeImage);
   const changedWidth = await widthInput.inputValue();
   await expect(page.locator(".canvas-dimensions")).toContainText(`${changedWidth} mm`);

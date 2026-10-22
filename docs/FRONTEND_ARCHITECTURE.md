@@ -46,6 +46,29 @@ Integrations-API:
 
 ## Preview och produktionssanning
 
+Redigering på `/` passerar `planWorkspaceDesignTransaction` innan modellen går till
+historik, lokal lagring eller serverpreview. Samma gräns används för fält, dragning,
+komponenter och startmallar. Planeraren använder befintliga regeltrösklar: den lägger
+till bärande avdelare, samordnar underskåpsstöden och beräknar tillräckligt skivantal.
+Den sänker inte lasten eller ändrar önskade yttermått för att få ett godkänt resultat.
+Om ingen fungerande konstruktion finns inom modellens gränser avvisas ändringen;
+föregående modell och historik behålls. Nödvändiga stöd och bakstycken är låsta i UI.
+
+Automatiskt skivantal är planerat materialbehov, aldrig verifierat lager. Exakta
+workshop-profiler och uttryckligt valda antal ökas inte automatiskt. En lokalt fungerande
+design innebär inte att infästning, beslag, foglåsning eller produktion är godkända.
+Äldre utkast repareras när det kan göras utan att kasta bort designintent; utkast som
+inte kan repareras behålls för inspektion med sina verkliga regelutfall. Undo/redo får
+inte återinföra en konstruktion som inte längre passerar redigeringsgränsen.
+
+Kvarstående begränsning: denna redigeringsgräns delar inte automatiskt möbelns
+genomgående topp, botten och sockel i byggbara sektioner. Ett väggbibliotek på
+4 300 mm stoppas därför med standardprofilens arbetsområde och skivformat, även
+om hyllspannen har tillräckliga stöd. Automatisk sektionsindelning med modellerade
+sammanfogningar och motsvarande servergeometri, ritningar och kaplistor återstår.
+Ingen komplett dokumentuppsättning för den konstruktionen har genererats eller
+verifierats. Uppdateringen är inte ett färdigt tillverkningsstöd.
+
 Lokal `resolveDesign` ger omedelbar visuell feedback. Den är aldrig produktionsauktoritativ.
 `POST /v1/designs/preview` och `/autofix` returnerar serverns geometri, designhash och regler.
 Frontend får bara skapa en produktionsrevision när aktuell `ResolvedDesign.source` är
