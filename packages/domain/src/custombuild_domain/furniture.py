@@ -21,7 +21,7 @@ Load = Annotated[int, Field(strict=True, ge=0, le=5_000)]
 FURNITURE_SCHEMA_VERSION: Literal["custombuild.furniture-design.v1"] = (
     "custombuild.furniture-design.v1"
 )
-FURNITURE_ENGINE_VERSION = "furniture-families-2.0.0"
+FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 
 class MaterialSelection(FrozenModel):

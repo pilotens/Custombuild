@@ -226,15 +226,14 @@ def build_frame(
     if isinstance(intent, ChairIntent):
         level, apron = intent.seat_height_um, 70_000
         rear, x0 = d - s, 0
-        top_y = rear - intent.seat_depth_um
-        front = top_y + 6_000
-        if top_y < 0 or h - level < 160_000:
+        front = 6_000
+        if intent.seat_depth_um > rear or h - level < 160_000:
             raise ValueError("Kontrollera sittdjupet och ryggens höjd över sitsen.")
         board(
             "chair-seat",
             PartRole.CHAIR_SEAT,
             (w, intent.seat_depth_um, t),
-            (0, top_y, level - t),
+            (0, 0, level - t),
             2,
         )
         top = "chair-seat"
@@ -308,8 +307,14 @@ def build_frame(
                     sign,
                     (cx, y, underside - drop),
                 )
-        # Two screws through the top into each side rail. Keep well clear of corner fasteners.
-        for y in (front + s + 45_000, rear - 45_000):
+        # Keep the four head recesses distinct and on the actual seat or tabletop.
+        # The inset from the rail ends also clears both horizontal corner screws.
+        start = front + s
+        end = min(rear, intent.seat_depth_um) if isinstance(intent, ChairIntent) else rear
+        if end - start < 100_000:
+            raise ValueError("Sitsen eller skivan täcker för lite av sidosargen för två skruvar.")
+        margin = min(45_000, (end - start - 16_000) // 2)
+        for y in (start + margin, end - margin):
             screw_joint(
                 design.design_id,
                 parts,

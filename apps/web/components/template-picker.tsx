@@ -334,10 +334,10 @@ function OpenTemplatePicker({
 }: TemplatePickerProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const initial = initialBrief ?? { ...DEFAULT_PLANNING_BRIEF, selectedTemplateId: selectedId };
-  const initialGalleryId = GALLERY_TEMPLATE_IDS.includes(selectedId) ? selectedId : recommendedTemplateId(initial);
+  const [showAllModels, setShowAllModels] = useState(!GALLERY_TEMPLATE_IDS.includes(selectedId));
   const [view, setView] = useState<ExploreView>("home");
   const [brief, setBrief] = useState<FurniturePlanningBrief>(initial);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<FurnitureTemplateId>(initialGalleryId);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<FurnitureTemplateId>(selectedId);
   const [intent, setIntent] = useState("");
   const [suggestionsVisible, setSuggestionsVisible] = useState(false);
   const [planningError, setPlanningError] = useState<string>();
@@ -358,6 +358,9 @@ function OpenTemplatePicker({
   const dimensionsValid = !dimensionErrors.width_mm && !dimensionErrors.height_mm && !dimensionErrors.depth_mm;
   const selectedTemplate = furnitureTemplate(selectedTemplateId);
   const galleryTemplates = GALLERY_TEMPLATE_IDS.map(furnitureTemplate);
+  if (showAllModels) galleryTemplates.push(...FURNITURE_TEMPLATES.filter(
+    (template) => !GALLERY_TEMPLATE_IDS.includes(template.id),
+  ));
   const suggestedTemplates = useMemo(() => {
     const first = recommendedTemplateId(brief);
     return [furnitureTemplate(first), ...FURNITURE_TEMPLATES.filter((template) => template.id !== first)].slice(0, 3);
@@ -540,6 +543,10 @@ function OpenTemplatePicker({
             <span><Ruler aria-hidden="true" size={18} /><strong>{Number(selectedTemplate.patch.width_mm).toLocaleString("sv-SE")} × {Number(selectedTemplate.patch.height_mm).toLocaleString("sv-SE")} × {Number(selectedTemplate.patch.depth_mm).toLocaleString("sv-SE")} mm</strong><small>Bredd × höjd × djup</small></span>
             <span><Check aria-hidden="true" size={18} /><strong>{selectedTemplate.productionLevel === "screened" ? "Screenad grundstomme" : "Konceptmodell"}</strong><small>Full kontroll sker i Check</small></span>
           </div>
+          <button type="button" className={styles.backButton} aria-expanded={showAllModels}
+            onClick={() => setShowAllModels((value) => !value)}>
+            {showAllModels ? "Visa färre startmodeller" : "Fler startmodeller"}
+          </button>
           <div className={styles.templateGrid}>
             {galleryTemplates.map((template) => (
               <TemplateCard key={template.id} template={template} selected={selectedTemplateId === template.id} onChoose={() => chooseDesign(template.id)} />

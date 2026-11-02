@@ -70,13 +70,17 @@ class FurnitureResult(FrozenModel):
         if len(moving) != len(set(moving)) or not set(moving) <= ids:
             raise ValueError("moving groups must reference distinct existing parts")
         p = self.spec.intent
-        for part in self.parts:
-            lower, upper = frame_bounds(part)
-            if min(lower) < 0 or any(
-                v > limit
-                for v, limit in zip(upper, (p.width_um, p.depth_um, p.height_um), strict=True)
-            ):
+        envelope = (p.width_um, p.depth_um, p.height_um)
+        bounds = [frame_bounds(part) for part in self.parts]
+        for lower, upper in bounds:
+            if min(lower) < 0 or any(v > limit for v, limit in zip(upper, envelope, strict=True)):
                 raise ValueError("generated part exceeds the locked furniture dimensions")
+        if isinstance(p, ChairIntent | DiningTableIntent):
+            spans = tuple(
+                max(hi[i] for _, hi in bounds) - min(lo[i] for lo, _ in bounds) for i in range(3)
+            )
+            if spans != envelope:
+                raise ValueError("Ramens verkliga yttermått avviker från beställda mått.")
         return self
 
 
