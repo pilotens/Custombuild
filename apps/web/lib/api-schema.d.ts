@@ -2119,7 +2119,7 @@ export interface components {
             design_hash: string;
             /**
              * Engine Version
-             * @default furniture-families-2.0.0
+             * @default furniture-families-2.1.0
              */
             engine_version: string;
             hardware_profile?: components["schemas"]["HardwareProfile"] | null;

@@ -12,6 +12,7 @@ import {
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
+import { DESIGN_CONSTRAINTS } from "@/lib/design-constraints";
 import { FurnitureFamilyControls } from "./furniture-family-controls";
 import { FurnitureProduction } from "./furniture-production";
 import { FurnitureStockRequirements, InstallationEditor, ShelvingLayoutEditor } from "./furniture-dimensions";
@@ -196,8 +197,24 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     }
     update({ ...workspace, design: { ...workspace.design, intent: nextIntent } });
   };
+  const usesBookcaseCarcass = intent.family === "shelving" || intent.family === "chest_of_drawers";
+  const envelopeRange = (key: string) => {
+    if (usesBookcaseCarcass) {
+      if (key === "width_um") return DESIGN_CONSTRAINTS.widthMm;
+      if (key === "height_um") return DESIGN_CONSTRAINTS.heightMm;
+      if (key === "depth_um") return DESIGN_CONSTRAINTS.depthMm;
+    }
+    return undefined;
+  };
   const changeMillimetres = (key: string, raw: string) => {
-    try { changeDimension(key, exactMillimetreTextToMicrometres(raw, { maximumUm: 6_000_000 })); }
+    const range = envelopeRange(key);
+    try {
+      const value = exactMillimetreTextToMicrometres(raw, { maximumUm: 6_000_000 });
+      if (range && (value < range.minimum * 1000 || value > range.maximum * 1000)) {
+        throw new Error(`Ange ett mått mellan ${range.minimum} och ${range.maximum} mm.`);
+      }
+      changeDimension(key, value);
+    }
     catch (reason) { inputError(errorText(reason), `carcass.${key}`); }
   };
   const openProject = (id: string) => navigate(() => {
@@ -316,7 +333,8 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
             ? [["width_um", "Diameter"], ["height_um", "Höjd"]] as const
             : [["width_um", "Bredd"], ["height_um", "Höjd"], ["depth_um", "Djup"]] as const
           ).map(([key, label]) =>
-            <label key={key}>{label}<input aria-label={`${label} (mm)`} type="number" step="0.001" min="1" max="6000"
+            <label key={key}>{label}<input aria-label={`${label} (mm)`} type="number" step="0.001"
+              min={envelopeRange(key)?.minimum ?? 0.001} max={envelopeRange(key)?.maximum ?? 6000}
               value={intent[key] / 1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
           <FurnitureFamilyControls intent={intent} onError={inputError} update={(patch, field) => updateInput(
             { ...workspace, design: { ...workspace.design, intent: { ...intent, ...patch } } },

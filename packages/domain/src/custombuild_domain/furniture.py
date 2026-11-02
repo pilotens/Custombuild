@@ -12,7 +12,14 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 
 from .enums import BackPanelType, ShelfMount
-from .models import FrozenModel, RatioPpm, StableKey
+from .models import (
+    BookcaseDepthUm,
+    BookcaseHeightUm,
+    BookcaseWidthUm,
+    FrozenModel,
+    RatioPpm,
+    StableKey,
+)
 
 Length = Annotated[int, Field(strict=True, ge=1, le=6_000_000)]
 Thickness = Annotated[int, Field(strict=True, ge=1_000, le=100_000)]
@@ -100,9 +107,9 @@ class InstallationSpace(FrozenModel):
 
 class ShelvingIntent(FrozenModel):
     family: Literal["shelving"] = "shelving"
-    width_um: Length = 900_000
-    height_um: Length = 1_800_000
-    depth_um: Length = 320_000
+    width_um: BookcaseWidthUm = 900_000
+    height_um: BookcaseHeightUm = 1_800_000
+    depth_um: BookcaseDepthUm = 320_000
     shelf_count: Annotated[int, Field(strict=True, ge=0, le=40)] = 4
     divider_count: Annotated[int, Field(strict=True, ge=0, le=16)] = 1
     shelf_load_n: Load = 200
@@ -184,9 +191,9 @@ class ChairIntent(FrozenModel):
 
 class ChestIntent(FrozenModel):
     family: Literal["chest_of_drawers"] = "chest_of_drawers"
-    width_um: Length = 800_000
-    height_um: Length = 900_000
-    depth_um: Length = 500_000
+    width_um: BookcaseWidthUm = 800_000
+    height_um: BookcaseHeightUm = 900_000
+    depth_um: BookcaseDepthUm = 500_000
     drawer_count: Annotated[int, Field(strict=True, ge=1, le=8)] = 3
     drawer_load_n: Load = 100
     front_gap_um: Annotated[int, Field(strict=True, ge=1_000, le=10_000)] = 3_000

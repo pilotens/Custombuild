@@ -309,12 +309,12 @@ def build_frame(
                 )
         # Keep the four head recesses distinct and on the actual seat or tabletop.
         # The inset from the rail ends also clears both horizontal corner screws.
-        start = front + s
-        end = min(rear, intent.seat_depth_um) if isinstance(intent, ChairIntent) else rear
-        if end - start < 100_000:
+        mount_start = front + s
+        mount_end = min(rear, intent.seat_depth_um) if isinstance(intent, ChairIntent) else rear
+        if mount_end - mount_start < 100_000:
             raise ValueError("Sitsen eller skivan täcker för lite av sidosargen för två skruvar.")
-        margin = min(45_000, (end - start - 16_000) // 2)
-        for y in (start + margin, end - margin):
+        margin = min(45_000, (mount_end - mount_start - 16_000) // 2)
+        for y in (mount_start + margin, mount_end - margin):
             screw_joint(
                 design.design_id,
                 parts,

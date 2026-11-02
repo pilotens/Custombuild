@@ -1076,8 +1076,8 @@
         "properties": {
           "depth_um": {
             "default": 500000,
-            "maximum": 6000000.0,
-            "minimum": 1.0,
+            "maximum": 1200000.0,
+            "minimum": 100000.0,
             "title": "Depth Um",
             "type": "integer"
           },
@@ -1128,8 +1128,8 @@
           },
           "height_um": {
             "default": 900000,
-            "maximum": 6000000.0,
-            "minimum": 1.0,
+            "maximum": 4000000.0,
+            "minimum": 300000.0,
             "title": "Height Um",
             "type": "integer"
           },
@@ -1147,7 +1147,7 @@
           "width_um": {
             "default": 800000,
             "maximum": 6000000.0,
-            "minimum": 1.0,
+            "minimum": 250000.0,
             "title": "Width Um",
             "type": "integer"
           }
@@ -3449,7 +3449,7 @@
             "type": "string"
           },
           "engine_version": {
-            "default": "furniture-families-2.0.0",
+            "default": "furniture-families-2.1.0",
             "title": "Engine Version",
             "type": "string"
           },
@@ -6496,8 +6496,8 @@
           },
           "depth_um": {
             "default": 320000,
-            "maximum": 6000000.0,
-            "minimum": 1.0,
+            "maximum": 1200000.0,
+            "minimum": 100000.0,
             "title": "Depth Um",
             "type": "integer"
           },
@@ -6516,8 +6516,8 @@
           },
           "height_um": {
             "default": 1800000,
-            "maximum": 6000000.0,
-            "minimum": 1.0,
+            "maximum": 4000000.0,
+            "minimum": 300000.0,
             "title": "Height Um",
             "type": "integer"
           },
@@ -6576,7 +6576,7 @@
           "width_um": {
             "default": 900000,
             "maximum": 6000000.0,
-            "minimum": 1.0,
+            "minimum": 250000.0,
             "title": "Width Um",
             "type": "integer"
           }

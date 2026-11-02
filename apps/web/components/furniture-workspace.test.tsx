@@ -499,6 +499,20 @@ describe("möbelstudions revisions- och profilflöde", () => {
 });
 
 describe("familjespecifika konstruktionsmått", () => {
+  it("visar stommens gräns och spärrar en för låg byrå tills höjden har rättats", () => {
+    const api = setup();
+    render(<FurnitureStudio principal={principal} api={api} initialFamily="chest_of_drawers" />);
+    const height = screen.getByLabelText("Höjd (mm)");
+    expect(height).toHaveAttribute("min", "300");
+    expect(height).toHaveAttribute("max", "4000");
+    fireEvent.change(height, { target: { value: "299.999" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("mellan 300 och 4000 mm");
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(height, { target: { value: "301" } });
+    expect(screen.queryByText("Ange ett mått mellan 300 och 4000 mm.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  });
+
   it("använder samma exakta diameter i båda riktningarna för en rund skiva", async () => {
     const api = setup();
     render(<FurnitureStudio principal={principal} api={api} initialFamily="dining_table" />);
