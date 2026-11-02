@@ -36,7 +36,7 @@ export function FurnitureFamilyControls({ intent, update, onError }: Props) {
     {field("leg_section_um", "Benens fyrkantsmått", 35, 80)}
     {field("end_inset_um", "Benens indrag", 0, 500)}
     {field("stretcher_height_um", "Sargens höjd", 65, 250)}
-    <p>Fyra separata ben i hyvlad björk. För rund skiva mäts indraget från den inskrivna kvadraten.</p>
+    <p>Fyra ben ur separat hyvlat fyrkantsvirke. Materialet anges i kaplistan. För rund skiva mäts indraget från den inskrivna kvadraten.</p>
   </>;
 
   if (intent.family === "chair") return <>

@@ -104,6 +104,8 @@ def _panel(
         "z": (FaceName.TOP, FaceName.BOTTOM),
     }[thin_axis]
     grain = GrainDirection.Z if thin_axis == "x" else GrainDirection.X
+    if role == PartRole.DRAWER_SIDE and material.material_id == "solid-walnut":
+        grain = GrainDirection.Y
     dimensions = Dimensions3D(width_um=size[0], depth_um=size[1], height_um=size[2])
     return PartInstance(
         part_id=stable_id("part", design.design_id, key),

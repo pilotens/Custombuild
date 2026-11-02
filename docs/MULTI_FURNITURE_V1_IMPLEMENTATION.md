@@ -4,6 +4,28 @@ Arbetsytan `/furniture` har en gemensam versionshanterad modell för hyllsystem,
 gavelbord, matbord, matstolar och byråer. Den nås från startsidan. Befintliga projekt fortsätter i sin
 ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 
+## Prova valnöt och kortare råämnen
+
+Välj **Öppna valnötsexempel** i möbelstudion. Samma arbetsfil finns i
+`examples/furniture/walnut-shelving-4340x2540x280.json`. Exemplet är en öppen hyllstomme i 18 mm amerikansk svartvalnöt med
+6 mm björkplywoodrygg. Rummet är 4 340 × 280 × 2 540 mm (bredd, djup, höjd).
+Provet reserverar 20 mm till vänster, höger och bak. De måtten ska ersättas med
+uppmätta förhållanden för en verklig beställning.
+
+Ange 0 mm mellan modulerna och välj **Fyll i rutnät från råämnets längd**.
+Välj sedan sockel endast på nedersta raden och beräkna modulplanen. Planeraren
+kontrollerar varje råämne med fiberriktning och kantmarginal, även ryggstyckena.
+Den gemensamma kaplistan anger modulrad, kolumn, del, material och lokala fiberaxlar.
+Rad, kolumn och delnamn kan användas för att matcha ritningar även efter att en modul
+sparats som ett eget projekt och fått nya ID:n. Rutnätets startvärden använder huvudmaterialet. De innebär inget antagande om
+antal inköpta ämnen, limfogar, staplingslast eller intermodulförband.
+
+Valnötsprofilen använder artmedel för torr, kvistfri svartvalnöt. Den valda
+batchen, fuktkvoten och rörelsemånen tvärs fibrerna behöver verifieras för
+verkstadsberedning. Underlag för granskning går att exportera.
+[Artdata från AHEC](https://www.americanhardwood.org/en/american-hardwood/american-walnut)
+och [USDA Wood Handbook, kapitel 5](https://www.fpl.fs.usda.gov/documnts/fplgtr/fplgtr282/chapter_05_fpl_gtr282.pdf).
+
 ## Vad som fungerar
 
 | Del | Implementerat beteende |
@@ -15,7 +37,7 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 | Matbord | Fyra ben i hyvlad björk, fyra sargar och rund eller rektangulär skiva. Benmått, indrag och sarghöjd styr delarna och tillhörande skruvhål. |
 | Matstol | Fyra ben, fyra sargar, sits och lutande ryggstöd. Sitthöjd, sittdjup och rygglutning styr geometrin. |
 | Byrå | En eller två kolumner, upp till åtta lådor och valbara fronthöjder nedifrån. Hettich KA 4532 Silent System 350 eller 450 mm ger borrbild på både stomme och låda. |
-| Material | Versionsbundna MDF-/björkplywoodprofiler, uppmätt tjocklek och valfri batchidentitet. Inget automatiskt ersättningsmaterial. |
+| Material | Versionsbundna profiler för MDF, björkplywood och 18 mm massiv amerikansk svartvalnöt, uppmätt tjocklek och valfri batchidentitet. Inget automatiskt ersättningsmaterial. |
 | Beslag | Dokumenterade skenprofiler visar artikelnummer, nominell längd, utdrag och kataloglast. Äldre layoutprofiler saknar borrbild. Pilotdiameter och infästning ska provas på verkligt material. |
 | Verkstad | Separat profil med råskivemått, kantmarginal och fiberriktning; kontroll av maskinområde och varje dels råmått. Materialgrupperat verkstadsunderlag anger nödvändiga råformat. Referensprofiler är uttryckligen okvalificerade. |
 | Arbetsfil | Export/import av versionsbunden JSON. Import kontrolleras av servern och blir ett nytt osparat projekt; en tidigare projektidentitet återanvänds inte. |

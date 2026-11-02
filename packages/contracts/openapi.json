@@ -3082,6 +3082,18 @@
             "title": "Gap Um",
             "type": "integer"
           },
+          "plinth_placement": {
+            "anyOf": [
+              {
+                "const": "floor_row_only",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Plinth Placement"
+          },
           "rows": {
             "maximum": 4.0,
             "minimum": 1.0,

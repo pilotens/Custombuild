@@ -19,10 +19,11 @@ from .materials import (
     screening_birch_plywood_18,
     screening_mdf_6,
     screening_mdf_18,
+    screening_solid_walnut_18,
 )
 from .models import FrozenModel, MaterialVersion, StableKey
 
-CATALOG_VERSION = "furniture-catalog-1.1.0"
+CATALOG_VERSION = "furniture-catalog-1.2.0"
 MATERIAL_CATALOG = MappingProxyType(
     {
         item.material_id: item
@@ -31,6 +32,7 @@ MATERIAL_CATALOG = MappingProxyType(
             screening_birch_plywood_6(),
             screening_mdf_18(),
             screening_mdf_6(),
+            screening_solid_walnut_18(),
         )
     }
 )

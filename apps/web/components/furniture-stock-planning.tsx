@@ -52,7 +52,7 @@ export function FurnitureStockEditor({ workspace, inputDrafts, onChange, onInput
   return <div className={styles.stockEditor}>
     <div role="group" aria-label="Gemensamt råformat">
       <h3>Gemensamt råformat</h3>
-      <p>Gäller material utan eget format. Bredd är maskinens X-led, höjd är Y-led.</p>
+      <p>Gäller skivmaterial utan eget format. Bredd är maskinens X-led och höjd är Y-led. Ange ett eget råformat för massiv valnöt.</p>
       {fields(selection, "manufacturing", (stock, field) => onChange({ ...selection, ...stock }, field))}
     </div>
     {groups.map(binding => {
@@ -65,7 +65,7 @@ export function FurnitureStockEditor({ workspace, inputDrafts, onChange, onInput
           const remaining = overrides.filter(stock => stockKey(stock) !== key);
           setOverrides(e.target.checked ? [...remaining, { ...binding,
             stock_width_um: selection.stock_width_um, stock_height_um: selection.stock_height_um,
-            stock_grain_axis: selection.stock_grain_axis, edge_margin_um: selection.edge_margin_um ?? 0 }] : remaining, prefix);
+            stock_grain_axis: binding.material_id === "solid-walnut" ? null : selection.stock_grain_axis, edge_margin_um: selection.edge_margin_um ?? 0 }] : remaining, prefix);
         }} />Eget råformat för {label}</label>
         {override ? fields(override, prefix, (stock, field) => setOverrides(overrides.map(item =>
           stockKey(item) === key ? { ...binding, ...stock } : item), field ?? `${prefix}.grain`))

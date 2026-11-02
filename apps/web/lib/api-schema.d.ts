@@ -1983,6 +1983,8 @@ export interface components {
             divider_count_per_module: number;
             /** Gap Um */
             gap_um: number;
+            /** Plinth Placement */
+            plinth_placement?: "floor_row_only" | null;
             /** Rows */
             rows: number;
             /** Shelf Count Per Row */

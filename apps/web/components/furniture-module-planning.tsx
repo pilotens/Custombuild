@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CustombuildApiClient } from "@/lib/api-client";
-import { assertMatchingFurnitureModulePlan, type FurnitureModuleGrid, type FurnitureModulePlan, type FurnitureModuleRequirement } from "@/lib/furniture-module-plan";
+import { assertMatchingFurnitureModulePlan, gridFromBlankLength, type FurnitureModuleGrid, type FurnitureModulePlan, type FurnitureModuleRequirement } from "@/lib/furniture-module-plan";
 import type { FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
@@ -28,8 +28,8 @@ function requirementText(requirement: FurnitureModuleRequirement) {
   return requirementLabels[requirement.code] ?? requirement.message;
 }
 
-function downloadJson(document: unknown, name: string) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(document, null, 2) + "\n"], { type: "application/json" }));
+function downloadFile(blob: Blob, name: string) {
+  const url = URL.createObjectURL(blob);
   try {
     const anchor = window.document.createElement("a");
     anchor.href = url;
@@ -54,6 +54,7 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
   const [columns, setColumns] = useState("2");
   const [rows, setRows] = useState("1");
   const [gap, setGap] = useState("");
+  const [floorPlinth, setFloorPlinth] = useState(false);
   const [dividers, setDividers] = useState("0");
   const [shelves, setShelves] = useState<string[]>(["", "", "", ""]);
   const [requestState, setRequestState] = useState<RequestState>();
@@ -64,6 +65,15 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
   const dividerCount = integer(dividers, 0, 16);
   const sourceShelfCount = workspace.design.intent.shelf_count ?? 4;
   const shelfCounts = shelves.slice(0, rowCount ?? 0).map(value => integer(value, 0, 40));
+  const needsPlinthChoice = (rowCount ?? 0) > 1 && Boolean(workspace.design.intent.plinth_height_um);
+  let startGrid: FurnitureModuleGrid | undefined;
+  let gapUm: number | undefined;
+  if (gap.trim()) {
+    try {
+      gapUm = exactMillimetreTextToMicrometres(gap, { minimumUm: 0, maximumUm: 100_000 });
+      startGrid = gridFromBlankLength(workspace, gapUm);
+    } catch { /* A partial number remains editable. */ }
+  }
   let grid: FurnitureModuleGrid | undefined;
   let validation: string;
   if (workspace.design.intent.family !== "shelving") {
@@ -78,24 +88,26 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
     validation = "Ange 0–40 hyllplan per modul för varje rad, nerifrån och upp.";
   } else if (shelfCounts.reduce<number>((sum, value) => sum + (value ?? 0), 0) < sourceShelfCount) {
     validation = `Summan av hyllplanen över raderna måste vara minst ${sourceShelfCount}, som i ursprungsmöbeln.`;
+  } else if (gapUm === undefined) {
+    validation = "Ange ett mellanrum på 0–100 mm med högst tre decimaler.";
+  } else if (needsPlinthChoice && !floorPlinth) {
+    validation = "Välj om sockeln ska sitta enbart på nedersta modulraden.";
   } else {
-    try {
-      const gapUm = exactMillimetreTextToMicrometres(gap, { minimumUm: 0, maximumUm: 100_000 });
-      grid = { columns: columnCount, rows: rowCount, gap_um: gapUm,
-        shelf_count_per_row: shelfCounts as number[], divider_count_per_module: dividerCount };
-      validation = `${rowCount * columnCount} moduler. Bredd och höjd fördelas jämnt efter valt mellanrum.`;
-    } catch {
-      validation = "Ange ett mellanrum på 0–100 mm med högst tre decimaler.";
-    }
+    grid = { columns: columnCount, rows: rowCount, gap_um: gapUm,
+      shelf_count_per_row: shelfCounts as number[], divider_count_per_module: dividerCount,
+      ...(needsPlinthChoice && floorPlinth ? { plinth_placement: "floor_row_only" as const } : {}),
+    };
+    validation = `${rowCount * columnCount} moduler. Bredd och höjd fördelas jämnt efter valt mellanrum.`;
   }
 
   // Bind both pending and completed state to all input values. A change hides
   // the old result immediately, even before the effect invalidates its promise.
-  const key = JSON.stringify([workspace, designHash, columns, rows, gap, dividers, shelves, disabled]);
+  const key = JSON.stringify([workspace, designHash, columns, rows, gap, dividers, shelves, floorPlinth, disabled]);
   const scope = useMemo(() => ({ key, api }), [key, api]);
   const current = requestState?.scope === scope ? requestState : undefined;
   const busy = current?.busy === true;
   const result = current?.result;
+  const cutList = result?.review_cut_list_csv;
   useEffect(() => () => { epoch.current += 1; }, [scope]);
 
   const calculate = async () => {
@@ -121,7 +133,9 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
   const save = (document: unknown, name: string) => {
     if (!canExport) return;
     try {
-      downloadJson(document, name);
+      const blob = document instanceof Blob ? document
+        : new Blob([JSON.stringify(document, null, 2) + "\n"], { type: "application/json" });
+      downloadFile(blob, name);
       if (current?.error) setRequestState({ scope, busy: false, result });
     }
     catch { setRequestState({ scope, busy: false, result, error: "Arbetsfilen kunde inte hämtas. Försök igen." }); }
@@ -148,6 +162,20 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
       </label>)}
       <label>Invändiga avdelare per modul<input type="number" min="0" max="16" step="1" value={dividers}
         onChange={event => setDividers(event.target.value)} /></label>
+      {workspace.manufacturing ? <div>
+        <button type="button" disabled={disabled || busy || !startGrid} onClick={() => {
+          if (!startGrid) return;
+          setColumns(String(startGrid.columns));
+          setRows(String(startGrid.rows));
+          setShelves(Array.from({ length: 4 }, (_, i) => startGrid.shelf_count_per_row[i]?.toString() ?? ""));
+          setDividers(String(startGrid.divider_count_per_module));
+        }}>Fyll i rutnät från råämnets längd</button>
+        <p>Ange mellanrummet först. Startvärdena använder stommens råformat och fiberriktning.
+          Beräkna sedan planen för att kontrollera alla delar, även ryggstyckena.</p>
+      </div> : null}
+      {needsPlinthChoice ? <label><input type="checkbox" checked={floorPlinth}
+        onChange={event => setFloorPlinth(event.target.checked)} />
+        Behåll sockeln endast på nedersta modulraden</label> : null}
       <p id={helpId}>{validation}</p>
       <button type="button" disabled={disabled || busy || !grid} onClick={() => { void calculate(); }}>
         {busy ? "Beräknar modulplan…" : "Beräkna modulplan"}
@@ -225,6 +253,10 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
         <p>Arbetsfilerna är nya modulutkast. Importera varje arbetsfil som ett separat projekt för fortsatt redigering.
           Planen innehåller alla moduler och deras placering. Källprojektet behålls.</p>
         <p>Planen är ett konstruktionsunderlag som behöver granskas före tillverkning.</p>
+        {cutList ? <button type="button" disabled={!canExport} onClick={() => save(
+          new Blob(["\uFEFF", cutList], { type: "text/csv;charset=utf-8" }),
+          `custombuild-moduler-kaplista-${result.plan_hash.slice(0, 12)}.csv`,
+        )}>Hämta gemensam kaplista för granskning (CSV)</button> : null}
         <button type="button" disabled={!canExport} onClick={() => save(result, `custombuild-modulplan-${result.plan_hash.slice(0, 12)}.json`)}>
           Hämta hela modulplanen
         </button>

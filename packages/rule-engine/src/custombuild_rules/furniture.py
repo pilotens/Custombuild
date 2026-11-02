@@ -5,6 +5,7 @@ from __future__ import annotations
 from fractions import Fraction
 from typing import Any
 
+from custombuild_domain.enums import MaterialType
 from custombuild_domain.furniture import ChairIntent, ChestIntent, DiningTableIntent, TableIntent
 from custombuild_domain.furniture_catalog import resolve_material
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
@@ -260,6 +261,17 @@ def evaluate_furniture(result: FurnitureResult) -> dict[str, Any]:
                     rated_pair_load_kg=hardware.rated_pair_load_kg,
                 )
             )
+    if resolve_material(result.spec.material).material_type == MaterialType.SOLID_WOOD:
+        rules.append(
+            _rule(
+                "CB-SOLID-WOOD-001",
+                "Fuktrörelse och verkligt virke",
+                "BLOCK",
+                "Kontrollera art, batch, fuktkvot och fiberriktning. Verkstaden behöver "
+                "granska rörelsemån tvärs fibrerna och hur förband och beslag tillåter "
+                "rörelse innan möbeln kan tillverkas.",
+            )
+        )
     rules.append(
         _rule(
             "CB-FURNITURE-MATERIAL-001",

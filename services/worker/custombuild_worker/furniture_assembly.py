@@ -228,9 +228,12 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
         )
     instructions = []
     if isinstance(intent, ChairIntent | DiningTableIntent):
+        leg_wood = (
+            "valnötsämne" if result.spec.material.material_id == "solid-walnut" else "björkämne"
+        )
         instructions = [
             (
-                "Kapa fyra ben ur separat hyvlat björkämne och märk varje ben och sarg "
+                f"Kapa fyra ben ur separat hyvlat {leg_wood} och märk varje ben och sarg "
                 "enligt dellistan."
             ),
             (
@@ -305,6 +308,11 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                 "detta äldre gavelbord behöver specificeras före montering."
             )
         ]
+    if result.spec.material.material_id == "solid-walnut":
+        instructions.append(
+            "Mät virkesfukten. Kontrollera fiberriktningen på varje ämne och verifiera "
+            "att förband och infästningar tillåter fuktrörelse tvärs fibrerna."
+        )
     styles = getSampleStyleSheet()
 
     def para(t: str, style: str = "BodyText") -> Paragraph:

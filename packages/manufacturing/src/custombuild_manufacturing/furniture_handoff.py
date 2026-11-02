@@ -97,6 +97,11 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
             "qualified_adhesive_free_retention",
             "postprocessor_and_simulation",
             "physical_joint_coupon_and_first_article_measurements",
+            *(
+                ["timber_moisture_content", "cross_grain_movement_and_fixings"]
+                if result.spec.material.material_id == "solid-walnut"
+                else []
+            ),
         ],
         "scope": "Raw-blank dimensions exclude sheet margins, tool clearance and nesting waste. "
         "Area is not an order quantity. Oversized parts require a different stock/setup or an "

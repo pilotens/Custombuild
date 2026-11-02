@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from custombuild_domain.enums import MaterialType
 from custombuild_domain.furniture import ManufacturingSelection
+from custombuild_domain.furniture_catalog import MATERIAL_CATALOG
 from custombuild_domain.furniture_engine import FurnitureResult
 
 from .furniture_handoff import furniture_stock_requirements
@@ -62,7 +64,19 @@ def plan_furniture_stock(
                 entry["part_id"] = part_id
             target.append(entry)
 
-        if key[0] == "birch-square-stock":
+        material = MATERIAL_CATALOG.get(key[0])
+        missing_wood_blank = (
+            material is not None
+            and material.material_type == MaterialType.SOLID_WOOD
+            and key not in overrides
+        )
+        if missing_wood_blank:
+            issue(
+                "SOLID_WOOD_BLANK_REQUIRED",
+                "Ange användbart råämne och fiberriktning för valnöten separat. "
+                "Varje del behöver rymmas i ett ämne. Limfog antas inte.",
+            )
+        if key[0] in {"birch-square-stock", "walnut-square-stock"}:
             issue(
                 "SOLID_TIMBER_STOCK_REQUIRED",
                 "Benens längder finns i kaplistan. Välj och kontrollera separat hyvlat "
@@ -83,6 +97,10 @@ def plan_furniture_stock(
         parts: list[dict[str, Any]] = []
         envelopes = {(0, 0)}
         for part in requirement["parts"]:
+            if missing_wood_blank:
+                parts.append({**part, "fits_stock": None, "orientations": []})
+                envelopes.clear()
+                continue
             grain = part["grain_direction"]
             rotations: tuple[bool, ...] = (False, True)
             if grain != "NONE":

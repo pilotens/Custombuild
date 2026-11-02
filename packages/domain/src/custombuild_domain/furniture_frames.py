@@ -166,6 +166,9 @@ def build_frame(
     holes: dict[str, list[ManufacturingFeature]] = {}
     joints: list[Joint] = []
     panel = resolve_material(design.material)
+    walnut = panel.material_id == "solid-walnut"
+    leg_stock_id = "walnut-square-stock" if walnut else "birch-square-stock"
+    leg_density = panel.density_kg_m3 if walnut else 650
     t = design.material.measured_thickness_um
     if not 16_000 <= t <= 25_000:
         raise ValueError("Ramkonstruktionen kräver 16–25 mm skivmaterial.")
@@ -188,10 +191,13 @@ def build_frame(
         if min(dims) <= 0 or min(pos) < 0:
             raise ValueError("Måtten lämnar inte plats för ramens delar.")
         size = Dimensions3D(width_um=dims[0], depth_um=dims[1], height_um=dims[2])
-        # Legs are separately procured square birch stock. 650 kg/m³ is a mass estimate only.
+        # Legs use separately procured planed square stock. Density estimates give mass only.
         volume = dims[0] * dims[1] * dims[2]
         weight = ceil(
-            volume * (650 if leg else panel.density_kg_m3) * (pi / 4 if circle else 1) / 10**15
+            volume
+            * (leg_density if leg else panel.density_kg_m3)
+            * (pi / 4 if circle else 1)
+            / 10**15
         )
         part = PartInstance(
             part_id=stable_id("part", design.design_id, key),
@@ -202,7 +208,7 @@ def build_frame(
             finished_size=size,
             raw_size=size,
             placement=Placement(x_um=pos[0], y_um=pos[1], z_um=pos[2], rotation_x_mdeg=angle),
-            material_id="birch-square-stock" if leg else panel.material_id,
+            material_id=leg_stock_id if leg else panel.material_id,
             material_version="dimensional-v1" if leg else panel.version,
             actual_thickness_um=dims[axis],
             a_side=FACES[axis][1],

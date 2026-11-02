@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import walnutExample from "../../../examples/furniture/walnut-shelving-4340x2540x280.json";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { CustombuildApiClient, type CurrentPrincipal, type ProjectRead } from "@/lib/api-client";
 import {
@@ -89,6 +90,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   const profileDirtyChanged = useCallback((value: boolean) => setProfileDirty(value), []);
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
+  const solidWood = workspace.design.material.material_id === "solid-walnut";
   const exceedsExportLimit = (preview?.design.parts.length ?? 0) > 128;
   const linearShelfLoad = intent.family === "shelving" && intent.shelf_load_basis === "per_metre";
   const update = (next: FurnitureWorkspace) => {
@@ -260,17 +262,18 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     } catch (reason) { setExportMessage(errorText(reason)); }
     finally { setBusy(false); }
   };
-  const importWorkspace = async (file: File) => {
+  const importWorkspace = async (file?: File) => {
     setBusy(true); const epoch = ++mutationEpoch.current;
     try {
-      if (file.size > 256 * 1024) throw new Error("Arbetsfilen får vara högst 256 kB.");
-      const document = JSON.parse(await file.text()) as FurnitureWorkspace;
+      if (file && file.size > 256 * 1024) throw new Error("Arbetsfilen får vara högst 256 kB.");
+      const document = (file ? JSON.parse(await file.text()) : walnutExample) as FurnitureWorkspace;
       const proposed = { ...document, design: { ...document.design, design_id: "furniture", revision: 1 } };
       const checked = await api.previewFurniture(proposed);
       if (epoch !== mutationEpoch.current) return;
       resetInputDrafts(); update(checked.workspace); setBaseline(""); setProjectId(undefined); setRevision(0);
       setPreview(checked); setHistory({ items: [], next_offset: null });
-      setName(file.name.replace(/\.json$/i, "").slice(0, 180));
+      setName(file ? file.name.replace(/\.json$/i, "").slice(0, 180) : "Hyllstomme i valnöt");
+      setSelectedPart(undefined); setDrawersOpen(false);
       setNotice("Arbetsfilen har kontrollerats. Spara som ett nytt projekt för att skapa underlag.");
     } catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); }
@@ -297,6 +300,9 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
         <label>Läs arbetsfil (JSON)<input type="file" accept=".json,application/json" disabled={busy || !mayEdit}
           onChange={e => { const file = e.target.files?.[0]; e.target.value = "";
             if (file) navigate(() => { void importWorkspace(file); }); }} /></label>
+        <button disabled={busy || !mayEdit} onClick={() => navigate(() => { void importWorkspace(); })}>
+          Öppna valnötsexempel
+        </button>
         <button disabled={busy || invalidInput || profileDirty} onClick={exportWorkspace}>Spara arbetsfil</button>
         <label>Öppna projekt<select aria-label="Öppna möbelprojekt" value={projectId ?? ""}
           disabled={busy} onChange={e => { if (e.target.value) openProject(e.target.value); }}>
@@ -407,10 +413,10 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
         {preview ? <p>{(preview.design.total_weight_g/1_000).toFixed(1)} kg beräknad bruttovikt · {dirty ? "Osparade ändringar" : revision ? "Sparad revision" : "Nytt utkast"}</p> : null}
       </div>
       {intent.family === "shelving" ? <div>
-        <button className={styles.primary} disabled={busy || dirty || !projectId || !preview || !workspace.manufacturing
+        <button className={styles.primary} disabled={busy || dirty || solidWood || !projectId || !preview || !workspace.manufacturing
           || preview.workshop_handoff?.dimensions.state === "requires_resolution"}
           onClick={() => setProductionOpen(true)}>Förbered tillverkning</button>
-        <p>{profileDirty ? "Använd eller återställ profilförslaget först." : dirty || !revision ? "Spara möbeln först." : !workspace.manufacturing
+        <p>{solidWood ? "Massiv valnöt kan exporteras som granskningspaket. Fuktrörelse och förband behöver granskas före tillverkning." : profileDirty ? "Använd eller återställ profilförslaget först." : dirty || !revision ? "Spara möbeln först." : !workspace.manufacturing
           ? "Välj och spara en planeringsprofil för att börja bereda. Verklig verkstad kan väljas senare."
           : preview?.workshop_handoff?.dimensions.state === "requires_resolution"
             ? "Kundmått och listkonstruktion behöver lösas innan tillverkningsberedningen öppnas."
@@ -508,6 +514,10 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChan
               measured_thickness_um: material.nominal_thickness_um, batch_id: null } } }, key);
           }}>{catalog.materials.filter(m => m.nominal_thickness_um === (key === "material" ? 18_000 : 6_000))
             .map(m => <option key={m.material_id} value={m.material_id}>{m.name}</option>)}</select></label>
+        {proposed.design[key].material_id === "solid-walnut" ? <p>
+          Profilen avser amerikansk svartvalnöt, 17–19 mm. Ange ämnets råformat och fiberriktning.
+          Rygg och lådbotten har egna materialval.
+        </p> : null}
         <label>{key === "material" ? "Uppmätt skivtjocklek (mm)" : "Uppmätt rygg-/bottentjocklek (mm)"}
           <input type="number" min="1" step="0.001" value={inputDrafts[`${key}.thickness`] ?? proposed.design[key].measured_thickness_um/1_000}
             onChange={e => withMillimetres(`${key}.thickness`, e.target.value, value => ({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
