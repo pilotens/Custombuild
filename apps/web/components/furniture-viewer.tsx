@@ -1625,6 +1625,7 @@ function PartMesh({
   return (
     <mesh
       position={transform.position}
+      rotation={[part.rotation_x_rad ?? 0, 0, 0]}
       castShadow={appearance.castShadow}
       receiveShadow
       onClick={handleSelect}
@@ -1640,7 +1641,7 @@ function PartMesh({
       }}
       onPointerOut={() => setHovered(false)}
     >
-      <boxGeometry args={partSize(part)} />
+      {part.circular_outline ? <cylinderGeometry args={[part.width_mm/2000, part.width_mm/2000, part.thickness_mm/1000, 96]} /> : <boxGeometry args={partSize(part)} />}
       <meshStandardMaterial
         color={appearance.color}
         roughness={appearance.materialVisual.roughness}
@@ -2165,7 +2166,7 @@ function Scene(props: FurnitureViewerProps & {
       : partSupportsVerticalDrag(part, props.parts) && Boolean(props.onPartMove);
   };
   const orbitPerformanceProps = viewerOrbitControlsPerformanceProps(props.parts.length);
-  const partRenderMode = viewerPartRenderMode(props.parts.length, props.transparent);
+  const partRenderMode = props.parts.some(p => p.rotation_x_rad || p.circular_outline) ? "standard" : viewerPartRenderMode(props.parts.length, props.transparent);
 
   return (
     <>

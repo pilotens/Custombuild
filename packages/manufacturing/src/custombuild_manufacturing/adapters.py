@@ -37,6 +37,11 @@ class AdaptedDesign:
 
 
 _ROLE_AXES: dict[str, PanelAxisMapping] = {
+    "FRAME_LEG": PanelAxisMapping("y", "z", "x"),
+    "FRAME_RAIL_X": PanelAxisMapping("x", "z", "y"),
+    "FRAME_RAIL_Y": PanelAxisMapping("y", "z", "x"),
+    "CHAIR_BACK": PanelAxisMapping("x", "z", "y"),
+    "CHAIR_SEAT": PanelAxisMapping("x", "y", "z"),
     "LEFT_SIDE": PanelAxisMapping("y", "z", "x"),
     "RIGHT_SIDE": PanelAxisMapping("y", "z", "x"),
     "SIDE_LEFT": PanelAxisMapping("y", "z", "x"),
@@ -239,6 +244,7 @@ def adapt_domain_part(part: Any) -> PartSpec:
         edge_bands=edge_bands,
         edge_band_details=edge_band_details,
         metadata={
+            **({"circular_outline": True} if getattr(part, "circular_outline", False) else {}),
             "domain_instance_index": int(getattr(part, "instance_index", 0)),
             "domain_a_side": a_side,
             "domain_b_side": b_side,

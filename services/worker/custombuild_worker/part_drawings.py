@@ -12,9 +12,11 @@ from dataclasses import dataclass
 from typing import Any
 from xml.etree import ElementTree
 
+from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_manufacturing import FeatureKind, ManufacturingFeature, PartSpec, Side
 from custombuild_manufacturing.adapters import adapt_design_result
 from custombuild_manufacturing.exporters import svg_for_part
+from custombuild_manufacturing.furniture_faces import DrawingFace, drawing_faces
 from custombuild_manufacturing.model import um_to_mm
 from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import A4
@@ -245,8 +247,15 @@ def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> 
     canvas.setTitle("Custombuild - delritningar för verkstadsgranskning")
     canvas.setAuthor("Custombuild deterministic document engine")
     page_number = 0
-    for part in sorted(adapted.parts, key=lambda value: value.part_id):
-        for side in (Side.A, Side.B):
+    sources = {p.part_id: p for p in design.parts} if isinstance(design, FurnitureResult) else {}
+    for original in sorted(adapted.parts, key=lambda value: value.part_id):
+        views = (
+            drawing_faces(sources[original.part_id], original)
+            if isinstance(design, FurnitureResult)
+            else tuple(DrawingFace(side.value, original, side) for side in (Side.A, Side.B))
+        )
+        for view in views:
+            part, side = view.part, view.side
             # Only our own validated, escaped exporter output is parsed here.
             root = ElementTree.fromstring(svg_for_part(part, side))  # noqa: S314
             metadata_node = root.find(f"{SVG_NS}metadata")
@@ -264,7 +273,7 @@ def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> 
                 page_number += 1
                 canvas.setFillColor(INK)
                 canvas.setFont("Helvetica-Bold", 17)
-                canvas.drawString(MARGIN, 806, f"Delritning - sida {side.value}")
+                canvas.drawString(MARGIN, 806, f"Delritning - sida {view.name}")
                 canvas.setFont("Helvetica", 8)
                 canvas.drawRightString(PAGE_WIDTH - MARGIN, 808, f"Blad {sheet_index}/{len(pages)}")
                 _text(canvas, MARGIN, 788, f"{part.name} | {part.part_id}")

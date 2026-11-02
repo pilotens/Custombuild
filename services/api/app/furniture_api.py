@@ -33,6 +33,7 @@ from .api import (
     _ARTIFACT_STREAM_OPERATION_DEPENDENCY,
     DownloadSessionDep,
     _verified_artifact_response,
+    create_project,
 )
 from .auth import Capability, Principal, get_principal, require_capability
 from .furniture_schemas import (
@@ -56,6 +57,7 @@ from .models import (
     Project,
 )
 from .repository import audit, tenant_project, tenant_session
+from .schemas import ProjectCreate, ProjectRead
 from .storage import (
     ArtifactIntegrityError,
     ArtifactStorageUnavailableError,
@@ -87,6 +89,17 @@ class FurnitureDraftSave(BaseModel):
     model_config = ConfigDict(extra="forbid")
     expected_revision: int = Field(ge=0)
     workspace: FurnitureWorkspace
+
+
+class NewFurnitureProject(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=180)
+    workspace: FurnitureWorkspace
+
+
+class CreatedFurnitureProject(BaseModel):
+    project: ProjectRead
+    draft: FurnitureDraftRead
 
 
 class FurnitureExportRequest(BaseModel):
@@ -362,6 +375,26 @@ def save_draft(
         "workspace": workspace.model_dump(mode="json"),
         "preview": preview_result,
     }
+
+
+@router.post(
+    "/projects",
+    response_model=CreatedFurnitureProject,
+    status_code=201,
+    response_model_exclude_unset=True,
+)
+def create_furniture_project(
+    payload: NewFurnitureProject, principal: DesignerDep, session: SessionDep
+) -> dict[str, Any]:
+    # The request-scoped transaction rolls the project back if geometry validation fails.
+    project = create_project(ProjectCreate(name=payload.name), session, principal)
+    draft = save_draft(
+        project.id,
+        FurnitureDraftSave(expected_revision=0, workspace=payload.workspace),
+        principal,
+        session,
+    )
+    return {"project": ProjectRead.model_validate(project), "draft": draft}
 
 
 @router.get(

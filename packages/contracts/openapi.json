@@ -1002,6 +1002,75 @@
         "title": "CAMApprovalReleaseBinding",
         "type": "object"
       },
+      "ChairIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "back_angle_mdeg": {
+            "default": 10000,
+            "maximum": 18000.0,
+            "minimum": 0.0,
+            "title": "Back Angle Mdeg",
+            "type": "integer"
+          },
+          "depth_um": {
+            "default": 500000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "family": {
+            "const": "chair",
+            "default": "chair",
+            "title": "Family",
+            "type": "string"
+          },
+          "height_um": {
+            "default": 850000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "leg_section_um": {
+            "default": 50000,
+            "maximum": 75000.0,
+            "minimum": 35000.0,
+            "title": "Leg Section Um",
+            "type": "integer"
+          },
+          "seat_depth_um": {
+            "default": 450000,
+            "maximum": 700000.0,
+            "minimum": 200000.0,
+            "title": "Seat Depth Um",
+            "type": "integer"
+          },
+          "seat_height_um": {
+            "default": 450000,
+            "maximum": 700000.0,
+            "minimum": 250000.0,
+            "title": "Seat Height Um",
+            "type": "integer"
+          },
+          "seat_load_n": {
+            "default": 900,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Seat Load N",
+            "type": "integer"
+          },
+          "width_um": {
+            "default": 460000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "title": "ChairIntent",
+        "type": "object"
+      },
       "ChestIntent": {
         "additionalProperties": false,
         "properties": {
@@ -1010,6 +1079,15 @@
             "maximum": 6000000.0,
             "minimum": 1.0,
             "title": "Depth Um",
+            "type": "integer"
+          },
+          "drawer_columns": {
+            "default": 1,
+            "enum": [
+              1,
+              2
+            ],
+            "title": "Drawer Columns",
             "type": "integer"
           },
           "drawer_count": {
@@ -1039,12 +1117,32 @@
             "title": "Front Gap Um",
             "type": "integer"
           },
+          "gap_basis": {
+            "default": "per_edge",
+            "enum": [
+              "per_edge",
+              "clear_reveal"
+            ],
+            "title": "Gap Basis",
+            "type": "string"
+          },
           "height_um": {
             "default": 900000,
             "maximum": 6000000.0,
             "minimum": 1.0,
             "title": "Height Um",
             "type": "integer"
+          },
+          "row_front_heights_um": {
+            "default": [],
+            "items": {
+              "maximum": 6000000.0,
+              "minimum": 1.0,
+              "type": "integer"
+            },
+            "maxItems": 7,
+            "title": "Row Front Heights Um",
+            "type": "array"
           },
           "width_um": {
             "default": 800000,
@@ -1055,6 +1153,22 @@
           }
         },
         "title": "ChestIntent",
+        "type": "object"
+      },
+      "CreatedFurnitureProject": {
+        "properties": {
+          "draft": {
+            "$ref": "#/components/schemas/FurnitureDraftRead"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectRead"
+          }
+        },
+        "required": [
+          "project",
+          "draft"
+        ],
+        "title": "CreatedFurnitureProject",
         "type": "object"
       },
       "DesignResult": {
@@ -1404,6 +1518,77 @@
           "height_um"
         ],
         "title": "Dimensions3D",
+        "type": "object"
+      },
+      "DiningTableIntent": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_um": {
+            "default": 900000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "end_inset_um": {
+            "default": 90000,
+            "maximum": 500000.0,
+            "minimum": 0.0,
+            "title": "End Inset Um",
+            "type": "integer"
+          },
+          "family": {
+            "const": "dining_table",
+            "default": "dining_table",
+            "title": "Family",
+            "type": "string"
+          },
+          "height_um": {
+            "default": 750000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "leg_section_um": {
+            "default": 55000,
+            "maximum": 80000.0,
+            "minimum": 35000.0,
+            "title": "Leg Section Um",
+            "type": "integer"
+          },
+          "stretcher_height_um": {
+            "default": 95000,
+            "maximum": 250000.0,
+            "minimum": 65000.0,
+            "title": "Stretcher Height Um",
+            "type": "integer"
+          },
+          "top_load_n": {
+            "default": 300,
+            "maximum": 5000.0,
+            "minimum": 0.0,
+            "title": "Top Load N",
+            "type": "integer"
+          },
+          "top_shape": {
+            "default": "rectangle",
+            "enum": [
+              "rectangle",
+              "round"
+            ],
+            "title": "Top Shape",
+            "type": "string"
+          },
+          "width_um": {
+            "default": 1800000,
+            "maximum": 6000000.0,
+            "minimum": 1.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "title": "DiningTableIntent",
         "type": "object"
       },
       "EdgeBand": {
@@ -2003,7 +2188,9 @@
           "intent": {
             "discriminator": {
               "mapping": {
+                "chair": "#/components/schemas/ChairIntent",
                 "chest_of_drawers": "#/components/schemas/ChestIntent",
+                "dining_table": "#/components/schemas/DiningTableIntent",
                 "shelving": "#/components/schemas/ShelvingIntent",
                 "table": "#/components/schemas/TableIntent"
               },
@@ -2018,6 +2205,12 @@
               },
               {
                 "$ref": "#/components/schemas/ChestIntent"
+              },
+              {
+                "$ref": "#/components/schemas/DiningTableIntent"
+              },
+              {
+                "$ref": "#/components/schemas/ChairIntent"
               }
             ],
             "title": "Intent"
@@ -2373,7 +2566,9 @@
             "enum": [
               "shelving",
               "table",
-              "chest_of_drawers"
+              "chest_of_drawers",
+              "dining_table",
+              "chair"
             ],
             "title": "Id",
             "type": "string"
@@ -2415,7 +2610,9 @@
             "enum": [
               "shelving",
               "table",
-              "chest_of_drawers"
+              "chest_of_drawers",
+              "dining_table",
+              "chair"
             ],
             "title": "Family",
             "type": "string"
@@ -2636,6 +2833,13 @@
         ],
         "title": "FurnitureIssueRead",
         "type": "object"
+      },
+      "FurnitureJointType": {
+        "enum": [
+          "wood_screw"
+        ],
+        "title": "FurnitureJointType",
+        "type": "string"
       },
       "FurnitureMachineRead": {
         "additionalProperties": false,
@@ -3245,7 +3449,7 @@
             "type": "string"
           },
           "engine_version": {
-            "default": "furniture-families-1.0.0",
+            "default": "furniture-families-2.0.0",
             "title": "Engine Version",
             "type": "string"
           },
@@ -4122,10 +4326,26 @@
       "HardwareProfile": {
         "additionalProperties": false,
         "properties": {
+          "cabinet_holes_um": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Cabinet Holes Um",
+            "type": "array"
+          },
           "catalog_id": {
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
             "title": "Catalog Id",
             "type": "string"
+          },
+          "drawer_holes_um": {
+            "default": [],
+            "items": {
+              "type": "integer"
+            },
+            "title": "Drawer Holes Um",
+            "type": "array"
           },
           "family": {
             "enum": [
@@ -4154,6 +4374,17 @@
             "default": false,
             "title": "Production Qualified",
             "type": "boolean"
+          },
+          "rated_pair_load_kg": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rated Pair Load Kg"
           },
           "rear_clearance_um": {
             "default": 10000,
@@ -4614,7 +4845,15 @@
             "type": "string"
           },
           "joint_type": {
-            "$ref": "#/components/schemas/JointType"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/JointType"
+              },
+              {
+                "$ref": "#/components/schemas/FurnitureJointType"
+              }
+            ],
+            "title": "Joint Type"
           },
           "mating_origin": {
             "$ref": "#/components/schemas/Point3D"
@@ -5275,9 +5514,20 @@
             "title": "Part Ids",
             "type": "array"
           },
-          "rated_load_n": {
+          "rated_pair_load_kg": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rated Pair Load Kg"
+          },
+          "requested_load_n": {
             "minimum": 0.0,
-            "title": "Rated Load N",
+            "title": "Requested Load N",
             "type": "integer"
           },
           "travel_um": {
@@ -5290,9 +5540,29 @@
           "group_id",
           "part_ids",
           "travel_um",
-          "rated_load_n"
+          "requested_load_n"
         ],
         "title": "MovingGroup",
+        "type": "object"
+      },
+      "NewFurnitureProject": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "maxLength": 180,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "name",
+          "workspace"
+        ],
+        "title": "NewFurnitureProject",
         "type": "object"
       },
       "OpenEndRelief": {
@@ -5321,6 +5591,11 @@
           "b_side": {
             "$ref": "#/components/schemas/FaceName",
             "default": "b"
+          },
+          "circular_outline": {
+            "default": false,
+            "title": "Circular Outline",
+            "type": "boolean"
           },
           "edge_bands": {
             "default": [],
@@ -5443,6 +5718,11 @@
           "base_bottom",
           "base_top",
           "cabinet_front",
+          "frame_leg",
+          "frame_rail_x",
+          "frame_rail_y",
+          "chair_seat",
+          "chair_back",
           "table_end",
           "table_stretcher",
           "drawer_side",
@@ -7790,6 +8070,52 @@
           }
         ],
         "summary": "Profile Change",
+        "tags": [
+          "furniture-design"
+        ]
+      }
+    },
+    "/v1/furniture/projects": {
+      "post": {
+        "operationId": "create_furniture_project_v1_furniture_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewFurnitureProject"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatedFurnitureProject"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Create Furniture Project",
         "tags": [
           "furniture-design"
         ]

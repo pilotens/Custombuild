@@ -62,6 +62,12 @@ def plan_furniture_stock(
                 entry["part_id"] = part_id
             target.append(entry)
 
+        if key[0] == "birch-square-stock":
+            issue(
+                "SOLID_TIMBER_STOCK_REQUIRED",
+                "Benens längder finns i kaplistan. Välj och kontrollera separat hyvlat "
+                "fyrkantsvirke och uppspänningen för kant- och ändborrning.",
+            )
         sw, sh, margin = stock.stock_width_um, stock.stock_height_um, stock.edge_margin_um
         uw, uh = sw - 2 * margin, sh - 2 * margin
         if sw > machine.work_width_um or sh > machine.work_height_um:

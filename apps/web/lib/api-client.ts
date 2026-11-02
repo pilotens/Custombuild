@@ -1745,6 +1745,14 @@ export class CustombuildApiClient {
     return result;
   }
 
+  async createFurnitureProject(name: string, workspace: FurnitureWorkspace): Promise<{project: ProjectRead; draft: FurnitureDraft}> {
+    const result = await this.request<{project: ProjectRead; draft: FurnitureDraft}>("/v1/furniture/projects",{
+      method:"POST",body:JSON.stringify({name,workspace})
+    });
+    if (result.draft.preview) assertFurniturePreview(result.draft.preview);
+    return result;
+  }
+
   async saveFurnitureDraft(projectId: string, revision: number, workspace: FurnitureWorkspace): Promise<FurnitureDraft> {
     const result = await this.request<FurnitureDraft>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/draft`, {
       method: "PUT", body: JSON.stringify({ expected_revision: revision, workspace }),

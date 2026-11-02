@@ -12,6 +12,7 @@ import {
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
+import { FurnitureFamilyControls } from "./furniture-family-controls";
 import { FurnitureProduction } from "./furniture-production";
 import { FurnitureStockRequirements, InstallationEditor, ShelvingLayoutEditor } from "./furniture-dimensions";
 import { FurnitureRuleValues } from "./furniture-rule-values";
@@ -25,7 +26,7 @@ const Viewer = dynamic(() => import("./furniture-viewer"), {
 const errorText = (error: unknown) => error instanceof Error ? error.message : "Åtgärden misslyckades.";
 const fingerprint = (workspace: FurnitureWorkspace) => JSON.stringify(workspace);
 
-export function FurnitureWorkspacePage({ runtimeConfig }: { runtimeConfig: PublicRuntimeConfig }) {
+export function FurnitureWorkspacePage({ runtimeConfig, initialFamily, initialProject }: { runtimeConfig: PublicRuntimeConfig; initialFamily?: FurnitureFamily; initialProject?: string }) {
   const api = useMemo(() => new CustombuildApiClient(runtimeConfig.apiUrl, undefined,
     runtimeConfig.developmentToken), [runtimeConfig.apiUrl, runtimeConfig.developmentToken]);
   const [principal, setPrincipal] = useState<CurrentPrincipal>();
@@ -43,8 +44,8 @@ export function FurnitureWorkspacePage({ runtimeConfig }: { runtimeConfig: Publi
       <Link href="/">Till startsidan</Link>
     </header>
     {principal ? <FurnitureStudio key={`${principal.organization_id}:${principal.user_id}`}
-      api={api} principal={principal} /> : <section className={styles.intro}>
-      <h1>Bord, byråer och hyllsystem</h1>
+      api={api} principal={principal} initialFamily={initialFamily} initialProject={initialProject} /> : <section className={styles.intro}>
+      <h1>Matbord, stolar, byråer och hyllsystem</h1>
       <p>Forma möbeln, jämför material och välj tillverkning när du är redo.</p>
       {error ? <><p role="alert">{error}</p><Link href="/">Logga in från startsidan</Link></>
         : <p role="status">Öppnar din arbetsyta…</p>}
@@ -52,14 +53,19 @@ export function FurnitureWorkspacePage({ runtimeConfig }: { runtimeConfig: Publi
   </main>;
 }
 
-export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient; principal: CurrentPrincipal }) {
-  const [workspace, setWorkspace] = useState(() => newFurnitureWorkspace("table"));
-  const [baseline, setBaseline] = useState(() => fingerprint(newFurnitureWorkspace("table")));
+const defaultProjectNames: Record<FurnitureFamily, string> = {
+  dining_table: "Mitt matbord", chair: "Min matstol", chest_of_drawers: "Min byrå",
+  table: "Mitt bord", shelving: "Mitt hyllsystem",
+};
+
+export function FurnitureStudio({ api, principal, initialFamily = "table", initialProject }: { api: CustombuildApiClient; principal: CurrentPrincipal; initialFamily?: FurnitureFamily; initialProject?: string }) {
+  const [workspace, setWorkspace] = useState(() => newFurnitureWorkspace(initialFamily));
+  const [baseline, setBaseline] = useState(() => fingerprint(newFurnitureWorkspace(initialFamily)));
   const [catalog, setCatalog] = useState<FurnitureCatalog>();
   const [projects, setProjects] = useState<ProjectRead[]>([]);
   const [projectId, setProjectId] = useState<string>();
   const [revision, setRevision] = useState(0);
-  const [name, setName] = useState("Mitt bord");
+  const [name, setName] = useState(defaultProjectNames[initialFamily]);
   const [preview, setPreview] = useState<FurniturePreview>();
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -82,6 +88,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
   const profileDirtyChanged = useCallback((value: boolean) => setProfileDirty(value), []);
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
+  const exceedsExportLimit = (preview?.design.parts.length ?? 0) > 128;
   const linearShelfLoad = intent.family === "shelving" && intent.shelf_load_basis === "per_metre";
   const update = (next: FurnitureWorkspace) => {
     mutationEpoch.current += 1;
@@ -172,13 +179,22 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     const next = newFurnitureWorkspace(family);
     resetInputDrafts();
     update(next); setBaseline(fingerprint(next)); setProjectId(undefined); setRevision(0);
-    setHistory({ items: [], next_offset: null }); setName(`Min ${FURNITURE_FAMILY_LABELS[family].toLowerCase()}`);
+    setHistory({ items: [], next_offset: null }); setName(defaultProjectNames[family]);
     setDrawersOpen(false); setSelectedPart(undefined);
   });
   const changeDimension = (key: string, value: number) => {
     if (!Number.isSafeInteger(value)) return;
     clearInputError(`carcass.${key}`);
-    update({ ...workspace, design: { ...workspace.design, intent: { ...intent, [key]: value } } });
+    const nextIntent = { ...intent, [key]: value };
+    if (intent.top_shape === "round" && (key === "width_um" || key === "depth_um")) {
+      nextIntent.width_um = value;
+      nextIntent.depth_um = value;
+    }
+    if (key === "drawer_count") {
+      const rows = Math.floor(value / (intent.drawer_columns ?? 1));
+      nextIntent.row_front_heights_um = (intent.row_front_heights_um ?? []).slice(0, Math.max(0, rows - 1));
+    }
+    update({ ...workspace, design: { ...workspace.design, intent: nextIntent } });
   };
   const changeMillimetres = (key: string, raw: string) => {
     try { changeDimension(key, exactMillimetreTextToMicrometres(raw, { maximumUm: 6_000_000 })); }
@@ -195,17 +211,20 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
       setDrawersOpen(false); setSelectedPart(undefined);
     }).catch(reason => setError(errorText(reason))).finally(() => setBusy(false));
   });
+  const openedInitialProject = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!initialProject || openedInitialProject.current === initialProject || !projects.some(p => p.id===initialProject)) return;
+    openedInitialProject.current = initialProject;
+    openProject(initialProject);
+  });
   const save = async () => {
     if (invalidInput || profileDirty) return;
     setBusy(true); setError(undefined);
     try {
-      let id = projectId;
-      if (!id) {
-        const project = await api.createProject(name.trim());
-        id = project.id; setProjectId(id);
-        setProjects(items => [...items, { ...project, furniture_type: intent.family }]);
-      }
-      const saved = await api.saveFurnitureDraft(id, revision, workspace);
+      const created = projectId ? undefined : await api.createFurnitureProject(name.trim(), workspace);
+      const id = created?.project.id ?? projectId!;
+      const saved = created ? created.draft : await api.saveFurnitureDraft(id, revision, workspace);
+      if (created) { setProjectId(id); setProjects(items => [...items, created.project]); }
       if (!saved.workspace) throw new Error("Servern returnerade inget sparat utkast.");
       update(saved.workspace); setBaseline(fingerprint(saved.workspace)); setRevision(saved.revision);
       setPreview(saved.preview ?? undefined); setNotice(`Revision ${saved.revision} är sparad.`);
@@ -214,7 +233,7 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
     finally { setBusy(false); }
   };
   const exportReview = async () => {
-    if (!projectId || !preview || dirty) return;
+    if (!projectId || !preview || dirty || exceedsExportLimit) return;
     setBusy(true); setDownload(undefined); setExportMessage(undefined);
     const epoch = mutationEpoch.current;
     try {
@@ -293,9 +312,16 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
           {Object.entries(FURNITURE_FAMILY_LABELS).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
         </select></label>
         <fieldset disabled={busy || !mayEdit || profileDirty}><legend>Stommått i millimeter</legend>
-          {([['width_um', 'Bredd'], ['height_um', 'Höjd'], ['depth_um', 'Djup']] as const).map(([key, label]) =>
+          {(intent.family === "dining_table" && intent.top_shape === "round"
+            ? [["width_um", "Diameter"], ["height_um", "Höjd"]] as const
+            : [["width_um", "Bredd"], ["height_um", "Höjd"], ["depth_um", "Djup"]] as const
+          ).map(([key, label]) =>
             <label key={key}>{label}<input aria-label={`${label} (mm)`} type="number" step="0.001" min="1" max="6000"
-              value={intent[key]/1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
+              value={intent[key] / 1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
+          <FurnitureFamilyControls intent={intent} onError={inputError} update={(patch, field) => updateInput(
+            { ...workspace, design: { ...workspace.design, intent: { ...intent, ...patch } } },
+            field ? `family.${field}` : "family",
+          )} />
           {intent.family === "table" ? <>
             <label>Gavelns indrag (mm)<input type="number" step="1" min="0" value={(intent.end_inset_um ?? 0)/1_000}
               onChange={e => changeMillimetres("end_inset_um", e.target.value)} /></label>
@@ -306,12 +332,12 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
               onChange={e => changeDimension("drawer_count", Number(e.target.value))} /></label>
             <label>Frontspel (mm)<input type="number" min="1" max="10" step="0.1" value={(intent.front_gap_um ?? 0)/1_000}
               onChange={e => changeMillimetres("front_gap_um", e.target.value)} /></label>
-          </> : <>
+          </> : intent.family==="shelving" ? <>
             <label>Hyllrader<input type="number" min="0" max="40" value={intent.shelf_count}
               onChange={e => changeDimension("shelf_count", Number(e.target.value))} /></label>
             <label>Avdelare<input type="number" min="0" max="16" value={intent.divider_count}
               onChange={e => changeDimension("divider_count", Number(e.target.value))} /></label>
-          </>}
+          </> : null}
           <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${inputEpoch}`} workspace={workspace} onChange={updateInput} onError={inputError} />
           <InstallationEditor workspace={workspace} onChange={updateInput} onError={inputError} />
           {intent.family === "shelving" ? <label>Hur anges hyllasten?<select value={intent.shelf_load_basis ?? "per_row"}
@@ -322,11 +348,11 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
             <option value="per_row">Total last per hel hyllrad</option>
             <option value="per_metre">Last per meter hyllrad</option>
           </select></label> : null}
-          <label>{intent.family === "table" ? "Last på skivan" : intent.family === "chest_of_drawers" ? "Last per låda"
+          <label>{intent.family === "chair" ? "Önskad last på sitsen" : ["table","dining_table"].includes(intent.family) ? "Last på skivan" : intent.family === "chest_of_drawers" ? "Last per låda"
             : linearShelfLoad ? "Last per meter hyllrad" : "Last per hel hyllrad"} ({linearShelfLoad ? "kg/m" : "kg"})
             <input type="number" min="0" max="500" step="0.1"
-              value={((intent.top_load_n ?? intent.drawer_load_n ?? (linearShelfLoad ? intent.shelf_load_per_metre_n : intent.shelf_load_n) ?? 0)/9.80665).toFixed(1)}
-              onChange={e => changeDimension(intent.family === "table" ? "top_load_n" : intent.family === "chest_of_drawers" ? "drawer_load_n"
+              value={((intent.seat_load_n ?? intent.top_load_n ?? intent.drawer_load_n ?? (linearShelfLoad ? intent.shelf_load_per_metre_n : intent.shelf_load_n) ?? 0)/9.80665).toFixed(1)}
+              onChange={e => changeDimension(intent.family==="chair" ? "seat_load_n" : ["table","dining_table"].includes(intent.family) ? "top_load_n" : intent.family === "chest_of_drawers" ? "drawer_load_n"
                 : linearShelfLoad ? "shelf_load_per_metre_n" : "shelf_load_n",
                 Math.round(Number(e.target.value)*9.80665))} /></label>
           {intent.family === "shelving" ? <p>Ange jämnt fördelad nyttig last. Radens last fördelas mellan facken efter deras bredd. Hyllornas egenvikt räknas till separat.
@@ -372,7 +398,8 @@ export function FurnitureStudio({ api, principal }: { api: CustombuildApiClient;
             ? "Kundmått och listkonstruktion behöver lösas innan tillverkningsberedningen öppnas."
             : "Öppna råmaterial, nesting, foggranskning och maskinens CAM-flöde för den sparade möbeln."}</p>
       </div> : null}
-      <button className={styles.primary} disabled={!mayEdit || busy || dirty || !projectId || !preview}
+      {exceedsExportLimit ? <p role="status">Granskningspaketet stöder högst 128 delar. Dela upp designen före export.</p> : null}
+      <button className={styles.primary} disabled={!mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
         onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
       {exportMessage ? <p role="status">{exportMessage}</p> : null}
       {download && !profileDirty ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
@@ -453,7 +480,7 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChan
   };
   return <form onSubmit={event => { void check(event); }}>
     <fieldset disabled={disabled}><legend>Jämför ett profilbyte</legend>
-      {(["material", ...(workspace.design.intent.family === "table" ? [] : ["back_material"])] as ("material" | "back_material")[]).map(key => <div key={key}>
+      {(["material", ...(["shelving","chest_of_drawers"].includes(workspace.design.intent.family) ? ["back_material"] : [])] as ("material" | "back_material")[]).map(key => <div key={key}>
         <label>{key === "material" ? "Skivmaterial" : "Rygg och lådbotten"}<select value={proposed.design[key].material_id}
           onChange={e => {
             const material = catalog.materials.find(item => item.material_id === e.target.value);

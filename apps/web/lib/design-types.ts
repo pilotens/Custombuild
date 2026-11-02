@@ -155,6 +155,8 @@ export interface ManufacturingFeature {
 }
 
 export interface ResolvedPart {
+  rotation_x_rad?: number;
+  circular_outline?: boolean;
   part_id: string;
   name: string;
   kind:

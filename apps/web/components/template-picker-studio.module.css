@@ -955,3 +955,6 @@
     transition: none;
   }
 }
+
+.familyLinks { display: flex; flex-wrap: wrap; gap: .5rem; }
+.familyLinks a { padding: .55rem .9rem; border: 1px solid currentColor; border-radius: .4rem; }

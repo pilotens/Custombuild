@@ -200,6 +200,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/furniture/projects": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Furniture Project */
+        post: operations["create_furniture_project_v1_furniture_projects_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/furniture/projects/{project_id}/draft": {
         parameters: {
             query?: never;
@@ -1151,6 +1168,54 @@ export interface components {
             /** Updated At */
             updated_at: string;
         };
+        /** ChairIntent */
+        ChairIntent: {
+            /**
+             * Back Angle Mdeg
+             * @default 10000
+             */
+            back_angle_mdeg: number;
+            /**
+             * Depth Um
+             * @default 500000
+             */
+            depth_um: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            family: "chair";
+            /**
+             * Height Um
+             * @default 850000
+             */
+            height_um: number;
+            /**
+             * Leg Section Um
+             * @default 50000
+             */
+            leg_section_um: number;
+            /**
+             * Seat Depth Um
+             * @default 450000
+             */
+            seat_depth_um: number;
+            /**
+             * Seat Height Um
+             * @default 450000
+             */
+            seat_height_um: number;
+            /**
+             * Seat Load N
+             * @default 900
+             */
+            seat_load_n: number;
+            /**
+             * Width Um
+             * @default 460000
+             */
+            width_um: number;
+        };
         /** ChestIntent */
         ChestIntent: {
             /**
@@ -1158,6 +1223,12 @@ export interface components {
              * @default 500000
              */
             depth_um: number;
+            /**
+             * Drawer Columns
+             * @default 1
+             * @enum {integer}
+             */
+            drawer_columns: 1 | 2;
             /**
              * Drawer Count
              * @default 3
@@ -1179,15 +1250,31 @@ export interface components {
              */
             front_gap_um: number;
             /**
+             * Gap Basis
+             * @default per_edge
+             * @enum {string}
+             */
+            gap_basis: "per_edge" | "clear_reveal";
+            /**
              * Height Um
              * @default 900000
              */
             height_um: number;
             /**
+             * Row Front Heights Um
+             * @default []
+             */
+            row_front_heights_um: number[];
+            /**
              * Width Um
              * @default 800000
              */
             width_um: number;
+        };
+        /** CreatedFurnitureProject */
+        CreatedFurnitureProject: {
+            draft: components["schemas"]["FurnitureDraftRead"];
+            project: components["schemas"]["ProjectRead"];
         };
         /** DesignResult */
         DesignResult: {
@@ -1319,6 +1406,55 @@ export interface components {
             /** Height Um */
             height_um: number;
             /** Width Um */
+            width_um: number;
+        };
+        /** DiningTableIntent */
+        DiningTableIntent: {
+            /**
+             * Depth Um
+             * @default 900000
+             */
+            depth_um: number;
+            /**
+             * End Inset Um
+             * @default 90000
+             */
+            end_inset_um: number;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            family: "dining_table";
+            /**
+             * Height Um
+             * @default 750000
+             */
+            height_um: number;
+            /**
+             * Leg Section Um
+             * @default 55000
+             */
+            leg_section_um: number;
+            /**
+             * Stretcher Height Um
+             * @default 95000
+             */
+            stretcher_height_um: number;
+            /**
+             * Top Load N
+             * @default 300
+             */
+            top_load_n: number;
+            /**
+             * Top Shape
+             * @default rectangle
+             * @enum {string}
+             */
+            top_shape: "rectangle" | "round";
+            /**
+             * Width Um
+             * @default 1800000
+             */
             width_um: number;
         };
         /** EdgeBand */
@@ -1521,7 +1657,7 @@ export interface components {
             hardware?: components["schemas"]["HardwareSelection"] | null;
             installation?: components["schemas"]["InstallationSpace"] | null;
             /** Intent */
-            intent: components["schemas"]["ShelvingIntent"] | components["schemas"]["TableIntent"] | components["schemas"]["ChestIntent"];
+            intent: components["schemas"]["ShelvingIntent"] | components["schemas"]["TableIntent"] | components["schemas"]["ChestIntent"] | components["schemas"]["DiningTableIntent"] | components["schemas"]["ChairIntent"];
             material?: components["schemas"]["MaterialSelection"];
             /**
              * Revision
@@ -1659,7 +1795,7 @@ export interface components {
              * Id
              * @enum {string}
              */
-            id: "shelving" | "table" | "chest_of_drawers";
+            id: "shelving" | "table" | "chest_of_drawers" | "dining_table" | "chair";
             /** Name */
             name: string;
             /**
@@ -1677,7 +1813,7 @@ export interface components {
              * Family
              * @enum {string}
              */
-            family: "shelving" | "table" | "chest_of_drawers";
+            family: "shelving" | "table" | "chest_of_drawers" | "dining_table" | "chair";
             /** Hardware Requirements */
             hardware_requirements: string[];
             /**
@@ -1749,6 +1885,11 @@ export interface components {
             /** Part Id */
             part_id?: string | null;
         };
+        /**
+         * FurnitureJointType
+         * @enum {string}
+         */
+        FurnitureJointType: "wood_screw";
         /** FurnitureMachineRead */
         FurnitureMachineRead: {
             /** Fingerprint */
@@ -1978,7 +2119,7 @@ export interface components {
             design_hash: string;
             /**
              * Engine Version
-             * @default furniture-families-1.0.0
+             * @default furniture-families-2.0.0
              */
             engine_version: string;
             hardware_profile?: components["schemas"]["HardwareProfile"] | null;
@@ -2308,8 +2449,18 @@ export interface components {
         };
         /** HardwareProfile */
         HardwareProfile: {
+            /**
+             * Cabinet Holes Um
+             * @default []
+             */
+            cabinet_holes_um: number[];
             /** Catalog Id */
             catalog_id: string;
+            /**
+             * Drawer Holes Um
+             * @default []
+             */
+            drawer_holes_um: number[];
             /**
              * Family
              * @enum {string}
@@ -2333,6 +2484,8 @@ export interface components {
              * @constant
              */
             production_qualified: false;
+            /** Rated Pair Load Kg */
+            rated_pair_load_kg?: number | null;
             /**
              * Rear Clearance Um
              * @default 10000
@@ -2503,7 +2656,8 @@ export interface components {
             hardware_sku?: string | null;
             /** Joint Id */
             joint_id: string;
-            joint_type: components["schemas"]["JointType"];
+            /** Joint Type */
+            joint_type: components["schemas"]["JointType"] | components["schemas"]["FurnitureJointType"];
             mating_origin: components["schemas"]["Point3D"];
             /** Members */
             members: components["schemas"]["JointMember"][];
@@ -2799,10 +2953,18 @@ export interface components {
             group_id: string;
             /** Part Ids */
             part_ids: string[];
-            /** Rated Load N */
-            rated_load_n: number;
+            /** Rated Pair Load Kg */
+            rated_pair_load_kg?: number | null;
+            /** Requested Load N */
+            requested_load_n: number;
             /** Travel Um */
             travel_um: number;
+        };
+        /** NewFurnitureProject */
+        NewFurnitureProject: {
+            /** Name */
+            name: string;
+            workspace: components["schemas"]["FurnitureWorkspace"];
         };
         /**
          * OpenEndRelief
@@ -2818,6 +2980,11 @@ export interface components {
             actual_thickness_um: number;
             /** @default b */
             b_side: components["schemas"]["FaceName"];
+            /**
+             * Circular Outline
+             * @default false
+             */
+            circular_outline: boolean;
             /**
              * Edge Bands
              * @default []
@@ -2867,7 +3034,7 @@ export interface components {
          * PartRole
          * @enum {string}
          */
-        PartRole: "left_side" | "right_side" | "top" | "bottom" | "shelf" | "back" | "plinth" | "divider" | "base_side" | "base_bottom" | "base_top" | "cabinet_front" | "table_end" | "table_stretcher" | "drawer_side" | "drawer_front" | "drawer_back" | "drawer_bottom";
+        PartRole: "left_side" | "right_side" | "top" | "bottom" | "shelf" | "back" | "plinth" | "divider" | "base_side" | "base_bottom" | "base_top" | "cabinet_front" | "frame_leg" | "frame_rail_x" | "frame_rail_y" | "chair_seat" | "chair_back" | "table_end" | "table_stretcher" | "drawer_side" | "drawer_front" | "drawer_back" | "drawer_bottom";
         /** Placement */
         Placement: {
             /**
@@ -3943,6 +4110,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["FurnitureProfileChangeRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_furniture_project_v1_furniture_projects_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewFurnitureProject"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatedFurnitureProject"];
                 };
             };
             /** @description Validation Error */

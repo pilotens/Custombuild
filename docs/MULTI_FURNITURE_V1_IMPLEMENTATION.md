@@ -1,7 +1,7 @@
 # Möbeltyper och utbytbara profiler
 
 Arbetsytan `/furniture` har en gemensam versionshanterad modell för hyllsystem,
-gavelbord och byråer. Den nås från startsidan. Befintliga projekt fortsätter i sin
+gavelbord, matbord, matstolar och byråer. Den nås från startsidan. Befintliga projekt fortsätter i sin
 ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 
 ## Vad som fungerar
@@ -12,9 +12,11 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 | Hyllsystem | Befintlig konstruktionsmotor, fogar och regelscreening återanvänds. Olikstora fack, individuella hyllhöjder, fasta/flyttbara hyllor, ryggval och sockel följer med till beredningen. |
 | Kundmått | Separata uppmätta yttermått och sex explicita reserverade utrymmen. Okänt är inte noll. Stommen räknas om efter användarens val. Ofullständig måttkedja eller omodellerad list blockerar beredningen även på servern och i paketläsaren. |
 | Bord | Skiva, två gavlar och två sargar. Separat beräkning av nedböjning och böjspänning. |
-| Byrå | Stomme samt sex trädelar per låda, frontspel, lådsidespel och sammanhängande utdragsgrupper. |
+| Matbord | Fyra ben i hyvlad björk, fyra sargar och rund eller rektangulär skiva. Benmått, indrag och sarghöjd styr delarna och tillhörande skruvhål. |
+| Matstol | Fyra ben, fyra sargar, sits och lutande ryggstöd. Sitthöjd, sittdjup och rygglutning styr geometrin. |
+| Byrå | En eller två kolumner, upp till åtta lådor och valbara fronthöjder nedifrån. Hettich KA 4532 Silent System 350 eller 450 mm ger borrbild på både stomme och låda. |
 | Material | Versionsbundna MDF-/björkplywoodprofiler, uppmätt tjocklek och valfri batchidentitet. Inget automatiskt ersättningsmaterial. |
-| Beslag | Utbytbara dimensionsprofiler. Tillverkarens beslag, kapacitet och hålbilder är fortfarande obligatoriska före tillverkning. |
+| Beslag | Dokumenterade skenprofiler visar artikelnummer, nominell längd, utdrag och kataloglast. Äldre layoutprofiler saknar borrbild. Pilotdiameter och infästning ska provas på verkligt material. |
 | Verkstad | Separat profil med råskivemått, kantmarginal och fiberriktning; kontroll av maskinområde och varje dels råmått. Materialgrupperat verkstadsunderlag anger nödvändiga råformat. Referensprofiler är uttryckligen okvalificerade. |
 | Arbetsfil | Export/import av versionsbunden JSON. Import kontrolleras av servern och blir ett nytt osparat projekt; en tidigare projektidentitet återanvänds inte. |
 | Profilbyte | Konsekvensjämförelse före tillämpning. Material/beslag räknar om geometrin. Maskinbyte behåller möbeldesignen och ogiltigförklarar berörd tillverkningsgranskning. |
@@ -24,7 +26,8 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 | Export | Beställning av exakt sparad revision via transaktionell kö. CAD-kärnan kontrollerar verkliga solider, kollisioner och formatåterläsning. |
 
 Granskningspaketet innehåller STEP, GLB, DXF/SVG för delarnas båda sidor,
-delritningar i PDF, BOM, kaplista, rörelsegrupper, modell, profiler och
+separata kantvyer för kantborrade delar, delritningar och monteringsöversikt i PDF,
+kopplingslista, beslagslista, BOM, kaplista, rörelsegrupper, modell, profiler och
 kontrollrapport. Ett manifest binder varje fil med SHA-256. Exportstatusen binds
 till organisation, projekt, revision, design och profilval. Jobb och artefaktmetadata
 lagras beständigt i PostgreSQL, medan ZIP-filen lagras oföränderligt i objektlagringen

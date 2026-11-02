@@ -1,7 +1,7 @@
 import type { ResolvedPart } from "./design-types";
 import type { paths } from "./api-schema";
 
-export type FurnitureFamily = "shelving" | "table" | "chest_of_drawers";
+export type FurnitureFamily = "shelving" | "table" | "chest_of_drawers" | "dining_table" | "chair";
 export interface FurnitureIntent {
   family: FurnitureFamily;
   width_um: number;
@@ -20,6 +20,15 @@ export interface FurnitureIntent {
   end_inset_um?: number;
   stretcher_height_um?: number;
   top_load_n?: number;
+  top_shape?: "rectangle" | "round";
+  leg_section_um?: number;
+  seat_height_um?: number;
+  seat_depth_um?: number;
+  back_angle_mdeg?: number;
+  seat_load_n?: number;
+  drawer_columns?: 1 | 2;
+  gap_basis?: "clear_reveal" | "per_edge";
+  row_front_heights_um?: number[];
   drawer_count?: number;
   drawer_load_n?: number;
   front_gap_um?: number;
@@ -96,7 +105,8 @@ export interface FurniturePart {
   semantic_key: string;
   role: string;
   finished_size: { width_um: number; depth_um: number; height_um: number };
-  placement: { x_um: number; y_um: number; z_um: number };
+  placement: { x_um: number; y_um: number; z_um: number; rotation_x_mdeg?: number };
+  circular_outline?: boolean;
   actual_thickness_um: number;
   material_id: string;
   weight_g: number;
@@ -221,18 +231,39 @@ export interface FurnitureProductionPreview {
 }
 
 export const FURNITURE_FAMILY_LABELS: Record<FurnitureFamily, string> = {
-  shelving: "Hyllsystem", table: "Bord med gavlar", chest_of_drawers: "Byrå",
+  dining_table: "Matbord med fyra ben",
+  chair: "Matstol",
+  shelving: "Hyllsystem",
+  table: "Bord med gavlar",
+  chest_of_drawers: "Byrå",
+};
+
+const familyDefaults: Record<FurnitureFamily, Omit<FurnitureIntent, "family">> = {
+  dining_table: {
+    width_um: 1_800_000, height_um: 750_000, depth_um: 900_000, top_shape: "rectangle",
+    end_inset_um: 90_000, leg_section_um: 55_000, stretcher_height_um: 95_000, top_load_n: 300,
+  },
+  chair: {
+    width_um: 460_000, height_um: 850_000, depth_um: 500_000, seat_height_um: 450_000,
+    seat_depth_um: 450_000, back_angle_mdeg: 10_000, leg_section_um: 50_000, seat_load_n: 900,
+  },
+  table: {
+    width_um: 1_000_000, height_um: 740_000, depth_um: 600_000,
+    end_inset_um: 60_000, stretcher_height_um: 100_000, top_load_n: 300,
+  },
+  chest_of_drawers: {
+    width_um: 550_000, height_um: 900_000, depth_um: 500_000, drawer_count: 3,
+    drawer_load_n: 100, front_gap_um: 3_000, gap_basis: "clear_reveal",
+  },
+  shelving: {
+    width_um: 900_000, height_um: 1_800_000, depth_um: 320_000,
+    shelf_count: 4, divider_count: 1, shelf_load_n: 200,
+  },
 };
 
 export function newFurnitureWorkspace(family: FurnitureFamily): FurnitureWorkspace {
-  const intent: FurnitureIntent = family === "table"
-    ? { family, width_um: 1_000_000, height_um: 740_000, depth_um: 600_000,
-        end_inset_um: 60_000, stretcher_height_um: 100_000, top_load_n: 300 }
-    : family === "chest_of_drawers"
-      ? { family, width_um: 800_000, height_um: 900_000, depth_um: 500_000,
-          drawer_count: 3, drawer_load_n: 100, front_gap_um: 3_000 }
-      : { family, width_um: 900_000, height_um: 1_800_000, depth_um: 320_000,
-          shelf_count: 4, divider_count: 1, shelf_load_n: 200, shelf_height_ratios_ppm: [] };
+  const intent: FurnitureIntent = { family, ...familyDefaults[family] };
+  if (family === "shelving") intent.shelf_height_ratios_ppm = [];
   return {
     schema_version: "custombuild.furniture-workspace.v1",
     design: {
@@ -242,8 +273,8 @@ export function newFurnitureWorkspace(family: FurnitureFamily): FurnitureWorkspa
         measured_thickness_um: 18_000, batch_id: null },
       back_material: { material_id: "birch-plywood-6", version: "screening-2026.1",
         measured_thickness_um: 6_000, batch_id: null },
-      hardware: family === "shelving" ? null : {
-        catalog_id: family === "table" ? "panel-table-connectors-layout" : "drawer-side-mount-450-layout",
+      hardware: !["chest_of_drawers","table"].includes(family) ? null : {
+        catalog_id: family === "table" ? "panel-table-connectors-layout" : "hettich-ka4532-9114275",
         version: "layout-1.0.0",
       },
     },
@@ -257,10 +288,13 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
   if (drawersOpen) for (const group of preview.design.moving_groups) {
     for (const id of group.part_ids) movements.set(id, group.travel_um);
   }
-  const yz = new Set(["left_side", "right_side", "divider", "table_end", "drawer_side"]);
-  const xz = new Set(["back", "plinth", "table_stretcher", "drawer_front", "drawer_back"]);
+  const yz = new Set(["left_side", "right_side", "divider", "table_end", "drawer_side", "frame_leg", "frame_rail_y"]);
+  const xz = new Set(["back", "plinth", "table_stretcher", "drawer_front", "drawer_back", "frame_rail_x", "chair_back"]);
   return preview.design.parts.map((part): ResolvedPart => {
     const size = part.finished_size;
+    const angle = (part.placement.rotation_x_mdeg ?? 0)*Math.PI/180_000;
+    const centreY = (size.depth_um*Math.cos(angle)-size.height_um*Math.sin(angle))/2;
+    const centreZ = (size.depth_um*Math.sin(angle)+size.height_um*Math.cos(angle))/2;
     const orientation = yz.has(part.role) ? "YZ" : xz.has(part.role) ? "XZ" : "XY";
     // The viewer's YZ board width runs vertically (world Z); its depth runs along world Y.
     const width = orientation === "YZ" ? size.height_um : size.width_um;
@@ -272,9 +306,10 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
       orientation, width_mm: width/1_000, depth_mm: depth/1_000, thickness_mm: thickness/1_000,
       position_mm: {
         x: (part.placement.x_um+size.width_um/2)/1_000,
-        y: (part.placement.y_um+size.depth_um/2-(movements.get(part.part_id) ?? 0))/1_000,
-        z: (part.placement.z_um+size.height_um/2)/1_000,
+        y: (part.placement.y_um+centreY-(movements.get(part.part_id) ?? 0))/1_000,
+        z: (part.placement.z_um+centreZ)/1_000,
       },
+      ...(angle ? {rotation_x_rad:angle} : {}), ...(part.circular_outline ? {circular_outline:true}:{}),
       material_id: part.material_id, weight_kg: part.weight_g/1_000,
       color: part.material_id.startsWith("mdf") ? "#b7a587" : "#d8c4a0", features: [],
     };

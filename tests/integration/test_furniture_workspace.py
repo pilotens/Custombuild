@@ -115,7 +115,13 @@ def save(client, family="table"):
 def test_families_are_available_and_preview_requires_a_valid_session(client):
     assert client.get("/v1/furniture/catalog").status_code == 401
     catalog = client.get("/v1/furniture/catalog", headers=HEADERS).json()
-    assert {f["id"] for f in catalog["families"]} == {"shelving", "table", "chest_of_drawers"}
+    assert {f["id"] for f in catalog["families"]} == {
+        "shelving",
+        "table",
+        "chest_of_drawers",
+        "chair",
+        "dining_table",
+    }
     for family in ("shelving", "table", "chest_of_drawers"):
         response = client.post(
             "/v1/furniture/preview", headers=HEADERS, json=workspace(family).model_dump(mode="json")
@@ -984,3 +990,20 @@ def test_material_stock_choices_survive_revisions_and_production_source_without_
     )
     assert unchanged.status_code == 200, unchanged.text
     assert unchanged.json()["revision"] == saved["revision"]
+
+
+def test_first_furniture_save_is_atomic_and_name_can_be_retried(client):
+    name = f"frame-{uuid4()}"
+    wrong = workspace("chest_of_drawers", depth_um=300_000).model_dump(mode="json")
+    path = "/v1/furniture/projects"
+    rejected = client.post(path, headers=HEADERS, json={"name": name, "workspace": wrong})
+    assert rejected.status_code == 422
+    assert all(p["name"] != name for p in client.get("/v1/projects", headers=HEADERS).json())
+    good = {"design": {"intent": {"family": "chair"}}}
+    created = client.post(path, headers=HEADERS, json={"name": name, "workspace": good})
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["project"]["furniture_type"] == "chair" and body["draft"]["revision"] == 1
+    assert (
+        client.get(f"{path}/{body['project']['id']}/draft", headers=HEADERS).json() == body["draft"]
+    )

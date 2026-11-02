@@ -11,6 +11,7 @@ from .enums import (
     DesignStatus,
     FaceName,
     FeatureKind,
+    FurnitureJointType,
     GrainDirection,
     JointRetentionLoadMode,
     JointRetentionMachiningScope,
@@ -608,6 +609,7 @@ class PartInstance(FrozenModel):
     visible_faces: tuple[FaceName, ...] = ()
     edge_bands: tuple[EdgeBand, ...] = ()
     features: tuple[ManufacturingFeature, ...] = ()
+    circular_outline: bool = Field(default=False, exclude_if=lambda v: not v)
     weight_g: PositiveInt
 
     @model_validator(mode="after")
@@ -634,7 +636,7 @@ class Joint(FrozenModel):
     """
 
     joint_id: str = Field(min_length=8, max_length=64)
-    joint_type: JointType
+    joint_type: JointType | FurnitureJointType
     members: tuple[JointMember, ...] = Field(min_length=2, max_length=2)
     mating_origin: Point3D
     assembly_direction: AssemblyDirection

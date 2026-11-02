@@ -25,6 +25,12 @@ function preview(workspace: FurnitureWorkspace, parts = 5): FurniturePreview {
 function setup() {
   const api = new CustombuildApiClient("https://api.example.test");
   vi.spyOn(api, "listProjects").mockResolvedValue([]);
+  vi.spyOn(api,"createFurnitureProject").mockImplementation(async(name,workspace)=>{
+    // Model the single create response using the project's and draft's shared fixtures.
+    const project=await api.createProject(name);
+    const draft=await api.saveFurnitureDraft(project.id,0,workspace);
+    return {project:{...project,furniture_type:workspace.design.intent.family},draft};
+  });
   vi.spyOn(api, "furnitureCatalog").mockResolvedValue({ families: [], materials: [
     { material_id: "birch-plywood", name: "Björkplywood", version: "screening-2026.1",
       nominal_thickness_um: 18_000, min_supported_thickness_um: 17_000, max_supported_thickness_um: 19_000 },
@@ -489,5 +495,26 @@ describe("möbelstudions revisions- och profilflöde", () => {
     fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1100.0001" } });
     expect(screen.getByRole("alert")).toHaveTextContent("högst tre decimaler");
     expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+  });
+});
+
+describe("familjespecifika konstruktionsmått", () => {
+  it("använder samma exakta diameter i båda riktningarna för en rund skiva", async () => {
+    const api = setup();
+    render(<FurnitureStudio principal={principal} api={api} initialFamily="dining_table" />);
+    fireEvent.change(screen.getByLabelText("Bordsskivans form"), { target: { value: "round" } });
+    fireEvent.change(screen.getByLabelText("Diameter (mm)"), { target: { value: "1150.125" } });
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent)
+      .toMatchObject({ top_shape: "round", width_um: 1_150_125, depth_um: 1_150_125 }));
+    expect(screen.queryByLabelText("Djup (mm)")).not.toBeInTheDocument();
+  });
+
+  it("håller antal lådor jämnt delbart när användaren väljer två kolumner", async () => {
+    const api = setup();
+    render(<FurnitureStudio principal={principal} api={api} initialFamily="chest_of_drawers" />);
+    fireEvent.change(screen.getByLabelText("Lådkolumner"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Fronthöjd rad 1 nedifrån (mm)"), { target: { value: "250" } });
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent)
+      .toMatchObject({ drawer_count: 4, drawer_columns: 2, row_front_heights_um: [250_000] }));
   });
 });

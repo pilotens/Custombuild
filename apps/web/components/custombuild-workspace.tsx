@@ -1,6 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { redirect } from "next/navigation";
+import { FURNITURE_FAMILY_LABELS } from "@/lib/furniture-workspace";
 import {
   AlertTriangle,
   Box,
@@ -383,6 +385,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const [selectedPartId, setSelectedPartId] = useState<string>();
   const [studioInspectorContext, setStudioInspectorContext] = useState<StudioInspectorContext>("furniture");
   const [partEditNotice, setPartEditNotice] = useState<string>();
+  const [furnitureProjectId, setFurnitureProjectId] = useState<string>();
   const [principal, setPrincipal] = useState<CurrentPrincipal>();
   const [authReady, setAuthReady] = useState(!api.configured);
   const [authError, setAuthError] = useState<string>();
@@ -675,10 +678,14 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, [changeSelectedPart, principal]);
 
   const loadProjectWorkspace = useCallback(async (
-    project: Pick<ProjectRead, "id" | "name">,
+    project: Pick<ProjectRead, "id" | "name"> & Partial<Pick<ProjectRead, "furniture_type">>,
     requestedMode?: WorkspaceStage,
   ) => {
     if (!principal) return;
+    if (project.furniture_type && Object.hasOwn(FURNITURE_FAMILY_LABELS, project.furniture_type)) {
+      setFurnitureProjectId(project.id);
+      return;
+    }
     const identity = principal;
     const requestId = ++workspaceLoadRef.current;
     setHydrated(false);
@@ -910,8 +917,21 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         if (cancelled) return;
         setProjects(availableProjects);
         const remembered = readSelectedProject(window.localStorage, principal);
+        const rootProjects = availableProjects.filter(
+          (project) => !Object.hasOwn(FURNITURE_FAMILY_LABELS, project.furniture_type),
+        );
+        if (!urlIntentRef.current.projectId && !rootProjects.length) {
+          applyHydratedWorkspace(undefined, undefined, false);
+          setProjectId(undefined);
+          setActiveProject(undefined);
+          setHydrated(true);
+          setServerDraftReady(false);
+          setApiState("synced");
+          setApiMessage("Välj ett sparat möbelprojekt eller börja med en möbeltyp.");
+          return;
+        }
         const selected = selectWorkspaceProject(
-          availableProjects,
+          urlIntentRef.current.projectId ? availableProjects : rootProjects,
           urlIntentRef.current.projectId,
           remembered?.id,
         );
@@ -1974,6 +1994,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     || displayedApiState === "error",
   );
 
+  if (furnitureProjectId) redirect(`/furniture?project=${encodeURIComponent(furnitureProjectId)}`);
+
   return (
     <div className={`app-shell cb-redesign-shell ${studioStyles.productShell}`}>
       <a className="cb-skip-link" href="#workspace-mode-heading">Hoppa till huvudinnehåll</a>
@@ -2192,7 +2214,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
               onClose={() => { if (workspaceSelected) changeWorkspaceStage("studio"); }}
             />
             <p className="existing-product-explore-notice">
-              <a href="/furniture">Designa bord, byråer och hyllsystem med utbytbara profiler</a>
+              <a href="/furniture">Designa matbord, stolar, byråer och hyllsystem</a>
             </p>
           </div>
         ) : (

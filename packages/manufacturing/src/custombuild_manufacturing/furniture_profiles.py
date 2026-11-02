@@ -68,7 +68,7 @@ def _dependencies(
 ) -> dict[str, str]:
     design = workspace.design
     materials = [design.material]
-    if design.intent.family != "table":
+    if design.intent.family in {"shelving", "chest_of_drawers"}:
         materials.append(design.back_material)
     return {
         "intent": result.intent_hash,
