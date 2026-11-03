@@ -47,10 +47,9 @@ export function planWorkspaceDesignTransaction(
   source: DesignSpec,
   candidate: DesignSpec,
   requestedDiff: readonly ChangeDiff[] = [],
+  allowConceptReview = false,
 ): PreviewWorkspaceDesignTransaction {
-  // A photographed concept must retain its observed layout even when a panel is
-  // too large for stock. Keep all design rules visible without substituting bays.
-  if (candidate.reference_image_import?.verification_status === "concept") {
+  function exactConcept() {
     const normalizedSpec = parseLocalDesignSpec(candidate);
     const design = resolveDesign(normalizedSpec);
     const invalid = design.rule_evaluations.find(rule => rule.rule_id === "GEO-001" && rule.status === "BLOCK");
@@ -61,6 +60,24 @@ export function planWorkspaceDesignTransaction(
       changedFields: changedDesignFields(source, normalizedSpec),
     };
   }
+  // Retain the photographed layout even when stock or machine capacity is exceeded.
+  if (candidate.reference_image_import?.verification_status === "concept") return exactConcept();
+  try {
+    return planFeasibleTransaction(source, candidate, requestedDiff);
+  } catch (error) {
+    // An explicitly conceptual template remains inspectable; its blocking rules
+    // and its real requested dimensions are returned with the original geometry.
+    if (allowConceptReview && !candidate.workshop_context && error instanceof DesignChangeRejected
+        && error.ruleIds.some(id => id === "DFM-STOCK-001" || id === "DFM-MACHINE-001")) return exactConcept();
+    throw error;
+  }
+}
+
+function planFeasibleTransaction(
+  source: DesignSpec,
+  candidate: DesignSpec,
+  requestedDiff: readonly ChangeDiff[],
+): PreviewWorkspaceDesignTransaction {
   let transaction = normalizeWorkspaceDesignTransaction(source, candidate, requestedDiff);
   const autoDiff: ChangeDiff[] = [...transaction.structuralDiff];
   const quantityExplicitlyChanged = candidate.stock_count !== source.stock_count

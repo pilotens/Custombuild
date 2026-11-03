@@ -41,6 +41,15 @@ describe("admission of workspace design changes", () => {
     expect(review.resolvedDesign.parts.filter(p=>p.kind==="shelf")).toHaveLength(15);
     expect(review.resolvedDesign.rule_evaluations).toContainEqual(expect.objectContaining({rule_id:"DFM-STOCK-001",status:"BLOCK"}));
   });
+  it("retains an oversized wall-library concept and displays both machine and stock stops", () => {
+    const requested = {...library, width_mm:4200, height_mm:2400, depth_mm:320, base_cabinet_depth_mm:320};
+    expect(() => planWorkspaceDesignTransaction(library, requested)).toThrow();
+    const preview=planWorkspaceDesignTransaction(library, requested, [], true);
+    expect(preview.normalizedSpec.width_mm).toBe(4200);
+    expect(preview.resolvedDesign.rule_evaluations).toContainEqual(expect.objectContaining({rule_id:"DFM-MACHINE-001",status:"BLOCK"}));
+    expect(preview.resolvedDesign.rule_evaluations).toContainEqual(expect.objectContaining({rule_id:"DFM-STOCK-001",status:"BLOCK"}));
+  });
+
   it("plans enough sheets for the reported library instead of saving a material BLOCK", () => {
     const before = structuredClone(library);
     const result = planWorkspaceDesignTransaction(library, library);

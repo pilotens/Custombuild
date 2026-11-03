@@ -878,6 +878,7 @@ export function DimensionDragOverlay(props: Pick<
             }}
           >
             <span className="dimension-handle-dot" aria-hidden="true" />
+            <span className="dimension-axis-label" aria-hidden="true">{{width:"X",height:"Z",depth:"Y"}[axis]}</span>
           </button>
           <output>{valueFor(axis).toLocaleString("sv-SE")} mm</output>
         </div>

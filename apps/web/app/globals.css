@@ -3884,6 +3884,50 @@ progress.utilization-bar::-moz-progress-bar {
   transform: translateX(-50%) rotate(27deg);
 }
 
+/* Keep mobile dimension controls in one row below the machining summary. */
+.dimension-axis-label { display: none; }
+@media (max-width: 680px) {
+  .dimension-drag-layer {
+    inset: auto 10px 8px;
+    z-index: 9;
+    height: 44px;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    padding: 2px 4px;
+    border-radius: 6px;
+    background: var(--cb-surface, white);
+  }
+  .dimension-drag-layer .dimension-guide {
+    position: relative;
+    inset: auto;
+    display: flex;
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
+    height: 40px;
+    align-items: center;
+    gap: 3px;
+    transform: none;
+  }
+  .dimension-guide .dimension-guide-line, .dimension-guide .dimension-handle-dot { display: none; }
+  .dimension-guide .dimension-axis-label { display: inline; }
+  .dimension-drag-layer .dimension-guide button {
+    position: static;
+    flex: 0 0 36px;
+    width: 36px;
+    height: 36px;
+  }
+  .dimension-drag-layer .dimension-guide output {
+    position: static;
+    min-width: 0;
+    padding: 0;
+    white-space: nowrap;
+    transform: none;
+  }
+  .canvas-shell:has(.dimension-drag-layer) .canvas-dimensions { display: none; }
+}
+
 .dimension-guide.active .dimension-guide-line {
   height: 2px;
   background: #0b8b58;

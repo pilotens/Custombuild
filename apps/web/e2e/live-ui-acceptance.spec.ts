@@ -192,6 +192,8 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
   });
   await configureWallLibrary(page);
   const wallPreviewRequest = await initialWallPreview;
+  const requestedFronts = wallPreviewRequest.postDataJSON().base_cabinet_count;
+  expect(requestedFronts).toBeGreaterThan(0);
   await expect(page.getByRole("spinbutton", { name: "Bredd", exact: true })).toHaveValue("2400");
   await expect(page.getByRole("spinbutton", { name: "Höjd", exact: true })).toHaveValue("2400");
 
@@ -201,7 +203,7 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
   await expect(threeDimensionalView).toHaveAttribute("aria-pressed", "true");
   await expect(frontView).toHaveAttribute("aria-pressed", "false");
   expect(await partPicker.getByRole("option", { name: /Hylla/ }).count()).toBeGreaterThanOrEqual(5);
-  expect(await partPicker.getByRole("option", { name: /Skåpsfront/ }).count()).toBeGreaterThanOrEqual(4);
+  await expect(partPicker.getByRole("option", { name: /Skåpsfront/ })).toHaveCount(requestedFronts);
   const model = page.locator(".canvas-shell canvas, [data-testid='front-projection-fallback']").first();
   await expect(model).toBeVisible();
   await waitForTwoAnimationFrames(page);
@@ -221,7 +223,7 @@ test("current-source live UI acceptance covers Explore, responsive Studio and re
   await page.unroute("**/v1/designs/autofix");
 
   expect(await partPicker.getByRole("option", { name: /Hylla/ }).count()).toBeGreaterThanOrEqual(5);
-  expect(await partPicker.getByRole("option", { name: /Skåpsfront/ }).count()).toBeGreaterThanOrEqual(4);
+  await expect(partPicker.getByRole("option", { name: /Skåpsfront/ })).toHaveCount(requestedFronts);
   await frontView.click();
   await expect(frontView).toHaveAttribute("aria-pressed", "true");
   await waitForTwoAnimationFrames(page);
