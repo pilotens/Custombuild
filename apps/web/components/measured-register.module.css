@@ -5,6 +5,7 @@
     15px/1.5 system-ui,
     sans-serif;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 .register * {
   box-sizing: border-box;
@@ -159,7 +160,7 @@
 }
 @media (max-width: 800px) {
   .columns {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .scene {
     height: 320px;
