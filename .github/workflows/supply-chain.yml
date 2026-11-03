@@ -129,6 +129,7 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all high and critical vulnerabilities
+        id: scan
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-${{ matrix.component }}:supply-chain-${{ github.sha }}
@@ -136,6 +137,16 @@ jobs:
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
+          output-format: json
+          output-file: ${{ runner.temp }}/custombuild-findings.json
+      - name: Preserve package findings from a rejected image
+        if: ${{ !cancelled() && steps.scan.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findings-app-${{ matrix.component }}-${{ github.sha }}
+          path: ${{ runner.temp }}/custombuild-findings.json
+          if-no-files-found: warn
+          retention-days: 14
 
   pinned-runtime-images:
     name: Runtime image / ${{ matrix.component }}
@@ -168,6 +179,7 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all high and critical vulnerabilities
+        id: scan
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: ${{ matrix.image }}
@@ -175,6 +187,16 @@ jobs:
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
+          output-format: json
+          output-file: ${{ runner.temp }}/custombuild-findings.json
+      - name: Preserve package findings from a rejected image
+        if: ${{ !cancelled() && steps.scan.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findings-runtime-${{ matrix.component }}-${{ github.sha }}
+          path: ${{ runner.temp }}/custombuild-findings.json
+          if-no-files-found: warn
+          retention-days: 14
 
   repository-seaweedfs-image:
     name: Repository SeaweedFS image
@@ -239,6 +261,7 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all SeaweedFS high and critical vulnerabilities
+        id: scan
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-seaweedfs:${{ github.sha }}
@@ -246,6 +269,16 @@ jobs:
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
+          output-format: json
+          output-file: ${{ runner.temp }}/custombuild-findings.json
+      - name: Preserve package findings from a rejected image
+        if: ${{ !cancelled() && steps.scan.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findings-seaweedfs-${{ github.sha }}
+          path: ${{ runner.temp }}/custombuild-findings.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload immutable SeaweedFS manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

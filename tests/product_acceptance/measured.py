@@ -75,6 +75,63 @@ def frame_file(frames=1, levels=1, two_ended=True):
     }
 
 
+def crossing_screw_work():
+    cleat = member("cleat", [60_000, 24_000, 40_000], [0, 0, 0])
+    side = member("side", [8_000, 24_000, 40_000], [-8_000, 0, 0])
+    back = member("back-panel", [60_000, 6_000, 40_000], [0, 24_000, 0])
+    joints = []
+    for i, (board, face, axes, u, v, thickness, penetration, diameter) in enumerate(
+        (
+            (side, "left", "yz", 16_000, 20_000, 8_000, 20_000, 4_000),
+            (back, "back", "xz", 12_000, 21_000, 6_000, 18_000, 3_000),
+        )
+    ):
+        sku = f"test-screw-{i}"
+        through = dict(
+            id="pass",
+            shape="drill",
+            face=face,
+            axes=axes,
+            u_um=u,
+            v_um=v,
+            width_um=diameter + 500,
+            height_um=diameter + 500,
+            depth_um=thickness,
+            through=True,
+            source="Oberoende koordinater",
+            article=sku,
+        )
+        hole = {
+            **through,
+            "id": f"pilot-{i}",
+            "width_um": diameter - 500,
+            "height_um": diameter - 500,
+            "depth_um": penetration + 1000,
+            "through": False,
+        }
+        board["operations"].append(through)
+        cleat["operations"].append(hole)
+        joints.append(
+            dict(
+                id=f"cross-{i}",
+                kind="screw",
+                a={"part": board["id"], "operation": "pass"},
+                b={"part": "cleat", "operation": hole["id"]},
+                article=sku,
+                diameter_um=diameter,
+                length_um=thickness + penetration,
+                source="Arbetsprov",
+            )
+        )
+    return {
+        "schema_version": "custombuild.measured-assembly.v1",
+        "title": "Korsande skruvar",
+        "source": "Två skruvar i samma tvärstycke",
+        "parts": [cleat, side, back],
+        "joints": joints,
+    }
+
+
 def exercise_measured(client, case, evidence):
     query = frame_file(**case.order.inputs)
     url = "/v1/measured-assemblies/review"
@@ -142,4 +199,17 @@ def exercise_measured(client, case, evidence):
             rear["size_um"][2] += 1
             rear["blank_lbt_um"][0] += 1
             assert response_json(client.post(url, json=with_back))["back_coverage"][0] == complete
+            hardware = crossing_screw_work()
+            crossed = response_json(client.post(url, json=hardware))
+            evidence.equal("crossing_fastener_pairs", len(crossed["fastener_interferences"]), 1)
+            assert all(j["state"] == "mismatch" for j in crossed["joints"])
+            # Move both the entrance and its receiver. Moving just the entrance cannot pass.
+            hardware["parts"][2]["operations"][0]["v_um"] += 6_000
+            single = response_json(client.post(url, json=hardware))
+            assert single["joints"][1]["state"] == "mismatch"
+            hardware["parts"][0]["operations"][1]["v_um"] += 6_000
+            separate = response_json(client.post(url, json=hardware))
+            assert not separate["fastener_interferences"] and all(
+                j["state"] == "aligned" for j in separate["joints"]
+            )
     assert report["physical_cutting_authorized"] is False

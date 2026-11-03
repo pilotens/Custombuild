@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from itertools import combinations
 from typing import Annotated, Literal
 
@@ -10,6 +10,7 @@ from pydantic import Field, model_validator
 
 from .identity import content_hash
 from .measured_backing import BackCoverage, Backing, review_backing
+from .measured_fasteners import FastenerInterference, Shaft, review_fasteners
 from .models import FrozenModel
 
 Key = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")]
@@ -148,6 +149,7 @@ class MeasuredReport(FrozenModel):
     overlaps_truncated: bool
     back_coverage: tuple[BackCoverage, ...] = ()
     unresolved_back_parts: tuple[str, ...] = ()
+    fastener_interferences: tuple[FastenerInterference, ...] = ()
     physical_cutting_authorized: Literal[False] = False
 
 
@@ -203,23 +205,59 @@ def _subtract(cell: Bounds, cut: Bounds) -> list[Bounds]:
     return fragments  # type: ignore[return-value]
 
 
+def _feature_box(part: MeasuredPart, op: MeasuredOperation) -> Bounds:
+    u, v, axis, sign = _axes(op)
+    u1, v1, u2, v2 = _area(op)
+    box = list((0.0, 0.0, 0.0, *part.size_um))
+    box[u], box[v], box[u + 3], box[v + 3] = u1, v1, u2, v2
+    if sign < 0:
+        box[axis + 3] = op.depth_um
+    else:
+        box[axis] = part.size_um[axis] - op.depth_um
+    return tuple(box)  # type: ignore[return-value]
+
+
 def _cuts(part: MeasuredPart, op: MeasuredOperation) -> list[Bounds]:
     if op.shape not in ("notch", "pocket", "tenon"):
         return []
+    feature = _feature_box(part, op)
+    if op.shape != "tenon":
+        return [feature]
+    _, _, axis, _ = _axes(op)
+    slab = list((0.0, 0.0, 0.0, *part.size_um))
+    slab[axis], slab[axis + 3] = feature[axis], feature[axis + 3]
+    return _subtract(tuple(slab), feature)  # type: ignore[arg-type]
+
+
+def _missing_wall(
+    part: MeasuredPart, box: Bounds, axis: int, sign: int, removed: list[Bounds]
+) -> bool:
+    plane = box[axis + (3 if sign > 0 else 0)]
+    if plane == (part.size_um[axis] if sign > 0 else 0):
+        return True
+    others = [n for n in range(3) if n != axis]
+    return any(
+        (cut[axis] <= plane < cut[axis + 3] if sign > 0 else cut[axis] < plane <= cut[axis + 3])
+        and all(cut[n] < box[n + 3] and box[n] < cut[n + 3] for n in others)
+        for cut in removed
+    )
+
+
+def _lost_joinery(part: MeasuredPart, op: MeasuredOperation, removed: list[Bounds]) -> str | None:
     u, v, axis, sign = _axes(op)
-    u1, v1, u2, v2 = _area(op)
-    slab = list((0, 0, 0, *part.size_um))
-    if sign < 0:
-        slab[axis + 3] = op.depth_um
-    else:
-        slab[axis] = part.size_um[axis] - op.depth_um
-    inner: list[float] = list(slab)
-    inner[u], inner[u + 3] = u1, u2
-    inner[v], inner[v + 3] = v1, v2
-    plug: Bounds = tuple(inner)  # type: ignore[assignment]
+    box = _feature_box(part, op)
     if op.shape == "tenon":
-        return _subtract(tuple(slab), plug)  # type: ignore[arg-type]
-    return [plug]
+        if any(_hit(box, cut) for cut in removed) or _missing_wall(part, box, axis, -sign, removed):
+            return (
+                "Tappens angivna material eller infästningen i skuldran saknas efter bearbetning."
+            )
+        return None
+    if any(
+        _missing_wall(part, box, n, direction, removed)
+        for n, direction in ((axis, -sign), (u, -1), (u, 1), (v, -1), (v, 1))
+    ):
+        return "Det blinda tapphålets botten eller sidovägg är öppen efter bearbetning."
+    return None
 
 
 def _breaks_into_cut(part: MeasuredPart, op: MeasuredOperation, removed: list[Bounds]) -> bool:
@@ -268,7 +306,9 @@ def _joint(
     left = next((o for o in a.operations if o.id == joint.a.operation), None)
     right = next((o for o in b.operations if o.id == joint.b.operation), None)
     if not left or not right or (a.id, left.id) in bad or (b.id, right.id) in bad:
-        return result("mismatch", "Förbandets bearbetningar saknas eller går utanför delarna.")
+        return result(
+            "mismatch", "Förbandets bearbetningar saknas eller är ogiltiga. Se respektive del."
+        )
     if a.frame_id != b.frame_id:
         return result("unresolved", "Motdelarna saknar en gemensam monteringsreferens.")
     if a.origin_um is None or b.origin_um is None:
@@ -348,6 +388,15 @@ def _joint(
         return result(
             "unresolved", "Artikel, diameter och längd behövs för att verifiera beslaget.", delta
         )
+    if joint.kind != "blind_tenon" and any(
+        op.article and op.article not in (joint.article, *joint.fittings) for op in (left, right)
+    ):
+        return result(
+            "unresolved",
+            "Bearbetningens angivna artikel saknas bland förbandets beslag.",
+            delta,
+            reserve,
+        )
     if (
         joint.kind == "screw"
         and joint.diameter_um is not None
@@ -364,6 +413,32 @@ def _joint(
         delta,
         reserve,
     )
+
+
+def _shaft(joint: MeasuredJoint, parts: dict[str, MeasuredPart]) -> Shaft:
+    first = parts[joint.a.part]
+    a = next(o for o in first.operations if o.id == joint.a.operation)
+    other = parts[joint.b.part]
+    b = next(o for o in other.operations if o.id == joint.b.operation)
+    _, _, axis, sign = _axes(a)
+    center = tuple(_point(first, a, 0))
+    assert joint.length_um and joint.diameter_um
+    datum = center[axis]
+
+    def interval(near: int, far: int) -> tuple[int, int]:
+        return min(near, far), max(near, far)
+
+    if joint.kind == "screw":
+        head = datum + sign * joint.head_allowance_um
+        certain = possible = interval(head, head - sign * joint.length_um)
+    else:
+        # A floating dowel can slide between the two blind bottoms.
+        possible = interval(datum - sign * a.depth_um, datum + sign * b.depth_um)
+        certain = interval(
+            datum - sign * (joint.length_um - b.depth_um),
+            datum + sign * (joint.length_um - a.depth_um),
+        )
+    return Shaft(joint.id, first.frame_id, axis, center, joint.diameter_um, certain, possible)  # type: ignore[arg-type]
 
 
 def _hit(a: Bounds, b: Bounds) -> bool:
@@ -429,6 +504,7 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
     cells: dict[str, tuple[Bounds, ...]] = {}
     world: dict[str, tuple[Bounds, tuple[Bounds, ...]]] = {}
     bad: set[tuple[str, str]] = set()
+    socket_ends = {(j.b.part, j.b.operation) for j in assembly.joints if j.kind == "blind_tenon"}
     for p in assembly.parts:
         blank: Bounds = (0, 0, 0, *p.size_um)
         pieces = [blank]
@@ -455,6 +531,14 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
             if len(pieces) > 2048:
                 raise ValueError("Bearbetningarna överstiger granskarens gräns för en del.")
         for op in p.operations:
+            if (
+                op.shape == "tenon"
+                or (op.shape == "pocket" and not op.through and (p.id, op.id) in socket_ends)
+            ) and (p.id, op.id) not in bad:
+                failure = _lost_joinery(p, op, removed)
+                if failure:
+                    issues[p.id].append(op.id + " · " + failure)
+                    bad.add((p.id, op.id))
             if (
                 op.shape in ("drill", "slot")
                 and (p.id, op.id) not in bad
@@ -518,6 +602,29 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
             ):
                 check = check.model_copy(update={"frame_id": parts[j.a.part].frame_id})
             checks.append(check)
+    shafts = [
+        _shaft(joint, parts)
+        for joint, check in zip(assembly.joints, checks, strict=True)
+        if joint.kind != "blind_tenon" and check.state == "aligned"
+    ]
+    interferences = review_fasteners(shafts)
+    by_joint: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for collision in interferences:
+        by_joint[collision.joint_a].append((collision.joint_b, collision.state))
+        by_joint[collision.joint_b].append((collision.joint_a, collision.state))
+    for index, check in enumerate(checks):
+        if hits := by_joint.get(check.id):
+            certain_hits = [other for other, state in hits if state == "mismatch"]
+            reason = (
+                "Beslagets nominella volym överlappar "
+                if certain_hits
+                else "Styrtappens sättdjup kan ge överlapp med "
+            )
+            examples = certain_hits or [other for other, _ in hits]
+            reason += ", ".join(examples[:3]) + (" m.fl." if len(examples) > 3 else ".")
+            checks[index] = check.model_copy(
+                update={"state": "mismatch" if certain_hits else "unresolved", "reason": reason}
+            )
     bearing_budget = sum(
         len(world[b.part][1]) * len(world[b.support][1])
         for b in assembly.bearings
@@ -564,6 +671,7 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
         assembly=assembly,
         assembly_sha256=content_hash(canonical),
         back_coverage=back_checks,
+        fastener_interferences=interferences,
         unresolved_back_parts=tuple(sorted(unknown)),
         cells=cells,
         issues={k: tuple(v) for k, v in issues.items() if v},

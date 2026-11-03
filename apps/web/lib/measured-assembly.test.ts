@@ -43,6 +43,7 @@ describe("measured working drawings", () => {
       issues: {},
       overlaps: [],
       overlaps_truncated: false,
+      fastener_interferences: [],
       back_coverage: [],
       unresolved_back_parts: [],
       bearings: [],

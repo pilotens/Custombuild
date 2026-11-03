@@ -17,16 +17,13 @@ def test_release_workflows_use_identical_sha_bound_linuxcnc_oracle() -> None:
         Path(".github/workflows/cd.yml"),
         PROD_CI,
     )
-    jobs = {
-        path: yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"] for path in paths
-    }
+    jobs = {path: yaml.safe_load(path.read_text(encoding="utf-8"))["jobs"] for path in paths}
     oracle_jobs = [jobs[path]["linuxcnc-interpreter-oracle"] for path in paths]
 
     assert all(job == oracle_jobs[0] for job in oracle_jobs[1:])
     oracle = oracle_jobs[0]
     assert oracle["container"]["image"] == (
-        "debian:trixie-slim@sha256:"
-        "abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f"
+        "debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f"
     )
     assert oracle["timeout-minutes"] == 20
     assert oracle["env"] == {
@@ -47,9 +44,7 @@ def test_release_workflows_use_identical_sha_bound_linuxcnc_oracle() -> None:
         "ref": "${{ github.sha }}",
         "persist-credentials": False,
     }
-    assert oracle["steps"][-1]["run"] == (
-        "python3 scripts/verify_linuxcnc_interpreter_oracle.py"
-    )
+    assert oracle["steps"][-1]["run"] == ("python3 scripts/verify_linuxcnc_interpreter_oracle.py")
     assert oracle["steps"][2] == {
         "name": "Verify immutable repository content root",
         "run": "python3 scripts/source_manifest.py --repo . --check-production-semantic-root",
@@ -60,10 +55,7 @@ def test_release_workflows_use_identical_sha_bound_linuxcnc_oracle() -> None:
     assert ci_python["steps"][0] == {
         "name": "Require LinuxCNC interpreter oracle",
         "if": "${{ needs.linuxcnc-interpreter-oracle.result != 'success' }}",
-        "run": (
-            'echo "LinuxCNC interpreter oracle did not pass for this exact commit"\n'
-            "exit 1\n"
-        ),
+        "run": ('echo "LinuxCNC interpreter oracle did not pass for this exact commit"\nexit 1\n'),
     }
     assert jobs[paths[1]]["test-release-bundle"]["needs"] == [
         "quality-evidence",
@@ -101,9 +93,7 @@ def test_release_browser_evidence_uses_direct_playwright_cli() -> None:
         Path(".github/workflows/cd.yml"),
         Path(".github/workflows/prod-ci.yml"),
     )
-    chromium_command = (
-        "pnpm --dir apps/web exec playwright test --project=chromium-desktop"
-    )
+    chromium_command = "pnpm --dir apps/web exec playwright test --project=chromium-desktop"
     wcag_command = (
         "pnpm --dir apps/web exec playwright test e2e/accessibility.spec.ts "
         "--project=chromium-desktop --output=wcag-test-results"
@@ -151,6 +141,8 @@ def test_prod_ci_probes_the_exact_executed_native_runtimes() -> None:
 
 
 def test_prod_ci_sboms_prove_native_interpreter_package_versions() -> None:
+    from scripts.release_evidence_gate import REQUIRED_NATIVE_PACKAGES
+
     workflow = _workflow()
 
     generated = workflow.index("- name: Generate exact volume-init runtime SPDX SBOM")
@@ -165,11 +157,17 @@ def test_prod_ci_sboms_prove_native_interpreter_package_versions() -> None:
         "nodejs-24 24.19.0-r0",
         "nodejs-26",
         "sbom-${component}.spdx.json",
-        "python-3.13 3.13.15-r2",
-        "python-3.13-base 3.13.15-r2",
         "python-3.14",
     ):
         assert required in workflow
+
+    for package, version in REQUIRED_NATIVE_PACKAGES["api"]:
+        assert f"{package} {version}" in workflow
+        for component in ("api", "worker"):
+            recipe = (
+                Path(__file__).resolve().parents[2] / "services" / component / "Dockerfile"
+            ).read_text()
+            assert f"{package}={version}" in recipe
 
 
 def test_prod_ci_pins_every_scan_to_the_reviewed_grype_toolchain() -> None:

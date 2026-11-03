@@ -2008,6 +2008,34 @@
         "title": "FaceName",
         "type": "string"
       },
+      "FastenerInterference": {
+        "additionalProperties": false,
+        "properties": {
+          "joint_a": {
+            "title": "Joint A",
+            "type": "string"
+          },
+          "joint_b": {
+            "title": "Joint B",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "mismatch",
+              "unresolved"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "joint_a",
+          "joint_b",
+          "state"
+        ],
+        "title": "FastenerInterference",
+        "type": "object"
+      },
       "FeatureDimensions": {
         "additionalProperties": false,
         "properties": {
@@ -6526,6 +6554,14 @@
             },
             "title": "Cells",
             "type": "object"
+          },
+          "fastener_interferences": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FastenerInterference"
+            },
+            "title": "Fastener Interferences",
+            "type": "array"
           },
           "issues": {
             "additionalProperties": {

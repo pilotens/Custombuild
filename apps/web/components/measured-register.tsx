@@ -890,8 +890,35 @@ export function MeasuredRegister({
               </ul>
             </details>
           )}
+          {(report.fastener_interferences ?? []).length > 0 && (
+            <details open className={css.attention}>
+              <summary>
+                Beslag med volymkonflikt ({report.fastener_interferences.length}{" "}
+                par)
+              </summary>
+              <p>
+                Kontrollen jämför nominella cylindrar för måttsatta skruvar och
+                styrtappar i samma montering.
+              </p>
+              <ul>
+                {report.fastener_interferences.map((c) => (
+                  <li key={c.joint_a + ":" + c.joint_b}>
+                    {c.joint_a} ↔ {c.joint_b} ·{" "}
+                    {c.state === "mismatch"
+                      ? "överlappande nominell volym"
+                      : "beror på styrtappens sättdjup"}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           <details open>
             <summary>Öppna konstruktionsfrågor</summary>
+            <p>
+              {report.assembly.parts.filter((p) => !p.stock_lbt_um).length} av{" "}
+              {report.assembly.parts.length} delar saknar angivet inköpsformat.
+              Deklarerade format behöver bekräftas av leverantören.
+            </p>
             <ul>
               {(report.assembly.open_items ?? []).map((t) => (
                 <li key={t}>{t}</li>

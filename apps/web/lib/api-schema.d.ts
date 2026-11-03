@@ -1666,6 +1666,18 @@ export interface components {
          * @enum {string}
          */
         FaceName: "a" | "b" | "front" | "back" | "left" | "right" | "top" | "bottom";
+        /** FastenerInterference */
+        FastenerInterference: {
+            /** Joint A */
+            joint_a: string;
+            /** Joint B */
+            joint_b: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "mismatch" | "unresolved";
+        };
         /** FeatureDimensions */
         FeatureDimensions: {
             /** Depth Um */
@@ -3330,6 +3342,11 @@ export interface components {
                     number
                 ][];
             };
+            /**
+             * Fastener Interferences
+             * @default []
+             */
+            fastener_interferences: components["schemas"]["FastenerInterference"][];
             /** Issues */
             issues: {
                 [key: string]: string[];

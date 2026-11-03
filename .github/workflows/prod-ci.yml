@@ -382,9 +382,13 @@ jobs:
             sbom="$1"
             package="$2"
             version="$3"
-            jq -e --arg package "$package" --arg version "$version" \
+            if ! jq -e --arg package "$package" --arg version "$version" \
               '([.packages[]? | select(.name == $package and .versionInfo == $version)] | length) == 1' \
-              "$sbom" >/dev/null
+              "$sbom" >/dev/null; then
+              echo "Expected one exact package $package $version in $sbom" >&2
+              jq -r --arg package "$package" '.packages[]? | select(.name == $package) | .versionInfo' "$sbom" >&2
+              return 1
+            fi
           }
           reject_package_prefix() {
             sbom="$1"
@@ -398,9 +402,9 @@ jobs:
           reject_package_prefix "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" nodejs-26
           for component in api worker; do
             require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" \
-              python-3.13 3.13.15-r2
+              python-3.13 3.13.15_git20260918-r2
             require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" \
-              python-3.13-base 3.13.15-r2
+              python-3.13-base 3.13.15_git20260918-r2
             reject_package_prefix "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" python-3.14
           done
           while read -r package version; do
