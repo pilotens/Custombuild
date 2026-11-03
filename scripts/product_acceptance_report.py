@@ -34,6 +34,7 @@ MEASURES = {
     "module_heights_um": "Modulhöjder (µm)",
     "stock_fit": "Alla råämnen ryms",
     "cut_rows": "Kaprader",
+    "rear_gap_um2": "Öppnad yta vid 1 µm för kort rygg (µm²)",
     "paired_measured_joints": "Passande ritningsförband",
     "offset_rejected_um": "Upptäckt förskjutning (µm)",
     "STEP_mm": "Uppmätt STEP B/D/H (mm)",

@@ -6,6 +6,8 @@ export type MeasuredPiece = components["schemas"]["MeasuredPart"];
 export type MeasuredCut = components["schemas"]["MeasuredOperation"];
 export const measuredMm = (v: number) =>
   (v / 1000).toLocaleString("sv-SE", { maximumFractionDigits: 3 });
+export const measuredArea = (um2: number) =>
+  (um2 / 1e6).toLocaleString("sv-SE", { maximumFractionDigits: 6 });
 export const faceNames: Record<string, string> = {
   front: "fram",
   back: "bak",
@@ -182,10 +184,19 @@ export function measuredPartSheet(
     ...(report.assembly.open_items ?? []),
     ...report.assembly.changes.map((t) => "Manuell ändring: " + t),
   ];
+  const backing = report.assembly.backing?.part_ids.includes(piece.id)
+    ? report.back_coverage
+        .filter((b) => (b.exposure_on_removal_um2[piece.id] ?? 0) > 0)
+        .map(
+          (b) =>
+            `<li>${esc(b.id)} · ${measuredArea(b.exposure_on_removal_um2[piece.id]!)} mm² öppnas om delen tas ut.</li>`,
+        )
+        .join("")
+    : "";
   const articles = measuredHardware(report, piece.id)
     .map(([sku, n]) => `<li>${n} × ${esc(sku)}</li>`)
     .join("");
-  return `<!doctype html><html lang="sv"><meta charset="utf-8"><title>${esc(piece.id)} · delritning</title><style>body{max-width:800px;margin:auto;padding:24px;font:14px/1.5 system-ui;color:#243c33}svg{max-width:100%;height:230px}table{border-collapse:collapse}td,th{padding:5px;border:1px solid #b9c6bc;text-align:left}code{overflow-wrap:anywhere}@media print{.face{break-before:page}tr{break-inside:avoid}}</style><h1>${esc(piece.id)} · ${esc(piece.name)}</h1><p>Granskningsritning · ${esc(report.assembly.title)}<br>Råämne L/B/T ${piece.blank_lbt_um.map(measuredMm).join(" × ")} mm · ${esc(piece.material)}</p><p>${esc(piece.note ?? "")}</p><p>Källa: ${esc(report.assembly.source)}<br>Modell: <code>${esc(report.assembly_sha256)}</code></p><p>Koordinatsystem: ${esc(piece.frame_id ?? "hela monteringen")}.</p><h2>Bearbetningar</h2><table><tr><th>ID</th><th>Form</th><th>Yta / U,V</th><th>Centrum mm</th><th>B × H × djup mm</th><th>Artikel / källa</th></tr>${rows}</table><h2>Förband</h2><ul>${mates || "<li>Inga parade förband angivna.</li>"}</ul><h2>Beslag på registrerade förband</h2><ul>${articles || "<li>Inga artiklar angivna.</li>"}</ul><h2>Upplag</h2><ul>${bearings || "<li>Inga upplag angivna.</li>"}</ul><h2>Öppna punkter</h2><ul>${issues.map((i) => `<li>${esc(i)}</li>`).join("")}</ul><strong>Fysisk bearbetning är spärrad.</strong>${measuredViews(
+  return `<!doctype html><html lang="sv"><meta charset="utf-8"><title>${esc(piece.id)} · delritning</title><style>body{max-width:800px;margin:auto;padding:24px;font:14px/1.5 system-ui;color:#243c33}svg{max-width:100%;height:230px}table{border-collapse:collapse}td,th{padding:5px;border:1px solid #b9c6bc;text-align:left}code{overflow-wrap:anywhere}@media print{.face{break-before:page}tr{break-inside:avoid}}</style><h1>${esc(piece.id)} · ${esc(piece.name)}</h1><p>Granskningsritning · ${esc(report.assembly.title)}<br>Råämne L/B/T ${piece.blank_lbt_um.map(measuredMm).join(" × ")} mm · ${esc(piece.material)}</p><p>${esc(piece.note ?? "")}</p><p>Källa: ${esc(report.assembly.source)}<br>Modell: <code>${esc(report.assembly_sha256)}</code></p><p>Koordinatsystem: ${esc(piece.frame_id ?? "hela monteringen")}.</p><h2>Bearbetningar</h2><table><tr><th>ID</th><th>Form</th><th>Yta / U,V</th><th>Centrum mm</th><th>B × H × djup mm</th><th>Artikel / källa</th></tr>${rows}</table><h2>Förband</h2><ul>${mates || "<li>Inga parade förband angivna.</li>"}</ul><h2>Beslag på registrerade förband</h2><ul>${articles || "<li>Inga artiklar angivna.</li>"}</ul><h2>Upplag</h2><ul>${bearings || "<li>Inga upplag angivna.</li>"}</ul>${backing ? "<h2>Ryggens täckning vid uttag</h2><ul>" + backing + "</ul>" : ""}<h2>Öppna punkter</h2><ul>${issues.map((i) => `<li>${esc(i)}</li>`).join("")}</ul><strong>Fysisk bearbetning är spärrad.</strong>${measuredViews(
     piece,
   )
     .map(

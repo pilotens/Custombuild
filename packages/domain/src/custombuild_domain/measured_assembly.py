@@ -9,6 +9,7 @@ from typing import Annotated, Literal
 from pydantic import Field, model_validator
 
 from .identity import content_hash
+from .measured_backing import BackCoverage, Backing, review_backing
 from .models import FrozenModel
 
 Key = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")]
@@ -105,6 +106,7 @@ class MeasuredAssembly(FrozenModel):
     schema_version: Literal["custombuild.measured-assembly.v1"]
     title: Text
     source: Text
+    backing: Backing | None = None
     parts: tuple[MeasuredPart, ...] = Field(min_length=1, max_length=512)
     joints: tuple[MeasuredJoint, ...] = Field(default=(), max_length=2048)
     bearings: tuple[MeasuredBearing, ...] = Field(default=(), max_length=2048)
@@ -144,6 +146,8 @@ class MeasuredReport(FrozenModel):
     bearings: tuple[JointCheck, ...]
     overlaps: tuple[tuple[str, str], ...]
     overlaps_truncated: bool
+    back_coverage: tuple[BackCoverage, ...] = ()
+    unresolved_back_parts: tuple[str, ...] = ()
     physical_cutting_authorized: Literal[False] = False
 
 
@@ -542,9 +546,25 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
                     if key in resting
                     else "Delen saknar passande registrerade förband och upplag till andra delar."
                 )
+    canonical = assembly.model_dump(mode="json")
+    back_checks: tuple[BackCoverage, ...] = ()
+    unknown: set[str] = set()
+    if assembly.backing:
+        backs = {
+            p: world[p][1]
+            for p in assembly.backing.part_ids
+            if p in world and not parts[p].frame_id
+        }
+        unknown = set(assembly.backing.part_ids).difference(backs)
+        back_checks = review_backing(assembly.backing, backs, unknown)
+    else:
+        # Keep receipts from files predating optional rear coverage reproducible.
+        canonical.pop("backing")
     return MeasuredReport(
         assembly=assembly,
-        assembly_sha256=content_hash(assembly.model_dump(mode="json")),
+        assembly_sha256=content_hash(canonical),
+        back_coverage=back_checks,
+        unresolved_back_parts=tuple(sorted(unknown)),
         cells=cells,
         issues={k: tuple(v) for k, v in issues.items() if v},
         joints=tuple(checks),

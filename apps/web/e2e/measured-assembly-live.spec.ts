@@ -44,6 +44,27 @@ test("en arbetsritning med långa käll-ID:n ryms på mobilskärmen", async ({
   await page.goto("/assembly");
   const file = sampleMeasuredWork();
   file.source = "Arbetsritningens källidentitet " + "a".repeat(64);
+  file.parts.push({
+    ...file.parts[0]!,
+    id: "rear-panel",
+    name: "Bakstycke",
+    size_um: [20000, 6000, 30000],
+    blank_lbt_um: [30000, 20000, 6000],
+    origin_um: [100000, 40000, 0],
+    operations: [],
+  });
+  file.backing = {
+    part_ids: ["rear-panel"],
+    openings: [
+      {
+        id: "lower",
+        label: "Nedre fack",
+        target: "covered",
+        low_um: [100000, 40000, 0],
+        high_um: [120000, 46000, 30000],
+      },
+    ],
+  };
   await page.getByLabel("Öppna arbetsritning (JSON)").setInputFiles({
     name: "test-assembly.json",
     mimeType: "application/json",
@@ -54,4 +75,11 @@ test("en arbetsritning med långa käll-ID:n ryms på mobilskärmen", async ({
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
     390,
   );
+  await expect(page.getByText("Nedre fack · Önskad täckning")).toBeVisible();
+  await page.getByLabel("Välj del i ritningen").selectOption("rear-panel");
+  await page.getByRole("button", { name: "Visa utan delen" }).click();
+  await expect(page.getByText("Nedre fack · Avviker")).toBeVisible();
+  await expect(
+    page.getByText("rear-panel uttagen: 600 mm² blir öppet."),
+  ).toBeVisible();
 });

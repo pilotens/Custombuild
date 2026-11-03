@@ -78,3 +78,5 @@ En stor konceptmall kan öppnas i Studio även om en obruten del överskrider sk
 Det går att vrida modellen, isolera en del och se vilka förband och upplag som påverkas om man tar ut den. En ändrad bearbetning kontrolleras på nytt av servern och får en ny modellidentitet. Arbetsfilen kan exporteras och öppnas igen. En del med okänt monteringsläge kan bara lägeskontrolleras inom ett angivet delmontage eller granskas isolerat.
 
 Arbetsproven jämför bland annat tapparnas tvärsnitt och djupreserv, borrhålens läge och riktning, skruvlängd, råformatets längd i ådringens riktning och kontaktarean på angivna upplag. Saknade beslag, härledda piloter och ofullständiga lägen syns i granskningen. Den mäter nominell geometri. Belastning, virkets variation, infästning i byggnaden och fysisk provmontering behöver egna underlag.
+
+För ritningar med en deklarerad rygg visar varje målöppning sin täckta yta i det angivna djupintervallet. Överlappande delars projektion räknas en gång. Vid uttag visas den yta som faktiskt öppnas. Ramprovet förkortar en bakskiva med en mikrometer och återställer den.

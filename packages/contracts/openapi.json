@@ -351,6 +351,127 @@
         "title": "AssemblyStep",
         "type": "object"
       },
+      "BackCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "covered_area_um2": {
+            "title": "Covered Area Um2",
+            "type": "number"
+          },
+          "exposure_on_removal_um2": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "title": "Exposure On Removal Um2",
+            "type": "object"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "required_area_um2": {
+            "title": "Required Area Um2",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "met",
+              "mismatch",
+              "unresolved"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "required_area_um2",
+          "covered_area_um2",
+          "exposure_on_removal_um2",
+          "state"
+        ],
+        "title": "BackCoverage",
+        "type": "object"
+      },
+      "BackOpening": {
+        "additionalProperties": false,
+        "properties": {
+          "high_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "maximum": 20000000.0,
+                "minimum": -20000000.0,
+                "type": "integer"
+              },
+              {
+                "maximum": 20000000.0,
+                "minimum": -20000000.0,
+                "type": "integer"
+              },
+              {
+                "maximum": 20000000.0,
+                "minimum": -20000000.0,
+                "type": "integer"
+              }
+            ],
+            "title": "High Um",
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "maxLength": 150,
+            "minLength": 1,
+            "title": "Label",
+            "type": "string"
+          },
+          "low_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "maximum": 20000000.0,
+                "minimum": -20000000.0,
+                "type": "integer"
+              },
+              {
+                "maximum": 20000000.0,
+                "minimum": -20000000.0,
+                "type": "integer"
+              },
+              {
+                "maximum": 20000000.0,
+                "minimum": -20000000.0,
+                "type": "integer"
+              }
+            ],
+            "title": "Low Um",
+            "type": "array"
+          },
+          "target": {
+            "enum": [
+              "covered",
+              "open"
+            ],
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "target",
+          "low_um",
+          "high_um"
+        ],
+        "title": "BackOpening",
+        "type": "object"
+      },
       "BackPanelType": {
         "enum": [
           "none",
@@ -359,6 +480,35 @@
         ],
         "title": "BackPanelType",
         "type": "string"
+      },
+      "Backing": {
+        "additionalProperties": false,
+        "properties": {
+          "openings": {
+            "items": {
+              "$ref": "#/components/schemas/BackOpening"
+            },
+            "maxItems": 64,
+            "minItems": 1,
+            "title": "Openings",
+            "type": "array"
+          },
+          "part_ids": {
+            "items": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+              "type": "string"
+            },
+            "maxItems": 512,
+            "title": "Part Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "part_ids",
+          "openings"
+        ],
+        "title": "Backing",
+        "type": "object"
       },
       "Body_inspect_import_v1_projects__project_id__imports_inspect_post": {
         "properties": {
@@ -5779,6 +5929,16 @@
       "MeasuredAssembly": {
         "additionalProperties": false,
         "properties": {
+          "backing": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Backing"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "bearings": {
             "default": [],
             "items": {
@@ -6320,6 +6480,14 @@
             "title": "Assembly Sha256",
             "type": "string"
           },
+          "back_coverage": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/BackCoverage"
+            },
+            "title": "Back Coverage",
+            "type": "array"
+          },
           "bearings": {
             "items": {
               "$ref": "#/components/schemas/JointCheck"
@@ -6402,6 +6570,14 @@
             "default": false,
             "title": "Physical Cutting Authorized",
             "type": "boolean"
+          },
+          "unresolved_back_parts": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved Back Parts",
+            "type": "array"
           }
         },
         "required": [

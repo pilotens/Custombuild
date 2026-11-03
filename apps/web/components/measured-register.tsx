@@ -6,6 +6,7 @@ import {
   cutNames,
   faceNames,
   measuredFaceSvg,
+  measuredArea,
   measuredMm as mm,
   measuredHardware,
   measuredGroups,
@@ -569,6 +570,71 @@ function OperationEdit({
   );
 }
 
+function RearCoverage({
+  report,
+  removed,
+}: {
+  report: MeasuredResult;
+  removed?: string;
+}) {
+  const backing = report.assembly.backing;
+  if (!backing) return null;
+  return (
+    <details open>
+      <summary>Ryggens täckning ({backing.openings.length} ytor)</summary>
+      <p>
+        De registrerade ryggdelarnas material projiceras mot varje angivet fack
+        inom det avsedda djupet. Procentsiffran avser skivornas täckning.
+        Borrhål och slitsar räknas inte som öppna fack.
+      </p>
+      {report.unresolved_back_parts.length > 0 && (
+        <p className={css.attention}>
+          Okänt monteringsläge eller saknad ryggdel:{" "}
+          {report.unresolved_back_parts.join(", ")}
+        </p>
+      )}
+      {backing.openings.map((opening, i) => {
+        const checked = report.back_coverage[i]!;
+        const loss = removed
+          ? (checked.exposure_on_removal_um2[removed] ?? 0)
+          : 0;
+        const covered = checked.covered_area_um2 - loss;
+        const pct = (
+          (100 * covered) /
+          checked.required_area_um2
+        ).toLocaleString("sv-SE", { maximumFractionDigits: 3 });
+        const matches =
+          opening.target === "open"
+            ? covered === 0
+            : covered === checked.required_area_um2;
+        const status =
+          checked.state === "unresolved"
+            ? "Ej fastställt"
+            : matches
+              ? "Önskad täckning"
+              : "Avviker";
+        return (
+          <div className={css.row} key={opening.id}>
+            <strong>
+              {opening.label} · {status}
+            </strong>
+            <span>
+              {pct} % täckt · {measuredArea(covered)} av{" "}
+              {measuredArea(checked.required_area_um2)} mm². Mål:{" "}
+              {opening.target === "open" ? "öppet" : "täckt"}.
+            </span>
+            {loss > 0 && (
+              <small>
+                {removed} uttagen: {measuredArea(loss)} mm² blir öppet.
+              </small>
+            )}
+          </div>
+        );
+      })}
+    </details>
+  );
+}
+
 export function MeasuredRegister({
   report,
   initialPart,
@@ -803,6 +869,10 @@ export function MeasuredRegister({
           >
             Hämta arbetsfilen för appen
           </button>
+          <RearCoverage
+            report={report}
+            removed={mode === "without" ? part.id : undefined}
+          />
           {groups.length > 1 && (
             <details open className={css.attention}>
               <summary>{groups.length} separata delgrupper i denna vy</summary>

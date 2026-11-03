@@ -867,11 +867,60 @@ export interface components {
              */
             tool_ids: string[];
         };
+        /** BackCoverage */
+        BackCoverage: {
+            /** Covered Area Um2 */
+            covered_area_um2: number;
+            /** Exposure On Removal Um2 */
+            exposure_on_removal_um2: {
+                [key: string]: number;
+            };
+            /** Id */
+            id: string;
+            /** Required Area Um2 */
+            required_area_um2: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "met" | "mismatch" | "unresolved";
+        };
+        /** BackOpening */
+        BackOpening: {
+            /** High Um */
+            high_um: [
+                number,
+                number,
+                number
+            ];
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+            /** Low Um */
+            low_um: [
+                number,
+                number,
+                number
+            ];
+            /**
+             * Target
+             * @enum {string}
+             */
+            target: "covered" | "open";
+        };
         /**
          * BackPanelType
          * @enum {string}
          */
         BackPanelType: "none" | "surface_mounted" | "inset_groove";
+        /** Backing */
+        Backing: {
+            /** Openings */
+            openings: components["schemas"]["BackOpening"][];
+            /** Part Ids */
+            part_ids: string[];
+        };
         /** Body_inspect_import_v1_projects__project_id__imports_inspect_post */
         Body_inspect_import_v1_projects__project_id__imports_inspect_post: {
             /** Document */
@@ -3075,6 +3124,7 @@ export interface components {
         };
         /** MeasuredAssembly */
         MeasuredAssembly: {
+            backing?: components["schemas"]["Backing"] | null;
             /**
              * Bearings
              * @default []
@@ -3262,6 +3312,11 @@ export interface components {
             assembly: components["schemas"]["MeasuredAssembly"];
             /** Assembly Sha256 */
             assembly_sha256: string;
+            /**
+             * Back Coverage
+             * @default []
+             */
+            back_coverage: components["schemas"]["BackCoverage"][];
             /** Bearings */
             bearings: components["schemas"]["JointCheck"][];
             /** Cells */
@@ -3294,6 +3349,11 @@ export interface components {
              * @constant
              */
             physical_cutting_authorized: false;
+            /**
+             * Unresolved Back Parts
+             * @default []
+             */
+            unresolved_back_parts: string[];
         };
         /** MovingGroup */
         MovingGroup: {

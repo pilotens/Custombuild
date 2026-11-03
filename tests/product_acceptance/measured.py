@@ -112,4 +112,34 @@ def exercise_measured(client, case, evidence):
                     for cell in report["cells"][p["id"]]
                 )
                 assert 0 < volume < prod(p["size_um"])
+            # Independent rear opening on the same API, shortened by one micrometre.
+            rear = member("back", [600_000, 6_000, 800_000], [0, 300_000, 0])
+            with_back = {
+                **query,
+                "parts": [*query["parts"], rear],
+                "backing": {
+                    "part_ids": ["back"],
+                    "openings": [
+                        {
+                            "id": "bay",
+                            "label": "Rygg",
+                            "target": "covered",
+                            "low_um": [0, 300_000, 0],
+                            "high_um": [600_000, 306_000, 800_000],
+                        }
+                    ],
+                },
+            }
+            complete = response_json(client.post(url, json=with_back))["back_coverage"][0]
+            assert complete["state"] == "met" and complete["covered_area_um2"] == 480_000_000_000
+            rear["size_um"][2] -= 1
+            rear["blank_lbt_um"][0] -= 1
+            short = response_json(client.post(url, json=with_back))["back_coverage"][0]
+            assert short["state"] == "mismatch"
+            evidence.equal(
+                "rear_gap_um2", short["required_area_um2"] - short["covered_area_um2"], 600_000
+            )
+            rear["size_um"][2] += 1
+            rear["blank_lbt_um"][0] += 1
+            assert response_json(client.post(url, json=with_back))["back_coverage"][0] == complete
     assert report["physical_cutting_authorized"] is False
