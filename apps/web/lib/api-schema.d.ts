@@ -422,6 +422,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/measured-assemblies/review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Measured Assembly */
+        post: operations["measured_assembly_v1_measured_assemblies_review_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/projects": {
         parameters: {
             query?: never;
@@ -2755,6 +2772,35 @@ export interface components {
              */
             tolerance_um: number;
         };
+        /** JointCheck */
+        JointCheck: {
+            /** Contact Area Um2 */
+            contact_area_um2?: number | null;
+            /** Depth Reserve Um */
+            depth_reserve_um?: number | null;
+            /** Frame Id */
+            frame_id?: string | null;
+            /** Id */
+            id: string;
+            /** Offset Um */
+            offset_um?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Reason */
+            reason: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "aligned" | "mismatch" | "unresolved";
+            /**
+             * Uses Transfer Template
+             * @default false
+             */
+            uses_transfer_template: boolean;
+        };
         /** JointMember */
         JointMember: {
             /** Feature Ids */
@@ -3026,6 +3072,228 @@ export interface components {
             source: components["schemas"]["PropertySource"];
             /** Version */
             version: string;
+        };
+        /** MeasuredAssembly */
+        MeasuredAssembly: {
+            /**
+             * Bearings
+             * @default []
+             */
+            bearings: components["schemas"]["MeasuredBearing"][];
+            /**
+             * Changes
+             * @default []
+             */
+            changes: string[];
+            /**
+             * Joints
+             * @default []
+             */
+            joints: components["schemas"]["MeasuredJoint"][];
+            /**
+             * Open Items
+             * @default []
+             */
+            open_items: string[];
+            /** Parts */
+            parts: components["schemas"]["MeasuredPart"][];
+            /**
+             * Schema Version
+             * @constant
+             */
+            schema_version: "custombuild.measured-assembly.v1";
+            /** Source */
+            source: string;
+            /** Title */
+            title: string;
+        };
+        /** MeasuredBearing */
+        MeasuredBearing: {
+            /** Id */
+            id: string;
+            /** Part */
+            part: string;
+            /** Source */
+            source: string;
+            /** Support */
+            support: string;
+        };
+        /** MeasuredEnd */
+        MeasuredEnd: {
+            /** Operation */
+            operation: string;
+            /** Part */
+            part: string;
+        };
+        /** MeasuredJoint */
+        MeasuredJoint: {
+            a: components["schemas"]["MeasuredEnd"];
+            /** Article */
+            article?: string | null;
+            b: components["schemas"]["MeasuredEnd"];
+            /** Diameter Um */
+            diameter_um?: number | null;
+            /**
+             * Fittings
+             * @default []
+             */
+            fittings: string[];
+            /**
+             * Head Allowance Um
+             * @default 0
+             */
+            head_allowance_um: number;
+            /** Id */
+            id: string;
+            /**
+             * Interface Gap Um
+             * @default 0
+             */
+            interface_gap_um: number;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "blind_tenon" | "dowel" | "screw";
+            /** Length Um */
+            length_um?: number | null;
+            /** Source */
+            source: string;
+        };
+        /** MeasuredOperation */
+        MeasuredOperation: {
+            /** Article */
+            article?: string | null;
+            /**
+             * Axes
+             * @enum {string}
+             */
+            axes: "xy" | "yx" | "xz" | "zx" | "yz" | "zy";
+            /** Depth Um */
+            depth_um: number;
+            /**
+             * Face
+             * @enum {string}
+             */
+            face: "left" | "right" | "front" | "back" | "bottom" | "top";
+            /** Height Um */
+            height_um: number;
+            /** Id */
+            id: string;
+            /**
+             * Provenance
+             * @default listed
+             * @enum {string}
+             */
+            provenance: "listed" | "drawing" | "transfer_template" | "edited";
+            /**
+             * Shape
+             * @enum {string}
+             */
+            shape: "drill" | "slot" | "pocket" | "tenon" | "notch";
+            /** Source */
+            source: string;
+            /**
+             * Through
+             * @default false
+             */
+            through: boolean;
+            /**
+             * Transfer
+             * @default false
+             */
+            transfer: boolean;
+            /** U Um */
+            u_um: number;
+            /** V Um */
+            v_um: number;
+            /** Width Um */
+            width_um: number;
+        };
+        /** MeasuredPart */
+        MeasuredPart: {
+            /** Blank Lbt Um */
+            blank_lbt_um: [
+                number,
+                number,
+                number
+            ];
+            /** Code */
+            code: string;
+            /** Frame Id */
+            frame_id?: string | null;
+            /** Id */
+            id: string;
+            /** Material */
+            material: string;
+            /** Name */
+            name: string;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /**
+             * Operations
+             * @default []
+             */
+            operations: components["schemas"]["MeasuredOperation"][];
+            /** Origin Um */
+            origin_um?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Size Um */
+            size_um: [
+                number,
+                number,
+                number
+            ];
+            /** Stock Lbt Um */
+            stock_lbt_um?: [
+                number,
+                number,
+                number
+            ] | null;
+        };
+        /** MeasuredReport */
+        MeasuredReport: {
+            assembly: components["schemas"]["MeasuredAssembly"];
+            /** Assembly Sha256 */
+            assembly_sha256: string;
+            /** Bearings */
+            bearings: components["schemas"]["JointCheck"][];
+            /** Cells */
+            cells: {
+                [key: string]: [
+                    number,
+                    number,
+                    number,
+                    number,
+                    number,
+                    number
+                ][];
+            };
+            /** Issues */
+            issues: {
+                [key: string]: string[];
+            };
+            /** Joints */
+            joints: components["schemas"]["JointCheck"][];
+            /** Overlaps */
+            overlaps: [
+                string,
+                string
+            ][];
+            /** Overlaps Truncated */
+            overlaps_truncated: boolean;
+            /**
+             * Physical Cutting Authorized
+             * @default false
+             * @constant
+             */
+            physical_cutting_authorized: false;
         };
         /** MovingGroup */
         MovingGroup: {
@@ -4845,6 +5113,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    measured_assembly_v1_measured_assemblies_review_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MeasuredAssembly"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasuredReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

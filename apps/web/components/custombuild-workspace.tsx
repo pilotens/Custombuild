@@ -1,6 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { FURNITURE_FAMILY_LABELS } from "@/lib/furniture-workspace";
 import {
@@ -2474,6 +2475,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                     <summary>Referensens stöd och baksida · {spec.reference_image_import.file_name}</summary>
                     <p>Bildförslag: {spec.reference_image_import.detected_dividers} invändiga stödlinjer och {spec.reference_image_import.detected_shelves} hyllrader.
                       Nuvarande modell: {spec.divider_count} avdelarskivor och {spec.shelf_count} hyllrader.</p>
+                    <p><Link href="/assembly">Öppna arbetsritning med måttsatta delar och förband</Link></p>
                     <ReferenceConstructionFields value={spec.reference_image_import.construction ?? UNKNOWN_CONSTRUCTION}
                       change={construction => updateSpec({ reference_image_import: { ...spec.reference_image_import!,
                         construction, verification_status:"concept", verified_model_fingerprint:undefined } }, "Referenskraven ändrades")} />

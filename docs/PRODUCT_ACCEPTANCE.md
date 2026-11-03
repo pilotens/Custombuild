@@ -23,7 +23,7 @@ Varje körning skriver ett svenskt arbetsprotokoll i `test-results/product-accep
 | Väldigt svårt | Ett sparat kundfall följs hela vägen genom produktens flöde. Verktygets sex möbelprofiler kontrolleras i nedladdade verkstadsfiler. Studions mallar provas med två redigeringar av samma utkast. | `very-hard` |
 | Omöjligt | Provet godkänns när systemet stoppar exakt den otillåtna åtgärden med rätt orsak och kontrollerbart slutläge. | `impossible` |
 
-`LEVEL` accepterar även `lätt`, `medel`, `svårt`, `väldigt-svårt` och `omöjligt`. Använd `PRODUCT` från tabellen för att köra en enda produkt. Utan filter körs 65 arbetsprov och en separat kontroll av att matrisen täcker produktkatalogerna.
+`LEVEL` accepterar även `lätt`, `medel`, `svårt`, `väldigt-svårt` och `omöjligt`. Använd `PRODUCT` från tabellen för att köra en enda produkt. Utan filter körs 70 arbetsprov och en separat kontroll av att matrisen täcker produktkatalogerna.
 
 ## Produkter och avgörande kontroller
 
@@ -36,6 +36,7 @@ Varje körning skriver ett svenskt arbetsprotokoll i `test-results/product-accep
 | Byrå | `dresser` | Lådornas slag, spel, fronter och hålbilder för 350 och 450 mm skenor. Borrningar i mellanväggen får inte kollidera. | Stoppa en 450 mm skena när front, rygg och frigång gör stommen för grund. |
 | Hyllsystem i möbelverktyget | `shelving` | Fackbredder, hyllcentrum, bakfält och sockel. 128 delar får köas för granskning. | Ett utkast på 129 delar får visas men får inget exportjobb. |
 | Valnötsvägg i moduler | `walnut-modules` | Rumsmått, fogar, råämnen, socklar och varje rad i den gemensamma kaplistan. Fyra moduler ger 62 delar i kundfallet. | Stoppa stapling med sockel tills placeringen har valts. Ingen kaplista får skapas. |
+| Måttsatt rammontering | `measured-frame` | Varje blindtapp jämförs med sin motdel i monterat läge. Ett flyttat tapphål ger en avvikelse och materialöverlapp. | Redovisa fog som inte passar när tappen bottnar och skydda tillverkningsspärren. |
 | Hyllsystem i studion | `studio-shelving` | Fackens verkliga mått, gammal designidentitet avvisad och rätt revision fryst. | Stoppa 20 hyllplan i 400 mm höjd och bevara det tidigare utkastet. |
 | Väggbibliotek | `studio-wall-library` | Underskåpens fronter och de öppna övre facken i samma stomme. | Stoppa produktionsrevisionen med mallens begränsning för gångjärn och infästning. |
 | Skänk | `studio-sideboard` | Låg stomme med två fack och olika bredder ovanför skåpen. | Stoppa produktionsrevisionen för mallens obekräftade beslagssystem. |
@@ -68,3 +69,12 @@ Delbladet innehåller delidentitet, modellhash, råmått, färdigmått, material
 Särskilda återprov förskjuter ett pilothål, flyttar en bearbetning till fel del, tar ut ett stolsben och mäter fria öppningar bakom underskåp. Ett annat prov testar en hel rygg mot skivformatet och kontrollerar att underskåpsbottnarna slutar vid dess framsida. I ett separat felprov återstår enbart de översta 200 mm av ett bakstycke. Just det facket ska då visas som delvis täckt och grannfacket som helt täckt. En lådsida följs till sina tre skenfästen och bara den låda som berörs när sidan tas ut. En uppmätt rund stolpe prövas vid kontakt, en mikrometers överlapp och en mikrometers mellanrum. En demonteringsvy ändrar ingen sparad revision. Den visar brutna modellerade förband och återstående golvstöd. Lastkapacitet och stabilitet för den ändrade möbeln behöver prövas separat.
 
 En stor konceptmall kan öppnas i Studio även om en obruten del överskrider skivformat eller maskinbord. Ett återprov med en 4 200 mm bred väggstomme mäter att bredden ligger kvar och att båda spärrarna fortfarande visas.
+
+
+## Måttsatta arbetsritningar
+
+Öppna **Måttsatt montering** från möbelstudion. Välj **Prova ett ramhörn** eller läs in en arbetsfil i formatet `custombuild.measured-assembly.v1`. Varje exemplar har ett eget ID, lokala mått, källdata och bearbetningar med yta, U/V och djup. Samma ID används för val i modellen, delritning, motdelar och utskrift.
+
+Det går att vrida modellen, isolera en del och se vilka förband och upplag som påverkas om man tar ut den. En ändrad bearbetning kontrolleras på nytt av servern och får en ny modellidentitet. Arbetsfilen kan exporteras och öppnas igen. En del med okänt monteringsläge kan bara lägeskontrolleras inom ett angivet delmontage eller granskas isolerat.
+
+Arbetsproven jämför bland annat tapparnas tvärsnitt och djupreserv, borrhålens läge och riktning, skruvlängd, råformatets längd i ådringens riktning och kontaktarean på angivna upplag. Saknade beslag, härledda piloter och ofullständiga lägen syns i granskningen. Den mäter nominell geometri. Belastning, virkets variation, infästning i byggnaden och fysisk provmontering behöver egna underlag.

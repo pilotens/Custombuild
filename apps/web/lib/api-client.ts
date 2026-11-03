@@ -1704,6 +1704,12 @@ export class CustombuildApiClient {
     return this.request<FurnitureCatalog>("/v1/furniture/catalog", { method: "GET" });
   }
 
+  async reviewMeasuredAssembly(input: components["schemas"]["MeasuredAssembly"], signal?: AbortSignal) {
+    return this.request<components["schemas"]["MeasuredReport"]>("/v1/measured-assemblies/review", {
+      method:"POST", body:JSON.stringify(input), signal,
+    });
+  }
+
   async inspectFurniturePart(workspace: FurnitureWorkspace, partId: string, hash: string, signal: AbortSignal) {
     const result = await this.request<PartInspection>("/v1/furniture/inspect-part", {
       method: "POST", signal, body: JSON.stringify({ workspace, part_id: partId, expected_design_hash: hash }),

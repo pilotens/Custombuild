@@ -45,6 +45,7 @@ export function FurnitureWorkspacePage({ runtimeConfig, initialFamily, initialPr
     <header className={styles.header}>
       <Link href="/" className={styles.brand}>Custombuild</Link>
       <span>Formge din möbel</span>
+      <Link href="/assembly">Måttsatt montering</Link>
       <Link href="/">Till startsidan</Link>
     </header>
     {principal ? <FurnitureStudio key={`${principal.organization_id}:${principal.user_id}`}

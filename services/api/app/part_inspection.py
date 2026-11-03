@@ -4,6 +4,11 @@ from typing import Annotated
 
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import FurnitureResult, build_furniture
+from custombuild_domain.measured_assembly import (
+    MeasuredAssembly,
+    MeasuredReport,
+    review_measured_assembly,
+)
 from custombuild_domain.models import DesignResult
 from custombuild_domain.rear_coverage import ReferenceConstruction
 from custombuild_manufacturing.adapters import adapt_domain_part
@@ -150,3 +155,11 @@ def inspect_bookcase(
         raise _validation_error(exc) from exc
     except RuleEngineUnavailable as exc:
         raise _rule_engine_error(exc) from exc
+
+
+@router.post("/measured-assemblies/review", response_model=MeasuredReport)
+def measured_assembly(payload: MeasuredAssembly, principal: PrincipalDep) -> MeasuredReport:
+    try:
+        return review_measured_assembly(payload)
+    except ValueError as exc:
+        raise _validation_error(exc) from exc

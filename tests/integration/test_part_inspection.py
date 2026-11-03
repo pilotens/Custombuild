@@ -309,3 +309,18 @@ def test_measured_reference_posts_have_distinct_geometry_and_no_invented_fastene
     free, _ = run()
     assert not free.get("touching") and not free.get("overlapping")
     assert response_json(buyer.post("/v1/designs/preview", json=spec)) == preview
+
+
+def test_measured_review_rejects_unidentified_callers_and_duplicate_parts(buyer):
+    from tests.product_acceptance.measured import frame_file
+
+    path = "/v1/measured-assemblies/review"
+    data = frame_file(two_ended=False)
+    with TestClient(app) as anonymous:
+        assert anonymous.post(path, json=data).status_code == 401
+    result = response_json(buyer.post(path, json=data))
+    assert len(result["assembly_sha256"]) == 64
+    assert result["physical_cutting_authorized"] is False
+    assert result["joints"][0]["state"] == "aligned"
+    data["parts"].append(deepcopy(data["parts"][0]))
+    assert buyer.post(path, json=data).status_code == 422

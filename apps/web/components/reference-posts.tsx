@@ -99,6 +99,7 @@ export function ReferencePostEditor({
   return (
     <details>
       <summary>Separata uppmätta stolpar ({posts.length})</summary>
+      <p><a href="/assembly">Öppna en arbetsritning med flera delar och förband</a></p>
       <p>
         Ange delens egna mått. X mäts från stommens vänsterkant, Y från
         framkanten och Z från golvet till delens lägsta hörn. Negativa Y ligger

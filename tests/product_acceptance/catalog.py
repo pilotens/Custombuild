@@ -372,10 +372,36 @@ def studio_orders(template, product):
     )
 
 
+MEASURED = (
+    Order(
+        "En måttsatt blind tapp",
+        "Centrum sammanfaller och 1,125 mm djupreserv återstår.",
+        {"two_ended": False},
+    ),
+    Order("En regel i två motstående stolpar", "Båda ändarna når rätt skuldra.", {"levels": 1}),
+    Order(
+        "Tre rader med en avsiktligt flyttad bearbetning",
+        "En mikrometers förskjutning upptäcks och en korrigerad omkörning är identisk.",
+        {"levels": 3},
+    ),
+    Order(
+        "Sex ramar med sju tvärstycken vardera",
+        "54 bearbetade delar, 84 matchande fogar och inga materialöverlapp.",
+        {"frames": 6, "levels": 7},
+    ),
+    Order(
+        "Tapp som bottnar i sitt blindhål",
+        "Fogkontrollen stoppar den aktuella tappen med noll djupreserv.",
+        {"two_ended": False},
+    ),
+)
+
+
 def all_cases():
     orders = {
         **FURNITURE,
         "walnut-modules": WALNUT,
+        "measured-frame": MEASURED,
         **{f"studio-{key}": studio_orders(key, product) for key, product in STUDIO.items()},
     }
     return [

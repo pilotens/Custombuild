@@ -5085,6 +5085,107 @@
         "title": "Joint",
         "type": "object"
       },
+      "JointCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "contact_area_um2": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Area Um2"
+          },
+          "depth_reserve_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Depth Reserve Um"
+          },
+          "frame_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Id"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "offset_um": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "maximum": 20000000.0,
+                    "minimum": -20000000.0,
+                    "type": "integer"
+                  },
+                  {
+                    "maximum": 20000000.0,
+                    "minimum": -20000000.0,
+                    "type": "integer"
+                  },
+                  {
+                    "maximum": 20000000.0,
+                    "minimum": -20000000.0,
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Offset Um"
+          },
+          "reason": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "aligned",
+              "mismatch",
+              "unresolved"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "uses_transfer_template": {
+            "default": false,
+            "title": "Uses Transfer Template",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "reason"
+        ],
+        "title": "JointCheck",
+        "type": "object"
+      },
       "JointMember": {
         "additionalProperties": false,
         "properties": {
@@ -5673,6 +5774,647 @@
           "source"
         ],
         "title": "MaterialVersion",
+        "type": "object"
+      },
+      "MeasuredAssembly": {
+        "additionalProperties": false,
+        "properties": {
+          "bearings": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MeasuredBearing"
+            },
+            "maxItems": 2048,
+            "title": "Bearings",
+            "type": "array"
+          },
+          "changes": {
+            "default": [],
+            "items": {
+              "maxLength": 600,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Changes",
+            "type": "array"
+          },
+          "joints": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MeasuredJoint"
+            },
+            "maxItems": 2048,
+            "title": "Joints",
+            "type": "array"
+          },
+          "open_items": {
+            "default": [],
+            "items": {
+              "maxLength": 600,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 40,
+            "title": "Open Items",
+            "type": "array"
+          },
+          "parts": {
+            "items": {
+              "$ref": "#/components/schemas/MeasuredPart"
+            },
+            "maxItems": 512,
+            "minItems": 1,
+            "title": "Parts",
+            "type": "array"
+          },
+          "schema_version": {
+            "const": "custombuild.measured-assembly.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "title",
+          "source",
+          "parts"
+        ],
+        "title": "MeasuredAssembly",
+        "type": "object"
+      },
+      "MeasuredBearing": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "part": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Part",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "support": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Support",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "part",
+          "support",
+          "source"
+        ],
+        "title": "MeasuredBearing",
+        "type": "object"
+      },
+      "MeasuredEnd": {
+        "additionalProperties": false,
+        "properties": {
+          "operation": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Operation",
+            "type": "string"
+          },
+          "part": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Part",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part",
+          "operation"
+        ],
+        "title": "MeasuredEnd",
+        "type": "object"
+      },
+      "MeasuredJoint": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "$ref": "#/components/schemas/MeasuredEnd"
+          },
+          "article": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Article"
+          },
+          "b": {
+            "$ref": "#/components/schemas/MeasuredEnd"
+          },
+          "diameter_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Diameter Um"
+          },
+          "fittings": {
+            "default": [],
+            "items": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Fittings",
+            "type": "array"
+          },
+          "head_allowance_um": {
+            "default": 0,
+            "maximum": 50000.0,
+            "minimum": 0.0,
+            "title": "Head Allowance Um",
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "interface_gap_um": {
+            "default": 0,
+            "maximum": 50000.0,
+            "minimum": 0.0,
+            "title": "Interface Gap Um",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "blind_tenon",
+              "dowel",
+              "screw"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "length_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Length Um"
+          },
+          "source": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "a",
+          "b",
+          "source"
+        ],
+        "title": "MeasuredJoint",
+        "type": "object"
+      },
+      "MeasuredOperation": {
+        "additionalProperties": false,
+        "properties": {
+          "article": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Article"
+          },
+          "axes": {
+            "enum": [
+              "xy",
+              "yx",
+              "xz",
+              "zx",
+              "yz",
+              "zy"
+            ],
+            "title": "Axes",
+            "type": "string"
+          },
+          "depth_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 20000000.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "face": {
+            "enum": [
+              "left",
+              "right",
+              "front",
+              "back",
+              "bottom",
+              "top"
+            ],
+            "title": "Face",
+            "type": "string"
+          },
+          "height_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 20000000.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "provenance": {
+            "default": "listed",
+            "enum": [
+              "listed",
+              "drawing",
+              "transfer_template",
+              "edited"
+            ],
+            "title": "Provenance",
+            "type": "string"
+          },
+          "shape": {
+            "enum": [
+              "drill",
+              "slot",
+              "pocket",
+              "tenon",
+              "notch"
+            ],
+            "title": "Shape",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "through": {
+            "default": false,
+            "title": "Through",
+            "type": "boolean"
+          },
+          "transfer": {
+            "default": false,
+            "title": "Transfer",
+            "type": "boolean"
+          },
+          "u_um": {
+            "maximum": 20000000.0,
+            "minimum": -20000000.0,
+            "title": "U Um",
+            "type": "integer"
+          },
+          "v_um": {
+            "maximum": 20000000.0,
+            "minimum": -20000000.0,
+            "title": "V Um",
+            "type": "integer"
+          },
+          "width_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 20000000.0,
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "shape",
+          "face",
+          "axes",
+          "u_um",
+          "v_um",
+          "width_um",
+          "height_um",
+          "depth_um",
+          "source"
+        ],
+        "title": "MeasuredOperation",
+        "type": "object"
+      },
+      "MeasuredPart": {
+        "additionalProperties": false,
+        "properties": {
+          "blank_lbt_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              }
+            ],
+            "title": "Blank Lbt Um",
+            "type": "array"
+          },
+          "code": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Code",
+            "type": "string"
+          },
+          "frame_id": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Id"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "material": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Material",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 750,
+            "title": "Note",
+            "type": "string"
+          },
+          "operations": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/MeasuredOperation"
+            },
+            "maxItems": 256,
+            "title": "Operations",
+            "type": "array"
+          },
+          "origin_um": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "maximum": 20000000.0,
+                    "minimum": -20000000.0,
+                    "type": "integer"
+                  },
+                  {
+                    "maximum": 20000000.0,
+                    "minimum": -20000000.0,
+                    "type": "integer"
+                  },
+                  {
+                    "maximum": 20000000.0,
+                    "minimum": -20000000.0,
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin Um"
+          },
+          "size_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              }
+            ],
+            "title": "Size Um",
+            "type": "array"
+          },
+          "stock_lbt_um": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "exclusiveMinimum": 0.0,
+                    "maximum": 20000000.0,
+                    "type": "integer"
+                  },
+                  {
+                    "exclusiveMinimum": 0.0,
+                    "maximum": 20000000.0,
+                    "type": "integer"
+                  },
+                  {
+                    "exclusiveMinimum": 0.0,
+                    "maximum": 20000000.0,
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Lbt Um"
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "size_um",
+          "blank_lbt_um",
+          "material"
+        ],
+        "title": "MeasuredPart",
+        "type": "object"
+      },
+      "MeasuredReport": {
+        "additionalProperties": false,
+        "properties": {
+          "assembly": {
+            "$ref": "#/components/schemas/MeasuredAssembly"
+          },
+          "assembly_sha256": {
+            "title": "Assembly Sha256",
+            "type": "string"
+          },
+          "bearings": {
+            "items": {
+              "$ref": "#/components/schemas/JointCheck"
+            },
+            "title": "Bearings",
+            "type": "array"
+          },
+          "cells": {
+            "additionalProperties": {
+              "items": {
+                "maxItems": 6,
+                "minItems": 6,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            },
+            "title": "Cells",
+            "type": "object"
+          },
+          "issues": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Issues",
+            "type": "object"
+          },
+          "joints": {
+            "items": {
+              "$ref": "#/components/schemas/JointCheck"
+            },
+            "title": "Joints",
+            "type": "array"
+          },
+          "overlaps": {
+            "items": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "string"
+                }
+              ],
+              "type": "array"
+            },
+            "title": "Overlaps",
+            "type": "array"
+          },
+          "overlaps_truncated": {
+            "title": "Overlaps Truncated",
+            "type": "boolean"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "assembly",
+          "assembly_sha256",
+          "cells",
+          "issues",
+          "joints",
+          "bearings",
+          "overlaps",
+          "overlaps_truncated"
+        ],
+        "title": "MeasuredReport",
         "type": "object"
       },
       "MovingGroup": {
@@ -9517,6 +10259,49 @@
           }
         ],
         "summary": "Me"
+      }
+    },
+    "/v1/measured-assemblies/review": {
+      "post": {
+        "operationId": "measured_assembly_v1_measured_assemblies_review_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MeasuredAssembly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasuredReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Measured Assembly"
       }
     },
     "/v1/projects": {
