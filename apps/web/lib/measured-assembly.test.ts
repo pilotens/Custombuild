@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   measuredFaceSvg,
+  measuredGroups,
   measuredPartSheet,
   measuredViews,
   sampleMeasuredWork,
@@ -54,6 +55,18 @@ describe("measured working drawings", () => {
         },
       ],
     };
+    assembly.parts.push({ ...part, id: "loose-door" });
+    expect(measuredGroups(report, null)).toEqual([
+      ["post-1", "rail-1"],
+      ["loose-door"],
+    ]);
+    expect(measuredGroups(report, null, "post-1")).toEqual([
+      ["rail-1"],
+      ["loose-door"],
+    ]);
+    report.joints[0]!.state = "mismatch";
+    expect(measuredGroups(report, null)).toHaveLength(3);
+    report.joints[0]!.state = "aligned";
     const html = measuredPartSheet(report, part);
     for (const text of [
       "rail-1/tapp",

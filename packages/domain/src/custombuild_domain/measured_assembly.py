@@ -451,12 +451,13 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
             if len(pieces) > 2048:
                 raise ValueError("Bearbetningarna överstiger granskarens gräns för en del.")
         for op in p.operations:
-            if op.shape in ("drill", "slot") and (p.id, op.id) not in bad:
-                if _breaks_into_cut(p, op, removed):
-                    bad.add((p.id, op.id))
-                    issues[p.id].append(
-                        op.id + " · Borrning eller slits går in i ett utskuret område."
-                    )
+            if (
+                op.shape in ("drill", "slot")
+                and (p.id, op.id) not in bad
+                and _breaks_into_cut(p, op, removed)
+            ):
+                bad.add((p.id, op.id))
+                issues[p.id].append(op.id + " · Borrning eller slits går in i ett utskuret område.")
         if not pieces:
             issues[p.id].append("Bearbetningarna tar bort hela delens material.")
         cells[p.id] = tuple(pieces)
@@ -520,13 +521,34 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
     )
     if bearing_budget > 3_000_000:
         raise ValueError("Upplagens geometri överstiger granskarens omfattning.")
+    bearings = tuple(_bearing(b, parts, world) for b in assembly.bearings)
+    joined = {
+        end.part
+        for j, c in zip(assembly.joints, checks, strict=True)
+        if c.state == "aligned"
+        for end in (j.a, j.b)
+    }
+    resting = {
+        key
+        for b, c in zip(assembly.bearings, bearings, strict=True)
+        if c.state == "aligned"
+        for key in (b.part, b.support)
+    }
+    if len(parts) > 1:
+        for key, part in parts.items():
+            if part.origin_um is not None and key not in joined:
+                issues[key].append(
+                    "Endast ett nominellt upplag förbinder delen med monteringen."
+                    if key in resting
+                    else "Delen saknar passande registrerade förband och upplag till andra delar."
+                )
     return MeasuredReport(
         assembly=assembly,
         assembly_sha256=content_hash(assembly.model_dump(mode="json")),
         cells=cells,
         issues={k: tuple(v) for k, v in issues.items() if v},
         joints=tuple(checks),
-        bearings=tuple(_bearing(b, parts, world) for b in assembly.bearings),
+        bearings=bearings,
         overlaps=tuple(overlaps),
         overlaps_truncated=truncated,
     )

@@ -103,6 +103,56 @@ export function measuredHardware(report: MeasuredResult, id: string) {
   return [...counts].sort(([a], [b]) => a.localeCompare(b));
 }
 
+// Only nominally matching contacts in the same coordinate frame can connect parts.
+export function measuredGroups(
+  report: MeasuredResult,
+  frame: string | null,
+  remove?: string,
+) {
+  const graph = new Map<string, Set<string>>();
+  for (const part of report.assembly.parts) {
+    if (
+      part.id !== remove &&
+      part.origin_um &&
+      (part.frame_id ?? null) === frame
+    )
+      graph.set(part.id, new Set());
+  }
+  function connect(a: string, b: string) {
+    if (graph.has(a) && graph.has(b)) {
+      graph.get(a)!.add(b);
+      graph.get(b)!.add(a);
+    }
+  }
+  const matches = new Set(
+    report.joints.filter((j) => j.state === "aligned").map((j) => j.id),
+  );
+  for (const j of report.assembly.joints)
+    if (matches.has(j.id)) connect(j.a.part, j.b.part);
+  const supported = new Set(
+    report.bearings.filter((b) => b.state === "aligned").map((b) => b.id),
+  );
+  for (const b of report.assembly.bearings)
+    if (supported.has(b.id)) connect(b.part, b.support);
+  const groups: string[][] = [];
+  const visited = new Set<string>();
+  for (const id of graph.keys()) {
+    if (visited.has(id)) continue;
+    const group = [id];
+    visited.add(id);
+    for (const member of group) {
+      for (const neighbour of graph.get(member)!) {
+        if (!visited.has(neighbour)) {
+          visited.add(neighbour);
+          group.push(neighbour);
+        }
+      }
+    }
+    groups.push(group);
+  }
+  return groups.sort((a, b) => b.length - a.length);
+}
+
 export function measuredPartSheet(
   report: MeasuredResult,
   piece: MeasuredPiece,

@@ -257,3 +257,11 @@ def test_a_pilot_that_hits_a_notch_loses_its_connection_and_drill_tangency_is_al
     part["operations"].pop()
     bore["width_um"] = bore["height_um"] = 4000
     assert run(data).joints[0].state == "unresolved"
+
+
+def test_separate_door_cannot_disappear_from_review_for_otherwise_matching_joinery():
+    model = pair("screw")
+    model["parts"].append(member("door", [50_000, 50_000, 12_000], [250_000, 0, 0]))
+    result = run(model)
+    assert result.joints[0].state == "aligned"
+    assert "saknar passande" in result.issues["door"][0]

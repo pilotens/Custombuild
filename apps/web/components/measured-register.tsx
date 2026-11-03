@@ -8,6 +8,7 @@ import {
   measuredFaceSvg,
   measuredMm as mm,
   measuredHardware,
+  measuredGroups,
   measuredPartSheet,
   measuredViews,
   type MeasuredCut,
@@ -596,6 +597,17 @@ export function MeasuredRegister({
   const attached = (report.assembly.joints ?? []).filter(
     (j) => j.a.part === part.id || j.b.part === part.id,
   );
+  const groups = useMemo(
+    () => measuredGroups(report, part.frame_id ?? null),
+    [report, part.frame_id],
+  );
+  const remnants = useMemo(() => {
+    if (mode !== "without") return [];
+    const group = new Set(groups.find((g) => g.includes(part.id)) ?? []);
+    return measuredGroups(report, part.frame_id ?? null, part.id).filter((g) =>
+      group.has(g[0]!),
+    );
+  }, [mode, groups, part.id, part.frame_id, report]);
   const faults = report.joints.filter((j) => j.state !== "aligned");
   const matched = report.joints.length - faults.length;
   const supports = report.bearings.filter((b) => b.state === "aligned").length;
@@ -759,8 +771,17 @@ export function MeasuredRegister({
                   (b) => b.part === part.id || b.support === part.id,
                 ).length
               }{" "}
-              upplag berörs. Geometrisk simulering. Hållfastheten efter uttag är
-              inte beräknad.
+              upplag berörs.{" "}
+              {remnants.length === 0
+                ? "Inga andra delar fanns i den valda delens sammanhängande grupp."
+                : remnants.length === 1
+                  ? "De återstående delarna i gruppen har fortsatt kontakt."
+                  : "Den tidigare sammanhängande gruppen delas upp i " +
+                    remnants.length +
+                    " grupper (" +
+                    remnants.map((g) => g.length).join(", ") +
+                    " delar)."}{" "}
+              Geometrisk simulering. Hållfastheten efter uttag är inte beräknad.
             </p>
           )}
           {report.assembly.changes.length > 0 && (
@@ -782,6 +803,23 @@ export function MeasuredRegister({
           >
             Hämta arbetsfilen för appen
           </button>
+          {groups.length > 1 && (
+            <details open className={css.attention}>
+              <summary>{groups.length} separata delgrupper i denna vy</summary>
+              <p>
+                Delar i olika grupper saknar en kedja av passande förband eller
+                verifierade upplag mellan sig.
+              </p>
+              <ul>
+                {groups.map((g) => (
+                  <li key={g[0]}>
+                    <button onClick={() => select(g[0]!)}>{g[0]}</button> ·{" "}
+                    {g.length} {g.length === 1 ? "del" : "delar"}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
           <details open>
             <summary>Öppna konstruktionsfrågor</summary>
             <ul>
