@@ -65,6 +65,7 @@ class InspectionStock(FrozenModel):
     height_um: int
     margin_um: int
     grain: str | None
+    dimensions_fit: bool
     fits: bool | None
 
 

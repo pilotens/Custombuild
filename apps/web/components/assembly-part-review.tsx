@@ -171,12 +171,18 @@ export function AssemblyPartReview({
             ? inspection.stock.map((s, i) => (
                 <div key={i}>
                   {mm(s.width_um)} × {mm(s.height_um)} mm · kant{" "}
-                  {mm(s.margin_um)} mm · fiber {s.grain ?? "okänd"}·{" "}
+                  {mm(s.margin_um)} mm ·{" "}
+                  {s.dimensions_fit ? "råmåtten ryms" : "råmåtten för stora"} ·
+                  fiber{" "}
+                  {s.grain === "UNBOUND"
+                    ? "ej deklarerad"
+                    : (s.grain ?? "okänd")}{" "}
+                  ·{" "}
                   {s.fits === true
                     ? "delen ryms"
                     : s.fits === false
                       ? "delen ryms inte"
-                      : "ej verifierat"}{" "}
+                      : "passning med fiber ej verifierad"}{" "}
                   · {s.source}
                 </div>
               ))

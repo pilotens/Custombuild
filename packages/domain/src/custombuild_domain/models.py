@@ -923,7 +923,9 @@ def captive_inset_back_topology_is_complete(
     return True
 
 
-def validate_part_connections(parts: tuple[PartInstance, ...], joints: tuple[Joint, ...]) -> None:
+def validate_part_connections(
+    parts: tuple[PartInstance, ...], joints: tuple[Joint, ...], graph: AssemblyGraph | None = None
+) -> None:
     """Verify both directions of the part–joint–machining-feature relationship."""
     part_ids = {part.part_id for part in parts}
     joint_ids = {joint.joint_id for joint in joints}
@@ -931,6 +933,11 @@ def validate_part_connections(parts: tuple[PartInstance, ...], joints: tuple[Joi
         raise ValueError("design result has duplicate part IDs")
     if len(joint_ids) != len(joints):
         raise ValueError("design result has duplicate joint IDs")
+    if graph is not None:
+        if {node.part_id for node in graph.nodes} != part_ids:
+            raise ValueError("assembly graph and part collection differ")
+        if {edge.joint_id for edge in graph.edges} != joint_ids:
+            raise ValueError("assembly graph and joint collection differ")
     features = tuple(feature for part in parts for feature in part.features)
     feature_ids = {feature.feature_id for feature in features}
     if len(feature_ids) != len(features):
@@ -987,13 +994,7 @@ class DesignResult(FrozenModel):
     @model_validator(mode="after")
     def validate_result_integrity(self) -> DesignResult:
         part_by_id = {part.part_id: part for part in self.parts}
-        part_ids = set(part_by_id)
-        validate_part_connections(self.parts, self.joints)
-        joint_ids = {joint.joint_id for joint in self.joints}
-        if {node.part_id for node in self.assembly_graph.nodes} != part_ids:
-            raise ValueError("assembly graph and part collection differ")
-        if {edge.joint_id for edge in self.assembly_graph.edges} != joint_ids:
-            raise ValueError("assembly graph and joint collection differ")
+        validate_part_connections(self.parts, self.joints, self.assembly_graph)
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
                 if (

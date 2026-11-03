@@ -4664,6 +4664,10 @@
       "InspectionStock": {
         "additionalProperties": false,
         "properties": {
+          "dimensions_fit": {
+            "title": "Dimensions Fit",
+            "type": "boolean"
+          },
           "fits": {
             "anyOf": [
               {
@@ -4709,6 +4713,7 @@
           "height_um",
           "margin_um",
           "grain",
+          "dimensions_fit",
           "fits"
         ],
         "title": "InspectionStock",

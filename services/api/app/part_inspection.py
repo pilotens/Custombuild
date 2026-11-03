@@ -8,7 +8,7 @@ from custombuild_domain.models import DesignResult
 from custombuild_domain.rear_coverage import ReferenceConstruction
 from custombuild_manufacturing.adapters import adapt_domain_part
 from custombuild_manufacturing.furniture_profiles import furniture_stock_assessment
-from custombuild_manufacturing.nesting import stock_orientations
+from custombuild_manufacturing.nesting import blank_orientations, stock_orientations
 from custombuild_manufacturing.part_inspection import InspectionStock, PartInspection, inspect_part
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,8 +58,12 @@ def _selected(result: DesignResult | FurnitureResult, request: InspectionRequest
             blank = next((p for p in group["parts"] if p["part_id"] == part.part_id), None)
             if blank:
                 fmt = group["stock"]
+                w = fmt["stock_width_um"] - 2 * fmt["edge_margin_um"]
+                h = fmt["stock_height_um"] - 2 * fmt["edge_margin_um"]
+                x, y = blank["raw_width_um"], blank["raw_height_um"]
                 stock.append(
                     InspectionStock(
+                        dimensions_fit=(x <= w and y <= h) or (x <= h and y <= w),
                         source=group["selection_source"],
                         width_um=fmt["stock_width_um"],
                         height_um=fmt["stock_height_um"],
@@ -81,6 +85,20 @@ def _selected(result: DesignResult | FurnitureResult, request: InspectionRequest
             ):
                 continue
             usable = sheet.usable_rect
+            geometry_fits = any(
+                w <= usable.width_um and h <= usable.height_um
+                for _, w, h in blank_orientations(blank_part, sheet)
+            )
+            fits: bool | None = any(
+                w <= usable.width_um and h <= usable.height_um
+                for _, w, h in stock_orientations(blank_part, sheet)
+            )
+            if (
+                geometry_fits
+                and blank_part.grain_direction != "NONE"
+                and sheet.grain_direction == "UNBOUND"
+            ):
+                fits = None
             stock.append(
                 InspectionStock(
                     source=sheet.declaration_authority,
@@ -88,10 +106,8 @@ def _selected(result: DesignResult | FurnitureResult, request: InspectionRequest
                     height_um=sheet.height_um,
                     margin_um=sheet.margin_um,
                     grain=sheet.grain_direction,
-                    fits=any(
-                        width <= usable.width_um and height <= usable.height_um
-                        for _, width, height in stock_orientations(blank_part, sheet)
-                    ),
+                    dimensions_fit=geometry_fits,
+                    fits=fits,
                 )
             )
     return inspect_part(

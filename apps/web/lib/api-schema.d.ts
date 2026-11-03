@@ -2628,6 +2628,8 @@ export interface components {
         };
         /** InspectionStock */
         InspectionStock: {
+            /** Dimensions Fit */
+            dimensions_fit: boolean;
             /** Fits */
             fits: boolean | null;
             /** Grain */

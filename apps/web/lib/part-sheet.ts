@@ -43,14 +43,16 @@ export function printablePartSheet(sheet: PartInspection) {
         [
           "Deklarerat format (mm)",
           "Marginal (mm)",
+          "Råmåtten ryms",
           "Fiber",
-          "Delen ryms",
+          "Passning med fiber",
           "Källa",
         ],
         sheet.stock.map((s) => [
           [s.width_um, s.height_um].map(mm).join(" × "),
           mm(s.margin_um),
-          s.grain ?? "okänd",
+          s.dimensions_fit ? "Ja" : "Nej",
+          s.grain === "UNBOUND" ? "ej deklarerad" : (s.grain ?? "okänd"),
           s.fits === true ? "Ja" : s.fits === false ? "Nej" : "Ej verifierat",
           s.source,
         ]),

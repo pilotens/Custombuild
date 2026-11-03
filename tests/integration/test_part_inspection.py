@@ -117,6 +117,8 @@ def test_reference_wall_per_part_register_measures_back_and_marks_missing_posts(
     assert {r["bottom_um"] for r in base} == {108_000}
     assert {r["top_um"] for r in base} == {772_000}
     assert len(sheet["stock"]) == 1 and sheet["stock"][0]["width_um"] == 2_440_000
+    assert sheet["stock"][0]["dimensions_fit"] is True
+    assert sheet["stock"][0]["fits"] is None and sheet["stock"][0]["grain"] == "UNBOUND"
     trace = sheet["reference_objects"]
     assert Counter(t["state"] for t in trace if t["key"].startswith("support-")) == {"different": 6}
     assert [len(t["compared_parts"]) for t in trace if t["key"].startswith("shelf-r")] == [5] * 3
@@ -257,7 +259,9 @@ def test_full_wall_back_covers_every_opening_without_intersecting_base_or_fittin
     }
     assert len(sheet["rear_openings"]) == 9
     assert all(o["state"] == "covered" for o in sheet["rear_openings"])
-    assert sheet["stock"] and all(not s["fits"] for s in sheet["stock"])
+    assert sheet["stock"] and all(
+        s["fits"] is False and not s["dimensions_fit"] for s in sheet["stock"]
+    )
     assert sheet["physical_cutting_authorized"] is False
     for part in setting["parts"]:
         if part["name"].startswith(("base-side-", "base-bottom-")):

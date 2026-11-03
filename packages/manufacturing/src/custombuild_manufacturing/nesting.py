@@ -150,14 +150,20 @@ def _grain_allows(part: PartSpec, stock: StockSheet, rotated: bool) -> bool:
     return effective == stock_grain
 
 
-def stock_orientations(part: PartSpec, stock: StockSheet) -> tuple[tuple[bool, int, int], ...]:
+def blank_orientations(part: PartSpec, stock: StockSheet) -> tuple[tuple[bool, int, int], ...]:
     candidates = [(False, part.blank_width_um, part.blank_height_um)]
     # A square blank still has distinct local axes: rotating it can be required
     # to align grain, and the placement must retain that transform for machining.
     if part.allow_rotation and stock.allow_rotation:
         candidates.append((True, part.blank_height_um, part.blank_width_um))
+    return tuple(candidates)
+
+
+def stock_orientations(part: PartSpec, stock: StockSheet) -> tuple[tuple[bool, int, int], ...]:
     return tuple(
-        orientation for orientation in candidates if _grain_allows(part, stock, orientation[0])
+        orientation
+        for orientation in blank_orientations(part, stock)
+        if _grain_allows(part, stock, orientation[0])
     )
 
 
