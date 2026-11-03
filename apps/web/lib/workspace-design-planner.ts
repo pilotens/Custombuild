@@ -17,6 +17,12 @@ export class DesignChangeRejected extends DesignHydrationError {
   }
 }
 
+export type ConceptReview = "open" | "existing" | false;
+
+function stockOrMachineLimit(id: string) {
+  return id === "DFM-STOCK-001" || id === "DFM-MACHINE-001";
+}
+
 function needsDesignChange(rule: RuleEvaluation): boolean {
   return rule.status === "BLOCK" || (
     rule.status !== "PASS" && ["STR-DEF-001", "STAB-RACK-001"].includes(rule.rule_id)
@@ -47,7 +53,7 @@ export function planWorkspaceDesignTransaction(
   source: DesignSpec,
   candidate: DesignSpec,
   requestedDiff: readonly ChangeDiff[] = [],
-  allowConceptReview = false,
+  allowConceptReview: ConceptReview = false,
 ): PreviewWorkspaceDesignTransaction {
   function exactConcept() {
     const normalizedSpec = parseLocalDesignSpec(candidate);
@@ -67,9 +73,15 @@ export function planWorkspaceDesignTransaction(
   } catch (error) {
     // An explicitly conceptual template remains inspectable; its blocking rules
     // and its real requested dimensions are returned with the original geometry.
-    if (allowConceptReview && !candidate.workshop_context && error instanceof DesignChangeRejected
-        && error.ruleIds.some(id => id === "DFM-STOCK-001" || id === "DFM-MACHINE-001")) return exactConcept();
-    throw error;
+    if (!allowConceptReview || candidate.workshop_context || !(error instanceof DesignChangeRejected)
+        || !error.ruleIds.some(stockOrMachineLimit)) throw error;
+    if (allowConceptReview === "existing" && source !== candidate) {
+      const alreadyBlocked = resolveDesign(source).rule_evaluations.some(
+        rule => rule.status === "BLOCK" && stockOrMachineLimit(rule.rule_id),
+      );
+      if (!alreadyBlocked) throw error;
+    }
+    return exactConcept();
   }
 }
 

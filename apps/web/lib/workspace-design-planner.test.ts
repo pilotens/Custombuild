@@ -44,7 +44,11 @@ describe("admission of workspace design changes", () => {
   it("retains an oversized wall-library concept and displays both machine and stock stops", () => {
     const requested = {...library, width_mm:4200, height_mm:2400, depth_mm:320, base_cabinet_depth_mm:320};
     expect(() => planWorkspaceDesignTransaction(library, requested)).toThrow();
-    const preview=planWorkspaceDesignTransaction(library, requested, [], true);
+    const preview=planWorkspaceDesignTransaction(library, requested, [], "open");
+    const feasible = planWorkspaceDesignTransaction(library, library).normalizedSpec;
+    expect(() => planWorkspaceDesignTransaction(feasible, {...feasible,width_mm:5000}, [], "existing")).toThrow();
+    const edited = planWorkspaceDesignTransaction(requested, {...requested,depth_mm:330,base_cabinet_depth_mm:330}, [], "existing");
+    expect(edited.normalizedSpec.depth_mm).toBe(330);
     expect(preview.normalizedSpec.width_mm).toBe(4200);
     expect(preview.resolvedDesign.rule_evaluations).toContainEqual(expect.objectContaining({rule_id:"DFM-MACHINE-001",status:"BLOCK"}));
     expect(preview.resolvedDesign.rule_evaluations).toContainEqual(expect.objectContaining({rule_id:"DFM-STOCK-001",status:"BLOCK"}));

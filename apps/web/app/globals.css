@@ -3926,6 +3926,8 @@ progress.utilization-bar::-moz-progress-bar {
     transform: none;
   }
   .canvas-shell:has(.dimension-drag-layer) .canvas-dimensions { display: none; }
+  .canvas-shell .webgl-fallback { padding: 60px 12px 68px; }
+  .canvas-shell .webgl-fallback svg { min-height: 240px; }
 }
 
 .dimension-guide.active .dimension-guide-line {

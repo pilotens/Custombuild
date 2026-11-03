@@ -123,7 +123,7 @@ import {
   previewWorkspaceDesignTransaction,
   type WorkspaceDesignFieldChange,
 } from "@/lib/workspace-design-transaction";
-import { DesignChangeRejected, planWorkspaceDesignTransaction } from "@/lib/workspace-design-planner";
+import { DesignChangeRejected, planWorkspaceDesignTransaction, type ConceptReview } from "@/lib/workspace-design-planner";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { DEFAULT_WORKSPACE_UI_STATE, type WorkspaceUiState } from "@/lib/workspace-ui-state";
 import {
@@ -329,7 +329,7 @@ function normalizedProjectDefaultSpec(projectId: string): DesignSpec {
 
 function planStudioChange(
   source: DesignSpec, candidate: DesignSpec, requestedDiff: ChangeDiff[] = [],
-  allowConceptReview = candidate.furniture_type === "wall_library",
+  allowConceptReview: ConceptReview = candidate.furniture_type === "wall_library" ? "existing" : false,
 ) {
   return planWorkspaceDesignTransaction(source, candidate, requestedDiff, allowConceptReview);
 }
@@ -1283,7 +1283,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, [effectiveSelectedPartId, hydrated, hydrationBlocker, spec, workspacePanels.componentLibraryOpen, workspaceStage]);
 
   const replaceSpec = useCallback((next: DesignSpec, diff: ChangeDiff[] = [],
-    allowConceptReview = furnitureTemplate(selectedTemplateId).productionLevel === "concept"): boolean => {
+    allowConceptReview: ConceptReview = furnitureTemplate(selectedTemplateId).productionLevel === "concept" ? "existing" : false): boolean => {
     let transaction;
     try {
       transaction = planStudioChange(spec, next, diff, allowConceptReview);
@@ -1581,7 +1581,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     };
     // Template quantities are starting estimates, not an explicit inventory
     // edit or a request to remove supports from the previous furniture.
-    const allowConceptReview = template.productionLevel === "concept";
+    const allowConceptReview = template.productionLevel === "concept" ? "open" : false;
     const planned = planStudioChange(candidate, candidate, [], allowConceptReview);
     replaceSpec(planned.normalizedSpec, planned.changeDiff, allowConceptReview);
     setSemanticNotice(undefined);
