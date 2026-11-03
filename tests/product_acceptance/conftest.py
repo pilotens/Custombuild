@@ -5,20 +5,6 @@ from fastapi.testclient import TestClient
 from .catalog import LEVELS, all_cases
 
 
-def pytest_addoption(parser):
-    group = parser.getgroup("product acceptance")
-    group.addoption(
-        "--product",
-        choices=sorted({case.product for case in all_cases()}),
-        help="Run one product profile.",
-    )
-    group.addoption(
-        "--product-level",
-        choices=[*LEVELS, *LEVELS.values()],
-        help="Run one difficulty level (English ID or Swedish name).",
-    )
-
-
 def pytest_generate_tests(metafunc):
     if "case" not in metafunc.fixturenames:
         return
