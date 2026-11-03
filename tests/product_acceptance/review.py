@@ -19,6 +19,8 @@ from .support import response_json, verify_cut
 def check_bundle(client, archive, draft, p, case, e, tmp_path):
     import cadquery as cq
 
+    from .borings import dxf_circles, verify_part_borings
+
     design = draft["preview"]["design"]
     manifest = json.loads(archive.read("manifest.json"))
     assert manifest["design_hash"] == design["design_hash"]
@@ -43,7 +45,9 @@ def check_bundle(client, archive, draft, p, case, e, tmp_path):
 
     step = tmp_path / "assembly.step"
     step.write_bytes(archive.read("design/model.step"))
-    assembly = cq.importers.importStep(str(step)).val()
+    named = cq.Assembly.load(str(step), importType="STEP")
+    shapes = {key: node.shapes for key, node in named.traverse() if node.shapes}
+    assembly = named.toCompound()
     bounds = assembly.BoundingBox()
     actual = [bounds.xlen, bounds.ylen, bounds.zlen]
     expected = [p[k] / 1000 for k in ("width_um", "depth_um", "height_um")]
@@ -54,10 +58,14 @@ def check_bundle(client, archive, draft, p, case, e, tmp_path):
     e.equal("STEP_solids", len(assembly.Solids()), len(parts))
     rows = list(csv.DictReader(io.StringIO(archive.read("bom/cut-list.csv").decode("utf-8-sig"))))
     assert sorted(r["part_id"] for r in rows) == sorted(parts)
+    assert set(shapes) == set(parts)
     face_count = 0
+    bore_count = 0
     for row in rows:
         part = parts[row["part_id"]]
         verify_cut(row, part)
+        (shape,) = shapes[part["part_id"]]
+        bore_count += verify_part_borings(archive, part, shape)
         sheet = response_json(
             client.post(
                 "/v1/furniture/inspect-part",
@@ -89,20 +97,18 @@ def check_bundle(client, archive, draft, p, case, e, tmp_path):
             drawing = archive.read(prefix + face + ".dxf")
             assert ("FEATURE:" + feature["feature_id"]).encode() in drawing
         if case.product == "dining-round" and part["semantic_key"] == "table-top":
-            # Parse entity, layer, centre and radius as actual DXF group codes.
-            lines = archive.read(prefix + "A.dxf").decode().splitlines()
-            tags = list(zip(lines[::2], lines[1::2], strict=True))
-            circles = []
-            for i, tag in enumerate(tags):
-                if tag == ("0", "CIRCLE"):
-                    entity = {}
-                    for code, value in tags[i + 1 :]:
-                        if code == "0":
-                            break
-                        entity[code] = value
-                    if entity.get("8") == "OUTLINE":
-                        circles.append([Decimal(entity[key]) for key in ("10", "20", "40")])
-            assert circles == [[Decimal(p["width_um"]) / 2000] * 3]
+            circles = dxf_circles(archive.read(prefix + "A.dxf"))["OUTLINE"]
+            radius = Decimal(p["width_um"]) / 2000
+            assert [circle for (_, circle) in circles.elements()] == [(radius,) * 3]
+    expected_bores = {
+        "panel-table": 0,
+        "dining-rectangle": 44,
+        "dining-round": 44,
+        "chair": 52,
+        "dresser": 176,
+        "shelving": 0,
+    }
+    e.equal("verified_export_bores", bore_count, expected_bores[case.product])
     e.equal("inspected_parts", len(rows), len(parts))
     e.note("verified_face_drawings", face_count)
     e.note("verified_archive", {"files": len(names), "cut_rows": len(rows)})

@@ -82,3 +82,9 @@ Arbetsproven jämför bland annat tapparnas tvärsnitt och djupreserv, borrhåle
 För ritningar med en deklarerad rygg visar varje målöppning sin täckta yta i det angivna djupintervallet. Överlappande delars projektion räknas en gång. Vid uttag visas den yta som faktiskt öppnas. Ramprovet förkortar en bakskiva med en mikrometer och återställer den.
 
 Den måttsatta monteringen kontrollerar även att tappar och blinda tapphål har kvar angivet material efter övriga rektangulära urtag. Nominella skruvkroppar jämförs parvis över hela sitt monterade läge. För lösa styrtappar skiljs säker överlappning från en möjlig överlappning som beror på sättdjupet. Skruvhuvuden, gängor och spetsform behöver verkliga artikelmått för fysisk verifiering. I det svåraste ramprovet korsas två olika skruvar trots matchande hålcentrum. Både ingång och pilot flyttas innan omprovet kan få nominell passning.
+
+De sex väldigt svåra exportproven läser tillbaka varje namngiven STEP-del och
+jämför cylinderyta, axel, radie, borrdjup och tomt borrcentrum med den angivna
+bearbetningen. DXF-centra och radier kontrolleras som numeriska entiteter på
+rätt ritningssida, inklusive upprepade hål. De sex arbetsproven har sammanlagt
+316 angivna borrningar. Skivbordets och hyllans prov har noll borrningar.
