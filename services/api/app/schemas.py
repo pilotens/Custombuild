@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from custombuild_domain.furniture_production import FurnitureProductionSource
+from custombuild_domain.rear_coverage import ReferenceConstruction
 from custombuild_manufacturing import (
     CLIENT_DECLARED_AUTHORITY,
     MAX_ARTIFACT_BYTES,
@@ -170,6 +171,7 @@ def _default_workspace_reference_confirmations() -> WorkspaceReferenceConfirmedI
 
 
 class WorkspaceReferenceImageImport(_StrictWorkspaceModel):
+    construction: ReferenceConstruction | None = None
     source: Literal["reference_image"]
     import_id: str = Field(
         pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -677,6 +679,7 @@ class ReferenceImageConfirmedInputs(BaseModel):
 
 
 class ReferenceImageSourceProvenance(BaseModel):
+    construction: ReferenceConstruction | None = None
     model_config = ConfigDict(extra="forbid")
 
     source: Literal["reference_image"]

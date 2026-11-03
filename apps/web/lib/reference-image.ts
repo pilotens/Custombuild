@@ -8,6 +8,7 @@ import {
   type DesignSpec,
   type FurnitureType,
   type ReferenceImageConfirmedInputs,
+  type ReferenceConstruction,
   type ReferenceImageImport,
 } from "./design-types";
 /*
@@ -48,6 +49,8 @@ export interface ReferenceImageAnalysis {
 }
 
 export interface ReferenceImageDraft {
+  construction?: ReferenceConstruction;
+  modeledBack?: "inset_groove" | "surface_mounted";
   furnitureType: FurnitureType;
   widthMm: number;
   heightMm: number;
@@ -81,9 +84,40 @@ export const EMPTY_REFERENCE_CONFIRMATIONS: ReferenceImageConfirmedInputs = {
   construction_assumptions_confirmed: false,
 };
 
+export const UNKNOWN_CONSTRUCTION: ReferenceConstruction = {
+  uprights: "unknown", back: "unknown", shelves: "unknown", material:"unknown", unresolved_detail: "",
+};
+
+export function referenceConstructionIssues(spec: Pick<DesignSpec, "back_panel" | "back_panel_type" | "base_cabinet_count" | "shelf_count" | "divider_count" | "material_id">,
+  request = UNKNOWN_CONSTRUCTION): string[] {
+  const issues = [];
+  if (request.uprights === "unknown") issues.push("Stödens form behöver fastställas.");
+  if (request.uprights === "separate_posts") issues.push("Separata stolpar finns i referensen. Stommodellen har skivsidor och avdelare.");
+  if (request.posts?.length) issues.push("Måttsatta referensstolpar saknar verifierade förband i stommens monteringsmodell.");
+  if (request.material === "unknown") issues.push("Stommaterialet behöver fastställas.");
+  else if (spec.material_id !== request.material) issues.push(`Önskat stommaterial: ${request.material}. Modell: ${spec.material_id}.`);
+  if (spec.shelf_count && request.shelves === "unknown") issues.push("Hyllornas indelning behöver fastställas.");
+  if (spec.shelf_count && spec.divider_count && request.shelves === "continuous") issues.push("Referensen kräver genomgående hyllor. Modellen har separata hyllplan per fack.");
+  if (request.unresolved_detail.trim()) issues.push("Omodellerad detalj: " + request.unresolved_detail.trim());
+  if (request.back === "unknown") issues.push("Baksidans täckning behöver fastställas.");
+  if (request.back === "open" && spec.back_panel || ["all_openings","upper_only"].includes(request.back) && !spec.back_panel) {
+    issues.push("Den valda ryggen avviker från referenskravet.");
+  } else if (spec.base_cabinet_count > 0 && spec.back_panel) {
+    if (request.back === "all_openings" && spec.back_panel_type === "inset_groove") issues.push("Den infällda ryggen täcker överdelen men saknas bakom underskåpen.");
+    if (request.back === "upper_only" && spec.back_panel_type === "surface_mounted") issues.push("Den utanpåliggande ryggen täcker även underskåpen.");
+  }
+  return issues;
+}
+
 export function referenceVerificationFingerprint(spec: DesignSpec): string {
   const parametricSpec = { ...spec };
-  delete parametricSpec.reference_image_import;
+  if (spec.reference_image_import?.construction) {
+    parametricSpec.reference_image_import = { ...spec.reference_image_import,
+      verified_model_fingerprint: undefined, verification_status: "concept",
+      confirmed_inputs: EMPTY_REFERENCE_CONFIRMATIONS };
+  } else {
+    delete parametricSpec.reference_image_import;
+  }
   return localDesignHash(parametricSpec);
 }
 
@@ -105,6 +139,7 @@ export function referenceImageVerificationIsCurrent(spec: DesignSpec): boolean {
     && /^[0-9a-f-]{36}$/.test(provenance.import_id)
     && /^[a-f0-9]{64}$/.test(provenance.image_sha256)
     && provenance.verification_status === "parametric_confirmed"
+    && referenceConstructionIssues(spec, provenance.construction).length === 0
     && referenceConfirmationsComplete(provenance.confirmed_inputs)
     && provenance.verified_model_fingerprint === referenceVerificationFingerprint(spec),
   );
@@ -375,7 +410,7 @@ export function analyzeReferencePixels(image: PixelImage): ReferenceImageAnalysi
   };
 }
 
-function differences(guides: number[]): number[] {
+export function differences(guides: number[]): number[] {
   const boundaries = [0, ...guides, 1];
   return boundaries.slice(1).map((value, index) => Number((value - boundaries[index]!).toFixed(4)));
 }
@@ -425,6 +460,16 @@ export function maximumReferenceBaseCabinetHeightMm(heightMm: number): number {
 }
 
 export function referenceDraftValidationError(draft: ReferenceImageDraft): string | undefined {
+  if (draft.bayWidthRatios.length === draft.dividerCount + 1) {
+    const sum = draft.bayWidthRatios.reduce((a,b) => a+b,0);
+    if (!(sum > 0) || draft.bayWidthRatios.some(v => !Number.isFinite(v) || v/sum < .08 - RATIO_TOLERANCE)) {
+      return "En markerad fackbredd är under 8 %. Justera stödlinjerna eller välj jämn fördelning.";
+    }
+  }
+  if (draft.shelfHeightRatios.length === draft.shelfCount && draft.shelfHeightRatios.some((v,i,rows) =>
+    !Number.isFinite(v) || v < .05 || v > .95 || (i > 0 && v - rows[i-1]! < .05 - RATIO_TOLERANCE))) {
+    return "Markerade hyllhöjder ryms inte med fem procents mellanrum. Justera hyllinjerna.";
+  }
   if (draft.furnitureType !== "wall_library") return undefined;
   if (
     maximumReferenceBaseCabinetHeightMm(draft.heightMm)
@@ -486,6 +531,8 @@ export function referenceResult(
   fileName: string,
   asset: ReferenceAssetInspection,
 ): ReferenceImageResult {
+  const layoutError = referenceDraftValidationError(draft);
+  if (layoutError) throw new RangeError(layoutError);
   const widthMm = clamp(
     Math.round(draft.widthMm),
     DESIGN_CONSTRAINTS.widthMm.minimum,
@@ -546,10 +593,12 @@ export function referenceResult(
         : 0,
       reinforcement_mode: "manual",
       back_panel: true,
+      back_panel_type: draft.furnitureType === "wall_library" ? (draft.modeledBack ?? "inset_groove") : "inset_groove",
       plinth: true,
     },
     metadata: {
       source: "reference_image",
+      construction: { ...(draft.construction ?? UNKNOWN_CONSTRUCTION) },
       import_id: asset.import_id,
       image_sha256: asset.image_sha256,
       file_name: safeName,

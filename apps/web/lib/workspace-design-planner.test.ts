@@ -24,6 +24,23 @@ function expectFeasible(spec: DesignSpec) {
 }
 
 describe("admission of workspace design changes", () => {
+  it("preserves a photographed wall as a reviewable concept with its raw-stock failures", () => {
+    const spec: DesignSpec = { ...DEFAULT_DESIGN_SPEC, furniture_type:"wall_library", width_mm:4300,
+      depth_mm:260, height_mm:2540, plinth_height_mm:90, base_cabinet_count:4,
+      base_cabinet_height_mm:700, base_cabinet_depth_mm:260, shelf_count:3, divider_count:4,
+      bay_width_ratios:[0.2536,0.1894,0.1539,0.1595,0.2436], shelf_height_ratios:[0.2628,0.4668,0.6241],
+      reinforcement_mode:"manual", reference_image_import:{
+        source:"reference_image", import_id:"acab1234-1234-4234-9234-123456789012", image_sha256:"f".repeat(64),
+        file_name:"sample.jpg",image_width_px:704,image_height_px:594,confidence:.96,detected_dividers:8,
+        detected_shelves:4,detected_base_cabinets:true,warnings:[],verification_status:"concept",
+        construction:{uprights:"separate_posts",material:"solid-walnut",shelves:"unknown",back:"all_openings",unresolved_detail:""},
+      },
+    };
+    const review=planWorkspaceDesignTransaction(DEFAULT_DESIGN_SPEC,spec);
+    expect(review.normalizedSpec).toMatchObject({bay_width_ratios:spec.bay_width_ratios,base_cabinet_count:4,divider_count:4});
+    expect(review.resolvedDesign.parts.filter(p=>p.kind==="shelf")).toHaveLength(15);
+    expect(review.resolvedDesign.rule_evaluations).toContainEqual(expect.objectContaining({rule_id:"DFM-STOCK-001",status:"BLOCK"}));
+  });
   it("plans enough sheets for the reported library instead of saving a material BLOCK", () => {
     const before = structuredClone(library);
     const result = planWorkspaceDesignTransaction(library, library);

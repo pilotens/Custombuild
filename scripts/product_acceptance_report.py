@@ -13,6 +13,8 @@ LEVELS = {
     "impossible": "Omöjligt",
 }
 MEASURES = {
+    "inspected_parts": "Granskade enskilda delar",
+    "verified_face_drawings": "Sidritningar jämförda med export",
     "parts_joints": "Delar/förband",
     "front_span_um": "Fri sarg (µm)",
     "top_width_depth_elevation_um": "Skiva B/D/nivå (µm)",

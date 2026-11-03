@@ -1,5 +1,6 @@
 import type { ResolvedPart } from "./design-types";
-import type { paths } from "./api-schema";
+import { domainFeatureSummary } from "./part-inspection";
+import type { components, paths } from "./api-schema";
 
 export type FurnitureFamily = "shelving" | "table" | "chest_of_drawers" | "dining_table" | "chair";
 export interface FurnitureIntent {
@@ -101,6 +102,9 @@ export interface FurnitureWorkspace {
   manufacturing: FurnitureManufacturingSelection | null;
 }
 export interface FurniturePart {
+  features?: components["schemas"]["ManufacturingFeature"][];
+  a_side?: string;
+  b_side?: string;
   part_id: string;
   semantic_key: string;
   role: string;
@@ -311,7 +315,8 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
       },
       ...(angle ? {rotation_x_rad:angle} : {}), ...(part.circular_outline ? {circular_outline:true}:{}),
       material_id: part.material_id, weight_kg: part.weight_g/1_000,
-      color: part.material_id.startsWith("mdf") ? "#b7a587" : "#d8c4a0", features: [],
+      color: part.material_id.startsWith("mdf") ? "#b7a587" : "#d8c4a0",
+      features: (part.features ?? []).map(f => domainFeatureSummary(f, part.a_side, part.b_side)),
     };
   });
 }

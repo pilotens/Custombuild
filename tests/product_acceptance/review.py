@@ -16,7 +16,7 @@ from tests.furniture_review_storage import install_review_storage
 from .support import response_json, verify_cut
 
 
-def check_bundle(archive, draft, p, case, e, tmp_path):
+def check_bundle(client, archive, draft, p, case, e, tmp_path):
     import cadquery as cq
 
     design = draft["preview"]["design"]
@@ -54,9 +54,31 @@ def check_bundle(archive, draft, p, case, e, tmp_path):
     e.equal("STEP_solids", len(assembly.Solids()), len(parts))
     rows = list(csv.DictReader(io.StringIO(archive.read("bom/cut-list.csv").decode("utf-8-sig"))))
     assert sorted(r["part_id"] for r in rows) == sorted(parts)
+    face_count = 0
     for row in rows:
         part = parts[row["part_id"]]
         verify_cut(row, part)
+        sheet = response_json(
+            client.post(
+                "/v1/furniture/inspect-part",
+                json={
+                    "workspace": draft["workspace"],
+                    "expected_design_hash": design["design_hash"],
+                    "part_id": part["part_id"],
+                },
+            )
+        )
+        assert sheet["physical_cutting_authorized"] is False and sheet["part"] == part
+        assert {mate["joint"]["joint_id"] for mate in sheet["mates"]} == {
+            j["joint_id"]
+            for j in design["joints"]
+            if any(m["part_id"] == part["part_id"] for m in j["members"])
+        }
+        face_count += len(sheet["drawings"])
+        for view in sheet["drawings"]:
+            name = f"parts/{part['part_id']}/{view['view']}.svg"
+            assert view["svg"].encode() == archive.read(name), name
+        assert len(sheet["sheet_sha256"]) == 64
         prefix = f"parts/{part['part_id']}/"
         for face in ("A", "B"):
             assert prefix + face + ".dxf" in names and prefix + face + ".svg" in names
@@ -81,6 +103,8 @@ def check_bundle(archive, draft, p, case, e, tmp_path):
                     if entity.get("8") == "OUTLINE":
                         circles.append([Decimal(entity[key]) for key in ("10", "20", "40")])
             assert circles == [[Decimal(p["width_um"]) / 2000] * 3]
+    e.equal("inspected_parts", len(rows), len(parts))
+    e.note("verified_face_drawings", face_count)
     e.note("verified_archive", {"files": len(names), "cut_rows": len(rows)})
 
 
@@ -107,4 +131,4 @@ def verify_download(client, path, draft, request, p, case, e, monkeypatch, tmp_p
     assert hashlib.sha256(payload).hexdigest() == status["sha256"]
     assert len(payload) == status["size_bytes"]
     with zipfile.ZipFile(io.BytesIO(payload)) as archive:
-        check_bundle(archive, draft, p, case, e, tmp_path)
+        check_bundle(client, archive, draft, p, case, e, tmp_path)

@@ -65,6 +65,49 @@ def frame_bounds(part: PartInstance) -> tuple[XYZ, XYZ]:
     )
 
 
+def validate_screw_alignment(parts: tuple[PartInstance, ...], joints: tuple[Joint, ...]) -> None:
+    """Meet the through bore and the pilot at the specified assembly datum, within 1 µm."""
+    by_id = {p.part_id: p for p in parts}
+    bores = {f.feature_id: f for p in parts for f in p.features}
+    for joint in joints:
+        if joint.joint_type != FurnitureJointType.WOOD_SCREW:
+            continue
+        axis = "xyz".index(joint.assembly_direction.value[1])
+        sign = 1 if joint.assembly_direction.value[0] == "+" else -1
+        datum = (joint.mating_origin.x_um, joint.mating_origin.y_um, joint.mating_origin.z_um)
+        if not joint.hardware_sku or joint.hardware_count != 1:
+            raise ValueError("Varje skruvförband kräver en angiven skruv.")
+        for index, member in enumerate(joint.members):
+            part = by_id[member.part_id]
+            features = [bores[fid] for fid in member.feature_ids]
+            # A clearance bore may also have a separate blind head recess.
+            primary = [
+                f for f in features if f.kind == FeatureKind.DRILL and f.through == (index == 0)
+            ]
+            if len(primary) != 1 or (index == 1 and len(features) != 1):
+                raise ValueError("Skruvens genomgående hål eller pilothål saknas.")
+            bore = primary[0]
+            through = index == 0
+            expected_face = FACES[axis][int(sign < 0)]
+            # Both entry faces face the operator along the screw axis, but
+            # the through piece mates on the opposite face from its entry.
+            if bore.face != expected_face or member.mating_face != (
+                FACES[axis][int(sign > 0)] if through else expected_face
+            ):
+                raise ValueError("Skruvens borrsida avviker från monteringsriktningen.")
+            pos = part.placement
+            y, z = rotated_yz(bore.origin.y_um, bore.origin.z_um, pos.rotation_x_mdeg)
+            entry = [pos.x_um + bore.origin.x_um, pos.y_um + y, pos.z_um + z]
+            if through:
+                entry[axis] += sign * (bore.dimensions.depth_um or 0)
+            if any(
+                abs(actual - expected) > 1 for actual, expected in zip(entry, datum, strict=True)
+            ):
+                raise ValueError("Skruvens hålcentrum möter inte förbandets anliggningspunkt.")
+            if any(f.origin != bore.origin or f.face != bore.face for f in features):
+                raise ValueError("Huvudförsänkningen ligger inte i skruvhålets centrum.")
+
+
 def screw_joint(
     design_id: str,
     parts: dict[str, PartInstance],

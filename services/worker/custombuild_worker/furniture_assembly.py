@@ -10,6 +10,7 @@ from math import ceil, cos, floor, pi, sin
 from xml.sax.saxutils import escape
 
 from custombuild_domain.furniture import ChairIntent, ChestIntent, DiningTableIntent, ShelvingIntent
+from custombuild_domain.furniture_catalog import RUNNER_FIXING_SKU
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.furniture_frames import rotated_yz
 from PIL import Image
@@ -271,8 +272,8 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
             sku = hardware.catalog_id.split("-")[-1]
             n = intent.drawer_count
             counts["Hettich KA 4532 Silent System " + sku + " (par)"] = n
-            counts["wood-screw-4x14-runner"] += 2 * n * len(hardware.cabinet_holes_um)
-            counts["wood-screw-4x14-runner"] += 2 * n * len(hardware.drawer_holes_um)
+            counts[RUNNER_FIXING_SKU] += 2 * n * len(hardware.cabinet_holes_um)
+            counts[RUNNER_FIXING_SKU] += 2 * n * len(hardware.drawer_holes_um)
             instructions.extend(
                 [
                     (

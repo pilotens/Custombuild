@@ -9,6 +9,7 @@ import {
   type PartOverride,
   type ReferenceImageConfirmedInputs,
   type ReferenceImageImport,
+  type ReferencePost,
   type TopologyBaseline,
 } from "./design-types";
 import {
@@ -156,6 +157,7 @@ const REFERENCE_KEYS = [
   "detected_dividers",
   "detected_base_cabinets",
   "warnings",
+  "construction",
   "verification_status",
   "confirmed_inputs",
   "verified_model_fingerprint",
@@ -486,12 +488,34 @@ function parseConfirmedInputs(
   };
 }
 
+function parseMeasuredPosts(raw: unknown, code: DesignHydrationErrorCode): ReferencePost[] {
+  if (!Array.isArray(raw) || raw.length > 32) fail(code, "Högst 32 måttsatta referensstolpar kan granskas.");
+  const ids = new Set<string>();
+  return raw.map(item => {
+    const p = record(item, "Referensstolpe", code);
+    exactKeys(p, ["key","name","shape","x_um","y_um","z_um","width_um","depth_um","height_um"], [], "Referensstolpe", code);
+    const key = boundedString(p.key, "Stolpens ID", 10, 11, code);
+    if (!/^ref-post-[0-9]{1,2}$/.test(key) || ids.has(key)) fail(code, "Stolpens ID är ogiltigt eller duplicerat.");
+    ids.add(key);
+    const shape = oneOf(p.shape, ["rectangular","round"] as const, "Stolpens tvärsnitt", code);
+    const width_um = integer(p.width_um, "Stolpbredd", 1, 1_000_000, code);
+    const depth_um = integer(p.depth_um, "Stolpdjup", 1, 1_000_000, code);
+    if (shape === "round" && width_um !== depth_um) fail(code, "En rund stolpe måste ha en enda diameter.");
+    return { key, shape, name: boundedString(p.name, "Stolpens namn", 1, 70, code),
+      x_um:integer(p.x_um,"Stolpens X", -10_000_000,10_000_000,code),
+      y_um:integer(p.y_um,"Stolpens Y", -10_000_000,10_000_000,code),
+      z_um:integer(p.z_um,"Stolpens Z", -10_000_000,10_000_000,code),
+      height_um:integer(p.height_um,"Stolplängd",1,10_000_000,code), width_um, depth_um };
+  });
+}
+
 function parseReferenceImageImport(
   value: unknown,
   code: DesignHydrationErrorCode,
 ): ReferenceImageImport {
   const provenance = record(value, "reference_image_import", code);
   const required = REFERENCE_KEYS.filter((key) => ![
+    "construction",
     "verification_status",
     "confirmed_inputs",
     "verified_model_fingerprint",
@@ -499,7 +523,7 @@ function parseReferenceImageImport(
   exactKeys(
     provenance,
     required,
-    ["verification_status", "confirmed_inputs", "verified_model_fingerprint"],
+    ["construction", "verification_status", "confirmed_inputs", "verified_model_fingerprint"],
     "reference_image_import",
     code,
   );
@@ -532,7 +556,17 @@ function parseReferenceImageImport(
   if (verifiedFingerprint && !/^[a-f0-9]{64}$/.test(verifiedFingerprint)) {
     fail(code, "reference_image_import.verified_model_fingerprint har ogiltigt format.");
   }
+  const extra = provenance.construction === undefined ? undefined : record(provenance.construction, "reference_image_import.construction", code);
+  if (extra) exactKeys(extra, ["uprights", "back", "unresolved_detail"], ["shelves", "material", "posts"], "reference_image_import.construction", code);
   return {
+    ...(extra ? { construction: {
+      ...(extra.posts === undefined ? {} : {posts:parseMeasuredPosts(extra.posts, code)}),
+      uprights: oneOf(extra.uprights, ["unknown", "panels", "separate_posts"] as const, "construction.uprights", code),
+      back: oneOf(extra.back, ["unknown", "all_openings", "upper_only", "open"] as const, "construction.back", code),
+      material: extra.material === undefined ? "unknown" : oneOf(extra.material, ["unknown", "mdf", "birch-plywood", "solid-walnut"] as const, "construction.material", code),
+      shelves: extra.shelves === undefined ? "unknown" : oneOf(extra.shelves, ["unknown", "per_bay", "continuous"] as const, "construction.shelves", code),
+      unresolved_detail: boundedString(extra.unresolved_detail, "construction.unresolved_detail", 0, 300, code),
+    }} : {}),
     source: oneOf(provenance.source, ["reference_image"] as const, "reference_image_import.source", code),
     import_id: importId,
     image_sha256: imageSha256,

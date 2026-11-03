@@ -2,8 +2,9 @@ import { DESIGN_CONSTRAINTS } from "./design-constraints";
 import { resolveDesign } from "./design-engine";
 import type { ChangeDiff, DesignSpec, RuleEvaluation } from "./design-types";
 import { estimateMaterialRequirements } from "./material-requirements";
-import { DesignHydrationError } from "./workspace-design-envelope";
+import { DesignHydrationError, parseLocalDesignSpec } from "./workspace-design-envelope";
 import {
+  changedDesignFields,
   normalizeWorkspaceDesignTransaction,
   type PreviewWorkspaceDesignTransaction,
 } from "./workspace-design-transaction";
@@ -47,6 +48,19 @@ export function planWorkspaceDesignTransaction(
   candidate: DesignSpec,
   requestedDiff: readonly ChangeDiff[] = [],
 ): PreviewWorkspaceDesignTransaction {
+  // A photographed concept must retain its observed layout even when a panel is
+  // too large for stock. Keep all design rules visible without substituting bays.
+  if (candidate.reference_image_import?.verification_status === "concept") {
+    const normalizedSpec = parseLocalDesignSpec(candidate);
+    const design = resolveDesign(normalizedSpec);
+    const invalid = design.rule_evaluations.find(rule => rule.rule_id === "GEO-001" && rule.status === "BLOCK");
+    if (invalid) throw rejection(invalid);
+    return {
+      normalizedSpec, resolvedDesign: design,
+      requestedDiff: [...requestedDiff], structuralDiff: [], changeDiff: [...requestedDiff],
+      changedFields: changedDesignFields(source, normalizedSpec),
+    };
+  }
   let transaction = normalizeWorkspaceDesignTransaction(source, candidate, requestedDiff);
   const autoDiff: ChangeDiff[] = [...transaction.structuralDiff];
   const quantityExplicitlyChanged = candidate.stock_count !== source.stock_count

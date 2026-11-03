@@ -58,3 +58,11 @@ Testerna skapar ett projekt, läser tillbaka det, beställer export för rätt r
 2. Lägg mätningen i möbel-, modul- eller studioflödet. Använd kundens mått eller en självständig beräkning som facit. En ny produktfamilj eller studiomall utan arbetsprov ska få katalogkontrollen att falla.
 3. Vid avvikelse, behåll den ursprungliga beställningen och skilj ett fel i appen från ett fel i testets facit. Rätta orsaken, kör om samma prov och gör ett nytt arbetsprov med andra mått som prövar samma fel. Behåll ett återprov för den faktiska regressionen.
 4. Kör hela matrisen igen. Varje rad i protokollet visar beställning, godkännandekrav, utfall och uppmätta observationer. Ett oväntat fel, ett uteblivet avslag eller ett överhoppat arbetsprov ger en misslyckad körning.
+
+## Delar, ritningar och demontering
+
+På nivån väldigt svårt hämtas delbladet för varje enskild del i de sex möbelprofilerna, sex studiomallarna och valnötsmodulerna. För de sex profiler som genererar ett verkstadspaket jämförs SVG-innehållet på varje bearbetningssida med filen i det nedladdade paketet. Modulprovet följer samtliga 62 kaprader till rätt del i rätt modul.
+
+Delbladet innehåller delidentitet, modellhash, råmått, färdigmått, material, förband, motdelar och faktiska U/V-koordinater för borrhål och borrserier. Yttermått på en planka är skilda från de tillgängliga råformaten. Marginal och fiberriktning ingår i formatkontrollen. Ett hål i en regelbunden serie redovisas på varje fysisk position. Ett skruvbeslag som visas från båda motdelarna räknas en gång i möbelns stycklista.
+
+Särskilda återprov förskjuter ett pilothål, flyttar en bearbetning till fel del, tar ut ett stolsben och mäter fria öppningar bakom underskåp. Ett annat prov testar en hel rygg mot skivformatet och kontrollerar att underskåpsbottnarna slutar vid dess framsida. En uppmätt rund stolpe prövas vid kontakt, en mikrometers överlapp och en mikrometers mellanrum. En demonteringsvy ändrar ingen sparad revision. Den visar brutna modellerade förband och återstående golvstöd. Lastkapacitet och stabilitet för den ändrade möbeln behöver prövas separat.

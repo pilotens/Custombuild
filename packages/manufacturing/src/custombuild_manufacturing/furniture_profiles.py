@@ -34,7 +34,9 @@ def furniture_machine_catalog() -> list[dict[str, Any]]:
     ]
 
 
-def _manufacturing(workspace: FurnitureWorkspace, result: FurnitureResult) -> dict[str, Any]:
+def furniture_stock_assessment(
+    workspace: FurnitureWorkspace, result: FurnitureResult,
+) -> dict[str, Any]:
     selection = workspace.manufacturing
     if selection is None:
         return {
@@ -85,7 +87,7 @@ def _dependencies(
 
 def preview_furniture(workspace: FurnitureWorkspace) -> dict[str, Any]:
     result = build_furniture(workspace.design)
-    manufacturing = _manufacturing(workspace, result)
+    manufacturing = furniture_stock_assessment(workspace, result)
     return {
         "schema_version": "custombuild.furniture-preview.v1",
         "workspace": workspace.model_dump(mode="json"),

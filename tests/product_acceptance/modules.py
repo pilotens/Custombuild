@@ -108,11 +108,27 @@ def exercise_modules(client, case, e):
             assert sorted(r["part_name"] for r in cut) == sorted(persisted)
             for item in cut:
                 verify_cut(item, persisted[item["part_name"]])
+            for item in cut:
+                part = persisted[item["part_name"]]
+                sheet = response_json(
+                    client.post(
+                        "/v1/furniture/inspect-part",
+                        json={
+                            "workspace": draft["workspace"],
+                            "expected_design_hash": draft["preview"]["design"]["design_hash"],
+                            "part_id": part["part_id"],
+                        },
+                    )
+                )
+                assert sheet["part"] == part
+                assert any(stock["fits"] for stock in sheet["stock"])
+                verify_cut(item, sheet["part"])
             assert (
                 module["workspace"]["design"]["installation"] == original["design"]["installation"]
             )
     assert coordinates == {(c, r) for c in range(len(widths)) for r in range(len(heights))}
     if case.level == "very-hard":
+        e.note("inspected_parts", len(rows))
         e.equal("grain_axes", sorted({r["grain_axis_uv"] for r in rows}), ["U", "V"])
         assert plan_for(grid)["plan_hash"] == plan["plan_hash"]
         assert plan_for({**grid, "gap_um": 1})["plan_hash"] != plan["plan_hash"]

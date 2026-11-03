@@ -84,9 +84,9 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
             )
         )
         if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}:
-            radius_um = (feature.diameter_um or 0) // 2
             for point in feature.points():
-                entities.extend(_dxf_circle("DRILL", point.x_um, point.y_um, radius_um))
+                entities.extend(_dxf_circle("DRILL", point.x_um * 2, point.y_um * 2,
+                                            feature.diameter_um or 0, half=True))
         elif feature.kind in {FeatureKind.GROOVE, FeatureKind.RABBET}:
             bounds = feature.bounds()
             layer = "RABBET" if feature.kind == FeatureKind.RABBET else "GROOVE"
@@ -286,7 +286,7 @@ def svg_for_part(part: PartSpec, side: Side) -> bytes:
             continue
         feature_id = escape(feature.feature_id, quote=True)
         if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}:
-            radius = um_to_mm((feature.diameter_um or 0) // 2)
+            radius = format(Decimal(feature.diameter_um or 0) / 2000, "f")
             for point in feature.points():
                 elements.append(
                     f'<circle class="drill" data-feature-id="{feature_id}" '

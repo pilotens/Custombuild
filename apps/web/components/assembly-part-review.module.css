@@ -1,0 +1,80 @@
+.sheet {
+  background: #fffefa;
+  color: #292a26;
+  padding: 1rem;
+  border: 1px solid #d8d8cf;
+  border-radius: 0.65rem;
+  display: grid;
+  gap: 0.8rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.sheet h3,
+.sheet p {
+  margin: 0.25rem 0;
+}
+.sheet small,
+.sheet code {
+  font-size: 0.78rem;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.actions button,
+.sheet select {
+  padding: 0.35rem 0.55rem;
+}
+.actions button[aria-pressed="true"] {
+  background: #284d41;
+  color: white;
+}
+.metrics {
+  display: grid;
+  grid-template-columns: minmax(6rem, 0.8fr) 1.2fr;
+  gap: 0.3rem;
+  margin: 0;
+  font-size: 0.87rem;
+}
+.metrics dt {
+  color: #4c534b;
+}
+.metrics dd {
+  margin: 0;
+}
+.impact {
+  padding: 0.7rem;
+  background: #fff4d8;
+  border-left: 3px solid #936818;
+}
+.faces {
+  display: grid;
+  gap: 0.4rem;
+}
+.faces img {
+  width: 100%;
+  min-height: 96px;
+  max-height: 320px;
+  object-fit: contain;
+  background: white;
+}
+.sheet details {
+  border-top: 1px solid #dedfd9;
+  padding-top: 0.5rem;
+}
+.sheet summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.sheet ul {
+  margin: 0.45rem 0;
+  padding-left: 1rem;
+}
+.sheet li {
+  margin-bottom: 0.42rem;
+}
+.sheet footer,
+.sheet footer a {
+  display: block;
+}

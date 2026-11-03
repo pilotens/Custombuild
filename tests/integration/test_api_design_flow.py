@@ -2904,6 +2904,10 @@ def verified_reference_provenance(
     model_fingerprint: str,
 ) -> dict[str, object]:
     return {
+        "construction": {
+            "uprights": "panels", "back": "all_openings", "shelves": "per_bay",
+            "material": "mdf", "unresolved_detail": "",
+        },
         "source": "reference_image",
         "import_id": imported["import_id"],
         "image_sha256": imported["image_sha256"],
@@ -3759,6 +3763,25 @@ def test_verified_reference_provenance_is_frozen_on_its_own_revision() -> None:
         )
         assert verified.json()["source_provenance_json"]["image_sha256"] == imported["image_sha256"]
         assert verified.json()["source_import_id"] == imported["import_id"]
+
+
+@pytest.mark.parametrize("change", [
+    {"uprights":"separate_posts"}, {"unresolved_detail":"Uppstickande vänsterände"},
+    {"material":"solid-walnut"}, {"back":"unknown"},
+])
+def test_reference_revision_rejects_an_unresolved_construction_detail(change) -> None:
+    with TestClient(app, headers=HEADERS) as client:
+        project = client.post("/v1/projects", json={"name": f"Unresolved source-{uuid4()}"}).json()
+        imported = upload_reference(client, project["id"])
+        payload = version_payload(project["id"])
+        provenance = verified_reference_provenance(imported, str(payload["expected_design_hash"]))
+        provenance["construction"] = {**provenance["construction"], **change}
+        response = client.post(f"/v1/projects/{project['id']}/versions",
+                               json={**payload, "source_provenance": provenance})
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "REFERENCE_CONSTRUCTION_UNRESOLVED"
+        assert response.json()["detail"]["issues"]
+        assert client.get(f"/v1/projects/{project['id']}/versions").json() == []
 
 
 def test_reference_provenance_fails_closed_when_any_confirmation_is_missing() -> None:

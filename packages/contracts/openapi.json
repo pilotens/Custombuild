@@ -1591,6 +1591,45 @@
         "title": "DiningTableIntent",
         "type": "object"
       },
+      "DrillPosition": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_um": {
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "diameter_um": {
+            "title": "Diameter Um",
+            "type": "integer"
+          },
+          "feature_id": {
+            "title": "Feature Id",
+            "type": "string"
+          },
+          "through": {
+            "title": "Through",
+            "type": "boolean"
+          },
+          "u_um": {
+            "title": "U Um",
+            "type": "integer"
+          },
+          "v_um": {
+            "title": "V Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "feature_id",
+          "u_um",
+          "v_um",
+          "diameter_um",
+          "depth_um",
+          "through"
+        ],
+        "title": "DrillPosition",
+        "type": "object"
+      },
       "EdgeBand": {
         "additionalProperties": false,
         "properties": {
@@ -4550,6 +4589,131 @@
         "title": "ImportInspection",
         "type": "object"
       },
+      "InspectBookcase": {
+        "additionalProperties": false,
+        "properties": {
+          "construction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceConstruction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expected_design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Design Hash",
+            "type": "string"
+          },
+          "part_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Part Id",
+            "type": "string"
+          },
+          "production_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RevisionProductionContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "spec": {
+            "$ref": "#/components/schemas/BookcasePreviewInput"
+          }
+        },
+        "required": [
+          "part_id",
+          "expected_design_hash",
+          "spec"
+        ],
+        "title": "InspectBookcase",
+        "type": "object"
+      },
+      "InspectFurniture": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_design_hash": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Design Hash",
+            "type": "string"
+          },
+          "part_id": {
+            "maxLength": 64,
+            "minLength": 8,
+            "title": "Part Id",
+            "type": "string"
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/FurnitureWorkspace"
+          }
+        },
+        "required": [
+          "part_id",
+          "expected_design_hash",
+          "workspace"
+        ],
+        "title": "InspectFurniture",
+        "type": "object"
+      },
+      "InspectionStock": {
+        "additionalProperties": false,
+        "properties": {
+          "fits": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fits"
+          },
+          "grain": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grain"
+          },
+          "height_um": {
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "margin_um": {
+            "title": "Margin Um",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "width_um": {
+            "title": "Width Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "source",
+          "width_um",
+          "height_um",
+          "margin_um",
+          "grain",
+          "fits"
+        ],
+        "title": "InspectionStock",
+        "type": "object"
+      },
       "InstallationSpace": {
         "additionalProperties": false,
         "description": "Customer measurements, distinct from the generated carcass dimensions.\n\nAllowances reserve space for installation or separately designed trim. None\nmeans unmeasured, never zero. They do not create a trim part or qualify it.",
@@ -5588,6 +5752,176 @@
         "title": "OpenEndRelief",
         "type": "string"
       },
+      "PartDrawing": {
+        "additionalProperties": false,
+        "properties": {
+          "holes": {
+            "items": {
+              "$ref": "#/components/schemas/DrillPosition"
+            },
+            "title": "Holes",
+            "type": "array"
+          },
+          "physical_face": {
+            "title": "Physical Face",
+            "type": "string"
+          },
+          "svg": {
+            "title": "Svg",
+            "type": "string"
+          },
+          "u_axis": {
+            "title": "U Axis",
+            "type": "string"
+          },
+          "v_axis": {
+            "title": "V Axis",
+            "type": "string"
+          },
+          "view": {
+            "title": "View",
+            "type": "string"
+          }
+        },
+        "required": [
+          "view",
+          "physical_face",
+          "u_axis",
+          "v_axis",
+          "holes",
+          "svg"
+        ],
+        "title": "PartDrawing",
+        "type": "object"
+      },
+      "PartFastener": {
+        "additionalProperties": false,
+        "properties": {
+          "feature_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Feature Ids",
+            "type": "array"
+          },
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sku",
+          "quantity",
+          "feature_ids"
+        ],
+        "title": "PartFastener",
+        "type": "object"
+      },
+      "PartInspection": {
+        "additionalProperties": false,
+        "properties": {
+          "design_hash": {
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "drawings": {
+            "items": {
+              "$ref": "#/components/schemas/PartDrawing"
+            },
+            "title": "Drawings",
+            "type": "array"
+          },
+          "hardware": {
+            "items": {
+              "$ref": "#/components/schemas/PartFastener"
+            },
+            "title": "Hardware",
+            "type": "array"
+          },
+          "mates": {
+            "items": {
+              "$ref": "#/components/schemas/PartMate"
+            },
+            "title": "Mates",
+            "type": "array"
+          },
+          "part": {
+            "$ref": "#/components/schemas/PartInstance"
+          },
+          "part_names": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Part Names",
+            "type": "object"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "rear_openings": {
+            "items": {
+              "$ref": "#/components/schemas/RearOpening"
+            },
+            "title": "Rear Openings",
+            "type": "array"
+          },
+          "reference_objects": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceObject"
+            },
+            "title": "Reference Objects",
+            "type": "array"
+          },
+          "removal": {
+            "$ref": "#/components/schemas/RemovalInspection"
+          },
+          "runner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HardwareProfile"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sheet_sha256": {
+            "readOnly": true,
+            "title": "Sheet Sha256",
+            "type": "string"
+          },
+          "stock": {
+            "items": {
+              "$ref": "#/components/schemas/InspectionStock"
+            },
+            "title": "Stock",
+            "type": "array"
+          }
+        },
+        "required": [
+          "design_hash",
+          "part",
+          "mates",
+          "hardware",
+          "drawings",
+          "removal",
+          "rear_openings",
+          "reference_objects",
+          "runner",
+          "stock",
+          "part_names",
+          "sheet_sha256"
+        ],
+        "title": "PartInspection",
+        "type": "object"
+      },
       "PartInstance": {
         "additionalProperties": false,
         "properties": {
@@ -5714,6 +6048,29 @@
           "weight_g"
         ],
         "title": "PartInstance",
+        "type": "object"
+      },
+      "PartMate": {
+        "additionalProperties": false,
+        "properties": {
+          "joint": {
+            "$ref": "#/components/schemas/Joint"
+          },
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "semantic_key": {
+            "title": "Semantic Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part_id",
+          "semantic_key",
+          "joint"
+        ],
+        "title": "PartMate",
         "type": "object"
       },
       "PartRole": {
@@ -6146,6 +6503,133 @@
         "title": "PropertySource",
         "type": "object"
       },
+      "RearOpening": {
+        "additionalProperties": false,
+        "properties": {
+          "back_part_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Back Part Ids",
+            "type": "array"
+          },
+          "bay": {
+            "title": "Bay",
+            "type": "integer"
+          },
+          "bottom_um": {
+            "title": "Bottom Um",
+            "type": "integer"
+          },
+          "left_um": {
+            "title": "Left Um",
+            "type": "integer"
+          },
+          "right_um": {
+            "title": "Right Um",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "covered",
+              "partial",
+              "open"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "top_um": {
+            "title": "Top Um",
+            "type": "integer"
+          },
+          "zone": {
+            "enum": [
+              "upper",
+              "base"
+            ],
+            "title": "Zone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "zone",
+          "bay",
+          "left_um",
+          "right_um",
+          "bottom_um",
+          "top_um",
+          "state",
+          "back_part_ids"
+        ],
+        "title": "RearOpening",
+        "type": "object"
+      },
+      "ReferenceConstruction": {
+        "additionalProperties": false,
+        "properties": {
+          "back": {
+            "enum": [
+              "unknown",
+              "all_openings",
+              "upper_only",
+              "open"
+            ],
+            "title": "Back",
+            "type": "string"
+          },
+          "material": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "mdf",
+              "birch-plywood",
+              "solid-walnut"
+            ],
+            "title": "Material",
+            "type": "string"
+          },
+          "posts": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ReferencePost"
+            },
+            "maxItems": 32,
+            "title": "Posts",
+            "type": "array"
+          },
+          "shelves": {
+            "default": "unknown",
+            "enum": [
+              "unknown",
+              "per_bay",
+              "continuous"
+            ],
+            "title": "Shelves",
+            "type": "string"
+          },
+          "unresolved_detail": {
+            "default": "",
+            "maxLength": 300,
+            "title": "Unresolved Detail",
+            "type": "string"
+          },
+          "uprights": {
+            "enum": [
+              "unknown",
+              "panels",
+              "separate_posts"
+            ],
+            "title": "Uprights",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uprights",
+          "back"
+        ],
+        "title": "ReferenceConstruction",
+        "type": "object"
+      },
       "ReferenceImageConfirmedInputs": {
         "properties": {
           "construction_assumptions_confirmed": {
@@ -6189,6 +6673,16 @@
           },
           "confirmed_inputs": {
             "$ref": "#/components/schemas/ReferenceImageConfirmedInputs"
+          },
+          "construction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceConstruction"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "detected_base_cabinets": {
             "title": "Detected Base Cabinets",
@@ -6275,6 +6769,147 @@
           "verified_model_fingerprint"
         ],
         "title": "ReferenceImageSourceProvenance",
+        "type": "object"
+      },
+      "ReferenceObject": {
+        "additionalProperties": false,
+        "properties": {
+          "compared_parts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Compared Parts",
+            "type": "array"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "measured_post": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferencePost"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "observation": {
+            "title": "Observation",
+            "type": "string"
+          },
+          "overlapping": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Overlapping",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "represented",
+              "different",
+              "unresolved"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "touching": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Touching",
+            "type": "array"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "state",
+          "compared_parts",
+          "observation"
+        ],
+        "title": "ReferenceObject",
+        "type": "object"
+      },
+      "ReferencePost": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000000.0,
+            "title": "Depth Um",
+            "type": "integer"
+          },
+          "height_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 10000000.0,
+            "title": "Height Um",
+            "type": "integer"
+          },
+          "key": {
+            "pattern": "^ref-post-[0-9]{1,2}$",
+            "title": "Key",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 70,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "shape": {
+            "enum": [
+              "rectangular",
+              "round"
+            ],
+            "title": "Shape",
+            "type": "string"
+          },
+          "width_um": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 1000000.0,
+            "title": "Width Um",
+            "type": "integer"
+          },
+          "x_um": {
+            "maximum": 10000000.0,
+            "minimum": -10000000.0,
+            "title": "X Um",
+            "type": "integer"
+          },
+          "y_um": {
+            "maximum": 10000000.0,
+            "minimum": -10000000.0,
+            "title": "Y Um",
+            "type": "integer"
+          },
+          "z_um": {
+            "maximum": 10000000.0,
+            "minimum": -10000000.0,
+            "title": "Z Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "shape",
+          "x_um",
+          "y_um",
+          "z_um",
+          "width_um",
+          "depth_um",
+          "height_um"
+        ],
+        "title": "ReferencePost",
         "type": "object"
       },
       "ReinforcementMode": {
@@ -6388,6 +7023,49 @@
           }
         ],
         "title": "ReleaseRead"
+      },
+      "RemovalInspection": {
+        "additionalProperties": false,
+        "properties": {
+          "affected_moving_groups": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Affected Moving Groups",
+            "type": "array"
+          },
+          "remaining_frame_feet": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remaining Frame Feet"
+          },
+          "separated_groups": {
+            "items": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Separated Groups",
+            "type": "array"
+          }
+        },
+        "required": [
+          "separated_groups",
+          "remaining_frame_feet",
+          "affected_moving_groups"
+        ],
+        "title": "RemovalInspection",
+        "type": "object"
       },
       "RevisionProductionContext": {
         "additionalProperties": false,
@@ -7452,6 +8130,16 @@
           "confirmed_inputs": {
             "$ref": "#/components/schemas/WorkspaceReferenceConfirmedInputs"
           },
+          "construction": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReferenceConstruction"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "detected_base_cabinets": {
             "title": "Detected Base Cabinets",
             "type": "boolean"
@@ -7842,6 +8530,83 @@
         "summary": "Autofix Design"
       }
     },
+    "/v1/designs/inspect-part": {
+      "post": {
+        "operationId": "inspect_bookcase_v1_designs_inspect_part_post",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "joint_retention_evidence_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Joint Retention Evidence Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectBookcase"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartInspection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect Bookcase"
+      }
+    },
     "/v1/designs/preview": {
       "post": {
         "operationId": "preview_design_v1_designs_preview_post",
@@ -7945,6 +8710,49 @@
         "tags": [
           "furniture-design"
         ]
+      }
+    },
+    "/v1/furniture/inspect-part": {
+      "post": {
+        "operationId": "inspect_furniture_v1_furniture_inspect_part_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InspectFurniture"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PartInspection"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect Furniture"
       }
     },
     "/v1/furniture/module-plan": {

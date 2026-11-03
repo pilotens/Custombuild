@@ -38,6 +38,9 @@ MATERIAL_CATALOG = MappingProxyType(
 )
 
 
+RUNNER_FIXING_SKU = "wood-screw-4x14-runner"
+
+
 class HardwareProfile(FrozenModel):
     catalog_id: StableKey
     version: StableKey = "layout-1.0.0"

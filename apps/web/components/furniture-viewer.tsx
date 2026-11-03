@@ -23,6 +23,7 @@ import {
   PerspectiveCamera as ThreePerspectiveCamera,
   Vector3,
 } from "three";
+import type { DrillMarker } from "@/lib/part-inspection";
 import type {
   Group as ThreeGroup,
   InstancedMesh as ThreeInstancedMesh,
@@ -111,6 +112,7 @@ export interface FurnitureComparisonPreview {
 }
 
 interface FurnitureViewerProps {
+  drillMarkers?: DrillMarker[];
   parts: ResolvedPart[];
   designSize: { widthMm: number; heightMm: number; depthMm: number };
   selectedPartId?: string;
@@ -2168,6 +2170,7 @@ function Scene(props: FurnitureViewerProps & {
       : partSupportsVerticalDrag(part, props.parts) && Boolean(props.onPartMove);
   };
   const orbitPerformanceProps = viewerOrbitControlsPerformanceProps(props.parts.length);
+  const selectedPart = props.parts.find(part => part.part_id === props.selectedPartId);
   const partRenderMode = props.parts.some(p => p.rotation_x_rad || p.circular_outline) ? "standard" : viewerPartRenderMode(props.parts.length, props.transparent);
 
   return (
@@ -2200,6 +2203,14 @@ function Scene(props: FurnitureViewerProps & {
       <RoomStage heightMm={props.designSize.heightMm} presentation={props.presentation} />
       <Bounds fit clip margin={1.35}>
         <group ref={modelRootRef}>
+          {Boolean(props.drillMarkers?.length) && selectedPart ? <group
+            position={viewerPartTransform(selectedPart, props.designSize, props.exploded).position}
+            rotation={[selectedPart.rotation_x_rad ?? 0,0,0]}>
+            {props.drillMarkers!.map(hole => <mesh key={hole.key} position={hole.center} rotation={hole.rotation}
+              raycast={() => undefined}>
+              <circleGeometry args={[hole.radius, 24]}/><meshBasicMaterial color="#12382c" />
+            </mesh>)}
+          </group> : null}
           {partRenderMode === "sortable-transparent" ? (
             <SortableTransparentParts
               parts={props.parts}

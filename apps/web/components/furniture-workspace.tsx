@@ -14,6 +14,8 @@ import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
 import { DESIGN_CONSTRAINTS } from "@/lib/design-constraints";
+import { inspectionDrillMarkers, type DrillMarker, type PartInspection, visibleAssembly, type InspectionView } from "@/lib/part-inspection";
+import { AssemblyPartReview } from "./assembly-part-review";
 import { FurnitureFamilyControls } from "./furniture-family-controls";
 import { FurnitureProduction } from "./furniture-production";
 import { FurnitureStockRequirements, InstallationEditor, ShelvingLayoutEditor } from "./furniture-dimensions";
@@ -77,6 +79,19 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   const [profileDirty, setProfileDirty] = useState(false);
   const [productionOpen, setProductionOpen] = useState(false);
   const [selectedPart, setSelectedPart] = useState<string>();
+  const [inspectionView, setInspectionView] = useState<InspectionView>();
+  const partKey = `${preview?.design.design_hash}:${selectedPart}`;
+  const [boreOverlay,setBoreOverlay] = useState<{key:string; markers:DrillMarker[]}>();
+  const showInspectedBores = useCallback((sheet:PartInspection) => {
+    setBoreOverlay({key:partKey, markers:inspectionDrillMarkers(sheet)});
+  }, [partKey]);
+  const mode = inspectionView?.key === partKey ? inspectionView.mode : "whole";
+  const selectPart = (id?: string) => { setSelectedPart(id); setInspectionView(undefined); };
+  const hash = preview?.design.design_hash;
+  const loadPart = useCallback((signal: AbortSignal) => {
+    if (!selectedPart || !hash) throw new Error("Välj en del i den aktuella modellen.");
+    return api.inspectFurniturePart(workspace, selectedPart, hash, signal);
+  }, [api, selectedPart, hash, workspace]);
   const [drawersOpen, setDrawersOpen] = useState(false);
   const [exploded, setExploded] = useState(false);
   const [history, setHistory] = useState<FurnitureHistory>({ items: [], next_offset: null });
@@ -252,7 +267,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     finally { setBusy(false); }
   };
   const exportReview = async () => {
-    if (!projectId || !preview || dirty || exceedsExportLimit) return;
+    if (!projectId || !preview || dirty || exceedsExportLimit || mode === "without") return;
     setBusy(true); setDownload(undefined); setExportMessage(undefined);
     const epoch = mutationEpoch.current;
     try {
@@ -303,14 +318,14 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
         <button disabled={busy || !mayEdit} onClick={() => navigate(() => { void importWorkspace(); })}>
           Öppna valnötsexempel
         </button>
-        <button disabled={busy || invalidInput || profileDirty} onClick={exportWorkspace}>Spara arbetsfil</button>
+        <button disabled={busy || invalidInput || profileDirty || mode === "without"} onClick={exportWorkspace}>Spara arbetsfil</button>
         <label>Öppna projekt<select aria-label="Öppna möbelprojekt" value={projectId ?? ""}
           disabled={busy} onChange={e => { if (e.target.value) openProject(e.target.value); }}>
           <option value="">Ny design</option>{projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select></label>
         <label>Projektnamn<input value={name} maxLength={180} disabled={Boolean(projectId) || busy || !mayEdit}
           onChange={e => setName(e.target.value)} /></label>
-        <button className={styles.primary} disabled={!mayEdit || busy || invalidInput || profileDirty || !name.trim()}
+        <button className={styles.primary} disabled={!mayEdit || busy || invalidInput || profileDirty || !name.trim() || mode === "without"}
           onClick={() => { void save(); }}>{busy ? "Arbetar…" : "Spara revision"}</button>
       </div>
     </section>
@@ -391,12 +406,21 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
             onClick={() => setDrawersOpen(v => !v)}>{drawersOpen ? "Stäng lådorna" : "Öppna lådorna"}</button> : null}
         </div>
         <div className={styles.canvas}>
-          {preview ? <Viewer parts={viewerParts} designSize={{ widthMm: intent.width_um/1_000,
+          {preview ? <Viewer drillMarkers={boreOverlay?.key===partKey && mode!=="without" ? boreOverlay.markers : undefined} parts={visibleAssembly(viewerParts, selectedPart, mode)} designSize={{ widthMm: intent.width_um/1_000,
             heightMm: intent.height_um/1_000, depthMm: intent.depth_um/1_000 }}
             viewMode="perspective" exploded={exploded} transparent={false} isolateSelection={false}
-            selectedPartId={selectedPart} onSelectPart={setSelectedPart} presentation="studio" />
+            selectedPartId={selectedPart} onSelectPart={selectPart} presentation="studio" />
             : <p role="status">{error ? "Kontrollera måtten för att visa möbeln." : "Räknar om delarna…"}</p>}
         </div>
+        {preview && <label>Granska en del <select aria-label="Granska en del" value={selectedPart ?? ""}
+          onChange={e => selectPart(e.target.value || undefined)}>
+          <option value="">Välj i modellen eller listan</option>
+          {preview.design.parts.map(p => <option key={p.part_id} value={p.part_id}>{p.semantic_key}</option>)}
+        </select></label>}
+        {preview && selectedPart && preview.design.parts.some(p => p.part_id === selectedPart) &&
+          <AssemblyPartReview key={partKey} onInspection={showInspectedBores} load={loadPart} mode={mode}
+            changeMode={next => setInspectionView({ key: partKey, mode: next })}
+            selectMate={selectPart} />}
         <p className={styles.caption}>3D-vyn visar delarnas placering. Bearbetningsdetaljer finns i delritningarna.</p>
       </section>
       <aside className={styles.profiles}>
@@ -413,7 +437,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
         {preview ? <p>{(preview.design.total_weight_g/1_000).toFixed(1)} kg beräknad bruttovikt · {dirty ? "Osparade ändringar" : revision ? "Sparad revision" : "Nytt utkast"}</p> : null}
       </div>
       {intent.family === "shelving" ? <div>
-        <button className={styles.primary} disabled={busy || dirty || solidWood || !projectId || !preview || !workspace.manufacturing
+        <button className={styles.primary} disabled={mode === "without" || busy || dirty || solidWood || !projectId || !preview || !workspace.manufacturing
           || preview.workshop_handoff?.dimensions.state === "requires_resolution"}
           onClick={() => setProductionOpen(true)}>Förbered tillverkning</button>
         <p>{solidWood ? "Massiv valnöt kan exporteras som granskningspaket. Fuktrörelse och förband behöver granskas före tillverkning." : profileDirty ? "Använd eller återställ profilförslaget först." : dirty || !revision ? "Spara möbeln först." : !workspace.manufacturing
@@ -423,10 +447,10 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
             : "Öppna råmaterial, nesting, foggranskning och maskinens CAM-flöde för den sparade möbeln."}</p>
       </div> : null}
       {exceedsExportLimit ? <p role="status">Granskningspaketet stöder högst 128 delar. Dela upp designen före export.</p> : null}
-      <button className={styles.primary} disabled={!mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
+      <button className={styles.primary} disabled={mode === "without" || !mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
         onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
       {exportMessage ? <p role="status">{exportMessage}</p> : null}
-      {download && !profileDirty ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
+      {download && !profileDirty && mode !== "without" ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
       {intent.family === "shelving" && preview ? <FurnitureShelfSuggestionPanel
         key={`${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}
         designHash={preview.design.design_hash} disabled={busy || invalidInput || profileDirty || !mayEdit}

@@ -18,7 +18,7 @@ from .furniture import (
     TableIntent,
 )
 from .furniture_catalog import HardwareProfile, resolve_hardware, resolve_material
-from .furniture_frames import build_frame, frame_bounds, screw_joint
+from .furniture_frames import build_frame, frame_bounds, screw_joint, validate_screw_alignment
 from .identity import content_hash, stable_id
 from .models import (
     BookcaseDesignSpec,
@@ -33,6 +33,7 @@ from .models import (
     PartInstance,
     Placement,
     Point3D,
+    validate_part_connections,
 )
 
 
@@ -61,6 +62,8 @@ class FurnitureResult(FrozenModel):
 
     @model_validator(mode="after")
     def validate_parts(self) -> FurnitureResult:
+        validate_part_connections(self.parts, self.joints)
+        validate_screw_alignment(self.parts, self.joints)
         ids = {part.part_id for part in self.parts}
         if len(ids) != len(self.parts) or not ids:
             raise ValueError("furniture must have unique, nonempty parts")

@@ -117,6 +117,29 @@ def exercise_studio(client, case, e):
         e.equal("stale_write", conflict["detail"]["code"], "DRAFT_REVISION_CONFLICT")
         assert response_json(client.get(f"{path}/draft")) == latest
         inspect_studio(template, latest, spec, e)
+        for part in latest["result_json"]["parts"]:
+            sheet = response_json(
+                client.post(
+                    "/v1/designs/inspect-part",
+                    params={"project_id": project["id"]},
+                    json={
+                        "spec": spec,
+                        "production_context": SHOP,
+                        "part_id": part["part_id"],
+                        "expected_design_hash": latest["design_hash"],
+                    },
+                )
+            )
+            assert sheet["part"]["semantic_key"] == part["name"]
+            assert sheet["part"]["finished_size"] == part["size_um"]
+            assert sheet["part"]["features"] == part["features"]
+            assert {"A", "B"} <= {d["view"] for d in sheet["drawings"]}
+            assert {m["joint"]["joint_id"] for m in sheet["mates"]} == {
+                joint["joint_id"]
+                for joint in latest["result_json"]["joints"]
+                if any(m["part_id"] == part["part_id"] for m in joint["members"])
+            }
+        e.note("inspected_parts", len(latest["result_json"]["parts"]))
         if template == "shelving":
             payload = {
                 "template_id": template,

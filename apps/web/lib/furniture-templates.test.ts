@@ -325,6 +325,7 @@ describe("furniture template visual contracts", () => {
         detected_dividers: 2,
         detected_base_cabinets: false,
         warnings: [],
+        construction: {uprights: "panels" as const, back: "all_openings" as const, shelves: "per_bay" as const, material:"birch-plywood" as const, unresolved_detail:""},
         verification_status: "parametric_confirmed" as const,
         confirmed_inputs: {
           dimensions_measured: true,

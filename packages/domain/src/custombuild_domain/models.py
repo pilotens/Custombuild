@@ -923,6 +923,44 @@ def captive_inset_back_topology_is_complete(
     return True
 
 
+def validate_part_connections(parts: tuple[PartInstance, ...], joints: tuple[Joint, ...]) -> None:
+    """Verify both directions of the part–joint–machining-feature relationship."""
+    part_ids = {part.part_id for part in parts}
+    joint_ids = {joint.joint_id for joint in joints}
+    if len(part_ids) != len(parts):
+        raise ValueError("design result has duplicate part IDs")
+    if len(joint_ids) != len(joints):
+        raise ValueError("design result has duplicate joint IDs")
+    features = tuple(feature for part in parts for feature in part.features)
+    feature_ids = {feature.feature_id for feature in features}
+    if len(feature_ids) != len(features):
+        raise ValueError("design result has duplicate manufacturing feature IDs")
+    feature_by_id = {feature.feature_id: feature for feature in features}
+    referenced_features: dict[str, str] = {}
+    for joint in joints:
+        for member in joint.members:
+            if member.part_id not in part_ids:
+                raise ValueError("joint references a missing part")
+            for feature_id in member.feature_ids:
+                feature = feature_by_id.get(feature_id)
+                if feature is None:
+                    raise ValueError("joint references a missing manufacturing feature")
+                if feature.part_id != member.part_id:
+                    raise ValueError("joint member references another part's feature")
+                if feature.joint_id != joint.joint_id:
+                    raise ValueError("joint member references a feature owned by another joint")
+                if feature_id in referenced_features:
+                    raise ValueError("manufacturing feature is referenced more than once")
+                referenced_features[feature_id] = joint.joint_id
+    for feature in features:
+        if feature.joint_id is None:
+            continue
+        if feature.joint_id not in joint_ids:
+            raise ValueError("manufacturing feature references a missing joint")
+        if referenced_features.get(feature.feature_id) != feature.joint_id:
+            raise ValueError("joint-owned manufacturing feature is absent from its joint")
+
+
 class DesignResult(FrozenModel):
     design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     engine_version: StableKey
@@ -950,21 +988,12 @@ class DesignResult(FrozenModel):
     def validate_result_integrity(self) -> DesignResult:
         part_by_id = {part.part_id: part for part in self.parts}
         part_ids = set(part_by_id)
-        if len(part_ids) != len(self.parts):
-            raise ValueError("design result has duplicate part IDs")
+        validate_part_connections(self.parts, self.joints)
         joint_ids = {joint.joint_id for joint in self.joints}
-        if len(joint_ids) != len(self.joints):
-            raise ValueError("design result has duplicate joint IDs")
         if {node.part_id for node in self.assembly_graph.nodes} != part_ids:
             raise ValueError("assembly graph and part collection differ")
         if {edge.joint_id for edge in self.assembly_graph.edges} != joint_ids:
             raise ValueError("assembly graph and joint collection differ")
-        features = tuple(feature for part in self.parts for feature in part.features)
-        feature_ids = {feature.feature_id for feature in features}
-        if len(feature_ids) != len(features):
-            raise ValueError("design result has duplicate manufacturing feature IDs")
-        feature_by_id = {feature.feature_id: feature for feature in features}
-        referenced_features: dict[str, str] = {}
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
                 if (
@@ -1008,27 +1037,6 @@ class DesignResult(FrozenModel):
                         raise ValueError(
                             "joint retention does not cover a joint member's material version"
                         )
-            for member in joint.members:
-                if member.part_id not in part_ids:
-                    raise ValueError("joint references a missing part")
-                for feature_id in member.feature_ids:
-                    feature = feature_by_id.get(feature_id)
-                    if feature is None:
-                        raise ValueError("joint references a missing manufacturing feature")
-                    if feature.part_id != member.part_id:
-                        raise ValueError("joint member references another part's feature")
-                    if feature.joint_id != joint.joint_id:
-                        raise ValueError("joint member references a feature owned by another joint")
-                    previous_joint = referenced_features.setdefault(feature_id, joint.joint_id)
-                    if previous_joint != joint.joint_id:
-                        raise ValueError("manufacturing feature is referenced by multiple joints")
-        for feature in features:
-            if feature.joint_id is None:
-                continue
-            if feature.joint_id not in joint_ids:
-                raise ValueError("manufacturing feature references a missing joint")
-            if referenced_features.get(feature.feature_id) != feature.joint_id:
-                raise ValueError("joint-owned manufacturing feature is absent from its joint")
         retention = self.spec.joint_retention
         if retention is not None and retention.joint_geometry_sha256 != (
             dado_joint_geometry_fingerprint(self.parts, self.joints)

@@ -343,7 +343,7 @@ class BookcaseEngine:
                     side_index,
                     Dimensions3D(
                         width_um=t,
-                        depth_um=p.base_cabinet_depth_um,
+                        depth_um=case_depth,
                         # The top edge enters a verified dado in the upper
                         # bottom.  That makes each internal side a direct
                         # vertical load path instead of a merely coincident
@@ -372,7 +372,7 @@ class BookcaseEngine:
                         # The lower bottom starts behind the front plane. Its
                         # requested depth therefore includes the inset-front
                         # thickness without creating a coincident solid.
-                        depth_um=p.base_cabinet_depth_um - t,
+                        depth_um=case_depth - t,
                         height_um=t,
                     ),
                     Placement(
