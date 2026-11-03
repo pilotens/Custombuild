@@ -6156,7 +6156,7 @@ def get_project_draft(
         "spec_json": project.draft_spec_json,
         "workspace_spec_json": project.draft_workspace_json,
         "result_json": project.draft_result_json,
-        "updated_at": project.updated_at,
+        "updated_at": _as_utc(project.updated_at),
     }
 
 
@@ -6247,7 +6247,7 @@ def update_project_draft(
         "spec_json": project.draft_spec_json,
         "workspace_spec_json": project.draft_workspace_json,
         "result_json": project.draft_result_json,
-        "updated_at": project.updated_at,
+        "updated_at": _as_utc(project.updated_at),
     }
 
 

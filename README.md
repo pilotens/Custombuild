@@ -15,6 +15,9 @@ KA 4532 drawer slides have separate hole patterns for the cabinet and drawer.
 Physical prototype testing and workshop acceptance remain required.
 See [scope and verification](docs/MULTI_FURNITURE_V1_IMPLEMENTATION.md).
 
+Run `make product-acceptance` for the five-level furniture work orders, measured
+results and expected rejections. [Product test matrix and commands (Swedish)](docs/PRODUCT_ACCEPTANCE.md).
+
 Furniture exports are durable, quota-accounted jobs with immutable object-store
 artifacts. Status polling returns metadata, and authenticated binary downloads
 are revision-bound and checksum-verified; ZIP payloads are not stored in Redis.

@@ -3280,6 +3280,28 @@ def test_project_workspace_draft_is_server_authoritative_and_restorable() -> Non
         assert restored.json()["workspace_spec_json"] == payload["workspace_spec_json"]
 
 
+def test_reopened_hanging_shelf_keeps_utc_on_both_saved_widths() -> None:
+    # Follow-up work order for the missing timezone on SQLite draft reload.
+    with TestClient(app, headers=HEADERS) as client:
+        project = client.post("/v1/projects", json={"name": f"UTC shelf-{uuid4()}"}).json()
+        path = f"/v1/projects/{project['id']}/draft"
+        for revision, width in enumerate((1_013, 1_027)):
+            order = {
+                "template_id": "hanging-shelf",
+                "spec": {**valid_spec(), "width_mm": width, "height_mm": 1_407, "plinth": False},
+                "workspace_spec": valid_workspace_intent(),
+                "expected_draft_revision": revision,
+            }
+            saved = client.put(path, json=order)
+            assert saved.status_code == 200, saved.text
+            reopened = client.get(path)
+            assert reopened.status_code == 200
+            assert reopened.json() == saved.json()
+            assert saved.json()["updated_at"].endswith("Z")
+            assert reopened.json()["draft_revision"] == revision + 1
+            assert reopened.json()["spec_json"]["width_mm"] == width
+
+
 def test_explicit_back_material_roundtrips_preview_draft_and_frozen_revision() -> None:
     requested = valid_spec() | {
         "material_id": "birch-plywood",

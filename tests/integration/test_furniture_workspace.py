@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import app.furniture_api as furniture_api
-import app.storage as storage_module
 import pytest
 from app.db import get_session_factory
 from app.main import app
@@ -23,7 +22,6 @@ from app.models import (
     StoredObject,
     StoredObjectState,
 )
-from botocore.exceptions import ClientError
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.identity import content_hash
 from custombuild_worker import tasks
@@ -31,6 +29,7 @@ from custombuild_worker.furniture_review import build_furniture_review
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from tests.furniture_review_storage import install_review_storage
 from tests.integration.test_api_design_flow import valid_spec, valid_workspace_intent
 from tests.unit.test_furniture_families import workspace
 
@@ -42,56 +41,11 @@ OTHER_TENANT = "22222222-2222-4222-8222-222222222222"
 
 @pytest.fixture
 def review_storage(monkeypatch):
-    """Exercise real job, quota and verification code with only S3/CAD replaced."""
-
-    class ReviewStorage:
-        def __init__(self):
-            self.objects = {}
-            self.put_calls = []
-
-        def head_bucket(self, **kwargs):
-            pass
-
-        def put_object(self, **kwargs):
-            self.put_calls.append(kwargs)
-            assert kwargs["IfNoneMatch"] == "*"
-            key = kwargs["Key"]
-            if key in self.objects:
-                raise ClientError(
-                    {
-                        "Error": {"Code": "PreconditionFailed"},
-                        "ResponseMetadata": {"HTTPStatusCode": 412},
-                    },
-                    "PutObject",
-                )
-            self.objects[key] = {
-                "ContentLength": len(kwargs["Body"]),
-                "ContentType": kwargs["ContentType"],
-                "Metadata": kwargs["Metadata"],
-                "payload": bytes(kwargs["Body"]),
-            }
-            return {"ETag": '"created"'}
-
-        def head_object(self, **kwargs):
-            return {
-                key: value for key, value in self.objects[kwargs["Key"]].items() if key != "payload"
-            }
-
-        def get_object(self, **kwargs):
-            return {
-                **self.head_object(**kwargs),
-                "Body": io.BytesIO(self.objects[kwargs["Key"]]["payload"]),
-            }
-
     import custombuild_worker.furniture_review as review
 
-    storage = ReviewStorage()
-    monkeypatch.setattr(tasks, "SessionFactory", get_session_factory())
-    monkeypatch.setattr(tasks, "_s3_client", lambda: storage)
-    monkeypatch.setattr(storage_module, "internal_s3_client", lambda: storage)
+    storage = install_review_storage(monkeypatch)
     monkeypatch.setattr(review, "build_furniture_review", lambda document: b"review-fixture")
     return storage
-
 
 @pytest.fixture
 def client():
