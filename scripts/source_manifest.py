@@ -37,6 +37,7 @@ APPLICATION_BUILD_INPUTS = (
     "compose.external-production.yml",
     "compose.registry.yml",
     "compose.yml",
+    "examples/furniture/walnut-shelving-4340x2540x280.json",
     "infra",
     "package.json",
     "packages",

@@ -714,7 +714,7 @@ def test_semantic_root_cli_updates_and_checks_exact_control(
 def test_every_release_checkout_immediately_checks_repository_content_root() -> None:
     command = "python3 scripts/source_manifest.py --repo . --check-production-semantic-root"
     expected_checkouts = {
-        ".github/workflows/ci.yml": 4,
+        ".github/workflows/ci.yml": 5,
         ".github/workflows/prod-ci.yml": 3,
         ".github/workflows/cd.yml": 6,
         ".github/workflows/supply-chain.yml": 3,
