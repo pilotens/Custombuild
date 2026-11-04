@@ -4897,6 +4897,143 @@
         "title": "InspectionStock",
         "type": "object"
       },
+      "InstallationCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "extent_xyz_um": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extent Xyz Um"
+          },
+          "known_parts": {
+            "title": "Known Parts",
+            "type": "integer"
+          },
+          "margin_xyz_um": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Xyz Um"
+          },
+          "raise_height_um": {
+            "anyOf": [
+              {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raise Height Um"
+          },
+          "raise_states": {
+            "default": [
+              "unresolved",
+              "unresolved"
+            ],
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "enum": [
+                  "fits",
+                  "blocked",
+                  "unresolved"
+                ],
+                "type": "string"
+              },
+              {
+                "enum": [
+                  "fits",
+                  "blocked",
+                  "unresolved"
+                ],
+                "type": "string"
+              }
+            ],
+            "title": "Raise States",
+            "type": "array"
+          },
+          "rear_access": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RearAccess"
+            },
+            "title": "Rear Access",
+            "type": "array"
+          },
+          "state": {
+            "enum": [
+              "fits",
+              "blocked",
+              "unresolved"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "unresolved_parts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved Parts",
+            "type": "array"
+          }
+        },
+        "required": [
+          "state",
+          "known_parts",
+          "unresolved_parts"
+        ],
+        "title": "InstallationCheck",
+        "type": "object"
+      },
       "InstallationSpace": {
         "additionalProperties": false,
         "description": "Customer measurements, distinct from the generated carcass dimensions.\n\nAllowances reserve space for installation or separately designed trim. None\nmeans unmeasured, never zero. They do not create a trim part or qualify it.",
@@ -6016,6 +6153,16 @@
             "title": "Parts",
             "type": "array"
           },
+          "room": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MeasuredRoom"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "schema_version": {
             "const": "custombuild.measured-assembly.v1",
             "title": "Schema Version",
@@ -6563,6 +6710,16 @@
             "title": "Fastener Interferences",
             "type": "array"
           },
+          "installation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/InstallationCheck"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "issues": {
             "additionalProperties": {
               "items": {
@@ -6607,6 +6764,14 @@
             "title": "Physical Cutting Authorized",
             "type": "boolean"
           },
+          "stock_checks": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/StockCheck"
+            },
+            "title": "Stock Checks",
+            "type": "array"
+          },
           "unresolved_back_parts": {
             "default": [],
             "items": {
@@ -6627,6 +6792,60 @@
           "overlaps_truncated"
         ],
         "title": "MeasuredReport",
+        "type": "object"
+      },
+      "MeasuredRoom": {
+        "additionalProperties": false,
+        "properties": {
+          "rear_tool_depth_um": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rear Tool Depth Um"
+          },
+          "size_um": {
+            "description": "Clear width, depth and height. The assembly's front and bottom extents are aligned with the room front and floor. Rectangular space without obstructions.",
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              },
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 20000000.0,
+                "type": "integer"
+              }
+            ],
+            "title": "Size Um",
+            "type": "array"
+          },
+          "source": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "size_um",
+          "source"
+        ],
+        "title": "MeasuredRoom",
         "type": "object"
       },
       "MovingGroup": {
@@ -7462,6 +7681,45 @@
         "title": "PropertySource",
         "type": "object"
       },
+      "RearAccess": {
+        "additionalProperties": false,
+        "properties": {
+          "gap_um": {
+            "title": "Gap Um",
+            "type": "number"
+          },
+          "joint": {
+            "title": "Joint",
+            "type": "string"
+          },
+          "part": {
+            "title": "Part",
+            "type": "string"
+          },
+          "required_um": {
+            "title": "Required Um",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "fits",
+              "blocked",
+              "unresolved"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "joint",
+          "part",
+          "gap_um",
+          "required_um",
+          "state"
+        ],
+        "title": "RearAccess",
+        "type": "object"
+      },
       "RearOpening": {
         "additionalProperties": false,
         "properties": {
@@ -8231,6 +8489,54 @@
           }
         },
         "title": "ShelvingIntent",
+        "type": "object"
+      },
+      "StockCheck": {
+        "additionalProperties": false,
+        "properties": {
+          "margin_lbt_um": {
+            "anyOf": [
+              {
+                "maxItems": 3,
+                "minItems": 3,
+                "prefixItems": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Lbt Um"
+          },
+          "part": {
+            "title": "Part",
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "fits",
+              "blocked",
+              "unresolved"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part",
+          "state"
+        ],
+        "title": "StockCheck",
         "type": "object"
       },
       "TableIntent": {

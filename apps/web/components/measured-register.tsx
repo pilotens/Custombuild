@@ -19,6 +19,7 @@ import {
 } from "@/lib/measured-assembly";
 import css from "./measured-register.module.css";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
+import { MeasuredStockEdit } from "./measured-planning";
 
 const panelFaces = [
   [0, 1, 3, 2],
@@ -440,7 +441,10 @@ function PieceDetail({
           })}
       </details>
       {onChange && (
-        <OperationEdit report={report} piece={piece} change={onChange} />
+        <>
+          <MeasuredStockEdit report={report} piece={piece} change={onChange} />
+          <OperationEdit report={report} piece={piece} change={onChange} />
+        </>
       )}
       {(neighbours.length > 0 || report.issues[piece.id]?.length) && (
         <div className={css.attention}>

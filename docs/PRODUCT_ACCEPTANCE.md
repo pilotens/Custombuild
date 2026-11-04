@@ -88,3 +88,13 @@ jämför cylinderyta, axel, radie, borrdjup och tomt borrcentrum med den angivna
 bearbetningen. DXF-centra och radier kontrolleras som numeriska entiteter på
 rätt ritningssida, inklusive upprepade hål. De sex arbetsproven har sammanlagt
 316 angivna borrningar. Skivbordets och hyllans prov har noll borrningar.
+
+Måttsatta arbetsritningar kan även ange en fri rumsram i X/Y/Z och verktygsdjup
+för åtkomst bakifrån. Kontrollen redovisar slutläge, två resningsriktningar och
+varje bakåtriktad skruvs utrymme mot bakväggen. Resningen avser en hel styv
+montering på plant golv med fritt utrymme framför nischen. Lokala delmontage
+med öppet läge ger ofullständiga besked. Inköpsformat bedöms per ämne i L/B/T
+utan omkastning av fiberriktningen. Saknade format redovisas separat.
+Det väldigt svåra monteringsprovet kontrollerar att en stomme kan rymmas
+stående samtidigt som resningen stoppas, samt att 1 µm för tunn råvara
+upptäcks. Ett omprov måste återge ursprungligt resultat när måtten återställs.

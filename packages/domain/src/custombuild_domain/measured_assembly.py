@@ -11,6 +11,13 @@ from pydantic import Field, model_validator
 from .identity import content_hash
 from .measured_backing import BackCoverage, Backing, review_backing
 from .measured_fasteners import FastenerInterference, Shaft, review_fasteners
+from .measured_installation import (
+    InstallationCheck,
+    MeasuredRoom,
+    StockCheck,
+    review_installation,
+    review_stock,
+)
 from .models import FrozenModel
 
 Key = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")]
@@ -108,6 +115,7 @@ class MeasuredAssembly(FrozenModel):
     title: Text
     source: Text
     backing: Backing | None = None
+    room: MeasuredRoom | None = None
     parts: tuple[MeasuredPart, ...] = Field(min_length=1, max_length=512)
     joints: tuple[MeasuredJoint, ...] = Field(default=(), max_length=2048)
     bearings: tuple[MeasuredBearing, ...] = Field(default=(), max_length=2048)
@@ -150,6 +158,8 @@ class MeasuredReport(FrozenModel):
     back_coverage: tuple[BackCoverage, ...] = ()
     unresolved_back_parts: tuple[str, ...] = ()
     fastener_interferences: tuple[FastenerInterference, ...] = ()
+    stock_checks: tuple[StockCheck, ...] = ()
+    installation: InstallationCheck | None = None
     physical_cutting_authorized: Literal[False] = False
 
 
@@ -654,6 +664,9 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
                     else "Delen saknar passande registrerade förband och upplag till andra delar."
                 )
     canonical = assembly.model_dump(mode="json")
+    if assembly.room is None:
+        # Roomless files retain their previous identities and printed receipts.
+        canonical.pop("room")
     back_checks: tuple[BackCoverage, ...] = ()
     unknown: set[str] = set()
     if assembly.backing:
@@ -672,6 +685,8 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
         assembly_sha256=content_hash(canonical),
         back_coverage=back_checks,
         fastener_interferences=interferences,
+        stock_checks=tuple(review_stock(p) for p in assembly.parts),
+        installation=review_installation(assembly, world),
         unresolved_back_parts=tuple(sorted(unknown)),
         cells=cells,
         issues={k: tuple(v) for k, v in issues.items() if v},

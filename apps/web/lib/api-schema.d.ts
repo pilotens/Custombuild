@@ -2721,6 +2721,51 @@ export interface components {
             /** Width Um */
             width_um: number;
         };
+        /** InstallationCheck */
+        InstallationCheck: {
+            /** Extent Xyz Um */
+            extent_xyz_um?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Known Parts */
+            known_parts: number;
+            /** Margin Xyz Um */
+            margin_xyz_um?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Raise Height Um */
+            raise_height_um?: [
+                number,
+                number
+            ] | null;
+            /**
+             * Raise States
+             * @default [
+             *       "unresolved",
+             *       "unresolved"
+             *     ]
+             */
+            raise_states: [
+                "fits" | "blocked" | "unresolved",
+                "fits" | "blocked" | "unresolved"
+            ];
+            /**
+             * Rear Access
+             * @default []
+             */
+            rear_access: components["schemas"]["RearAccess"][];
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "fits" | "blocked" | "unresolved";
+            /** Unresolved Parts */
+            unresolved_parts: string[];
+        };
         /**
          * InstallationSpace
          * @description Customer measurements, distinct from the generated carcass dimensions.
@@ -3159,6 +3204,7 @@ export interface components {
             open_items: string[];
             /** Parts */
             parts: components["schemas"]["MeasuredPart"][];
+            room?: components["schemas"]["MeasuredRoom"] | null;
             /**
              * Schema Version
              * @constant
@@ -3347,6 +3393,7 @@ export interface components {
              * @default []
              */
             fastener_interferences: components["schemas"]["FastenerInterference"][];
+            installation?: components["schemas"]["InstallationCheck"] | null;
             /** Issues */
             issues: {
                 [key: string]: string[];
@@ -3367,10 +3414,31 @@ export interface components {
              */
             physical_cutting_authorized: false;
             /**
+             * Stock Checks
+             * @default []
+             */
+            stock_checks: components["schemas"]["StockCheck"][];
+            /**
              * Unresolved Back Parts
              * @default []
              */
             unresolved_back_parts: string[];
+        };
+        /** MeasuredRoom */
+        MeasuredRoom: {
+            /** Rear Tool Depth Um */
+            rear_tool_depth_um?: number | null;
+            /**
+             * Size Um
+             * @description Clear width, depth and height. The assembly's front and bottom extents are aligned with the room front and floor. Rectangular space without obstructions.
+             */
+            size_um: [
+                number,
+                number,
+                number
+            ];
+            /** Source */
+            source: string;
         };
         /** MovingGroup */
         MovingGroup: {
@@ -3698,6 +3766,22 @@ export interface components {
             /** Valid From */
             valid_from?: string | null;
         };
+        /** RearAccess */
+        RearAccess: {
+            /** Gap Um */
+            gap_um: number;
+            /** Joint */
+            joint: string;
+            /** Part */
+            part: string;
+            /** Required Um */
+            required_um: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "fits" | "blocked" | "unresolved";
+        };
         /** RearOpening */
         RearOpening: {
             /** Back Part Ids */
@@ -4023,6 +4107,22 @@ export interface components {
              * @default 900000
              */
             width_um: number;
+        };
+        /** StockCheck */
+        StockCheck: {
+            /** Margin Lbt Um */
+            margin_lbt_um?: [
+                number,
+                number,
+                number
+            ] | null;
+            /** Part */
+            part: string;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "fits" | "blocked" | "unresolved";
         };
         /**
          * TableIntent

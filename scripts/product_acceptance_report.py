@@ -40,6 +40,7 @@ MEASURES = {
     "offset_rejected_um": "Upptäckt förskjutning (µm)",
     "STEP_mm": "Uppmätt STEP B/D/H (mm)",
     "STEP_solids": "STEP-solider",
+    "rigid_raise_height_um": "Minsta takhöjd vid resning (µm)",
     "verified_export_bores": "Borrningar verifierade i STEP och DXF",
     "stale_write": "Äldre sparförsök",
     "blocked_plan": "Spärrad modulplan",

@@ -10,6 +10,7 @@ import {
 } from "@/lib/measured-assembly";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { MeasuredRegister } from "./measured-register";
+import { MeasuredRoomPlanning } from "./measured-planning";
 import css from "./measured-register.module.css";
 
 export function MeasuredWorkbench({
@@ -92,6 +93,11 @@ export function MeasuredWorkbench({
       {report && (
         <>
           <h2>{report.assembly.title}</h2>
+          <MeasuredRoomPlanning
+            key={report.assembly_sha256 + "-room"}
+            report={report}
+            change={(input) => void load(async () => input, returnPart)}
+          />
           <MeasuredRegister
             key={report.assembly_sha256}
             report={report}

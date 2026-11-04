@@ -324,3 +324,23 @@ def test_measured_review_rejects_unidentified_callers_and_duplicate_parts(buyer)
     assert result["joints"][0]["state"] == "aligned"
     data["parts"].append(deepcopy(data["parts"][0]))
     assert buyer.post(path, json=data).status_code == 422
+
+
+def test_measured_room_and_stock_checks_follow_the_normal_review_endpoint(buyer):
+    from tests.product_acceptance.measured import installation_file
+
+    work = installation_file()
+    path = "/v1/measured-assemblies/review"
+    original = response_json(buyer.post(path, json=work))
+    assert original["installation"]["raise_height_um"] == [5_000_000, 5_000_000]
+    assert original["stock_checks"][0]["state"] == "unresolved"
+    work["room"]["size_um"][2] -= 1
+    work["parts"][0]["stock_lbt_um"] = [4_000_000, 3_000_000, 899_999]
+    blocked = response_json(buyer.post(path, json=work))
+    assert blocked["installation"]["state"] == "fits"
+    assert blocked["installation"]["raise_states"] == ["blocked", "blocked"]
+    assert blocked["stock_checks"][0]["state"] == "blocked"
+    assert blocked["assembly_sha256"] != original["assembly_sha256"]
+    work["room"]["size_um"][2] += 1
+    del work["parts"][0]["stock_lbt_um"]
+    assert response_json(buyer.post(path, json=work)) == original

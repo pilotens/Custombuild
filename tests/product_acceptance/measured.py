@@ -132,6 +132,16 @@ def crossing_screw_work():
     }
 
 
+def installation_file(height=4_000_000, depth=3_000_000):
+    return {
+        "schema_version": "custombuild.measured-assembly.v1",
+        "title": "Monteringsprov",
+        "source": "Måttsatt 3–4–5-prov",
+        "parts": [member("frame", [900_000, depth, height], [0, 0, 0])],
+        "room": {"size_um": [900_000, depth, 5_000_000], "source": "Uppmätt provrum"},
+    }
+
+
 def exercise_measured(client, case, evidence):
     query = frame_file(**case.order.inputs)
     url = "/v1/measured-assemblies/review"
@@ -169,6 +179,23 @@ def exercise_measured(client, case, evidence):
                     for cell in report["cells"][p["id"]]
                 )
                 assert 0 < volume < prod(p["size_um"])
+            placement = installation_file()
+            fitting = response_json(client.post(url, json=placement))
+            evidence.equal(
+                "rigid_raise_height_um",
+                fitting["installation"]["raise_height_um"],
+                [5_000_000, 5_000_000],
+            )
+            assert fitting["installation"]["raise_states"] == ["fits", "fits"]
+            placement["room"]["size_um"][2] -= 1
+            placement["parts"][0]["stock_lbt_um"] = [4_000_000, 3_000_000, 899_999]
+            obstructed = response_json(client.post(url, json=placement))
+            assert obstructed["installation"]["state"] == "fits"
+            assert obstructed["installation"]["raise_states"] == ["blocked", "blocked"]
+            assert obstructed["stock_checks"][0]["state"] == "blocked"
+            placement["room"]["size_um"][2] += 1
+            del placement["parts"][0]["stock_lbt_um"]
+            assert response_json(client.post(url, json=placement)) == fitting
             # Independent rear opening on the same API, shortened by one micrometre.
             rear = member("back", [600_000, 6_000, 800_000], [0, 300_000, 0])
             with_back = {
