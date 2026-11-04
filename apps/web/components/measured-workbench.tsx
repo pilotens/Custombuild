@@ -11,6 +11,7 @@ import {
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { MeasuredRegister } from "./measured-register";
 import { MeasuredRoomPlanning } from "./measured-planning";
+import { TrestleConstruction } from "./trestle-construction";
 import css from "./measured-register.module.css";
 
 export function MeasuredWorkbench({
@@ -22,6 +23,7 @@ export function MeasuredWorkbench({
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false);
   const [returnPart, setReturnPart] = useState<string>();
+  const [constructionVersion, setConstructionVersion] = useState(0);
   const serial = useRef(0);
   async function load(read: () => Promise<MeasuredWork>, keepPart?: string) {
     const epoch = ++serial.current;
@@ -66,6 +68,8 @@ export function MeasuredWorkbench({
           tillverkningstillstånd.
         </p>
       </header>
+      <TrestleConstruction key={constructionVersion} runtimeConfig={runtimeConfig} open={(work) => void load(async () => work)}
+        openVerified={(verified) => { ++serial.current; setLoading(false); setError(""); setReturnPart(undefined); setReport(verified); }} />
       <div className={css.toolbar}>
         <label>
           Öppna arbetsritning (JSON){" "}
@@ -75,6 +79,7 @@ export function MeasuredWorkbench({
             onChange={(e) => {
               const file = e.target.files?.[0];
               e.target.value = "";
+              if (file) setConstructionVersion(v => v + 1);
               if (file)
                 void load(async () => {
                   if (file.size > 4 * 1024 * 1024)
@@ -103,13 +108,13 @@ export function MeasuredWorkbench({
           <MeasuredRoomPlanning
             key={report.assembly_sha256 + "-room"}
             report={report}
-            change={(input) => void load(async () => input, returnPart)}
+            change={(input) => { setConstructionVersion(v => v + 1); void load(async () => input, returnPart); }}
           />
           <MeasuredRegister
             key={report.assembly_sha256}
             report={report}
             initialPart={returnPart}
-            onChange={(input, id) => void load(async () => input, id)}
+            onChange={(input, id) => { setConstructionVersion(v => v + 1); void load(async () => input, id); }}
           />
         </>
       )}

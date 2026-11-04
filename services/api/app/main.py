@@ -25,6 +25,9 @@ from .security import (
 )
 from .seed import seed_development
 from .storage_quota import initialize_development_storage_quota
+from .trestle_construction import router as trestle_construction_router
+from .trestle_exports import router as trestle_exports_router
+from .trestle_inspection import router as trestle_inspection_router
 
 
 class JsonFormatter(logging.Formatter):
@@ -121,6 +124,9 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(router)
 app.include_router(furniture_router)
 app.include_router(part_inspection_router)
+app.include_router(trestle_construction_router)
+app.include_router(trestle_exports_router)
+app.include_router(trestle_inspection_router)
 
 
 @app.get("/health", tags=["operations"])

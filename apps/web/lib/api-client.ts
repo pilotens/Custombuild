@@ -1714,6 +1714,31 @@ export class CustombuildApiClient {
     return this.request<components["schemas"]["MeasuredAssembly"]>("/v1/measured-assemblies/examples/trestle-table", {method:"GET"});
   }
 
+  async constructTrestle(input: components["schemas"]["TrestleRequest"]) {
+    return this.request<components["schemas"]["TrestleConstruction"]>("/v1/constructions/trestle-table", {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  async requestTrestleExport(input: components["schemas"]["TrestleExportRequest"], signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["TrestleExportAccepted"]>(
+      "/v1/constructions/trestle-table/exports", { method: "POST", body: JSON.stringify(input), signal },
+    );
+    const id = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+    if (!id.test(result.project_id) || !id.test(result.job_id)) throw new ApiError("Ogiltig exportidentitet.");
+    return result;
+  }
+
+  async inspectTrestleExport(projectId: string, jobId: string, assemblyHash: string, signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["MeasuredReport"]>(
+      `/v1/constructions/trestle-table/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}/inspection`,
+      { method: "GET", signal },
+    );
+    if (result.assembly_sha256 !== assemblyHash || result.physical_cutting_authorized !== false)
+      throw new ApiError("Granskningen gäller inte den aktuella konstruktionen.");
+    return result;
+  }
+
   async inspectFurniturePart(workspace: FurnitureWorkspace, partId: string, hash: string, signal: AbortSignal) {
     const result = await this.request<PartInspection>("/v1/furniture/inspect-part", {
       method: "POST", signal, body: JSON.stringify({ workspace, part_id: partId, expected_design_hash: hash }),

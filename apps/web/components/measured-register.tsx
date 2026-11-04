@@ -317,11 +317,13 @@ function PieceDetail({
         </dd>
       </dl>
       {piece.note && <p>{piece.note}</p>}
-      {piece.profile && <p className={css.attention}>
+      {piece.profile && <p className={report.geometry_method === "exact_cad" ? undefined : css.attention}>
         {piece.profile.kind === "rounded_rectangle"
           ? `Hörnradie ${mm(piece.profile.radius_um)} mm.`
           : `Sned profil i ${piece.profile.axes.toUpperCase()}, ${piece.profile.points_um.length} hörn.`}
-        {" "}Konturen visas i ritningen. Förband och bearbetningar mot profilen är ej verifierade.
+        {" "}{report.geometry_method === "exact_cad"
+          ? "Profil, bearbetningar och nominell förbandspassning är kontrollerade i CAD."
+          : "Konturen visas i ritningen. Förband och bearbetningar mot profilen är ej verifierade."}
       </p>}
       <label>
         Ritningsyta{" "}
@@ -967,9 +969,9 @@ export function MeasuredRegister({
                 </p>
               ))}
             <small>
-              Rektangulära tappar, fickor, urtag och falsar är subtraherade.
-              Runda hål och slitsar redovisas i delritningarna och är inte
-              subtraherade vid volymkontrollen.
+              {report.geometry_method === "exact_cad"
+                ? "CAD-kontrollen använder bearbetade solider med hål, slitsar och urtag. 3D-vyn är en förenklad översikt; STEP innehåller den färdiga geometrin."
+                : "Rektangulära tappar, fickor, urtag och falsar är subtraherade. Runda hål och slitsar redovisas i delritningarna och är inte subtraherade vid volymkontrollen."}
             </small>
           </details>
           <small>

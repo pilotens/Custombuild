@@ -424,6 +424,28 @@ def all_cases():
                 "En radie 1 µm över halva bredden avvisas; originalet går att läsa igen.",
             ),
         ),
+        "constructed-trestle": (
+            Order(
+                "Bockbord B1 med automatiska förband",
+                "13 delar, 29 kopplade förband och 79 bearbetningar skapas.",
+            ),
+            Order(
+                "Stor skiva med högre centrisk provlast",
+                "Skivtjockleken ökas automatiskt; CAD verifierar varje förband.",
+            ),
+            Order(
+                "Felmonterat ben i bearbetad konstruktion",
+                "CAD stoppar kollisionen; rättat arbetsprov granskas igen.",
+            ),
+            Order(
+                "Borrningar genom PDF, DXF och bearbetad STEP",
+                "78 DXF-vyer, 13 återimporterade STEP-delar och fem bevarade pilotborrningar.",
+            ),
+            Order(
+                "Hundratusen newton och bord utan bredd",
+                "Omöjliga indata stoppas utan tyst klippning; giltigt arbetsprov kan återskapas.",
+            ),
+        ),
         **{f"studio-{key}": studio_orders(key, product) for key, product in STUDIO.items()},
     }
     return [

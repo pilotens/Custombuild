@@ -29,7 +29,7 @@ Point = tuple[Coord, Coord, Coord]
 Size = tuple[Measure, Measure, Measure]
 Bounds = tuple[float, float, float, float, float, float]
 Face = Literal["left", "right", "front", "back", "bottom", "top"]
-Shape = Literal["drill", "slot", "pocket", "tenon", "notch"]
+Shape = Literal["drill", "slot", "round_slot", "pocket", "tenon", "notch"]
 NORMAL = {
     "left": (0, -1),
     "right": (0, 1),
@@ -95,7 +95,7 @@ class MeasuredEnd(FrozenModel):
 
 class MeasuredJoint(FrozenModel):
     id: Key
-    kind: Literal["blind_tenon", "dowel", "screw"]
+    kind: Literal["blind_tenon", "dowel", "screw", "through_bolt"]
     a: MeasuredEnd
     b: MeasuredEnd
     source: Text
@@ -103,6 +103,12 @@ class MeasuredJoint(FrozenModel):
     fittings: tuple[Key, ...] = Field(default=(), max_length=10)
     interface_gap_um: int = Field(default=0, strict=True, ge=0, le=50_000)
     head_allowance_um: int = Field(default=0, strict=True, ge=0, le=50_000)
+    head_recess_um: int | None = Field(
+        default=None, strict=True, ge=0, le=200_000, exclude_if=lambda value: value is None
+    )
+    nut_recess_um: int | None = Field(
+        default=None, strict=True, ge=0, le=50_000, exclude_if=lambda value: value is None
+    )
     diameter_um: Measure | None = None
     length_um: Measure | None = None
 
@@ -165,6 +171,9 @@ class MeasuredReport(FrozenModel):
     stock_checks: tuple[StockCheck, ...] = ()
     installation: InstallationCheck | None = None
     unreviewed_profile_parts: tuple[str, ...] = ()
+    geometry_method: Literal["exact_cad"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     physical_cutting_authorized: Literal[False] = False
 
 
@@ -313,6 +322,13 @@ def _joint(
     ) -> JointCheck:
         return JointCheck(
             id=joint.id, state=state, reason=why, offset_um=offset, depth_reserve_um=reserve
+        )
+
+    if joint.kind == "through_bolt" or joint.head_recess_um or joint.nut_recess_um:
+        return result(
+            "unresolved",
+            "Bult eller försänkt infästning kräver den exakta "
+            "CAD-kontrollen inklusive kvarvarande material och beslagets volym.",
         )
 
     a, b = parts.get(joint.a.part), parts.get(joint.b.part)
@@ -513,6 +529,16 @@ def _bearing(
     )
 
 
+def measured_assembly_hash(assembly: MeasuredAssembly) -> str:
+    """Shared receipt identity, preserving files predating room/backing metadata."""
+    canonical = assembly.model_dump(mode="json")
+    if assembly.room is None:
+        canonical.pop("room")
+    if assembly.backing is None:
+        canonical.pop("backing")
+    return content_hash(canonical)
+
+
 def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
     parts = {p.id: p for p in assembly.parts}
     issues: dict[str, list[str]] = {p.id: [] for p in assembly.parts}
@@ -681,10 +707,6 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
                     if key in resting
                     else "Delen saknar passande registrerade förband och upplag till andra delar."
                 )
-    canonical = assembly.model_dump(mode="json")
-    if assembly.room is None:
-        # Roomless files retain their previous identities and printed receipts.
-        canonical.pop("room")
     back_checks: tuple[BackCoverage, ...] = ()
     unknown: set[str] = set()
     if assembly.backing:
@@ -695,12 +717,9 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
         }
         unknown = set(assembly.backing.part_ids).difference(backs)
         back_checks = review_backing(assembly.backing, backs, unknown)
-    else:
-        # Keep receipts from files predating optional rear coverage reproducible.
-        canonical.pop("backing")
     return MeasuredReport(
         assembly=assembly,
-        assembly_sha256=content_hash(canonical),
+        assembly_sha256=measured_assembly_hash(assembly),
         back_coverage=back_checks,
         fastener_interferences=interferences,
         stock_checks=tuple(review_stock(p) for p in assembly.parts),

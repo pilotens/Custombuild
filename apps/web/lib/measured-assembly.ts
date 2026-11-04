@@ -21,6 +21,7 @@ export const cutNames: Record<string, string> = {
   drill: "Borrning",
   pocket: "Ficka / tapphål",
   slot: "Slits / fönster",
+  round_slot: "Slits med rundade ändar",
   tenon: "Tapp",
   notch: "Urtag / fals",
 };
@@ -53,6 +54,13 @@ export function measuredViews(piece: MeasuredPiece) {
     if (!groups.has(key))
       groups.set(key, { face: op.face, axes: op.axes, cuts: [] });
     groups.get(key)!.cuts.push(op);
+    if (op.through) {
+      const opposite: Record<string, string> = { left: "right", right: "left", front: "back", back: "front", top: "bottom", bottom: "top" };
+      const exitFace = opposite[op.face]!;
+      const exitKey = exitFace + "-" + op.axes;
+      if (!groups.has(exitKey)) groups.set(exitKey, { face: exitFace, axes: op.axes, cuts: [] });
+      groups.get(exitKey)!.cuts.push(op);
+    }
   }
   const n = piece.size_um.indexOf(Math.min(...piece.size_um));
   const primary = [
@@ -90,11 +98,12 @@ export function measuredFaceSvg(
         y = c.v_um / 1000,
         a = c.width_um / 1000,
         b = c.height_um / 1000;
-      const attrs = `data-feature-id="${esc(c.id)}" data-shape="${esc(c.shape)}" stroke="${c.transfer ? "#9c6520" : "#134f4d"}"`;
+      const exit = c.face !== view.face;
+      const attrs = `data-feature-id="${esc(c.id)}" data-shape="${esc(c.shape)}" ${exit ? 'data-reference-exit="true" stroke-dasharray="2 1"' : ""} stroke="${c.transfer ? "#9c6520" : "#134f4d"}"`;
       const label = `<title>${esc(c.id)} · ${esc(cutNames[c.shape]!)} · U ${measuredMm(c.u_um)} / V ${measuredMm(c.v_um)} · ${measuredMm(c.depth_um)} mm</title>`;
       if (c.shape === "drill")
         return `<circle ${attrs} cx="${x}" cy="${y}" r="${a / 2}" fill="none">${label}</circle>`;
-      return `<rect ${attrs} x="${x - a / 2}" y="${y - b / 2}" width="${a}" height="${b}" fill="${c.shape === "tenon" ? "#b8ddca" : "#f2e5bc"}">${label}</rect>`;
+      return `<rect ${attrs} x="${x - a / 2}" y="${y - b / 2}" width="${a}" height="${b}" ${c.shape === "round_slot" ? `rx="${Math.min(a,b)/2}"` : ""} fill="${c.shape === "tenon" ? "#b8ddca" : "#f2e5bc"}">${label}</rect>`;
     })
     .join("");
   const outline = profileSvgOutline(piece, view.axes) ?? `<rect width="${w}" height="${h}" fill="#fffefa" stroke="#473e31"/>`;

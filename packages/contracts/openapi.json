@@ -4608,6 +4608,25 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HardwareLine": {
+        "additionalProperties": false,
+        "properties": {
+          "quantity": {
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "specification": {
+            "title": "Specification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "specification",
+          "quantity"
+        ],
+        "title": "HardwareLine",
+        "type": "object"
+      },
       "HardwareProfile": {
         "additionalProperties": false,
         "properties": {
@@ -6352,6 +6371,19 @@
             "title": "Head Allowance Um",
             "type": "integer"
           },
+          "head_recess_um": {
+            "anyOf": [
+              {
+                "maximum": 200000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Recess Um"
+          },
           "id": {
             "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
             "title": "Id",
@@ -6368,7 +6400,8 @@
             "enum": [
               "blind_tenon",
               "dowel",
-              "screw"
+              "screw",
+              "through_bolt"
             ],
             "title": "Kind",
             "type": "string"
@@ -6385,6 +6418,19 @@
               }
             ],
             "title": "Length Um"
+          },
+          "nut_recess_um": {
+            "anyOf": [
+              {
+                "maximum": 50000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nut Recess Um"
           },
           "source": {
             "maxLength": 600,
@@ -6474,6 +6520,7 @@
             "enum": [
               "drill",
               "slot",
+              "round_slot",
               "pocket",
               "tenon",
               "notch"
@@ -6790,6 +6837,18 @@
             },
             "title": "Fastener Interferences",
             "type": "array"
+          },
+          "geometry_method": {
+            "anyOf": [
+              {
+                "const": "exact_cad",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Geometry Method"
           },
           "installation": {
             "anyOf": [
@@ -7770,6 +7829,67 @@
         "title": "PropertySource",
         "type": "object"
       },
+      "PurchaseBlank": {
+        "additionalProperties": false,
+        "properties": {
+          "finished_blank_lbt_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Finished Blank Lbt Um",
+            "type": "array"
+          },
+          "grain": {
+            "title": "Grain",
+            "type": "string"
+          },
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "purchase_min_lbt_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Purchase Min Lbt Um",
+            "type": "array"
+          },
+          "supplier_stock_confirmed": {
+            "const": false,
+            "default": false,
+            "title": "Supplier Stock Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "part_id",
+          "finished_blank_lbt_um",
+          "purchase_min_lbt_um",
+          "grain"
+        ],
+        "title": "PurchaseBlank",
+        "type": "object"
+      },
       "RearAccess": {
         "additionalProperties": false,
         "properties": {
@@ -8721,6 +8841,266 @@
           }
         },
         "title": "TableIntent",
+        "type": "object"
+      },
+      "TrestleConstruction": {
+        "additionalProperties": false,
+        "properties": {
+          "assembly": {
+            "$ref": "#/components/schemas/MeasuredAssembly"
+          },
+          "assembly_sequence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assembly Sequence",
+            "type": "array"
+          },
+          "assembly_sha256": {
+            "title": "Assembly Sha256",
+            "type": "string"
+          },
+          "construction_sha256": {
+            "title": "Construction Sha256",
+            "type": "string"
+          },
+          "hardware": {
+            "items": {
+              "$ref": "#/components/schemas/HardwareLine"
+            },
+            "title": "Hardware",
+            "type": "array"
+          },
+          "outstanding_acceptance": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outstanding Acceptance",
+            "type": "array"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "purchase_blanks": {
+            "items": {
+              "$ref": "#/components/schemas/PurchaseBlank"
+            },
+            "title": "Purchase Blanks",
+            "type": "array"
+          },
+          "request": {
+            "$ref": "#/components/schemas/TrestleRequest"
+          },
+          "schema_version": {
+            "const": "custombuild.trestle-construction.v1",
+            "default": "custombuild.trestle-construction.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sizing": {
+            "$ref": "#/components/schemas/TrestleSizing"
+          }
+        },
+        "required": [
+          "request",
+          "sizing",
+          "assembly",
+          "assembly_sha256",
+          "construction_sha256",
+          "purchase_blanks",
+          "hardware",
+          "assembly_sequence",
+          "outstanding_acceptance"
+        ],
+        "title": "TrestleConstruction",
+        "type": "object"
+      },
+      "TrestleExportAccepted": {
+        "properties": {
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "job_id"
+        ],
+        "title": "TrestleExportAccepted",
+        "type": "object"
+      },
+      "TrestleExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_construction_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Construction Sha256",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "format": "uuid",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/TrestleRequest"
+          }
+        },
+        "required": [
+          "request",
+          "expected_construction_sha256",
+          "idempotency_key"
+        ],
+        "title": "TrestleExportRequest",
+        "type": "object"
+      },
+      "TrestleRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "central_load_n": {
+            "default": 300,
+            "maximum": 1500.0,
+            "minimum": 100.0,
+            "title": "Central Load N",
+            "type": "integer"
+          },
+          "dimensions_confirmed": {
+            "default": false,
+            "title": "Dimensions Confirmed",
+            "type": "boolean"
+          },
+          "height_mm": {
+            "default": 750,
+            "maximum": 800.0,
+            "minimum": 700.0,
+            "title": "Height Mm",
+            "type": "integer"
+          },
+          "length_mm": {
+            "default": 2200,
+            "maximum": 2600.0,
+            "minimum": 1800.0,
+            "title": "Length Mm",
+            "type": "integer"
+          },
+          "material": {
+            "const": "american-black-walnut",
+            "default": "american-black-walnut",
+            "title": "Material",
+            "type": "string"
+          },
+          "moisture_max_pct": {
+            "default": 12,
+            "maximum": 14.0,
+            "minimum": 7.0,
+            "title": "Moisture Max Pct",
+            "type": "integer"
+          },
+          "moisture_min_pct": {
+            "default": 6,
+            "maximum": 13.0,
+            "minimum": 6.0,
+            "title": "Moisture Min Pct",
+            "type": "integer"
+          },
+          "width_mm": {
+            "default": 950,
+            "maximum": 1100.0,
+            "minimum": 850.0,
+            "title": "Width Mm",
+            "type": "integer"
+          }
+        },
+        "title": "TrestleRequest",
+        "type": "object"
+      },
+      "TrestleSizing": {
+        "additionalProperties": false,
+        "properties": {
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "bending_stress_mpa": {
+            "title": "Bending Stress Mpa",
+            "type": "number"
+          },
+          "deflection_target_mm": {
+            "title": "Deflection Target Mm",
+            "type": "number"
+          },
+          "elastic_modulus_mpa": {
+            "title": "Elastic Modulus Mpa",
+            "type": "number"
+          },
+          "load_rating_verified": {
+            "const": false,
+            "default": false,
+            "title": "Load Rating Verified",
+            "type": "boolean"
+          },
+          "mounting_slot_length_mm": {
+            "title": "Mounting Slot Length Mm",
+            "type": "integer"
+          },
+          "mounting_travel_each_way_mm": {
+            "title": "Mounting Travel Each Way Mm",
+            "type": "number"
+          },
+          "predicted_deflection_mm": {
+            "title": "Predicted Deflection Mm",
+            "type": "number"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "span_mm": {
+            "title": "Span Mm",
+            "type": "integer"
+          },
+          "strip_width_mm": {
+            "const": 300,
+            "default": 300,
+            "title": "Strip Width Mm",
+            "type": "integer"
+          },
+          "top_thickness_mm": {
+            "title": "Top Thickness Mm",
+            "type": "integer"
+          },
+          "width_change_mm": {
+            "title": "Width Change Mm",
+            "type": "number"
+          }
+        },
+        "required": [
+          "top_thickness_mm",
+          "span_mm",
+          "elastic_modulus_mpa",
+          "predicted_deflection_mm",
+          "deflection_target_mm",
+          "bending_stress_mpa",
+          "width_change_mm",
+          "mounting_travel_each_way_mm",
+          "mounting_slot_length_mm",
+          "assumptions",
+          "sources"
+        ],
+        "title": "TrestleSizing",
         "type": "object"
       },
       "TrimProfile": {
@@ -9858,6 +10238,145 @@
           }
         ],
         "summary": "Template Capabilities"
+      }
+    },
+    "/v1/constructions/trestle-table": {
+      "post": {
+        "operationId": "trestle_construction_v1_constructions_trestle_table_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrestleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrestleConstruction"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Trestle Construction"
+      }
+    },
+    "/v1/constructions/trestle-table/exports": {
+      "post": {
+        "operationId": "export_trestle_v1_constructions_trestle_table_exports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TrestleExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrestleExportAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Trestle"
+      }
+    },
+    "/v1/constructions/trestle-table/projects/{project_id}/exports/{job_id}/inspection": {
+      "get": {
+        "operationId": "inspect_trestle_v1_constructions_trestle_table_projects__project_id__exports__job_id__inspection_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasuredReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect Trestle"
       }
     },
     "/v1/designs/autofix": {

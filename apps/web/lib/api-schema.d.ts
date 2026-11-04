@@ -98,6 +98,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/constructions/trestle-table": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Trestle Construction */
+        post: operations["trestle_construction_v1_constructions_trestle_table_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/constructions/trestle-table/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Trestle */
+        post: operations["export_trestle_v1_constructions_trestle_table_exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/constructions/trestle-table/projects/{project_id}/exports/{job_id}/inspection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspect Trestle */
+        get: operations["inspect_trestle_v1_constructions_trestle_table_projects__project_id__exports__job_id__inspection_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/designs/autofix": {
         parameters: {
             query?: never;
@@ -2613,6 +2664,13 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
+        /** HardwareLine */
+        HardwareLine: {
+            /** Quantity */
+            quantity: number;
+            /** Specification */
+            specification: string;
+        };
         /** HardwareProfile */
         HardwareProfile: {
             /**
@@ -3288,6 +3346,8 @@ export interface components {
              * @default 0
              */
             head_allowance_um: number;
+            /** Head Recess Um */
+            head_recess_um?: number | null;
             /** Id */
             id: string;
             /**
@@ -3299,9 +3359,11 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "blind_tenon" | "dowel" | "screw";
+            kind: "blind_tenon" | "dowel" | "screw" | "through_bolt";
             /** Length Um */
             length_um?: number | null;
+            /** Nut Recess Um */
+            nut_recess_um?: number | null;
             /** Source */
             source: string;
         };
@@ -3335,7 +3397,7 @@ export interface components {
              * Shape
              * @enum {string}
              */
-            shape: "drill" | "slot" | "pocket" | "tenon" | "notch";
+            shape: "drill" | "slot" | "round_slot" | "pocket" | "tenon" | "notch";
             /** Source */
             source: string;
             /**
@@ -3432,6 +3494,8 @@ export interface components {
              * @default []
              */
             fastener_interferences: components["schemas"]["FastenerInterference"][];
+            /** Geometry Method */
+            geometry_method?: "exact_cad" | null;
             installation?: components["schemas"]["InstallationCheck"] | null;
             /** Issues */
             issues: {
@@ -3809,6 +3873,31 @@ export interface components {
             uri?: string | null;
             /** Valid From */
             valid_from?: string | null;
+        };
+        /** PurchaseBlank */
+        PurchaseBlank: {
+            /** Finished Blank Lbt Um */
+            finished_blank_lbt_um: [
+                number,
+                number,
+                number
+            ];
+            /** Grain */
+            grain: string;
+            /** Part Id */
+            part_id: string;
+            /** Purchase Min Lbt Um */
+            purchase_min_lbt_um: [
+                number,
+                number,
+                number
+            ];
+            /**
+             * Supplier Stock Confirmed
+             * @default false
+             * @constant
+             */
+            supplier_stock_confirmed: false;
         };
         /** RearAccess */
         RearAccess: {
@@ -4225,6 +4314,135 @@ export interface components {
              * @default 1000000
              */
             width_um: number;
+        };
+        /** TrestleConstruction */
+        TrestleConstruction: {
+            assembly: components["schemas"]["MeasuredAssembly"];
+            /** Assembly Sequence */
+            assembly_sequence: string[];
+            /** Assembly Sha256 */
+            assembly_sha256: string;
+            /** Construction Sha256 */
+            construction_sha256: string;
+            /** Hardware */
+            hardware: components["schemas"]["HardwareLine"][];
+            /** Outstanding Acceptance */
+            outstanding_acceptance: string[];
+            /**
+             * Physical Cutting Authorized
+             * @default false
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /** Purchase Blanks */
+            purchase_blanks: components["schemas"]["PurchaseBlank"][];
+            request: components["schemas"]["TrestleRequest"];
+            /**
+             * Schema Version
+             * @default custombuild.trestle-construction.v1
+             * @constant
+             */
+            schema_version: "custombuild.trestle-construction.v1";
+            sizing: components["schemas"]["TrestleSizing"];
+        };
+        /** TrestleExportAccepted */
+        TrestleExportAccepted: {
+            /** Job Id */
+            job_id: string;
+            /** Project Id */
+            project_id: string;
+        };
+        /** TrestleExportRequest */
+        TrestleExportRequest: {
+            /** Expected Construction Sha256 */
+            expected_construction_sha256: string;
+            /**
+             * Idempotency Key
+             * Format: uuid
+             */
+            idempotency_key: string;
+            request: components["schemas"]["TrestleRequest"];
+        };
+        /** TrestleRequest */
+        TrestleRequest: {
+            /**
+             * Central Load N
+             * @default 300
+             */
+            central_load_n: number;
+            /**
+             * Dimensions Confirmed
+             * @default false
+             */
+            dimensions_confirmed: boolean;
+            /**
+             * Height Mm
+             * @default 750
+             */
+            height_mm: number;
+            /**
+             * Length Mm
+             * @default 2200
+             */
+            length_mm: number;
+            /**
+             * Material
+             * @default american-black-walnut
+             * @constant
+             */
+            material: "american-black-walnut";
+            /**
+             * Moisture Max Pct
+             * @default 12
+             */
+            moisture_max_pct: number;
+            /**
+             * Moisture Min Pct
+             * @default 6
+             */
+            moisture_min_pct: number;
+            /**
+             * Width Mm
+             * @default 950
+             */
+            width_mm: number;
+        };
+        /** TrestleSizing */
+        TrestleSizing: {
+            /** Assumptions */
+            assumptions: string[];
+            /** Bending Stress Mpa */
+            bending_stress_mpa: number;
+            /** Deflection Target Mm */
+            deflection_target_mm: number;
+            /** Elastic Modulus Mpa */
+            elastic_modulus_mpa: number;
+            /**
+             * Load Rating Verified
+             * @default false
+             * @constant
+             */
+            load_rating_verified: false;
+            /** Mounting Slot Length Mm */
+            mounting_slot_length_mm: number;
+            /** Mounting Travel Each Way Mm */
+            mounting_travel_each_way_mm: number;
+            /** Predicted Deflection Mm */
+            predicted_deflection_mm: number;
+            /** Sources */
+            sources: string[];
+            /** Span Mm */
+            span_mm: number;
+            /**
+             * Strip Width Mm
+             * @default 300
+             * @constant
+             */
+            strip_width_mm: 300;
+            /** Top Thickness Mm */
+            top_thickness_mm: number;
+            /** Width Change Mm */
+            width_change_mm: number;
         };
         /**
          * TrimProfile
@@ -4701,6 +4919,104 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    trestle_construction_v1_constructions_trestle_table_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TrestleRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrestleConstruction"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_trestle_v1_constructions_trestle_table_exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TrestleExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrestleExportAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_trestle_v1_constructions_trestle_table_projects__project_id__exports__job_id__inspection_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasuredReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

@@ -27,7 +27,7 @@ def reference_solid(part: MeasuredPart) -> Any:
     dimensions = [n / 1000 for n in part.size_um]
     profile = part.profile
     if profile is None:
-        solid = cq.Solid.makeBox(*dimensions)
+        solid = cq.Solid.makeBox(dimensions[0], dimensions[1], dimensions[2])
     else:
         u, v = ("xyz".index(a) for a in profile.axes)
         n = next(i for i in range(3) if i not in (u, v))
@@ -37,6 +37,7 @@ def reference_solid(part: MeasuredPart) -> Any:
             p[u], p[v] = a, b
             return cq.Vector(*p)
 
+        wire: Any
         if isinstance(profile, ConvexProfile):
             wire = cq.Wire.makePolygon(
                 [point(a / 1000, b / 1000) for a, b in profile.points_um], close=True
