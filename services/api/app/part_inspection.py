@@ -11,6 +11,7 @@ from custombuild_domain.measured_assembly import (
 )
 from custombuild_domain.models import DesignResult
 from custombuild_domain.rear_coverage import ReferenceConstruction
+from custombuild_domain.trestle_example import trestle_example
 from custombuild_manufacturing.adapters import adapt_domain_part
 from custombuild_manufacturing.furniture_profiles import furniture_stock_assessment
 from custombuild_manufacturing.nesting import blank_orientations, stock_orientations
@@ -163,3 +164,8 @@ def measured_assembly(payload: MeasuredAssembly, principal: PrincipalDep) -> Mea
         return review_measured_assembly(payload)
     except ValueError as exc:
         raise _validation_error(exc) from exc
+
+
+@router.get("/measured-assemblies/examples/trestle-table", response_model=MeasuredAssembly)
+def trestle_table_example(principal: PrincipalDep) -> MeasuredAssembly:
+    return trestle_example()

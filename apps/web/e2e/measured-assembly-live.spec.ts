@@ -1,6 +1,22 @@
 import { expect, test } from "@playwright/test";
 import { sampleMeasuredWork } from "../lib/measured-assembly";
 
+test("bockbordets formprofiler och öppna förband följer med till delbladet", async ({ page }) => {
+  test.skip(process.env.PLAYWRIGHT_REAL_API !== "1", "Requires the live assembly API");
+  await page.goto("/assembly");
+  await page.getByRole("button", {name:"Prova ett bockbord"}).click();
+  await expect(page.getByText(/9 formprofiler visas/)).toBeVisible();
+  await page.getByLabel("Välj del i ritningen").selectOption("LEG-L-F");
+  const sheet=page.getByRole("article",{name:"Måttsatt delblad"});
+  await expect(sheet.getByText(/Sned profil i YZ, 4 hörn/)).toBeVisible();
+  await expect(sheet.getByLabel("Ritningsyta").locator("option")).toHaveCount(6);
+  const download=page.waitForEvent("download");
+  await sheet.getByRole("button",{name:"Hämta utskrivbart delblad med alla ytor"}).click();
+  expect((await download).suggestedFilename()).toBe("LEG-L-F-delblad.html");
+  await page.getByLabel("Välj del i ritningen").selectOption("TOP");
+  await expect(sheet.getByText(/Hörnradie 60 mm/)).toBeVisible();
+});
+
 test("en ändrad tapp kan granskas, exporteras och återställas", async ({
   page,
 }) => {

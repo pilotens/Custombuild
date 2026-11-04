@@ -8,6 +8,7 @@ from .measured import exercise_measured
 from .modules import exercise_modules
 from .studio import exercise_studio
 from .support import Evidence, response_json
+from .trestle import exercise_trestle
 
 
 def test_catalog_covers_every_available_product_and_level(customer):
@@ -20,7 +21,13 @@ def test_catalog_covers_every_available_product_and_level(customer):
         p for p, family in FAMILIES.items() if family == "dining_table"
     }
     cases = all_cases()
-    products = {*FAMILIES, "walnut-modules", "measured-frame", *(f"studio-{key}" for key in STUDIO)}
+    products = {
+        *FAMILIES,
+        "walnut-modules",
+        "measured-frame",
+        "reference-trestle",
+        *(f"studio-{key}" for key in STUDIO),
+    }
     expected = {(product, level): 1 for product in products for level in LEVELS}
     assert Counter((c.product, c.level) for c in cases) == expected
     assert len({c.order.brief for c in cases}) == len(cases)
@@ -34,7 +41,9 @@ def test_product_work_order(case, customer, monkeypatch, tmp_path, record_proper
     record_property("acceptance", case.order.expected)
     e = Evidence(record_property)
     e.note("inputs", case.order.inputs)
-    if case.product == "measured-frame":
+    if case.product == "reference-trestle":
+        exercise_trestle(customer, case, e, tmp_path)
+    elif case.product == "measured-frame":
         exercise_measured(customer, case, e)
     elif case.product == "walnut-modules":
         exercise_modules(customer, case, e)

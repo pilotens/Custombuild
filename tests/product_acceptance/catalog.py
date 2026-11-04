@@ -402,6 +402,28 @@ def all_cases():
         **FURNITURE,
         "walnut-modules": WALNUT,
         "measured-frame": MEASURED,
+        "reference-trestle": (
+            Order(
+                "Bockbord med individuella referensdelar",
+                "13 delar, nio formprofiler och uttryckligt ofullständiga förband.",
+            ),
+            Order(
+                "Lutande ben och rundad skiva i CAD",
+                "Analytiska volymer och 78 kontrollerade delpar utan materialöverlapp.",
+            ),
+            Order(
+                "Flytta en tvärbalk in i benet",
+                "Exakt CAD hittar kollisionen; rättad position kontrolleras igen.",
+            ),
+            Order(
+                "13 profiler genom STEP och råformat",
+                "Varje STEP återimporteras; ett råämne 1 µm för kort avvisas och rättas.",
+            ),
+            Order(
+                "Omöjlig hörnradie i bockbordets skiva",
+                "En radie 1 µm över halva bredden avvisas; originalet går att läsa igen.",
+            ),
+        ),
         **{f"studio-{key}": studio_orders(key, product) for key, product in STUDIO.items()},
     }
     return [

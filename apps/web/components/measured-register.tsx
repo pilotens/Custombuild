@@ -20,6 +20,7 @@ import {
 import css from "./measured-register.module.css";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import { MeasuredStockEdit } from "./measured-planning";
+import { orderSceneFaces, profileFaces } from "@/lib/measured-profiles";
 
 const panelFaces = [
   [0, 1, 3, 2],
@@ -141,6 +142,15 @@ function MeasuredScene({
       )
         continue;
       const origin = mode === "alone" ? [0, 0, 0] : part.origin_um!;
+      const profile = profileFaces(part);
+      if (profile) {
+        profile.forEach((face, n) => {
+          const points = face.map(p => project(p.map((v,axis)=>(v+origin[axis]!)/1000)));
+          faces.push({points,depth:points.reduce((s,p)=>s+p[2]!,0)/points.length,
+            id:part.id,shade:n%6,key:part.id+"-profile-"+n});
+        });
+        continue;
+      }
       for (const [index, box] of (report.cells[part.id] ?? []).entries()) {
         const verts = Array.from({ length: 8 }, (_, i) =>
           project(
@@ -163,7 +173,8 @@ function MeasuredScene({
         }
       }
     }
-    faces.sort((x, y) => y.depth - x.depth);
+    if (report.assembly.parts.some(p=>p.profile)) orderSceneFaces(faces, pitch);
+    else faces.sort((x,y)=>y.depth-x.depth);
     let minX = Infinity,
       maxX = -Infinity,
       minY = Infinity,
@@ -306,6 +317,12 @@ function PieceDetail({
         </dd>
       </dl>
       {piece.note && <p>{piece.note}</p>}
+      {piece.profile && <p className={css.attention}>
+        {piece.profile.kind === "rounded_rectangle"
+          ? `Hörnradie ${mm(piece.profile.radius_um)} mm.`
+          : `Sned profil i ${piece.profile.axes.toUpperCase()}, ${piece.profile.points_um.length} hörn.`}
+        {" "}Konturen visas i ritningen. Förband och bearbetningar mot profilen är ej verifierade.
+      </p>}
       <label>
         Ritningsyta{" "}
         <select value={viewIx} onChange={(e) => setViewIx(+e.target.value)}>

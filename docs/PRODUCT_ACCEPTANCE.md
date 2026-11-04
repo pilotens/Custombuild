@@ -23,7 +23,7 @@ Varje körning skriver ett svenskt arbetsprotokoll i `test-results/product-accep
 | Väldigt svårt | Ett sparat kundfall följs hela vägen genom produktens flöde. Verktygets sex möbelprofiler kontrolleras i nedladdade verkstadsfiler. Studions mallar provas med två redigeringar av samma utkast. | `very-hard` |
 | Omöjligt | Provet godkänns när systemet stoppar exakt den otillåtna åtgärden med rätt orsak och kontrollerbart slutläge. | `impossible` |
 
-`LEVEL` accepterar även `lätt`, `medel`, `svårt`, `väldigt-svårt` och `omöjligt`. Använd `PRODUCT` från tabellen för att köra en enda produkt. Utan filter körs 70 arbetsprov och en separat kontroll av att matrisen täcker produktkatalogerna.
+`LEVEL` accepterar även `lätt`, `medel`, `svårt`, `väldigt-svårt` och `omöjligt`. Använd `PRODUCT` från tabellen för att köra en enda produkt. Utan filter körs 75 arbetsprov och en separat kontroll av att matrisen täcker produktkatalogerna.
 
 ## Produkter och avgörande kontroller
 
@@ -98,3 +98,24 @@ utan omkastning av fiberriktningen. Saknade format redovisas separat.
 Det väldigt svåra monteringsprovet kontrollerar att en stomme kan rymmas
 stående samtidigt som resningen stoppas, samt att 1 µm för tunn råvara
 upptäcks. Ett omprov måste återge ursprungligt resultat när måtten återställs.
+## Referensbord med bockunderrede
+
+`reference-trestle` lägger till fem arbetsprov för ett föreslaget bord på
+2200 × 950 × 750 mm. Det ger 75 arbetsprov för 15 profiler, plus katalogkontrollen.
+API-exemplet `/v1/measured-assemblies/examples/trestle-table` innehåller 13 separata
+delar, nio explicita formprofiler och inga påhittade borrningar eller förband.
+I `/assembly` öppnas det med **Prova ett bockbord**. Sneda konturer och exakta
+hörnradier följer med till delritningarna. Provets mått och dolda konstruktion
+är antaganden, inte uppmätta originaldata.
+
+De fem proven kontrollerar delidentiteter, analytiska volymer, 78 CAD-delpar,
+en avsiktlig materialkollision följd av rättning, återimport av 13 STEP-delar,
+för kort råformat följt av rättning och en omöjlig hörnradie.
+Referensadaptern avvisar bearbetningar och okända dellägen i stället för att
+tappa dem vid export. Den ingår inte i den ordinarie tillverkningsexporten.
+
+Formprofiler visas i delgranskningen men kvalificeras inte av dess rätvinkliga
+förbandskontroll. Rapporten listar uttryckligen de berörda delarna. Ett tomt
+överlappsresultat i denna kontroll betyder därför inte att hela referensmodellen
+är kollisionsgranskad. CAD-provet ovan är en separat kontroll av just provets
+obearbetade kroppar. Bärförmåga, trädata, fogar och skivinfästning är olösta.

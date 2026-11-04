@@ -1710,6 +1710,10 @@ export class CustombuildApiClient {
     });
   }
 
+  async measuredTrestleExample() {
+    return this.request<components["schemas"]["MeasuredAssembly"]>("/v1/measured-assemblies/examples/trestle-table", {method:"GET"});
+  }
+
   async inspectFurniturePart(workspace: FurnitureWorkspace, partId: string, hash: string, signal: AbortSignal) {
     const result = await this.request<PartInspection>("/v1/furniture/inspect-part", {
       method: "POST", signal, body: JSON.stringify({ workspace, part_id: partId, expected_design_hash: hash }),

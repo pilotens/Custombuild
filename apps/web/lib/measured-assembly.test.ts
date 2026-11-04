@@ -9,6 +9,10 @@ import {
 } from "./measured-assembly";
 
 describe("measured working drawings", () => {
+  it("includes every face of a rectangular member, including faces without holes", () => {
+    const part={...sampleMeasuredWork().parts[0]!,operations:[]};
+    expect(measuredViews(part).map(v=>v.face).sort()).toEqual(["back","bottom","front","left","right","top"]);
+  });
   it("keeps a drill's centre and half-micrometre radius on the stated face", () => {
     const part = sampleMeasuredWork().parts[0]!;
     const drill = {
@@ -45,6 +49,7 @@ describe("measured working drawings", () => {
       overlaps_truncated: false,
       fastener_interferences: [],
       stock_checks: [],
+      unreviewed_profile_parts: [],
       back_coverage: [],
       unresolved_back_parts: [],
       bearings: [],

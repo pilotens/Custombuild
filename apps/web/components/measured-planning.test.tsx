@@ -8,6 +8,7 @@ function report(): MeasuredResult {
     assembly: sampleMeasuredWork(), assembly_sha256: "a".repeat(64), cells: {}, issues: {},
     joints: [], bearings: [], overlaps: [], overlaps_truncated: false,
     fastener_interferences: [], back_coverage: [], unresolved_back_parts: [], stock_checks: [],
+    unreviewed_profile_parts: [],
     physical_cutting_authorized: false,
   };
 }

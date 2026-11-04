@@ -18,6 +18,7 @@ from .measured_installation import (
     review_installation,
     review_stock,
 )
+from .measured_profiles import Profile, check_profile_size
 from .models import FrozenModel
 
 Key = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")]
@@ -76,9 +77,12 @@ class MeasuredPart(FrozenModel):
     note: str = Field(default="", max_length=750)
     stock_lbt_um: Size | None = None
     operations: tuple[MeasuredOperation, ...] = Field(default=(), max_length=256)
+    profile: Profile | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def feature_keys(self) -> MeasuredPart:
+        if self.profile is not None:
+            check_profile_size(self.profile, self.size_um)
         if len({o.id for o in self.operations}) != len(self.operations):
             raise ValueError("Bearbetningarnas ID måste vara unika på delen.")
         return self
@@ -160,6 +164,7 @@ class MeasuredReport(FrozenModel):
     fastener_interferences: tuple[FastenerInterference, ...] = ()
     stock_checks: tuple[StockCheck, ...] = ()
     installation: InstallationCheck | None = None
+    unreviewed_profile_parts: tuple[str, ...] = ()
     physical_cutting_authorized: Literal[False] = False
 
 
@@ -518,7 +523,7 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
     for p in assembly.parts:
         blank: Bounds = (0, 0, 0, *p.size_um)
         pieces = [blank]
-        if sorted(p.size_um) != sorted(p.blank_lbt_um):
+        if p.profile is None and sorted(p.size_um) != sorted(p.blank_lbt_um):
             issues[p.id].append(
                 "Råmått och modellens omslutande mått avviker. Kontrollera orienteringen."
             )
@@ -528,6 +533,12 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
             issues[p.id].append("Råämnet ryms inte i angivet inköpsformat i ådringens riktning.")
         if p.origin_um is None:
             issues[p.id].append("Monteringsläge saknas. Delen kan granskas isolerad.")
+        if p.profile is not None:
+            issues[p.id].append(
+                "Formprofilen visas, men den rätvinkliga förbands- och kollisionskontrollen "
+                "omfattar inte denna del. Profilens bearbetningar och anslutningar "
+                "är ej verifierade."
+            )
         removed: list[Bounds] = []
         for op in p.operations:
             failure = _invalid(p, op)
@@ -561,7 +572,7 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
         cells[p.id] = tuple(pieces)
         if sum(map(len, cells.values())) > 20_000:
             raise ValueError("Arbetsritningen överskrider gränsen för geometrisk granskning.")
-        if p.origin_um is not None:
+        if p.origin_um is not None and p.profile is None:
             world[p.id] = (
                 _world(blank, p.origin_um),
                 tuple(_world(c, p.origin_um) for c in pieces),
@@ -596,6 +607,13 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
             )
         else:
             check = _joint(j, parts, bad)
+            if any(parts[e.part].profile is not None for e in (j.a, j.b) if e.part in parts):
+                check = JointCheck(
+                    id=j.id,
+                    state="unresolved",
+                    reason="Förband mot en formprofil är inte verifierat "
+                    "av den rätvinkliga granskaren.",
+                )
             transfer = any(
                 op.provenance == "transfer_template"
                 for end in (j.a, j.b)
@@ -687,6 +705,7 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
         fastener_interferences=interferences,
         stock_checks=tuple(review_stock(p) for p in assembly.parts),
         installation=review_installation(assembly, world),
+        unreviewed_profile_parts=tuple(p.id for p in assembly.parts if p.profile is not None),
         unresolved_back_parts=tuple(sorted(unknown)),
         cells=cells,
         issues={k: tuple(v) for k, v in issues.items() if v},

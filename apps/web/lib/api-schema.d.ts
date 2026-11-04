@@ -422,6 +422,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/measured-assemblies/examples/trestle-table": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Trestle Table Example */
+        get: operations["trestle_table_example_v1_measured_assemblies_examples_trestle_table_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/measured-assemblies/review": {
         parameters: {
             query?: never;
@@ -1370,6 +1387,26 @@ export interface components {
              * @default 800000
              */
             width_um: number;
+        };
+        /** ConvexProfile */
+        ConvexProfile: {
+            /**
+             * Axes
+             * @enum {string}
+             */
+            axes: "xy" | "xz" | "yz";
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "convex_prism";
+            /** Points Um */
+            points_um: [
+                number,
+                number
+            ][];
+            /** Source */
+            source: string;
         };
         /** CreatedFurnitureProject */
         CreatedFurnitureProject: {
@@ -3352,6 +3389,8 @@ export interface components {
                 number,
                 number
             ] | null;
+            /** Profile */
+            profile?: (components["schemas"]["ConvexProfile"] | components["schemas"]["RoundedProfile"]) | null;
             /** Size Um */
             size_um: [
                 number,
@@ -3423,6 +3462,11 @@ export interface components {
              * @default []
              */
             unresolved_back_parts: string[];
+            /**
+             * Unreviewed Profile Parts
+             * @default []
+             */
+            unreviewed_profile_parts: string[];
         };
         /** MeasuredRoom */
         MeasuredRoom: {
@@ -4034,6 +4078,23 @@ export interface components {
             stock_width_mm: number;
             /** Two Sided Registrations */
             two_sided_registrations?: components["schemas"]["WorkshopTwoSidedRegistration"][] | null;
+        };
+        /** RoundedProfile */
+        RoundedProfile: {
+            /**
+             * Axes
+             * @enum {string}
+             */
+            axes: "xy" | "xz" | "yz";
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "rounded_rectangle";
+            /** Radius Um */
+            radius_um: number;
+            /** Source */
+            source: string;
         };
         /**
          * ShelfMount
@@ -5290,6 +5351,26 @@ export interface operations {
                     "application/json": {
                         [key: string]: string;
                     };
+                };
+            };
+        };
+    };
+    trestle_table_example_v1_measured_assemblies_examples_trestle_table_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasuredAssembly"];
                 };
             };
         };

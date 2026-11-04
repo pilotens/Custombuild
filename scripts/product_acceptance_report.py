@@ -13,6 +13,11 @@ LEVELS = {
     "impossible": "Omöjligt",
 }
 MEASURES = {
+    "parts_profiles": "Separata delar/formprofiler",
+    "provisional_table_um": "Skivans provmått (µm)",
+    "reference_pairs_checked": "Delpar kontrollerade med CAD",
+    "reference_collision": "Avsiktligt fel: faktisk CAD-kollision",
+    "reference_STEP_parts": "Referensdelar verifierade genom STEP",
     "inspected_parts": "Granskade enskilda delar",
     "verified_face_drawings": "Sidritningar jämförda med export",
     "parts_joints": "Delar/förband",

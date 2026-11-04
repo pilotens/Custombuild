@@ -87,12 +87,19 @@ export function MeasuredWorkbench({
         <button onClick={() => void load(async () => sampleMeasuredWork())}>
           Prova ett ramhörn
         </button>
+        <button onClick={() => void load(() => new CustombuildApiClient(
+          runtimeConfig.apiUrl, undefined, runtimeConfig.developmentToken,
+        ).measuredTrestleExample())}>Prova ett bockbord</button>
       </div>
       {loading && <p role="status">Granskar delarna …</p>}
       {error && <p role="alert">{error}</p>}
       {report && (
         <>
           <h2>{report.assembly.title}</h2>
+          {(report.unreviewed_profile_parts?.length ?? 0) > 0 && <p role="status" className={css.attention}>
+            {report.unreviewed_profile_parts.length} formprofiler visas i modellen men ingår inte
+            i den rätvinkliga förbands- och kollisionskontrollen. Modellens montering är ofullständigt verifierad.
+          </p>}
           <MeasuredRoomPlanning
             key={report.assembly_sha256 + "-room"}
             report={report}

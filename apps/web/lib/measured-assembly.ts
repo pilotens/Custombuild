@@ -1,4 +1,5 @@
 import type { components } from "./api-schema";
+import { profileSvgOutline } from "./measured-profiles";
 
 export type MeasuredWork = components["schemas"]["MeasuredAssembly"];
 export type MeasuredResult = components["schemas"]["MeasuredReport"];
@@ -67,6 +68,10 @@ export function measuredViews(piece: MeasuredPiece) {
         cuts: [],
       });
   }
+  for (const [face, axes] of [["left","yz"],["right","yz"],["front","xz"],["back","xz"],["top","xy"],["bottom","xy"]]) {
+    if (![...groups.values()].some(g=>g.face===face))
+      groups.set(face+"-"+axes,{face:face!,axes:axes!,cuts:[]});
+  }
   return [...groups.values()];
 }
 
@@ -92,7 +97,8 @@ export function measuredFaceSvg(
       return `<rect ${attrs} x="${x - a / 2}" y="${y - b / 2}" width="${a}" height="${b}" fill="${c.shape === "tenon" ? "#b8ddca" : "#f2e5bc"}">${label}</rect>`;
     })
     .join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-padding} ${-padding} ${w + 2 * padding} ${h + 2 * padding}"><title>${esc(piece.id)} · ${esc(view.face)} · mm</title><g stroke-width="${stroke}"><rect width="${w}" height="${h}" fill="#fffefa" stroke="#473e31"/>${features}</g></svg>`;
+  const outline = profileSvgOutline(piece, view.axes) ?? `<rect width="${w}" height="${h}" fill="#fffefa" stroke="#473e31"/>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${-padding} ${-padding} ${w + 2 * padding} ${h + 2 * padding}"><title>${esc(piece.id)} · ${esc(view.face)} · mm</title><g stroke-width="${stroke}">${outline}${features}</g></svg>`;
 }
 
 export function measuredHardware(report: MeasuredResult, id: string) {
