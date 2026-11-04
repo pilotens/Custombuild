@@ -6199,6 +6199,14 @@
             "title": "Changes",
             "type": "array"
           },
+          "fittings": {
+            "items": {
+              "$ref": "#/components/schemas/MeasuredFitting"
+            },
+            "maxItems": 512,
+            "title": "Fittings",
+            "type": "array"
+          },
           "joints": {
             "default": [],
             "items": {
@@ -6318,6 +6326,88 @@
           "operation"
         ],
         "title": "MeasuredEnd",
+        "type": "object"
+      },
+      "MeasuredFitting": {
+        "additionalProperties": false,
+        "properties": {
+          "accessories": {
+            "default": [],
+            "items": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Accessories",
+            "type": "array"
+          },
+          "article": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Article",
+            "type": "string"
+          },
+          "connects": {
+            "maxItems": 2,
+            "minItems": 2,
+            "prefixItems": [
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+                "type": "string"
+              },
+              {
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+                "type": "string"
+              }
+            ],
+            "title": "Connects",
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "hinge",
+              "shelf_pin",
+              "push_latch"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "mounts": {
+            "items": {
+              "$ref": "#/components/schemas/MeasuredEnd"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "title": "Mounts",
+            "type": "array"
+          },
+          "source": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Source",
+            "type": "string"
+          },
+          "specification": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Specification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "article",
+          "kind",
+          "connects",
+          "mounts",
+          "specification",
+          "source"
+        ],
+        "title": "MeasuredFitting",
         "type": "object"
       },
       "MeasuredJoint": {
@@ -6838,10 +6928,20 @@
             "title": "Fastener Interferences",
             "type": "array"
           },
+          "fitting_checks": {
+            "items": {
+              "$ref": "#/components/schemas/JointCheck"
+            },
+            "title": "Fitting Checks",
+            "type": "array"
+          },
           "geometry_method": {
             "anyOf": [
               {
-                "const": "exact_cad",
+                "enum": [
+                  "exact_cad",
+                  "machined_wood"
+                ],
                 "type": "string"
               },
               {
@@ -8739,6 +8839,249 @@
         "title": "ShelvingIntent",
         "type": "object"
       },
+      "SideboardBlank": {
+        "additionalProperties": false,
+        "properties": {
+          "finished_lbt_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Finished Lbt Um",
+            "type": "array"
+          },
+          "grain_axis": {
+            "enum": [
+              "x",
+              "y",
+              "z"
+            ],
+            "title": "Grain Axis",
+            "type": "string"
+          },
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "purchase_min_lbt_um": {
+            "maxItems": 3,
+            "minItems": 3,
+            "prefixItems": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              },
+              {
+                "type": "integer"
+              }
+            ],
+            "title": "Purchase Min Lbt Um",
+            "type": "array"
+          },
+          "supplier_stock_confirmed": {
+            "const": false,
+            "default": false,
+            "title": "Supplier Stock Confirmed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "part_id",
+          "finished_lbt_um",
+          "purchase_min_lbt_um",
+          "grain_axis"
+        ],
+        "title": "SideboardBlank",
+        "type": "object"
+      },
+      "SideboardConstruction": {
+        "additionalProperties": false,
+        "properties": {
+          "assembly": {
+            "$ref": "#/components/schemas/MeasuredAssembly"
+          },
+          "assembly_sequence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assembly Sequence",
+            "type": "array"
+          },
+          "assembly_sha256": {
+            "title": "Assembly Sha256",
+            "type": "string"
+          },
+          "assumptions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assumptions",
+            "type": "array"
+          },
+          "construction_sha256": {
+            "title": "Construction Sha256",
+            "type": "string"
+          },
+          "fittings": {
+            "items": {
+              "$ref": "#/components/schemas/MeasuredFitting"
+            },
+            "title": "Fittings",
+            "type": "array"
+          },
+          "hardware": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Hardware",
+            "type": "object"
+          },
+          "outstanding_acceptance": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outstanding Acceptance",
+            "type": "array"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "purchase_blanks": {
+            "items": {
+              "$ref": "#/components/schemas/SideboardBlank"
+            },
+            "title": "Purchase Blanks",
+            "type": "array"
+          },
+          "request": {
+            "$ref": "#/components/schemas/SideboardRequest"
+          },
+          "schema_version": {
+            "const": "custombuild.sideboard-construction.v1",
+            "default": "custombuild.sideboard-construction.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "sources": {
+            "default": [
+              "https://publications.blum.com/2024/catalogue/en/76/",
+              "https://publications.blum.com/2024/catalogue/en/77/",
+              "https://publications.blum.com/2024/catalogue/en/153/",
+              "https://publications.blum.com/2024/catalogue/en/192/"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "request",
+          "assembly",
+          "assembly_sha256",
+          "construction_sha256",
+          "fittings",
+          "hardware",
+          "purchase_blanks",
+          "assembly_sequence",
+          "assumptions",
+          "outstanding_acceptance"
+        ],
+        "title": "SideboardConstruction",
+        "type": "object"
+      },
+      "SideboardExportRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_construction_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Expected Construction Sha256",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "format": "uuid",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "request": {
+            "$ref": "#/components/schemas/SideboardRequest"
+          }
+        },
+        "required": [
+          "request",
+          "expected_construction_sha256",
+          "idempotency_key"
+        ],
+        "title": "SideboardExportRequest",
+        "type": "object"
+      },
+      "SideboardRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "depth_mm": {
+            "default": 450,
+            "maximum": 550.0,
+            "minimum": 400.0,
+            "title": "Depth Mm",
+            "type": "integer"
+          },
+          "dimensions_confirmed": {
+            "default": false,
+            "title": "Dimensions Confirmed",
+            "type": "boolean"
+          },
+          "door_count": {
+            "const": 5,
+            "default": 5,
+            "title": "Door Count",
+            "type": "integer"
+          },
+          "height_mm": {
+            "default": 750,
+            "maximum": 850.0,
+            "minimum": 650.0,
+            "title": "Height Mm",
+            "type": "integer"
+          },
+          "leg_height_mm": {
+            "default": 180,
+            "maximum": 220.0,
+            "minimum": 140.0,
+            "title": "Leg Height Mm",
+            "type": "integer"
+          },
+          "material": {
+            "const": "walnut-veneered-plywood",
+            "default": "walnut-veneered-plywood",
+            "title": "Material",
+            "type": "string"
+          },
+          "width_mm": {
+            "default": 2400,
+            "maximum": 2600.0,
+            "minimum": 1800.0,
+            "title": "Width Mm",
+            "type": "integer"
+          }
+        },
+        "title": "SideboardRequest",
+        "type": "object"
+      },
       "StockCheck": {
         "additionalProperties": false,
         "properties": {
@@ -10238,6 +10581,145 @@
           }
         ],
         "summary": "Template Capabilities"
+      }
+    },
+    "/v1/constructions/sideboard": {
+      "post": {
+        "operationId": "preview_sideboard_v1_constructions_sideboard_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SideboardRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SideboardConstruction"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Preview Sideboard"
+      }
+    },
+    "/v1/constructions/sideboard/exports": {
+      "post": {
+        "operationId": "export_sideboard_v1_constructions_sideboard_exports_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SideboardExportRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrestleExportAccepted"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Export Sideboard"
+      }
+    },
+    "/v1/constructions/sideboard/projects/{project_id}/exports/{job_id}/inspection": {
+      "get": {
+        "operationId": "inspect_sideboard_v1_constructions_sideboard_projects__project_id__exports__job_id__inspection_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeasuredReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Inspect Sideboard"
       }
     },
     "/v1/constructions/trestle-table": {

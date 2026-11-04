@@ -424,6 +424,28 @@ def all_cases():
                 "En radie 1 µm över halva bredden avvisas; originalet går att läsa igen.",
             ),
         ),
+        "constructed-sideboard": (
+            Order(
+                "Skänk S1 med fem luckor och separat beslagregister",
+                "38 trädelar, 90 förband, 35 beslagsposter och 310 bearbetningar.",
+            ),
+            Order(
+                "Skänkens minsta och största provmått",
+                "Två yttergränser klarar CAD, borrbilder och ryggtäckning.",
+            ),
+            Order(
+                "Skänkrygg reducerad till en övre remsa",
+                "Ofullständig täckning stoppas; hel rygg återtestas.",
+            ),
+            Order(
+                "Skänkluckans blinda gångjärnskopp genom exportkedjan",
+                "38 STEP-delar, 228 DXF; oberoende koppkoordinater och bevarat frontskikt.",
+            ),
+            Order(
+                "Skänk med nollbredd, fel luckantal eller otillräcklig stomhöjd",
+                "Ogiltiga konstruktioner stoppas och korrekt original kan återskapas.",
+            ),
+        ),
         "constructed-trestle": (
             Order(
                 "Bockbord B1 med automatiska förband",

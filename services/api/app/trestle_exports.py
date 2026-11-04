@@ -5,6 +5,8 @@ from uuid import UUID, uuid4
 
 from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION
 from custombuild_domain.identity import content_hash
+from custombuild_domain.sideboard_construction import SideboardRequest, construct_sideboard
+from custombuild_domain.sideboard_snapshot import SideboardWorkspace
 from custombuild_domain.trestle_construction import construct_trestle
 from custombuild_domain.trestle_planning import TrestleRequest
 from custombuild_domain.trestle_snapshot import TrestleWorkspace
@@ -34,6 +36,13 @@ class TrestleExportAccepted(BaseModel):
     job_id: str
 
 
+class SideboardExportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request: SideboardRequest
+    expected_construction_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    idempotency_key: UUID
+
+
 @router.post(
     "/trestle-table/exports",
     response_model=TrestleExportAccepted,
@@ -43,10 +52,28 @@ class TrestleExportAccepted(BaseModel):
 def export_trestle(
     payload: TrestleExportRequest, principal: GeneratorDep, session: SessionDep
 ) -> TrestleExportAccepted:
-    package = construct_trestle(payload.request)
+    return enqueue_construction(payload, principal, session)
+
+
+def enqueue_construction(
+    payload: TrestleExportRequest | SideboardExportRequest,
+    principal: GeneratorDep,
+    session: SessionDep,
+) -> TrestleExportAccepted:
+    sideboard = isinstance(payload, SideboardExportRequest)
+    package = (
+        construct_sideboard(payload.request)
+        if isinstance(payload, SideboardExportRequest)
+        else construct_trestle(payload.request)
+    )
     if package.construction_sha256 != payload.expected_construction_sha256:
         raise HTTPException(409, "Konstruktionen har ändrats. Skapa och granska den på nytt.")
-    key = content_hash(dict(kind="trestle-review", key=str(payload.idempotency_key)))
+    key = content_hash(
+        dict(
+            kind="sideboard-review" if sideboard else "trestle-review",
+            key=str(payload.idempotency_key),
+        )
+    )
 
     def existing() -> GenerationJob | None:
         return session.scalar(
@@ -77,7 +104,11 @@ def export_trestle(
         return accepted(previous)
     now = datetime.now(UTC)
     project_id, job_id = str(uuid4()), str(uuid4())
-    workspace = TrestleWorkspace(project_id=project_id, revision=1, request=payload.request)
+    workspace = (
+        SideboardWorkspace(project_id=project_id, revision=1, request=payload.request)
+        if isinstance(payload, SideboardExportRequest)
+        else TrestleWorkspace(project_id=project_id, revision=1, request=payload.request)
+    )
     request = dict(
         schema_version="custombuild.furniture-review-job.v1",
         job_type=GenerationJobType.furniture_review.value,
@@ -101,7 +132,7 @@ def export_trestle(
                 id=project_id,
                 organization_id=principal.organization_id,
                 name=f"{package.assembly.title} / {project_id[:8]}",
-                furniture_type="trestle_table",
+                furniture_type="sideboard_s1" if sideboard else "trestle_table",
                 draft_revision=1,
                 draft_design_hash=package.construction_sha256,
                 draft_spec_json=workspace.model_dump(mode="json"),
@@ -136,7 +167,7 @@ def export_trestle(
             audit(
                 session,
                 principal,
-                "trestle.export.requested",
+                "sideboard.export.requested" if sideboard else "trestle.export.requested",
                 "project",
                 project_id,
                 dict(job_id=job_id, design_hash=package.construction_sha256, revision=1),

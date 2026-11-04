@@ -3,6 +3,7 @@ from collections import Counter
 from custombuild_domain.furniture import DiningTableIntent
 
 from .catalog import FAMILIES, LEVELS, STUDIO, all_cases
+from .constructed_sideboard import exercise_constructed_sideboard
 from .constructed_trestle import exercise_constructed_trestle
 from .furniture import exercise_furniture
 from .measured import exercise_measured
@@ -28,6 +29,7 @@ def test_catalog_covers_every_available_product_and_level(customer):
         "measured-frame",
         "reference-trestle",
         "constructed-trestle",
+        "constructed-sideboard",
         *(f"studio-{key}" for key in STUDIO),
     }
     expected = {(product, level): 1 for product in products for level in LEVELS}
@@ -43,7 +45,9 @@ def test_product_work_order(case, customer, monkeypatch, tmp_path, record_proper
     record_property("acceptance", case.order.expected)
     e = Evidence(record_property)
     e.note("inputs", case.order.inputs)
-    if case.product == "constructed-trestle":
+    if case.product == "constructed-sideboard":
+        exercise_constructed_sideboard(customer, case, e, tmp_path)
+    elif case.product == "constructed-trestle":
         exercise_constructed_trestle(customer, case, e, tmp_path)
     elif case.product == "reference-trestle":
         exercise_trestle(customer, case, e, tmp_path)

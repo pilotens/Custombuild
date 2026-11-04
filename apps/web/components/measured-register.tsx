@@ -21,6 +21,7 @@ import css from "./measured-register.module.css";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 import { MeasuredStockEdit } from "./measured-planning";
 import { orderSceneFaces, profileFaces } from "@/lib/measured-profiles";
+import { orderConvexFaces } from "../../../packages/scene-geometry/occlusion.mjs";
 
 const panelFaces = [
   [0, 1, 3, 2],
@@ -173,7 +174,12 @@ function MeasuredScene({
         }
       }
     }
-    if (report.assembly.parts.some(p=>p.profile)) orderSceneFaces(faces, pitch);
+    let unresolved = 0;
+    if (report.assembly.fittings?.length) {
+      const ordered = orderConvexFaces(faces);
+      faces.splice(0, faces.length, ...ordered.faces);
+      unresolved = ordered.unresolved;
+    } else if (report.assembly.parts.some(p=>p.profile)) orderSceneFaces(faces, pitch);
     else faces.sort((x,y)=>y.depth-x.depth);
     let minX = Infinity,
       maxX = -Infinity,
@@ -189,6 +195,7 @@ function MeasuredScene({
     const pad = Math.max(maxX - minX, maxY - minY) * 0.05 + 1;
     return {
       faces,
+      unresolved,
       marks,
       viewBox: faces.length
         ? [
@@ -206,7 +213,9 @@ function MeasuredScene({
       viewBox={polys.viewBox}
       role="img"
       aria-label="Monterade, klickbara delar i arbetsritningen"
+      data-ordering-complete={polys.unresolved === 0}
     >
+      {polys.unresolved > 0 && <text x="0" y="0">Överlappande ytor: visningsordningen är ofullständig.</text>}
       {polys.faces.map((f) => (
         <polygon
           key={f.key}
@@ -275,6 +284,7 @@ function PieceDetail({
     (j) => j.a.part === piece.id || j.b.part === piece.id,
   );
   const checks = new Map(report.joints.map((j) => [j.id, j]));
+  const fittings = (report.assembly.fittings ?? []).filter((f) => f.connects.includes(piece.id));
   const neighbours = report.overlaps.flatMap((pair) =>
     pair[0] === piece.id ? [pair[1]] : pair[1] === piece.id ? [pair[0]] : [],
   );
@@ -323,7 +333,9 @@ function PieceDetail({
           : `Sned profil i ${piece.profile.axes.toUpperCase()}, ${piece.profile.points_um.length} hörn.`}
         {" "}{report.geometry_method === "exact_cad"
           ? "Profil, bearbetningar och nominell förbandspassning är kontrollerade i CAD."
-          : "Konturen visas i ritningen. Förband och bearbetningar mot profilen är ej verifierade."}
+          : report.geometry_method === "machined_wood"
+            ? "Träprofil och borrningar är CAD-kontrollerade. Beslagens fulla rörelse och volymer är inte verifierade."
+            : "Konturen visas i ritningen. Förband och bearbetningar mot profilen är ej verifierade."}
       </p>}
       <label>
         Ritningsyta{" "}
@@ -424,6 +436,16 @@ function PieceDetail({
           );
         })}
       </details>
+      {fittings.length > 0 && <details open>
+        <summary>Beslagsanslutningar ({fittings.length})</summary>
+        {fittings.map((f) => <div className={css.row} key={f.id}>
+          <b>{f.id} · {f.article}</b>
+          <span>{f.specification}</span>
+          <span>{report.fitting_checks?.find((c) => c.id === f.id)?.reason ?? "Ej verifierat"}</span>
+          {f.connects.filter((id) => id !== piece.id).map((id) => <button key={id} onClick={() => choose(id)}>{id}</button>)}
+          <small>{f.mounts.map((m) => m.part + "/" + m.operation).join(", ")}</small>
+        </div>)}
+      </details>}
       <details open>
         <summary>Beslag i delens förband</summary>
         {measuredHardware(report, piece.id).length ? (
@@ -686,6 +708,7 @@ export function MeasuredRegister({
   const attached = (report.assembly.joints ?? []).filter(
     (j) => j.a.part === part.id || j.b.part === part.id,
   );
+  const attachedFittings = (report.assembly.fittings ?? []).filter((f) => f.connects.includes(part.id));
   const groups = useMemo(
     () => measuredGroups(report, part.frame_id ?? null),
     [report, part.frame_id],
@@ -728,6 +751,9 @@ export function MeasuredRegister({
           </b>{" "}
           nominella upplag
         </span>
+        {!!report.assembly.fittings?.length && <span><b>
+          {report.fitting_checks?.filter((f) => f.state === "aligned").length ?? 0} / {report.assembly.fittings.length}
+        </b> kontrollerade beslagsanslutningar</span>}
       </div>
       <p>
         {
@@ -855,6 +881,7 @@ export function MeasuredRegister({
           {mode === "without" && (
             <p className={css.attention} role="status">
               {attached.length} registrerade förband till {part.id} öppnas.{" "}
+              {attachedFittings.length > 0 && <>{attachedFittings.length} beslagsanslutningar berörs. </>}
               {
                 report.assembly.bearings.filter(
                   (b) => b.part === part.id || b.support === part.id,
@@ -969,7 +996,7 @@ export function MeasuredRegister({
                 </p>
               ))}
             <small>
-              {report.geometry_method === "exact_cad"
+              {report.geometry_method === "exact_cad" || report.geometry_method === "machined_wood"
                 ? "CAD-kontrollen använder bearbetade solider med hål, slitsar och urtag. 3D-vyn är en förenklad översikt; STEP innehåller den färdiga geometrin."
                 : "Rektangulära tappar, fickor, urtag och falsar är subtraherade. Runda hål och slitsar redovisas i delritningarna och är inte subtraherade vid volymkontrollen."}
             </small>

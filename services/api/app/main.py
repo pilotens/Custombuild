@@ -24,6 +24,8 @@ from .security import (
     SecurityHeadersMiddleware,
 )
 from .seed import seed_development
+from .sideboard_construction import router as sideboard_construction_router
+from .sideboard_inspection import router as sideboard_inspection_router
 from .storage_quota import initialize_development_storage_quota
 from .trestle_construction import router as trestle_construction_router
 from .trestle_exports import router as trestle_exports_router
@@ -125,6 +127,8 @@ app.include_router(router)
 app.include_router(furniture_router)
 app.include_router(part_inspection_router)
 app.include_router(trestle_construction_router)
+app.include_router(sideboard_construction_router)
+app.include_router(sideboard_inspection_router)
 app.include_router(trestle_exports_router)
 app.include_router(trestle_inspection_router)
 

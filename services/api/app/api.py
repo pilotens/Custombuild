@@ -6182,6 +6182,7 @@ def update_project_draft(
     session.refresh(project, with_for_update=True)
     if (project.draft_spec_json or {}).get("schema_version") in {
         "custombuild.furniture-design.v1", "custombuild.trestle-workspace.v1",
+        "custombuild.sideboard-workspace.v1",
     }:
         raise HTTPException(
             status_code=409,

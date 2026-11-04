@@ -1507,6 +1507,26 @@ def _validated_furniture_review_snapshot(
     source = request.get("workspace")
     if (
         isinstance(source, dict)
+        and source.get("schema_version") == "custombuild.sideboard-workspace.v1"
+    ):
+        from custombuild_domain.sideboard_construction import construct_sideboard
+        from custombuild_domain.sideboard_snapshot import SideboardWorkspace
+
+        try:
+            sideboard = SideboardWorkspace.model_validate(source)
+        except (TypeError, ValueError) as exc:
+            raise ProductionBlockedError("sideboard workspace snapshot is invalid") from exc
+        if (
+            sideboard.project_id != job.project_id
+            or sideboard.revision != revision
+            or content_hash(sideboard) != workspace_sha256
+        ):
+            raise ProductionBlockedError("sideboard workspace snapshot is detached")
+        if construct_sideboard(sideboard.request).construction_sha256 != design_hash:
+            raise ProductionBlockedError("sideboard construction changed; create a new revision")
+        return sideboard, design_hash, workspace_sha256, revision, requested_by
+    if (
+        isinstance(source, dict)
         and source.get("schema_version") == "custombuild.trestle-workspace.v1"
     ):
         from custombuild_domain.trestle_construction import construct_trestle
@@ -1515,8 +1535,11 @@ def _validated_furniture_review_snapshot(
             trestle = TrestleWorkspace.model_validate(source)
         except (TypeError, ValueError) as exc:
             raise ProductionBlockedError("trestle review workspace snapshot is invalid") from exc
-        if (trestle.project_id != job.project_id or trestle.revision != revision
-                or content_hash(trestle) != workspace_sha256):
+        if (
+            trestle.project_id != job.project_id
+            or trestle.revision != revision
+            or content_hash(trestle) != workspace_sha256
+        ):
             raise ProductionBlockedError("trestle review workspace snapshot is detached")
         construction = construct_trestle(trestle.request)
         if construction.construction_sha256 != design_hash:
@@ -1600,9 +1623,14 @@ def _generate_furniture_review(
     workspace, design_hash, workspace_sha256, revision, _requested_by = (
         _validated_furniture_review_snapshot(job)
     )
+    from custombuild_domain.sideboard_snapshot import SideboardWorkspace
     from custombuild_domain.trestle_snapshot import TrestleWorkspace
 
-    if isinstance(workspace, TrestleWorkspace):
+    if isinstance(workspace, SideboardWorkspace):
+        from .sideboard_review import build_sideboard_review
+
+        payload = build_sideboard_review(workspace)
+    elif isinstance(workspace, TrestleWorkspace):
         from .trestle_review import build_trestle_review
 
         payload = build_trestle_review(workspace)

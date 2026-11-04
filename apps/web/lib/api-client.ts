@@ -1720,6 +1720,31 @@ export class CustombuildApiClient {
     });
   }
 
+  async constructSideboard(input: components["schemas"]["SideboardRequest"]) {
+    return this.request<components["schemas"]["SideboardConstruction"]>("/v1/constructions/sideboard", {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  async requestSideboardExport(input: components["schemas"]["SideboardExportRequest"], signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["TrestleExportAccepted"]>(
+      "/v1/constructions/sideboard/exports", { method: "POST", body: JSON.stringify(input), signal },
+    );
+    const id = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+    if (!id.test(result.project_id) || !id.test(result.job_id)) throw new ApiError("Ogiltig exportidentitet.");
+    return result;
+  }
+
+  async inspectSideboardExport(projectId: string, jobId: string, assemblyHash: string, signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["MeasuredReport"]>(
+      `/v1/constructions/sideboard/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}/inspection`,
+      { method: "GET", signal },
+    );
+    if (result.assembly_sha256 !== assemblyHash || result.physical_cutting_authorized !== false
+      || result.geometry_method !== "machined_wood") throw new ApiError("Granskningen gäller inte den aktuella skänken.");
+    return result;
+  }
+
   async requestTrestleExport(input: components["schemas"]["TrestleExportRequest"], signal?: AbortSignal) {
     const result = await this.request<components["schemas"]["TrestleExportAccepted"]>(
       "/v1/constructions/trestle-table/exports", { method: "POST", body: JSON.stringify(input), signal },

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 from itertools import combinations
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -93,6 +93,17 @@ class MeasuredEnd(FrozenModel):
     operation: Key
 
 
+class MeasuredFitting(FrozenModel):
+    id: Key
+    article: Key
+    kind: Literal["hinge", "shelf_pin", "push_latch"]
+    connects: tuple[Key, Key]
+    mounts: tuple[MeasuredEnd, ...] = Field(min_length=1, max_length=8)
+    accessories: tuple[Key, ...] = Field(default=(), max_length=10)
+    specification: Text
+    source: Text
+
+
 class MeasuredJoint(FrozenModel):
     id: Key
     kind: Literal["blind_tenon", "dowel", "screw", "through_bolt"]
@@ -120,6 +131,11 @@ class MeasuredBearing(FrozenModel):
     source: Text
 
 
+def _omitted_empty_default(schema: dict[str, Any]) -> None:
+    # These collections are omitted when empty; clients must not require them.
+    schema.pop("default", None)
+
+
 class MeasuredAssembly(FrozenModel):
     schema_version: Literal["custombuild.measured-assembly.v1"]
     title: Text
@@ -128,6 +144,12 @@ class MeasuredAssembly(FrozenModel):
     room: MeasuredRoom | None = None
     parts: tuple[MeasuredPart, ...] = Field(min_length=1, max_length=512)
     joints: tuple[MeasuredJoint, ...] = Field(default=(), max_length=2048)
+    fittings: tuple[MeasuredFitting, ...] = Field(
+        default=(),
+        max_length=512,
+        exclude_if=lambda value: not value,
+        json_schema_extra=_omitted_empty_default,
+    )
     bearings: tuple[MeasuredBearing, ...] = Field(default=(), max_length=2048)
     changes: tuple[Text, ...] = Field(default=(), max_length=100)
     open_items: tuple[Text, ...] = Field(default=(), max_length=40)
@@ -138,6 +160,8 @@ class MeasuredAssembly(FrozenModel):
             raise ValueError("Varje del behöver ett eget ID.")
         if len({j.id for j in self.joints}) != len(self.joints):
             raise ValueError("Varje förband behöver ett eget ID.")
+        if len({f.id for f in self.fittings}) != len(self.fittings):
+            raise ValueError("Varje beslag behöver ett eget ID.")
         if len({b.id for b in self.bearings}) != len(self.bearings):
             raise ValueError("Varje upplag behöver ett eget ID.")
         if sum(len(p.operations) for p in self.parts) > 4096:
@@ -171,7 +195,12 @@ class MeasuredReport(FrozenModel):
     stock_checks: tuple[StockCheck, ...] = ()
     installation: InstallationCheck | None = None
     unreviewed_profile_parts: tuple[str, ...] = ()
-    geometry_method: Literal["exact_cad"] | None = Field(
+    fitting_checks: tuple[JointCheck, ...] = Field(
+        default=(),
+        exclude_if=lambda value: not value,
+        json_schema_extra=_omitted_empty_default,
+    )
+    geometry_method: Literal["exact_cad", "machined_wood"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
     physical_cutting_authorized: Literal[False] = False
@@ -729,6 +758,17 @@ def review_measured_assembly(assembly: MeasuredAssembly) -> MeasuredReport:
         cells=cells,
         issues={k: tuple(v) for k, v in issues.items() if v},
         joints=tuple(checks),
+        fitting_checks=tuple(
+            JointCheck(
+                id=f.id,
+                state="unresolved",
+                reason=(
+                    "Beslagskopplingen är registrerad. Dess borrbild kräver konstruktionens "
+                    "CAD-kontroll; mekanism och bärförmåga är inte verifierade."
+                ),
+            )
+            for f in assembly.fittings
+        ),
         bearings=bearings,
         overlaps=tuple(overlaps),
         overlaps_truncated=truncated,

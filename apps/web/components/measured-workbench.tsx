@@ -12,6 +12,7 @@ import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { MeasuredRegister } from "./measured-register";
 import { MeasuredRoomPlanning } from "./measured-planning";
 import { TrestleConstruction } from "./trestle-construction";
+import { SideboardConstruction } from "./sideboard-construction";
 import css from "./measured-register.module.css";
 
 export function MeasuredWorkbench({
@@ -69,6 +70,8 @@ export function MeasuredWorkbench({
         </p>
       </header>
       <TrestleConstruction key={constructionVersion} runtimeConfig={runtimeConfig} open={(work) => void load(async () => work)}
+        openVerified={(verified) => { ++serial.current; setLoading(false); setError(""); setReturnPart(undefined); setReport(verified); }} />
+      <SideboardConstruction key={"sideboard-"+constructionVersion} runtimeConfig={runtimeConfig} open={(work) => void load(async () => work)}
         openVerified={(verified) => { ++serial.current; setLoading(false); setError(""); setReturnPart(undefined); setReport(verified); }} />
       <div className={css.toolbar}>
         <label>

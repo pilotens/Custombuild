@@ -117,6 +117,10 @@ export function measuredHardware(report: MeasuredResult, id: string) {
       for (const sku of [joint.article, ...joint.fittings])
         if (sku) counts.set(sku, (counts.get(sku) ?? 0) + 1);
     }
+  for (const fitting of report.assembly.fittings ?? [])
+    if (fitting.connects.includes(id))
+      for (const sku of [fitting.article, ...(fitting.accessories ?? [])])
+        counts.set(sku, (counts.get(sku) ?? 0) + 1);
   return [...counts].sort(([a], [b]) => a.localeCompare(b));
 }
 
@@ -151,6 +155,10 @@ export function measuredGroups(
   );
   for (const b of report.assembly.bearings)
     if (supported.has(b.id)) connect(b.part, b.support);
+  const mounted = new Set((report.fitting_checks ?? [])
+    .filter((f) => f.state === "aligned").map((f) => f.id));
+  for (const f of report.assembly.fittings ?? [])
+    if (mounted.has(f.id)) connect(f.connects[0], f.connects[1]);
   const groups: string[][] = [];
   const visited = new Set<string>();
   for (const id of graph.keys()) {
@@ -194,6 +202,10 @@ export function measuredPartSheet(
       return `<li>${esc(b.part)} på ${esc(b.support)} · ${esc(check.reason)} · ${(check.contact_area_um2 ?? 0) / 1e6} mm²</li>`;
     })
     .join("");
+  const fittings = (report.assembly.fittings ?? [])
+    .filter((f) => f.connects.includes(piece.id))
+    .map((f) => `<li>${esc(f.id)} · ${esc(f.article)} · ${f.connects.map(esc).join(" ↔ ")} · ${esc(f.specification)} · ${esc(report.fitting_checks?.find((c) => c.id === f.id)?.reason ?? "Ej verifierat")}<br>${f.mounts.map((m) => esc(m.part) + "/" + esc(m.operation)).join(", ")}</li>`)
+    .join("");
   const issues = [
     ...(report.issues[piece.id] ?? []),
     ...(report.assembly.open_items ?? []),
@@ -211,7 +223,7 @@ export function measuredPartSheet(
   const articles = measuredHardware(report, piece.id)
     .map(([sku, n]) => `<li>${n} × ${esc(sku)}</li>`)
     .join("");
-  return `<!doctype html><html lang="sv"><meta charset="utf-8"><title>${esc(piece.id)} · delritning</title><style>body{max-width:800px;margin:auto;padding:24px;font:14px/1.5 system-ui;color:#243c33}svg{max-width:100%;height:230px}table{border-collapse:collapse}td,th{padding:5px;border:1px solid #b9c6bc;text-align:left}code{overflow-wrap:anywhere}@media print{.face{break-before:page}tr{break-inside:avoid}}</style><h1>${esc(piece.id)} · ${esc(piece.name)}</h1><p>Granskningsritning · ${esc(report.assembly.title)}<br>Råämne L/B/T ${piece.blank_lbt_um.map(measuredMm).join(" × ")} mm · ${esc(piece.material)}</p><p>${esc(piece.note ?? "")}</p><p>Källa: ${esc(report.assembly.source)}<br>Modell: <code>${esc(report.assembly_sha256)}</code></p><p>Koordinatsystem: ${esc(piece.frame_id ?? "hela monteringen")}.</p><h2>Bearbetningar</h2><table><tr><th>ID</th><th>Form</th><th>Yta / U,V</th><th>Centrum mm</th><th>B × H × djup mm</th><th>Artikel / källa</th></tr>${rows}</table><h2>Förband</h2><ul>${mates || "<li>Inga parade förband angivna.</li>"}</ul><h2>Beslag på registrerade förband</h2><ul>${articles || "<li>Inga artiklar angivna.</li>"}</ul><h2>Upplag</h2><ul>${bearings || "<li>Inga upplag angivna.</li>"}</ul>${backing ? "<h2>Ryggens täckning vid uttag</h2><ul>" + backing + "</ul>" : ""}<h2>Öppna punkter</h2><ul>${issues.map((i) => `<li>${esc(i)}</li>`).join("")}</ul><strong>Fysisk bearbetning är spärrad.</strong>${measuredViews(
+  return `<!doctype html><html lang="sv"><meta charset="utf-8"><title>${esc(piece.id)} · delritning</title><style>body{max-width:800px;margin:auto;padding:24px;font:14px/1.5 system-ui;color:#243c33}svg{max-width:100%;height:230px}table{border-collapse:collapse}td,th{padding:5px;border:1px solid #b9c6bc;text-align:left}code{overflow-wrap:anywhere}@media print{.face{break-before:page}tr{break-inside:avoid}}</style><h1>${esc(piece.id)} · ${esc(piece.name)}</h1><p>Granskningsritning · ${esc(report.assembly.title)}<br>Råämne L/B/T ${piece.blank_lbt_um.map(measuredMm).join(" × ")} mm · ${esc(piece.material)}</p><p>${esc(piece.note ?? "")}</p><p>Källa: ${esc(report.assembly.source)}<br>Modell: <code>${esc(report.assembly_sha256)}</code></p><p>Koordinatsystem: ${esc(piece.frame_id ?? "hela monteringen")}.</p><h2>Bearbetningar</h2><table><tr><th>ID</th><th>Form</th><th>Yta / U,V</th><th>Centrum mm</th><th>B × H × djup mm</th><th>Artikel / källa</th></tr>${rows}</table><h2>Förband</h2><ul>${mates || "<li>Inga parade förband angivna.</li>"}</ul><h2>Beslagsanslutningar</h2><ul>${fittings || "<li>Inga separata beslagsanslutningar.</li>"}</ul><h2>Beslag på registrerade förband</h2><ul>${articles || "<li>Inga artiklar angivna.</li>"}</ul><h2>Upplag</h2><ul>${bearings || "<li>Inga upplag angivna.</li>"}</ul>${backing ? "<h2>Ryggens täckning vid uttag</h2><ul>" + backing + "</ul>" : ""}<h2>Öppna punkter</h2><ul>${issues.map((i) => `<li>${esc(i)}</li>`).join("")}</ul><strong>Fysisk bearbetning är spärrad.</strong>${measuredViews(
     piece,
   )
     .map(

@@ -98,6 +98,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/constructions/sideboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Preview Sideboard */
+        post: operations["preview_sideboard_v1_constructions_sideboard_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/constructions/sideboard/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Export Sideboard */
+        post: operations["export_sideboard_v1_constructions_sideboard_exports_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/constructions/sideboard/projects/{project_id}/exports/{job_id}/inspection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Inspect Sideboard */
+        get: operations["inspect_sideboard_v1_constructions_sideboard_projects__project_id__exports__job_id__inspection_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/constructions/trestle-table": {
         parameters: {
             query?: never;
@@ -3287,6 +3338,8 @@ export interface components {
              * @default []
              */
             changes: string[];
+            /** Fittings */
+            fittings?: components["schemas"]["MeasuredFitting"][];
             /**
              * Joints
              * @default []
@@ -3327,6 +3380,34 @@ export interface components {
             operation: string;
             /** Part */
             part: string;
+        };
+        /** MeasuredFitting */
+        MeasuredFitting: {
+            /**
+             * Accessories
+             * @default []
+             */
+            accessories: string[];
+            /** Article */
+            article: string;
+            /** Connects */
+            connects: [
+                string,
+                string
+            ];
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "hinge" | "shelf_pin" | "push_latch";
+            /** Mounts */
+            mounts: components["schemas"]["MeasuredEnd"][];
+            /** Source */
+            source: string;
+            /** Specification */
+            specification: string;
         };
         /** MeasuredJoint */
         MeasuredJoint: {
@@ -3494,8 +3575,10 @@ export interface components {
              * @default []
              */
             fastener_interferences: components["schemas"]["FastenerInterference"][];
+            /** Fitting Checks */
+            fitting_checks?: components["schemas"]["JointCheck"][];
             /** Geometry Method */
-            geometry_method?: "exact_cad" | null;
+            geometry_method?: ("exact_cad" | "machined_wood") | null;
             installation?: components["schemas"]["InstallationCheck"] | null;
             /** Issues */
             issues: {
@@ -4258,6 +4341,130 @@ export interface components {
              */
             width_um: number;
         };
+        /** SideboardBlank */
+        SideboardBlank: {
+            /** Finished Lbt Um */
+            finished_lbt_um: [
+                number,
+                number,
+                number
+            ];
+            /**
+             * Grain Axis
+             * @enum {string}
+             */
+            grain_axis: "x" | "y" | "z";
+            /** Part Id */
+            part_id: string;
+            /** Purchase Min Lbt Um */
+            purchase_min_lbt_um: [
+                number,
+                number,
+                number
+            ];
+            /**
+             * Supplier Stock Confirmed
+             * @default false
+             * @constant
+             */
+            supplier_stock_confirmed: false;
+        };
+        /** SideboardConstruction */
+        SideboardConstruction: {
+            assembly: components["schemas"]["MeasuredAssembly"];
+            /** Assembly Sequence */
+            assembly_sequence: string[];
+            /** Assembly Sha256 */
+            assembly_sha256: string;
+            /** Assumptions */
+            assumptions: string[];
+            /** Construction Sha256 */
+            construction_sha256: string;
+            /** Fittings */
+            fittings: components["schemas"]["MeasuredFitting"][];
+            /** Hardware */
+            hardware: {
+                [key: string]: number;
+            };
+            /** Outstanding Acceptance */
+            outstanding_acceptance: string[];
+            /**
+             * Physical Cutting Authorized
+             * @default false
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /** Purchase Blanks */
+            purchase_blanks: components["schemas"]["SideboardBlank"][];
+            request: components["schemas"]["SideboardRequest"];
+            /**
+             * Schema Version
+             * @default custombuild.sideboard-construction.v1
+             * @constant
+             */
+            schema_version: "custombuild.sideboard-construction.v1";
+            /**
+             * Sources
+             * @default [
+             *       "https://publications.blum.com/2024/catalogue/en/76/",
+             *       "https://publications.blum.com/2024/catalogue/en/77/",
+             *       "https://publications.blum.com/2024/catalogue/en/153/",
+             *       "https://publications.blum.com/2024/catalogue/en/192/"
+             *     ]
+             */
+            sources: string[];
+        };
+        /** SideboardExportRequest */
+        SideboardExportRequest: {
+            /** Expected Construction Sha256 */
+            expected_construction_sha256: string;
+            /**
+             * Idempotency Key
+             * Format: uuid
+             */
+            idempotency_key: string;
+            request: components["schemas"]["SideboardRequest"];
+        };
+        /** SideboardRequest */
+        SideboardRequest: {
+            /**
+             * Depth Mm
+             * @default 450
+             */
+            depth_mm: number;
+            /**
+             * Dimensions Confirmed
+             * @default false
+             */
+            dimensions_confirmed: boolean;
+            /**
+             * Door Count
+             * @default 5
+             * @constant
+             */
+            door_count: 5;
+            /**
+             * Height Mm
+             * @default 750
+             */
+            height_mm: number;
+            /**
+             * Leg Height Mm
+             * @default 180
+             */
+            leg_height_mm: number;
+            /**
+             * Material
+             * @default walnut-veneered-plywood
+             * @constant
+             */
+            material: "walnut-veneered-plywood";
+            /**
+             * Width Mm
+             * @default 2400
+             */
+            width_mm: number;
+        };
         /** StockCheck */
         StockCheck: {
             /** Margin Lbt Um */
@@ -4919,6 +5126,104 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+        };
+    };
+    preview_sideboard_v1_constructions_sideboard_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SideboardRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SideboardConstruction"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_sideboard_v1_constructions_sideboard_exports_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SideboardExportRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TrestleExportAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_sideboard_v1_constructions_sideboard_projects__project_id__exports__job_id__inspection_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MeasuredReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

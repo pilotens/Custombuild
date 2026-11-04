@@ -23,12 +23,14 @@ Varje körning skriver ett svenskt arbetsprotokoll i `test-results/product-accep
 | Väldigt svårt | Ett sparat kundfall följs hela vägen genom produktens flöde. Verktygets sex möbelprofiler kontrolleras i nedladdade verkstadsfiler. Studions mallar provas med två redigeringar av samma utkast. | `very-hard` |
 | Omöjligt | Provet godkänns när systemet stoppar exakt den otillåtna åtgärden med rätt orsak och kontrollerbart slutläge. | `impossible` |
 
-`LEVEL` accepterar även `lätt`, `medel`, `svårt`, `väldigt-svårt` och `omöjligt`. Använd `PRODUCT` från tabellen för att köra en enda produkt. Utan filter körs 75 arbetsprov och en separat kontroll av att matrisen täcker produktkatalogerna.
+`LEVEL` accepterar även `lätt`, `medel`, `svårt`, `väldigt-svårt` och `omöjligt`. Använd `PRODUCT` från tabellen för att köra en enda produkt. Utan filter körs 85 arbetsprov och en separat kontroll av att matrisen täcker produktkatalogerna.
 
 ## Produkter och avgörande kontroller
 
 | Produkt | PRODUCT | Exempel på mätning | Krav för omöjligt prov |
 |---|---|---|---|
+| Konstruerad skänk S1 | `constructed-sideboard` | 38 trädelar, 90 träförband, 35 beslagsposter; full ryggtäckning och verkliga gångjärnskoppar i STEP/DXF. | Nollbredd, sex luckor, för låg stomme och materialbyte utanför konstruktionen avvisas. |
+| Konstruerat bockbord B1 | `constructed-trestle` | 13 bearbetade delar, 29 förband, 79 operationer, 78 DXF-vyer. | 100 000 N eller noll bredd avvisas. |
 | Panelbord | `panel-table` | Fri längd mellan gavlarna, båda sargerna, fem delar. | Stoppa en 249,998 mm lång sarg. En sarg på 250,001 mm ryms i det svåra provet. |
 | Rektangulärt matbord | `dining-rectangle` | Fyra ben, nio delar och tjugo parade skruvförband. Ett långt belastat spann ska ge en nedböjningsspärr. | Stoppa en ram med mindre än 100 mm fri sarg. |
 | Runt matbord | `dining-round` | Mät radien 633,5005 mm ur DXF och kontrollera att alla hörn på benen ligger inom skivan. | Stoppa två diametrar som skiljer 0,001 mm. |
