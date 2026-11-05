@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from custombuild_cad.sideboard_checks import audit_sideboard
+from custombuild_cad.sideboard_stability import closed_stability
 from custombuild_domain.sideboard_construction import SideboardConstruction, construct_sideboard
 from custombuild_domain.sideboard_snapshot import SideboardWorkspace
 
@@ -22,6 +23,8 @@ def sideboard_files(package: SideboardConstruction) -> dict[str, bytes]:
     audit, solids = audit_sideboard(package)
     if not audit["wood_and_boring_checks_passed"]:
         raise ValueError("Skänkens trä-/borrkontroll underkändes: " + str(audit))
+    if package.request.review:
+        audit["closed_stability"] = closed_stability(package, solids)
     files = {
         "construction.json": _json(package.model_dump(mode="json")),
         "assembly.json": _json(package.assembly.model_dump(mode="json")),
@@ -120,6 +123,14 @@ def sideboard_files(package: SideboardConstruction) -> dict[str, bytes]:
         ),
         "assembly/fittings.json": _json([f.model_dump(mode="json") for f in package.fittings]),
     }
+    if package.assessment:
+        files["validation/planning.json"] = _json(
+            dict(
+                construction_sha256=package.construction_sha256,
+                assessment=package.assessment.model_dump(mode="json"),
+                closed_stability=audit["closed_stability"],
+            )
+        )
     roundtrips = []
     with tempfile.TemporaryDirectory(prefix="custombuild-sideboard-") as temporary:
         for part in package.assembly.parts:

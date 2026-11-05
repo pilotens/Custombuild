@@ -11,6 +11,7 @@ from custombuild_domain.measured_assembly import (
 )
 from custombuild_domain.sideboard_construction import construct_sideboard
 from custombuild_domain.sideboard_snapshot import SideboardWorkspace
+from custombuild_domain.sideboard_stability_report import ClosedStability
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
@@ -125,10 +126,24 @@ def inspect_sideboard(
             )
         ):
             raise ValueError("Tryckrörelsen är inte kontrollerad.")
+        stability = None
+        if package.request.review is not None:
+            stability = ClosedStability.model_validate(cad.get("closed_stability"))
+            if (
+                stability.horizontal_force_n != package.request.review.horizontal_force_n
+                or stability.top_payload_kg != package.request.review.top_payload_kg
+                or abs(
+                    stability.push_moment_nm
+                    - stability.horizontal_force_n * package.request.height_mm / 1000
+                )
+                > 1e-8
+            ):
+                raise ValueError("Tippkontrollen har andra provlaster än ritningen.")
         original = review_measured_assembly(package.assembly)
         return original.model_copy(
             update=dict(
                 geometry_method="machined_wood",
+                closed_stability=stability,
                 issues={},
                 overlaps=(),
                 overlaps_truncated=False,

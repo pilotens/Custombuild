@@ -169,3 +169,12 @@
     max-width: 90px;
   }
 }
+
+.hash { overflow-wrap: anywhere; }
+
+.planning { min-width: 0; overflow-wrap: anywhere; }
+.planning table { width: 100%; border-collapse: collapse; table-layout: fixed; white-space: normal; font-size: .875rem; }
+.planning th { position: static; font-size: .75rem; }
+.planning th, .planning td { text-align: left; vertical-align: top; padding: .35rem; border-bottom: 1px solid #c8d3c9; }
+.planning fieldset { min-width: 0; }
+.planning input, .planning select { max-width: 100%; box-sizing: border-box; }

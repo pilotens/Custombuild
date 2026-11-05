@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustombuildApiClient } from "@/lib/api-client";
 import type { components } from "@/lib/api-schema";
@@ -35,11 +35,29 @@ describe("sideboard construction", () => {
     fireEvent.change(screen.getByLabelText("Benhöjd (mm)"), { target: { value: "190" } });
     expect(screen.queryByRole("button", { name: "Öppna skänkens delar" })).toBeNull();
   });
+  it("sends reference proportions and load, and unlocks a confirmed drawing on edits", async () => {
+    const call=vi.spyOn(CustombuildApiClient.prototype,"constructSideboard").mockResolvedValue(fixture());
+    render(<SideboardConstruction runtimeConfig={config} open={vi.fn()} openVerified={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Luckindelning"),{target:{value:"custom"}});
+    fireEvent.click(screen.getByLabelText("Jag har valt skänkens yttermått och luckindelning"));
+    fireEvent.change(screen.getByLabelText("Nyttolast per hyllplan (kg)"),{target:{value:"32"}});
+    expect(screen.getByLabelText("Jag har valt skänkens yttermått och luckindelning")).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button",{name:"Skapa skänk"}));
+    await waitFor(()=>expect(call).toHaveBeenCalledWith(expect.objectContaining({
+      dimensions_confirmed:false,front_percent:[21,17,23,20,19],
+      review:expect.objectContaining({shelf_payload_kg:32,hinge_paths:[]}),
+    })));
+    fireEvent.change(screen.getByLabelText("Lucka 3 (%)"),{target:{value:"25"}});
+    fireEvent.click(screen.getByRole("button",{name:"Skapa skänk"}));
+    expect(await screen.findByRole("alert")).toHaveTextContent("100 %");
+    expect(call).toHaveBeenCalledTimes(1);
+  });
   it("discards late responses when dimensions change", async () => {
     let finish!: (result: Construction) => void;
     vi.spyOn(CustombuildApiClient.prototype, "constructSideboard").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     render(<SideboardConstruction runtimeConfig={config} open={vi.fn()} openVerified={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Skapa skänk" }));
+    await waitFor(() => expect(finish).toBeTypeOf("function"));
     fireEvent.change(screen.getByLabelText("Skänkens höjd (mm)"), { target: { value: "780" } });
     await act(async () => finish(fixture()));
     expect(screen.queryByRole("button", { name: "Öppna skänkens delar" })).toBeNull();

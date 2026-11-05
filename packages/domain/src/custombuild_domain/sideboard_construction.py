@@ -5,13 +5,14 @@ All coordinates are millimetres at the builder boundary and integer µm in the m
 """
 
 from collections import Counter
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
 from .identity import content_hash
 from .measured_assembly import MeasuredAssembly, MeasuredFitting, measured_assembly_hash
 from .models import FrozenModel
+from .sideboard_verification import SideboardAssessment, SideboardReviewInputs, assess_sideboard
 
 SOURCE = "Custombuild S1: vald skänkkonstruktion efter foto IMG_8289; inga fotoavlästa mått."
 SOURCES = (
@@ -30,11 +31,17 @@ class SideboardRequest(FrozenModel):
     door_count: Literal[5] = 5
     material: Literal["walnut-veneered-plywood"] = "walnut-veneered-plywood"
     dimensions_confirmed: bool = False
+    front_percent: tuple[Annotated[int, Field(strict=True, ge=10, le=32)], ...] | None = Field(
+        default=None, min_length=5, max_length=5, exclude_if=lambda v: v is None
+    )
+    review: SideboardReviewInputs | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def useful_case(self) -> "SideboardRequest":
         if self.height_mm - self.leg_height_mm < 450:
             raise ValueError("Stommen behöver minst 450 mm höjd för denna beslagssättning.")
+        if self.front_percent is not None and sum(self.front_percent) != 100:
+            raise ValueError("De fem luckandelarna måste summera till 100 %.")
         return self
 
 
@@ -60,6 +67,7 @@ class SideboardConstruction(FrozenModel):
     assembly_sequence: tuple[str, ...]
     assumptions: tuple[str, ...]
     outstanding_acceptance: tuple[str, ...]
+    assessment: SideboardAssessment | None = Field(default=None, exclude_if=lambda v: v is None)
     sources: tuple[str, ...] = SOURCES
     physical_cutting_authorized: Literal[False] = False
 
@@ -227,6 +235,18 @@ def construct_sideboard(request: SideboardRequest) -> SideboardConstruction:
     part("SIDE-L", "Vänster gavel", (t, body_d, clear_h), (0, 0, leg + t), "z")
     part("SIDE-R", "Höger gavel", (t, body_d, clear_h), (w - t, 0, leg + t), "z")
     partitions = [t + (i + 1) * bay + i * divider for i in range(4)]
+    if request.front_percent is not None:
+        # Shares refer to finished fronts, excluding all six gaps.
+        wood_width = w - 2 * t - 6 * gap
+        partitions = [
+            t
+            + gap
+            + wood_width * sum(request.front_percent[:i]) / 100
+            + (i - 0.5) * gap
+            - divider / 2
+            for i in range(1, 5)
+        ]
+    bays = list(zip([t, *(x + divider for x in partitions)], [*partitions, w - t], strict=True))
     for i, x in enumerate(partitions, 1):
         part(
             f"DIV-{i}",
@@ -299,9 +319,8 @@ def construct_sideboard(request: SideboardRequest) -> SideboardConstruction:
             for z, support in ((leg + 12, "BOTTOM"), (h - 12, "TOP")):
                 screw(key, support, "back", "xz", x, z, back_t, 3, 16, 2, 14, 2.5)
 
-    for i in range(5):
-        left = t + i * (bay + divider)
-        right = left + bay
+    for i, (left, right) in enumerate(bays):
+        bay = right - left
         left_part = "SIDE-L" if i == 0 else f"DIV-{i}"
         right_part = "SIDE-R" if i == 4 else f"DIV-{i + 1}"
         door_left = t + gap if i == 0 else left - divider / 2 + gap / 2
@@ -442,10 +461,10 @@ def construct_sideboard(request: SideboardRequest) -> SideboardConstruction:
             id=f"REAR-{i + 1}",
             label=f"Baköppning {i + 1}",
             target="covered",
-            low_um=(um(t + i * (bay + divider)), um(body_d), um(leg + t)),
-            high_um=(um(t + i * (bay + divider) + bay), um(d), um(h - t)),
+            low_um=(um(left), um(body_d), um(leg + t)),
+            high_um=(um(right), um(d), um(h - t)),
         )
-        for i in range(5)
+        for i, (left, right) in enumerate(bays)
     ]
     outstanding = (
         *(
@@ -481,6 +500,11 @@ def construct_sideboard(request: SideboardRequest) -> SideboardConstruction:
     )
     package = SideboardConstruction(
         request=request,
+        assessment=(
+            assess_sideboard(assembly, request.review, request.dimensions_confirmed)
+            if request.review is not None
+            else None
+        ),
         assembly=assembly,
         assembly_sha256=measured_assembly_hash(assembly),
         construction_sha256="",

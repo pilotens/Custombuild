@@ -1,3 +1,4 @@
+import json
 from copy import deepcopy
 from io import StringIO
 
@@ -12,7 +13,14 @@ def exercise_constructed_sideboard(client, case, e, tmp_path):
     path = "/v1/constructions/sideboard"
     before = response_json(client.post(path, json={}))
     package = SideboardConstruction.model_validate(before)
+    plan = {"front_percent": [21, 17, 23, 20, 19], "review": {}}
     if case.level == "easy":
+        assessed = response_json(client.post(path, json=plan))
+        e.equal(
+            "door_motion_without_supplier_path",
+            [r["state"] for r in assessed["assessment"]["door_motion"]],
+            ["missing_path"] * 5,
+        )
         e.equal(
             "parts_joints_fittings_operations",
             [
@@ -26,6 +34,8 @@ def exercise_constructed_sideboard(client, case, e, tmp_path):
         return
     if case.level == "impossible":
         for invalid in (
+            {"front_percent": [21, 17, 23, 21, 19]},
+            {"review": {"hinge_paths": [{"article": "70T3750.TL", "poses": []}]}},
             {"width_mm": 0},
             {"door_count": 6},
             {"height_mm": 650, "leg_height_mm": 220},
@@ -45,6 +55,13 @@ def exercise_constructed_sideboard(client, case, e, tmp_path):
             )
             audit, _ = audit_sideboard(sample)
             assert audit["wood_and_boring_checks_passed"], audit
+        layout = SideboardConstruction.model_validate(response_json(client.post(path, json=plan)))
+        assert audit_sideboard(layout)[0]["wood_and_boring_checks_passed"]
+        e.equal(
+            "front_widths_um",
+            [p.size_um[0] for p in layout.assembly.parts if p.id.startswith("DOOR-")],
+            [490140, 396780, 536820, 466800, 443460],
+        )
         e.note("boundary_sizes", "1800/400/650 och 2600/550/850 mm har full CAD-passning.")
         return
     audit, _ = audit_sideboard(package)
@@ -52,6 +69,15 @@ def exercise_constructed_sideboard(client, case, e, tmp_path):
     assert not audit["physical_cutting_authorized"] and not audit["hinge_motion_verified"]
     e.equal("wood_pairs", audit["pairs_checked"], 703)
     if case.level == "hard":
+        failed_plan = response_json(
+            client.post(path, json={**plan, "review": {"edge_error_mm": 1.2}})
+        )
+        assert all(g["state"] == "insufficient" for g in failed_plan["assessment"]["hinge_gaps"])
+        fixed = response_json(client.post(path, json=plan))
+        assert all(g["state"] == "within_table" for g in fixed["assessment"]["hinge_gaps"])
+        e.note(
+            "gap_repair", "Kantfel ±1,2 mm stoppar springkravet; ±0,2 mm ger godkänt katalogprov."
+        )
         bad = deepcopy(before)
         back = next(p for p in bad["assembly"]["parts"] if p["id"] == "BACK-3")
         back["size_um"][2] = 150000
@@ -67,7 +93,11 @@ def exercise_constructed_sideboard(client, case, e, tmp_path):
         import cadquery as cq
         import ezdxf
 
+        package = SideboardConstruction.model_validate(response_json(client.post(path, json=plan)))
         files = sideboard_files(package)
+        report = json.loads(files["validation/planning.json"])
+        assert report["closed_stability"]["positive_reserve"]
+        assert report["assessment"]["total_shelf_payload_kg"] == 100
         assert sum(p.endswith(".dxf") for p in files) == 228
         drawing = ezdxf.read(StringIO(files["parts/DOOR-1/back.dxf"].decode()))
         assert drawing.units == 4

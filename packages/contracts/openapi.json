@@ -510,6 +510,57 @@
         "title": "Backing",
         "type": "object"
       },
+      "BaseTestRecord": {
+        "additionalProperties": false,
+        "properties": {
+          "assembly_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Assembly Sha256",
+            "type": "string"
+          },
+          "batch": {
+            "maxLength": 120,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Batch",
+            "type": "string"
+          },
+          "case": {
+            "const": "S1-closed-combined-v1",
+            "title": "Case",
+            "type": "string"
+          },
+          "horizontal_n": {
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Horizontal N",
+            "type": "number"
+          },
+          "source": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Source",
+            "type": "string"
+          },
+          "total_vertical_n": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 100000.0,
+            "title": "Total Vertical N",
+            "type": "number"
+          }
+        },
+        "required": [
+          "assembly_sha256",
+          "source",
+          "batch",
+          "case",
+          "total_vertical_n",
+          "horizontal_n"
+        ],
+        "title": "BaseTestRecord",
+        "type": "object"
+      },
       "Body_inspect_import_v1_projects__project_id__imports_inspect_post": {
         "properties": {
           "document": {
@@ -1303,6 +1354,79 @@
           }
         },
         "title": "ChestIntent",
+        "type": "object"
+      },
+      "ClosedStability": {
+        "additionalProperties": false,
+        "properties": {
+          "base_test_comparison": {
+            "enum": [
+              "missing",
+              "wrong_assembly",
+              "wrong_batch",
+              "outside_recorded_case",
+              "within_recorded_case"
+            ],
+            "title": "Base Test Comparison",
+            "type": "string"
+          },
+          "basis": {
+            "maxLength": 600,
+            "minLength": 1,
+            "title": "Basis",
+            "type": "string"
+          },
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/TippingEdge"
+            },
+            "maxItems": 4,
+            "minItems": 4,
+            "title": "Edges",
+            "type": "array"
+          },
+          "horizontal_force_n": {
+            "minimum": 0.0,
+            "title": "Horizontal Force N",
+            "type": "number"
+          },
+          "positive_reserve": {
+            "title": "Positive Reserve",
+            "type": "boolean"
+          },
+          "push_moment_nm": {
+            "minimum": 0.0,
+            "title": "Push Moment Nm",
+            "type": "number"
+          },
+          "top_payload_kg": {
+            "minimum": 0.0,
+            "title": "Top Payload Kg",
+            "type": "number"
+          },
+          "total_vertical_n": {
+            "exclusiveMinimum": 0.0,
+            "title": "Total Vertical N",
+            "type": "number"
+          },
+          "wood_mass_kg": {
+            "exclusiveMinimum": 0.0,
+            "title": "Wood Mass Kg",
+            "type": "number"
+          }
+        },
+        "required": [
+          "wood_mass_kg",
+          "horizontal_force_n",
+          "top_payload_kg",
+          "push_moment_nm",
+          "edges",
+          "positive_reserve",
+          "total_vertical_n",
+          "base_test_comparison",
+          "basis"
+        ],
+        "title": "ClosedStability",
         "type": "object"
       },
       "ConvexProfile": {
@@ -4763,6 +4887,139 @@
         "title": "HardwareSelection",
         "type": "object"
       },
+      "HingeGap": {
+        "additionalProperties": false,
+        "properties": {
+          "article": {
+            "title": "Article",
+            "type": "string"
+          },
+          "available_mm": {
+            "title": "Available Mm",
+            "type": "number"
+          },
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "required_mm": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Mm"
+          },
+          "state": {
+            "enum": [
+              "within_table",
+              "insufficient",
+              "outside_table"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "part_id",
+          "article",
+          "available_mm",
+          "required_mm",
+          "state"
+        ],
+        "title": "HingeGap",
+        "type": "object"
+      },
+      "HingePath": {
+        "additionalProperties": false,
+        "properties": {
+          "article": {
+            "enum": [
+              "70T3750.TL",
+              "70T3650.TL"
+            ],
+            "title": "Article",
+            "type": "string"
+          },
+          "cup_distance_mm": {
+            "enum": [
+              6,
+              7
+            ],
+            "title": "Cup Distance Mm",
+            "type": "integer"
+          },
+          "front_mm": {
+            "const": 19,
+            "title": "Front Mm",
+            "type": "integer"
+          },
+          "plate": {
+            "const": "175H7100",
+            "title": "Plate",
+            "type": "string"
+          },
+          "poses": {
+            "items": {
+              "$ref": "#/components/schemas/HingePose"
+            },
+            "maxItems": 111,
+            "minItems": 23,
+            "title": "Poses",
+            "type": "array"
+          },
+          "source": {
+            "maxLength": 180,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "article",
+          "plate",
+          "front_mm",
+          "cup_distance_mm",
+          "source",
+          "poses"
+        ],
+        "title": "HingePath",
+        "type": "object"
+      },
+      "HingePose": {
+        "additionalProperties": false,
+        "properties": {
+          "angle_deg": {
+            "maximum": 110.0,
+            "minimum": 0.0,
+            "title": "Angle Deg",
+            "type": "integer"
+          },
+          "dx_mm": {
+            "maximum": 100.0,
+            "minimum": -100.0,
+            "title": "Dx Mm",
+            "type": "number"
+          },
+          "dy_mm": {
+            "maximum": 100.0,
+            "minimum": -100.0,
+            "title": "Dy Mm",
+            "type": "number"
+          }
+        },
+        "required": [
+          "angle_deg",
+          "dx_mm",
+          "dy_mm"
+        ],
+        "title": "HingePose",
+        "type": "object"
+      },
       "ImportInspection": {
         "properties": {
           "assumptions": {
@@ -6920,6 +7177,16 @@
             "title": "Cells",
             "type": "object"
           },
+          "closed_stability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ClosedStability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "fastener_interferences": {
             "default": [],
             "items": {
@@ -7096,6 +7363,69 @@
         "title": "MeasuredRoom",
         "type": "object"
       },
+      "MotionResult": {
+        "additionalProperties": false,
+        "properties": {
+          "angle_deg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Angle Deg"
+          },
+          "article": {
+            "title": "Article",
+            "type": "string"
+          },
+          "door_id": {
+            "title": "Door Id",
+            "type": "string"
+          },
+          "obstacle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Obstacle"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source"
+          },
+          "state": {
+            "enum": [
+              "missing_path",
+              "clear_in_model",
+              "envelope_contact",
+              "inconclusive"
+            ],
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "door_id",
+          "article",
+          "state"
+        ],
+        "title": "MotionResult",
+        "type": "object"
+      },
       "MovingGroup": {
         "additionalProperties": false,
         "properties": {
@@ -7177,6 +7507,51 @@
         ],
         "title": "OpenEndRelief",
         "type": "string"
+      },
+      "PanelMeasurements": {
+        "additionalProperties": false,
+        "properties": {
+          "back_mm": {
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Back Mm",
+            "type": "number"
+          },
+          "batch": {
+            "maxLength": 120,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Batch",
+            "type": "string"
+          },
+          "carcass_mm": {
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Carcass Mm",
+            "type": "number"
+          },
+          "front_mm": {
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Front Mm",
+            "type": "number"
+          },
+          "shelf_divider_mm": {
+            "maximum": 60.0,
+            "minimum": 1.0,
+            "title": "Shelf Divider Mm",
+            "type": "number"
+          }
+        },
+        "required": [
+          "batch",
+          "back_mm",
+          "shelf_divider_mm",
+          "front_mm",
+          "carcass_mm"
+        ],
+        "title": "PanelMeasurements",
+        "type": "object"
       },
       "PartDrawing": {
         "additionalProperties": false,
@@ -8723,6 +9098,44 @@
         "title": "RoundedProfile",
         "type": "object"
       },
+      "ShelfMaterialData": {
+        "additionalProperties": false,
+        "properties": {
+          "allowable_bending_mpa": {
+            "exclusiveMinimum": 0.0,
+            "maximum": 200.0,
+            "title": "Allowable Bending Mpa",
+            "type": "number"
+          },
+          "density_kg_m3": {
+            "maximum": 1800.0,
+            "minimum": 100.0,
+            "title": "Density Kg M3",
+            "type": "number"
+          },
+          "service_modulus_mpa": {
+            "maximum": 50000.0,
+            "minimum": 1.0,
+            "title": "Service Modulus Mpa",
+            "type": "number"
+          },
+          "source": {
+            "maxLength": 160,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "density_kg_m3",
+          "service_modulus_mpa",
+          "allowable_bending_mpa"
+        ],
+        "title": "ShelfMaterialData",
+        "type": "object"
+      },
       "ShelfMount": {
         "enum": [
           "fixed",
@@ -8730,6 +9143,74 @@
         ],
         "title": "ShelfMount",
         "type": "string"
+      },
+      "ShelfScreen": {
+        "additionalProperties": false,
+        "properties": {
+          "bending_stress_mpa": {
+            "title": "Bending Stress Mpa",
+            "type": "number"
+          },
+          "bending_within_declared_limit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bending Within Declared Limit"
+          },
+          "deflection_mm": {
+            "title": "Deflection Mm",
+            "type": "number"
+          },
+          "deflection_within_limit": {
+            "title": "Deflection Within Limit",
+            "type": "boolean"
+          },
+          "limit_mm": {
+            "title": "Limit Mm",
+            "type": "number"
+          },
+          "part_id": {
+            "title": "Part Id",
+            "type": "string"
+          },
+          "pin_within_declared_load": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin Within Declared Load"
+          },
+          "span_mm": {
+            "title": "Span Mm",
+            "type": "number"
+          },
+          "support_demand_n": {
+            "title": "Support Demand N",
+            "type": "number"
+          }
+        },
+        "required": [
+          "part_id",
+          "span_mm",
+          "deflection_mm",
+          "limit_mm",
+          "bending_stress_mpa",
+          "bending_within_declared_limit",
+          "support_demand_n",
+          "deflection_within_limit",
+          "pin_within_declared_load"
+        ],
+        "title": "ShelfScreen",
+        "type": "object"
       },
       "ShelvingIntent": {
         "additionalProperties": false,
@@ -8839,6 +9320,83 @@
         "title": "ShelvingIntent",
         "type": "object"
       },
+      "SideboardAssessment": {
+        "additionalProperties": false,
+        "properties": {
+          "batch_state": {
+            "enum": [
+              "missing",
+              "matches_nominal",
+              "revise_dimensions"
+            ],
+            "title": "Batch State",
+            "type": "string"
+          },
+          "door_motion": {
+            "items": {
+              "$ref": "#/components/schemas/MotionResult"
+            },
+            "title": "Door Motion",
+            "type": "array"
+          },
+          "findings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Findings",
+            "type": "array"
+          },
+          "hinge_gaps": {
+            "items": {
+              "$ref": "#/components/schemas/HingeGap"
+            },
+            "title": "Hinge Gaps",
+            "type": "array"
+          },
+          "material_profile": {
+            "title": "Material Profile",
+            "type": "string"
+          },
+          "minimum_divider_web_mm": {
+            "title": "Minimum Divider Web Mm",
+            "type": "number"
+          },
+          "minimum_front_skin_mm": {
+            "title": "Minimum Front Skin Mm",
+            "type": "number"
+          },
+          "physical_cutting_authorized": {
+            "const": false,
+            "default": false,
+            "title": "Physical Cutting Authorized",
+            "type": "boolean"
+          },
+          "shelf_screens": {
+            "items": {
+              "$ref": "#/components/schemas/ShelfScreen"
+            },
+            "title": "Shelf Screens",
+            "type": "array"
+          },
+          "total_shelf_payload_kg": {
+            "title": "Total Shelf Payload Kg",
+            "type": "number"
+          }
+        },
+        "required": [
+          "shelf_screens",
+          "hinge_gaps",
+          "door_motion",
+          "batch_state",
+          "minimum_divider_web_mm",
+          "minimum_front_skin_mm",
+          "findings",
+          "material_profile",
+          "total_shelf_payload_kg"
+        ],
+        "title": "SideboardAssessment",
+        "type": "object"
+      },
       "SideboardBlank": {
         "additionalProperties": false,
         "properties": {
@@ -8921,6 +9479,16 @@
           "assembly_sha256": {
             "title": "Assembly Sha256",
             "type": "string"
+          },
+          "assessment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SideboardAssessment"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "assumptions": {
             "items": {
@@ -9051,6 +9619,24 @@
             "title": "Door Count",
             "type": "integer"
           },
+          "front_percent": {
+            "anyOf": [
+              {
+                "items": {
+                  "maximum": 32.0,
+                  "minimum": 10.0,
+                  "type": "integer"
+                },
+                "maxItems": 5,
+                "minItems": 5,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Front Percent"
+          },
           "height_mm": {
             "default": 750,
             "maximum": 850.0,
@@ -9071,6 +9657,16 @@
             "title": "Material",
             "type": "string"
           },
+          "review": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SideboardReviewInputs"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "width_mm": {
             "default": 2400,
             "maximum": 2600.0,
@@ -9080,6 +9676,114 @@
           }
         },
         "title": "SideboardRequest",
+        "type": "object"
+      },
+      "SideboardReviewInputs": {
+        "additionalProperties": false,
+        "properties": {
+          "base_test": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BaseTestRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "bore_depth_error_mm": {
+            "default": 0.3,
+            "maximum": 3.0,
+            "minimum": 0.0,
+            "title": "Bore Depth Error Mm",
+            "type": "number"
+          },
+          "edge_error_mm": {
+            "default": 0.2,
+            "maximum": 3.0,
+            "minimum": 0.0,
+            "title": "Edge Error Mm",
+            "type": "number"
+          },
+          "hinge_paths": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/HingePath"
+            },
+            "maxItems": 2,
+            "title": "Hinge Paths",
+            "type": "array"
+          },
+          "horizontal_force_n": {
+            "default": 50,
+            "maximum": 1000.0,
+            "minimum": 0.0,
+            "title": "Horizontal Force N",
+            "type": "number"
+          },
+          "measurements": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PanelMeasurements"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pin_source": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin Source"
+          },
+          "pin_working_load_n": {
+            "anyOf": [
+              {
+                "exclusiveMinimum": 0.0,
+                "maximum": 10000.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pin Working Load N"
+          },
+          "shelf_material": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ShelfMaterialData"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "shelf_payload_kg": {
+            "default": 20,
+            "maximum": 200.0,
+            "minimum": 0.0,
+            "title": "Shelf Payload Kg",
+            "type": "number"
+          },
+          "top_payload_kg": {
+            "default": 10,
+            "maximum": 200.0,
+            "minimum": 0.0,
+            "title": "Top Payload Kg",
+            "type": "number"
+          }
+        },
+        "title": "SideboardReviewInputs",
         "type": "object"
       },
       "StockCheck": {
@@ -9184,6 +9888,41 @@
           }
         },
         "title": "TableIntent",
+        "type": "object"
+      },
+      "TippingEdge": {
+        "additionalProperties": false,
+        "properties": {
+          "edge": {
+            "enum": [
+              "vänster",
+              "höger",
+              "fram",
+              "bak"
+            ],
+            "title": "Edge",
+            "type": "string"
+          },
+          "empty_reserve_nm": {
+            "title": "Empty Reserve Nm",
+            "type": "number"
+          },
+          "fully_loaded_reserve_nm": {
+            "title": "Fully Loaded Reserve Nm",
+            "type": "number"
+          },
+          "minimum_reserve_nm": {
+            "title": "Minimum Reserve Nm",
+            "type": "number"
+          }
+        },
+        "required": [
+          "edge",
+          "empty_reserve_nm",
+          "fully_loaded_reserve_nm",
+          "minimum_reserve_nm"
+        ],
+        "title": "TippingEdge",
         "type": "object"
       },
       "TrestleConstruction": {

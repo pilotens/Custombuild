@@ -199,3 +199,52 @@ def test_real_export_includes_machined_step_face_drawings_and_every_operation(cl
             content = archive.read(entry["path"])
             assert len(content) == entry["size_bytes"]
             assert hashlib.sha256(content).hexdigest() == entry["sha256"]
+
+
+def test_reference_layout_and_planning_survive_the_real_export_and_inspection(
+    client, monkeypatch, tmp_path
+):
+    install_review_storage(monkeypatch)
+    path = "/v1/constructions/sideboard"
+    request = {"front_percent": [21, 17, 23, 20, 19], "review": {}}
+    preview = client.post(path, headers=HEADERS, json=request).json()
+    body = {
+        "expected_construction_sha256": preview["construction_sha256"],
+        "request": request,
+        "idempotency_key": str(uuid4()),
+    }
+    job = client.post(path + "/exports", headers=HEADERS, json=body).json()
+    assert tasks.generate_furniture_review.run(job["job_id"], TENANT)["state"] == "succeeded"
+    status = client.get(
+        f"/v1/furniture/projects/{job['project_id']}/exports/{job['job_id']}", headers=HEADERS
+    ).json()
+    contents = client.get(status["download_path"], headers=HEADERS).content
+    zip_path = tmp_path / "Custombuild-S1-konstruktionsprov.zip"
+    zip_path.write_bytes(contents)
+    with zipfile.ZipFile(zip_path) as archive:
+        evidence = json.loads(archive.read("validation/planning.json"))
+        assert evidence["construction_sha256"] == preview["construction_sha256"]
+        assert evidence["assessment"] == preview["assessment"]
+        assert all(m["state"] == "missing_path" for m in evidence["assessment"]["door_motion"])
+        assert evidence["closed_stability"]["positive_reserve"]
+        assert evidence["closed_stability"]["push_moment_nm"] == 37.5
+        assert {r["edge"] for r in evidence["closed_stability"]["edges"]} == {
+            "vänster",
+            "höger",
+            "fram",
+            "bak",
+        }
+        assert evidence["assessment"]["physical_cutting_authorized"] is False
+    proof = client.get(
+        f"{path}/projects/{job['project_id']}/exports/{job['job_id']}/inspection", headers=HEADERS
+    )
+    assert proof.status_code == 200, proof.text
+    assert proof.json()["closed_stability"] == evidence["closed_stability"]
+    assert proof.json()["assembly_sha256"] == preview["assembly_sha256"]
+    assert proof.json()["physical_cutting_authorized"] is False
+    mismatch = client.post(
+        path + "/exports",
+        headers=HEADERS,
+        json={**body, "request": {**request, "review": {"shelf_payload_kg": 30}}},
+    )
+    assert mismatch.status_code == 409

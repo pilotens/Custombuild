@@ -6,6 +6,8 @@ import type { components } from "@/lib/api-schema";
 import type { MeasuredResult, MeasuredWork } from "@/lib/measured-assembly";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import css from "./measured-register.module.css";
+import { readSideboardPlan, SideboardPlanningFields, SideboardPlanningResult, SideboardStabilityResult } from "./sideboard-planning";
+import { SideboardTravel } from "./sideboard-travel";
 import { TrestleExport } from "./trestle-export";
 
 export function SideboardConstruction({runtimeConfig,open,openVerified}: {
@@ -18,12 +20,14 @@ export function SideboardConstruction({runtimeConfig,open,openVerified}: {
   const [result,setResult]=useState<components["schemas"]["SideboardConstruction"]>();
   const [proof,setProof]=useState<MeasuredResult>();
   const [error,setError]=useState("");const [busy,setBusy]=useState(false);const serial=useRef(0);
-  function invalidate(){++serial.current;setResult(undefined);setProof(undefined);setError("");setBusy(false)}
-  async function construct(){
+  function invalidate(){++serial.current;setConfirmed(false);setResult(undefined);setProof(undefined);setError("");setBusy(false)}
+  async function construct(form: FormData){
     const epoch=++serial.current;setBusy(true);setError("");setResult(undefined);setProof(undefined);
     try{
       const client=new CustombuildApiClient(runtimeConfig.apiUrl,undefined,runtimeConfig.developmentToken);
-      const next=await client.constructSideboard({width_mm:Number(values[0]),depth_mm:Number(values[1]),height_mm:Number(values[2]),leg_height_mm:Number(values[3]),
+      const plan = await readSideboardPlan(form);
+      if(epoch !== serial.current)return;
+      const next=await client.constructSideboard({...plan,width_mm:Number(values[0]),depth_mm:Number(values[1]),height_mm:Number(values[2]),leg_height_mm:Number(values[3]),
         door_count:5,material:"walnut-veneered-plywood",dimensions_confirmed:confirmed});
       if(next.physical_cutting_authorized!==false||!/^[a-f0-9]{64}$/.test(next.construction_sha256)||!/^[a-f0-9]{64}$/.test(next.assembly_sha256))throw Error("Konstruktionens identitet saknas.");
       if(epoch===serial.current)setResult(next);
@@ -34,10 +38,10 @@ export function SideboardConstruction({runtimeConfig,open,openVerified}: {
     <h2 id="sideboard-title">Konstruera skänken med fem luckor</h2>
     <p>S1 följer referensens låga proportioner, fem släta fronter och smala springor. Valnötsfanerad plywood med ben och underrede i massiv valnöt.
       Två extra mittben stödjer den långa stommen. Måtten är valda provmått.</p>
-    <form onSubmit={e=>{e.preventDefault();void construct()}}><div className={css.toolbar}>
+    <form onSubmit={e=>{e.preventDefault();void construct(new FormData(e.currentTarget))}}><div className={css.toolbar}>
       {[["Skänkens bredd (mm)",1800,2600],["Skänkens djup (mm)",400,550],["Skänkens höjd (mm)",650,850],["Benhöjd (mm)",140,220]].map(([label,min,max],i)=><label key={label}>{label}
         <input type="number" min={min} max={max} step="1" required value={values[i]} onChange={e=>{invalidate();setValues(prev=>prev.map((v,j)=>j===i?e.target.value:v))}} /></label>)}
-    </div><label><input type="checkbox" checked={confirmed} onChange={e=>{invalidate();setConfirmed(e.target.checked)}} /> Jag har valt skänkens yttermått</label>{" "}
+    </div><SideboardPlanningFields invalidate={invalidate}/><label><input type="checkbox" checked={confirmed} onChange={e=>{invalidate();setConfirmed(e.target.checked)}} /> Jag har valt skänkens yttermått och luckindelning</label>{" "}
       <button type="submit" disabled={busy}>{busy?"Konstruerar skänk …":"Skapa skänk"}</button></form>
     {error&&<p role="alert">{error}</p>}
     {result&&<div aria-live="polite">
@@ -50,7 +54,10 @@ export function SideboardConstruction({runtimeConfig,open,openVerified}: {
         <tbody>{result.purchase_blanks.map(b=><tr key={b.part_id}><td>{b.part_id}</td><td>{b.purchase_min_lbt_um.map(x=>x/1000).join(" × ")}</td></tr>)}</tbody></table>
         <ul>{Object.entries(result.hardware).map(([article,n])=><li key={article}>{n} st · {article}</li>)}</ul></details>
       <details><summary>Skänkens monteringsordning</summary><ol>{result.assembly_sequence.map(s=><li key={s}>{s}</li>)}</ol></details>
+      {result.assessment && <><SideboardPlanningResult report={result.assessment}/><SideboardTravel construction={result}/>
+        <small>Montering för provprotokoll: <code className={css.hash}>{result.assembly_sha256}</code></small></>}
       <TrestleExport key={result.construction_sha256} construction={result} runtimeConfig={runtimeConfig} verified={setProof}/>
+      {proof?.closed_stability && <SideboardStabilityResult report={proof.closed_stability}/>}
       <ul>{result.outstanding_acceptance.map(a=><li key={a}>{a}</li>)}</ul>
     </div>}
   </section>;

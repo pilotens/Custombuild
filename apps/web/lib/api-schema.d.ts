@@ -1040,6 +1040,24 @@ export interface components {
             /** Part Ids */
             part_ids: string[];
         };
+        /** BaseTestRecord */
+        BaseTestRecord: {
+            /** Assembly Sha256 */
+            assembly_sha256: string;
+            /** Batch */
+            batch: string;
+            /**
+             * Case
+             * @constant
+             */
+            case: "S1-closed-combined-v1";
+            /** Horizontal N */
+            horizontal_n: number;
+            /** Source */
+            source: string;
+            /** Total Vertical N */
+            total_vertical_n: number;
+        };
         /** Body_inspect_import_v1_projects__project_id__imports_inspect_post */
         Body_inspect_import_v1_projects__project_id__imports_inspect_post: {
             /** Document */
@@ -1489,6 +1507,30 @@ export interface components {
              * @default 800000
              */
             width_um: number;
+        };
+        /** ClosedStability */
+        ClosedStability: {
+            /**
+             * Base Test Comparison
+             * @enum {string}
+             */
+            base_test_comparison: "missing" | "wrong_assembly" | "wrong_batch" | "outside_recorded_case" | "within_recorded_case";
+            /** Basis */
+            basis: string;
+            /** Edges */
+            edges: components["schemas"]["TippingEdge"][];
+            /** Horizontal Force N */
+            horizontal_force_n: number;
+            /** Positive Reserve */
+            positive_reserve: boolean;
+            /** Push Moment Nm */
+            push_moment_nm: number;
+            /** Top Payload Kg */
+            top_payload_kg: number;
+            /** Total Vertical N */
+            total_vertical_n: number;
+            /** Wood Mass Kg */
+            wood_mass_kg: number;
         };
         /** ConvexProfile */
         ConvexProfile: {
@@ -2804,6 +2846,58 @@ export interface components {
              */
             version: string;
         };
+        /** HingeGap */
+        HingeGap: {
+            /** Article */
+            article: string;
+            /** Available Mm */
+            available_mm: number;
+            /** Part Id */
+            part_id: string;
+            /** Required Mm */
+            required_mm: number | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "within_table" | "insufficient" | "outside_table";
+        };
+        /** HingePath */
+        HingePath: {
+            /**
+             * Article
+             * @enum {string}
+             */
+            article: "70T3750.TL" | "70T3650.TL";
+            /**
+             * Cup Distance Mm
+             * @enum {integer}
+             */
+            cup_distance_mm: 6 | 7;
+            /**
+             * Front Mm
+             * @constant
+             */
+            front_mm: 19;
+            /**
+             * Plate
+             * @constant
+             */
+            plate: "175H7100";
+            /** Poses */
+            poses: components["schemas"]["HingePose"][];
+            /** Source */
+            source: string;
+        };
+        /** HingePose */
+        HingePose: {
+            /** Angle Deg */
+            angle_deg: number;
+            /** Dx Mm */
+            dx_mm: number;
+            /** Dy Mm */
+            dy_mm: number;
+        };
         /** ImportInspection */
         ImportInspection: {
             /** Assumptions */
@@ -3570,6 +3664,7 @@ export interface components {
                     number
                 ][];
             };
+            closed_stability?: components["schemas"]["ClosedStability"] | null;
             /**
              * Fastener Interferences
              * @default []
@@ -3631,6 +3726,24 @@ export interface components {
             /** Source */
             source: string;
         };
+        /** MotionResult */
+        MotionResult: {
+            /** Angle Deg */
+            angle_deg?: number | null;
+            /** Article */
+            article: string;
+            /** Door Id */
+            door_id: string;
+            /** Obstacle */
+            obstacle?: string | null;
+            /** Source */
+            source?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "missing_path" | "clear_in_model" | "envelope_contact" | "inconclusive";
+        };
         /** MovingGroup */
         MovingGroup: {
             /**
@@ -3662,6 +3775,19 @@ export interface components {
          * @enum {string}
          */
         OpenEndRelief: "u_min" | "u_max" | "v_min" | "v_max";
+        /** PanelMeasurements */
+        PanelMeasurements: {
+            /** Back Mm */
+            back_mm: number;
+            /** Batch */
+            batch: string;
+            /** Carcass Mm */
+            carcass_mm: number;
+            /** Front Mm */
+            front_mm: number;
+            /** Shelf Divider Mm */
+            shelf_divider_mm: number;
+        };
         /** PartDrawing */
         PartDrawing: {
             /** Holes */
@@ -4268,11 +4394,43 @@ export interface components {
             /** Source */
             source: string;
         };
+        /** ShelfMaterialData */
+        ShelfMaterialData: {
+            /** Allowable Bending Mpa */
+            allowable_bending_mpa: number;
+            /** Density Kg M3 */
+            density_kg_m3: number;
+            /** Service Modulus Mpa */
+            service_modulus_mpa: number;
+            /** Source */
+            source: string;
+        };
         /**
          * ShelfMount
          * @enum {string}
          */
         ShelfMount: "fixed" | "adjustable";
+        /** ShelfScreen */
+        ShelfScreen: {
+            /** Bending Stress Mpa */
+            bending_stress_mpa: number;
+            /** Bending Within Declared Limit */
+            bending_within_declared_limit: boolean | null;
+            /** Deflection Mm */
+            deflection_mm: number;
+            /** Deflection Within Limit */
+            deflection_within_limit: boolean;
+            /** Limit Mm */
+            limit_mm: number;
+            /** Part Id */
+            part_id: string;
+            /** Pin Within Declared Load */
+            pin_within_declared_load: boolean | null;
+            /** Span Mm */
+            span_mm: number;
+            /** Support Demand N */
+            support_demand_n: number;
+        };
         /** ShelvingIntent */
         ShelvingIntent: {
             /** @default inset_groove */
@@ -4341,6 +4499,36 @@ export interface components {
              */
             width_um: number;
         };
+        /** SideboardAssessment */
+        SideboardAssessment: {
+            /**
+             * Batch State
+             * @enum {string}
+             */
+            batch_state: "missing" | "matches_nominal" | "revise_dimensions";
+            /** Door Motion */
+            door_motion: components["schemas"]["MotionResult"][];
+            /** Findings */
+            findings: string[];
+            /** Hinge Gaps */
+            hinge_gaps: components["schemas"]["HingeGap"][];
+            /** Material Profile */
+            material_profile: string;
+            /** Minimum Divider Web Mm */
+            minimum_divider_web_mm: number;
+            /** Minimum Front Skin Mm */
+            minimum_front_skin_mm: number;
+            /**
+             * Physical Cutting Authorized
+             * @default false
+             * @constant
+             */
+            physical_cutting_authorized: false;
+            /** Shelf Screens */
+            shelf_screens: components["schemas"]["ShelfScreen"][];
+            /** Total Shelf Payload Kg */
+            total_shelf_payload_kg: number;
+        };
         /** SideboardBlank */
         SideboardBlank: {
             /** Finished Lbt Um */
@@ -4376,6 +4564,7 @@ export interface components {
             assembly_sequence: string[];
             /** Assembly Sha256 */
             assembly_sha256: string;
+            assessment?: components["schemas"]["SideboardAssessment"] | null;
             /** Assumptions */
             assumptions: string[];
             /** Construction Sha256 */
@@ -4443,6 +4632,8 @@ export interface components {
              * @constant
              */
             door_count: 5;
+            /** Front Percent */
+            front_percent?: number[] | null;
             /**
              * Height Mm
              * @default 750
@@ -4459,11 +4650,52 @@ export interface components {
              * @constant
              */
             material: "walnut-veneered-plywood";
+            review?: components["schemas"]["SideboardReviewInputs"] | null;
             /**
              * Width Mm
              * @default 2400
              */
             width_mm: number;
+        };
+        /** SideboardReviewInputs */
+        SideboardReviewInputs: {
+            base_test?: components["schemas"]["BaseTestRecord"] | null;
+            /**
+             * Bore Depth Error Mm
+             * @default 0.3
+             */
+            bore_depth_error_mm: number;
+            /**
+             * Edge Error Mm
+             * @default 0.2
+             */
+            edge_error_mm: number;
+            /**
+             * Hinge Paths
+             * @default []
+             */
+            hinge_paths: components["schemas"]["HingePath"][];
+            /**
+             * Horizontal Force N
+             * @default 50
+             */
+            horizontal_force_n: number;
+            measurements?: components["schemas"]["PanelMeasurements"] | null;
+            /** Pin Source */
+            pin_source?: string | null;
+            /** Pin Working Load N */
+            pin_working_load_n?: number | null;
+            shelf_material?: components["schemas"]["ShelfMaterialData"] | null;
+            /**
+             * Shelf Payload Kg
+             * @default 20
+             */
+            shelf_payload_kg: number;
+            /**
+             * Top Payload Kg
+             * @default 10
+             */
+            top_payload_kg: number;
         };
         /** StockCheck */
         StockCheck: {
@@ -4521,6 +4753,20 @@ export interface components {
              * @default 1000000
              */
             width_um: number;
+        };
+        /** TippingEdge */
+        TippingEdge: {
+            /**
+             * Edge
+             * @enum {string}
+             */
+            edge: "vänster" | "höger" | "fram" | "bak";
+            /** Empty Reserve Nm */
+            empty_reserve_nm: number;
+            /** Fully Loaded Reserve Nm */
+            fully_loaded_reserve_nm: number;
+            /** Minimum Reserve Nm */
+            minimum_reserve_nm: number;
         };
         /** TrestleConstruction */
         TrestleConstruction: {

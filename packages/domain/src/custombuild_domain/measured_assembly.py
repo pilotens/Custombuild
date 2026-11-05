@@ -20,6 +20,7 @@ from .measured_installation import (
 )
 from .measured_profiles import Profile, check_profile_size
 from .models import FrozenModel
+from .sideboard_stability_report import ClosedStability
 
 Key = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$")]
 Text = Annotated[str, Field(min_length=1, max_length=600)]
@@ -200,6 +201,7 @@ class MeasuredReport(FrozenModel):
         exclude_if=lambda value: not value,
         json_schema_extra=_omitted_empty_default,
     )
+    closed_stability: ClosedStability | None = Field(default=None, exclude_if=lambda v: v is None)
     geometry_method: Literal["exact_cad", "machined_wood"] | None = Field(
         default=None, exclude_if=lambda value: value is None
     )

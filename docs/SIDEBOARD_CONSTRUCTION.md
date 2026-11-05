@@ -120,3 +120,85 @@ short pilots, intersecting shelf bores, shifted hinge plates, authentication,
 tenant isolation, idempotency, draft isolation, snapshot tampering, immutable
 downloads and the complete real worker export. A passing software test does not
 convert the explicit physical acceptance items above into verified facts.
+
+## Optional construction checks in the editor
+
+Open `/assembly`, choose the S1 front layout and enter the work order's loads.
+Front shares are whole percentages of the five **finished wooden fronts**
+excluding the six gaps. The photo preset uses 21/17/23/20/19 as estimates.
+At 2400 mm this gives 490.14, 396.78, 536.82, 466.80 and 443.46 mm.
+A seam moves the divider, dowel/plate/pin bores, shelf, full back, latch and
+corresponding drawings together. The default retains equal internal openings.
+Confirming the dimensions fixes that input on export. Editing the form clears
+the confirmation and discards previous results. Legacy requests without review
+data retain their original construction hashes and export/inspection behavior.
+
+### Loads and workshop measurements
+
+The review compares the actual generated shelf span and depth against the chosen
+uniform payload plus shelf self weight. It uses a simply supported beam,
+I = b t³ / 12, long-term deflection 5 W L³ / (384 E I), and bending stress
+3 W L / (4 b t²). The span limit is min(3 mm, L/200). One pin at each end is
+screened for the full end reaction W/2. This is a beam estimate for symmetric
+loading. Local bearing damage, plate behavior at point supports, joints and
+unusual load positions require separate qualification.
+
+By default the existing screening material uses 680 kg/m³, 6500 MPa, 20%
+stiffness uncertainty and 50% creep allowance. A sourced supplier profile may
+instead specify density, **effective service modulus including creep** along
+the span, and allowable service bending stress. Optional pin working load must
+include a source. Missing declarations stay visible. The four measured panel
+thicknesses are checked at model precision. Edge-position error is counted at
+both meeting edges. Bore overshoot is counted on both opposing divider holes.
+A batch that differs from the actual modeled thickness requires revision.
+
+### Hinge geometry and file import
+
+The automatic gap check uses the Blum 2024/25 catalogue p.77 for R1, MD0, the
+chosen TB6/TB7 arms and the side-adjustment allowance. The bounded table covers
+18–20 mm fronts, rounding thickness up to the next tabulated value. For 19 mm
+the requirement is 0.9 + 0.4 mm. This tests the planning rule at each hinge
+edge. For a custom travel analysis import a UTF-8 JSON **array** (maximum two
+profiles and 64 KiB). The API exposes the `HingePath` schema. Each entry needs:
+
+| Field | Convention |
+|---|---|
+| article / plate | 70T3750.TL or 70T3650.TL / 175H7100 |
+| front_mm / cup_distance_mm | 19 / 7 for inset, 19 / 6 for half-overlay |
+| source | Supplier document or measured fixture and revision |
+| poses | Each has angle_deg, dx_mm, dy_mm. Start (0,0,0), finish 110°, strictly increasing integer angles, at most 5° apart |
+| Translation origin | Displacement of the front **left-front corner** from its closed position. +X goes right, +Y goes into the cabinet |
+| Rotation | Clockwise in XY as seen from above. Interpolate displacement and angle linearly between the supplied poses |
+
+The browser can scrub an imported article path from 0° to 110° in plan view. For each door the other doors stay shut. The checker compares the door's bounding
+rectangle against stationary wood envelopes throughout the modeled travel. It
+certifies an interval only when its separation exceeds the remaining tolerance
+and an upper bound on the motion of every corner. Otherwise it subdivides and
+reports the affected part/angle or an inconclusive interval. The result applies
+to the interpolated model. A supplier file's provenance and interpolation error
+are not independently authenticated. No fixed pivot is provided as a substitute
+for Blum mechanism data. Hardware body collisions and the physical fit stay open.
+
+### Native stability and base protocol
+
+The CAD job computes mass and centers from the 38 machined wood solids with
+assumed densities. Loads include shelf payloads, a top payload at the adverse
+edge and horizontal force at the cabinet top. It compares restoring and
+overturning moments at all four support lines of the actual tapered feet under
+empty, fully loaded and worst bounded partial loading. This static screen assumes
+closed doors, six bearing feet on a level floor, no wall restraint and omits
+purchased-hardware mass. Sliding, dynamic loads and open-door stability are
+outside the model.
+
+An optional combined base-test record declares the tested assembly SHA, measured
+batch ID, source, total vertical force including dead weight and simultaneous
+horizontal force for case S1-closed-combined-v1. The worker compares both loads.
+A changed assembly, mismatched batch or exceeded force stays visible. A matching
+record means only that the calculated demands lie inside the **declared** test
+case. The app does not authenticate a workshop's report or assign a general load rating.
+
+The PDF and `validation/planning.json` accompany the immutable export; the
+native inspection returns the four tipping reserves to the browser. Changes to
+loads, profiles or evidence change the construction identity. Only a change to
+modeled wood/assembly evidence changes its separate assembly identity. All
+physical cutting and qualification flags stay false.

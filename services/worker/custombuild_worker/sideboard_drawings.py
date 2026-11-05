@@ -132,6 +132,121 @@ def sideboard_pdf(package: SideboardConstruction, audit: dict[str, Any]) -> byte
         p("Konstruktion och material", "Heading2"),
     ]
     story += [p(a) for a in package.assumptions]
+    assessment = package.assessment
+    if assessment is not None and package.request.review is not None:
+        review = package.request.review
+        story += [
+            PageBreak(),
+            p("Konstruktionsprov", "Heading1"),
+            p(
+                f"Jämnt fördelad nyttolast {review.shelf_payload_kg:g} kg/hylla. "
+                f"Materialunderlag {assessment.material_profile}."
+            ),
+            table(
+                [["Hyllplan", "Spann mm", "Nedböjning / gräns mm", "Behov per bärare N"]]
+                + [
+                    [
+                        r.part_id,
+                        f"{r.span_mm:.2f}",
+                        f"{r.deflection_mm:.3f} / {r.limit_mm:.2f}",
+                        f"{r.support_demand_n:.1f}",
+                    ]
+                    for r in assessment.shelf_screens
+                ],
+                [110, 90, 180, 130],
+            ),
+            p("Luckornas rörelse", "Heading2"),
+            table(
+                [["Lucka", "Springa / katalogkrav mm", "Bana", "Hinder / vinkel"]]
+                + [
+                    [
+                        r.part_id,
+                        f"{r.available_mm:.2f} / "
+                        f"{r.required_mm if r.required_mm is not None else '—'}",
+                        {
+                            "clear_in_model": "Fri i modellen",
+                            "missing_path": "Bana saknas",
+                            "envelope_contact": "Kontakt i modellen",
+                            "inconclusive": "Osäker marginal",
+                        }[m.state],
+                        f"{m.obstacle or '—'} / {m.angle_deg if m.angle_deg is not None else '—'}",
+                    ]
+                    for r, m in zip(assessment.hinge_gaps, assessment.door_motion, strict=True)
+                ],
+                [80, 150, 145, 135],
+            ),
+            p(
+                "Banan avser en luckas träkontur mot övriga stillastående trädelar. "
+                "Katalog: Blum 2024/25 s.77, R1 och MD0."
+            ),
+            p(
+                "Skivbatch: "
+                + (review.measurements.batch if review.measurements else "ej registrerad")
+                + ". "
+                + f"Trä mellan borrningar {assessment.minimum_divider_web_mm:.2f} mm. "
+                f"återstående frontskikt {assessment.minimum_front_skin_mm:.2f} mm."
+            ),
+        ]
+        story += [
+            p(
+                f"Toleranser: {review.edge_error_mm:g} mm per kant, "
+                f"{review.bore_depth_error_mm:g} mm i borrdjup."
+            ),
+            table(
+                [["Hyllplan", "Böjspänning MPa", "Tillåten MPa", "Bärarkapacitet N"]]
+                + [
+                    [
+                        r.part_id,
+                        f"{r.bending_stress_mpa:.3f}",
+                        f"{review.shelf_material.allowable_bending_mpa:g}"
+                        if review.shelf_material
+                        else "saknas",
+                        f"{review.pin_working_load_n:g}" if review.pin_working_load_n else "saknas",
+                    ]
+                    for r in assessment.shelf_screens
+                ],
+                [120, 125, 125, 140],
+            ),
+        ]
+        if review.pin_source:
+            story.append(p("Hyllbärarens artikel/källa: " + review.pin_source))
+        if review.measurements:
+            batch = review.measurements
+            story.append(
+                p(
+                    f"Uppmätt rygg/hylla/front/stomme: {batch.back_mm:g} / "
+                    f"{batch.shelf_divider_mm:g} / {batch.front_mm:g} / {batch.carcass_mm:g} mm."
+                )
+            )
+        for profile in review.hinge_paths:
+            story.append(p(profile.article + " / rörelsekälla: " + profile.source))
+        stability = audit["closed_stability"]
+        story += [
+            p("Statisk tippberäkning", "Heading2"),
+            p(stability["basis"]),
+            p(
+                f"Trämassa {stability['wood_mass_kg']:.1f} kg, "
+                f"topplast {review.top_payload_kg:g} kg, sidokraft {review.horizontal_force_n:g} N."
+            ),
+            table(
+                [["Tippkant", "Minsta momentreserv Nm"]]
+                + [[r["edge"], f"{r['minimum_reserve_nm']:.2f}"] for r in stability["edges"]],
+                [255, 255],
+            ),
+            p(
+                f"Total vertikallast {stability['total_vertical_n']:.1f} N. "
+                + {
+                    "missing": "Underredets kombinerade provfall saknas.",
+                    "wrong_assembly": "Underredets protokoll gäller annan montering.",
+                    "wrong_batch": "Protokollet saknar matchande uppmätt skivbatch.",
+                    "outside_recorded_case": "Valda laster överskrider underredets protokoll.",
+                    "within_recorded_case": "Valda laster ryms i angivet kombinerat provfall.",
+                }[stability["base_test_comparison"]]
+            ),
+            p("Öppna punkter", "Heading2"),
+            *[p(f) for f in assessment.findings],
+        ]
+
     story += [
         PageBreak(),
         p("Rygg, montage och kvarvarande acceptans", "Heading1"),
