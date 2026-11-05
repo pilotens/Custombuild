@@ -6,9 +6,10 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from .enums import MaterialType
 from .furniture import FurnitureWorkspace
 from .furniture_dimensions import assert_production_dimensions
-from .furniture_engine import build_furniture
+from .furniture_engine import FurnitureResult, build_furniture
 from .identity import content_hash
 from .models import BookcaseDesignSpec, FrozenModel
 
@@ -17,14 +18,25 @@ FURNITURE_PRODUCTION_BRIDGE_VERSION: Literal["furniture-production-1.0.0"] = (
 )
 
 
-def shelving_production_spec(workspace: FurnitureWorkspace) -> BookcaseDesignSpec:
+def _production_shelving(workspace: FurnitureWorkspace) -> FurnitureResult:
     assert_production_dimensions(workspace.design)
     result = build_furniture(workspace.design)
-    if result.shelving_result is None or workspace.design.intent.family != "shelving":
+    if result.shelving_result is None:
         raise ValueError(
             "Tillverkningsberedning stöder ännu endast hyllsystem. "
-            "Bord och byråer behöver modellerade beslag, hålbilder och monteringsförband."
+            "Bord, stolar och byråer bereds via möbelns granskningspaket."
         )
+    if result.shelving_result.spec.material.material_type == MaterialType.SOLID_WOOD:
+        raise ValueError(
+            "Massivträ kan exporteras för granskning. Tillverkningsberedning kräver "
+            "verifiering av fuktrörelser och förband i den valda materialbatchen."
+        )
+    return result
+
+
+def shelving_production_spec(workspace: FurnitureWorkspace) -> BookcaseDesignSpec:
+    result = _production_shelving(workspace)
+    assert result.shelving_result is not None
     return result.shelving_result.spec
 
 
@@ -39,21 +51,20 @@ class FurnitureProductionSource(FrozenModel):
 
     @model_validator(mode="after")
     def verify_source(self) -> FurnitureProductionSource:
-        assert_production_dimensions(self.workspace.design)
         if self.workspace_sha256 != content_hash(self.workspace):
             raise ValueError("furniture source workspace checksum differs")
-        result = build_furniture(self.workspace.design)
-        if result.shelving_result is None or result.design_hash != self.furniture_design_hash:
+        result = _production_shelving(self.workspace)
+        if result.design_hash != self.furniture_design_hash:
             raise ValueError("furniture source does not match the supported saved design")
         return self
 
 
 def furniture_production_source(workspace: FurnitureWorkspace) -> FurnitureProductionSource:
-    shelving_production_spec(workspace)
+    result = _production_shelving(workspace)
     return FurnitureProductionSource(
         workspace=workspace,
         workspace_sha256=content_hash(workspace),
-        furniture_design_hash=build_furniture(workspace.design).design_hash,
+        furniture_design_hash=result.design_hash,
     )
 
 

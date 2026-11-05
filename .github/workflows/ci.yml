@@ -9,6 +9,27 @@ permissions:
   contents: read
 
 jobs:
+  product-acceptance:
+    name: Product acceptance (five levels)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          enable-cache: true
+      - run: make product-acceptance
+      - name: Publish per-product measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: furniture-product-acceptance
+          path: test-results/product-acceptance.*
+          if-no-files-found: error
+
   python:
     needs: linuxcnc-interpreter-oracle
     if: ${{ always() }}
@@ -406,6 +427,17 @@ jobs:
         run: >-
           docker compose --file compose.yml up --build --detach
           --wait --wait-timeout 900
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          enable-cache: true
+      - name: Verify saved artifacts against the live object store
+        env:
+          SEAWEEDFS_S3_ENDPOINT: http://127.0.0.1:9000
+        run: >-
+          uv run --locked --group dev --no-group cad pytest -q
+          tests/integration/test_seaweedfs_storage_immutability.py
+          tests/unit/test_cad_adapter.py::test_cad_unavailability_is_explicit_and_never_creates_placeholder_files
       - name: Prove PostgreSQL replacement reruns the recovery barrier
         run: |
           set -euo pipefail

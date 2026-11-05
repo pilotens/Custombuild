@@ -1,4 +1,4 @@
-.PHONY: install test test-web coverage-gates lint typecheck build check openapi contracts golden e2e-list encoding environment-contract external-production-contract release-readiness source-manifest backup-freshness trusted-package-verifier-sha256 install-trusted-package-verifier linuxcnc-interpreter-oracle
+.PHONY: install test product-acceptance test-web coverage-gates lint typecheck build check openapi contracts golden e2e-list encoding environment-contract external-production-contract release-readiness source-manifest backup-freshness trusted-package-verifier-sha256 install-trusted-package-verifier linuxcnc-interpreter-oracle
 
 PYTHONPATHS := packages/domain/src:packages/rule-engine/src:packages/manufacturing/src:packages/template-sdk/src:cad/src:cam/src:postprocessors/src:services/api:services/worker
 TRUSTED_PACKAGE_VERIFIER_SOURCE := packages/manufacturing/src/custombuild_manufacturing/offline_package_verifier.py
@@ -12,6 +12,17 @@ install:
 test:
 	uv run coverage erase
 	uv run pytest --cov --cov-report=term-missing --cov-fail-under=80
+
+product-acceptance:
+	@mkdir -p test-results
+	@rm -f test-results/product-acceptance.xml test-results/product-acceptance.md
+	@rc=0; uv run --locked --group dev --group cad pytest tests/product_acceptance -v \
+		-o junit_family=xunit1 --junitxml=test-results/product-acceptance.xml \
+		$(if $(PRODUCT),--product "$(PRODUCT)") $(if $(LEVEL),--product-level "$(LEVEL)") || rc=$$?; \
+	if test -f test-results/product-acceptance.xml; then \
+		python3 scripts/product_acceptance_report.py test-results/product-acceptance.xml \
+			test-results/product-acceptance.md --source "$$(git describe --always --dirty)" || exit 1; \
+	fi; exit $$rc
 
 test-web:
 	pnpm --dir apps/web test

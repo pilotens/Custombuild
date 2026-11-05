@@ -30,9 +30,11 @@ from custombuild_domain import (
     template_capability_registry_payload,
 )
 from custombuild_domain.models import (
+    DesignResult,
     JointRetentionApplicationClass,
     captive_inset_back_topology_is_complete,
 )
+from custombuild_domain.rear_coverage import ReferenceConstruction, reference_discrepancies
 from custombuild_manufacturing import (
     BACK_PANEL_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
     DADO_RETENTION_EVIDENCE_MISSING_BLOCKER_CODE,
@@ -997,7 +999,7 @@ def _verified_reference_provenance(
     project: Project,
     source_provenance: dict[str, Any],
     *,
-    design_hash: str,
+    result: DesignResult,
 ) -> tuple[ImportedAsset, dict[str, Any]]:
     import_id = str(source_provenance.get("import_id", ""))
     asset = session.scalar(
@@ -1027,7 +1029,7 @@ def _verified_reference_provenance(
                 "solution": "Use the import ID and checksum returned by the latest image upload.",
             },
         )
-    if source_provenance.get("verified_model_fingerprint") != design_hash:
+    if source_provenance.get("verified_model_fingerprint") != result.design_hash:
         raise HTTPException(
             status_code=409,
             detail={
@@ -1039,6 +1041,15 @@ def _verified_reference_provenance(
                 ),
             },
         )
+    raw_construction = source_provenance.get("construction")
+    construction = (
+        ReferenceConstruction.model_validate(raw_construction) if raw_construction else None
+    )
+    issues = reference_discrepancies(construction, result)
+    if issues:
+        raise HTTPException(409, detail={"code": "REFERENCE_CONSTRUCTION_UNRESOLVED",
+                                         "issues": issues,
+                                         "solution": "Granska referensen mot delritningarna."})
     _verify_imported_asset_object(session, asset)
     snapshot = {
         **source_provenance,
@@ -1049,7 +1060,7 @@ def _verified_reference_provenance(
         "size_bytes": asset.size_bytes,
         "asset_created_at": asset.created_at.isoformat(),
         "asset_schema_version": "custombuild.reference-asset.v1",
-        "verified_model_fingerprint": design_hash,
+        "verified_model_fingerprint": result.design_hash,
     }
     return asset, snapshot
 
@@ -6156,7 +6167,7 @@ def get_project_draft(
         "spec_json": project.draft_spec_json,
         "workspace_spec_json": project.draft_workspace_json,
         "result_json": project.draft_result_json,
-        "updated_at": project.updated_at,
+        "updated_at": _as_utc(project.updated_at),
     }
 
 
@@ -6169,10 +6180,13 @@ def update_project_draft(
 ) -> dict[str, Any]:
     project = tenant_project(session, principal, project_id)
     session.refresh(project, with_for_update=True)
-    if (project.draft_spec_json or {}).get("schema_version") == "custombuild.furniture-design.v1":
+    if (project.draft_spec_json or {}).get("schema_version") in {
+        "custombuild.furniture-design.v1", "custombuild.trestle-workspace.v1",
+        "custombuild.sideboard-workspace.v1",
+    }:
         raise HTTPException(
             status_code=409,
-            detail="Projektet använder möbelstudion. Öppna det under /furniture.",
+            detail="Projektet använder en annan konstruktionsmodell och kan inte ersättas här.",
         )
     if payload.expected_draft_revision != project.draft_revision:
         raise HTTPException(
@@ -6247,7 +6261,7 @@ def update_project_draft(
         "spec_json": project.draft_spec_json,
         "workspace_spec_json": project.draft_workspace_json,
         "result_json": project.draft_result_json,
-        "updated_at": project.updated_at,
+        "updated_at": _as_utc(project.updated_at),
     }
 
 
@@ -6357,13 +6371,30 @@ def create_version(
             },
         ) from exc
 
+    saved_reference = (project.draft_workspace_json or {}).get("reference_image_import")
+    if saved_reference and any(
+        saved_reference.get(key) != requested_source_provenance.get(key)
+        for key in ("import_id", "image_sha256", "construction")
+    ):
+        raise HTTPException(409, detail={"code": "REFERENCE_DRAFT_MISMATCH",
+                                         "solution": "Spara och granska aktuell referenstolkning."})
+    if saved_reference and (
+        saved_reference.get("verification_status") != "parametric_confirmed"
+        or saved_reference.get("confirmed_inputs")
+        != requested_source_provenance.get("confirmed_inputs")
+        or project.draft_spec_json != payload.spec.model_dump(exclude_none=True)
+    ):
+        raise HTTPException(409, detail={
+            "code": "REFERENCE_DRAFT_UNCONFIRMED",
+            "solution": "Bekräfta och spara just den aktuella modellen innan revisionen skapas.",
+        })
     if requested_source_provenance:
         source_import, source_provenance = _verified_reference_provenance(
             session,
             principal,
             project,
             requested_source_provenance,
-            design_hash=result.design_hash,
+            result=result,
         )
 
     presented = {

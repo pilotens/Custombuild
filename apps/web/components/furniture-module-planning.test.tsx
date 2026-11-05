@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustombuildApiClient } from "@/lib/api-client";
 import { newFurnitureWorkspace, type FurniturePreview, type FurnitureWorkspace } from "@/lib/furniture-workspace";
-import type { FurnitureModuleGrid, FurnitureModulePlan } from "@/lib/furniture-module-plan";
+import { assertMatchingFurnitureModulePlan, gridFromBlankLength, type FurnitureModuleGrid, type FurnitureModulePlan } from "@/lib/furniture-module-plan";
 import { FurnitureModulePlanningPanel } from "./furniture-module-planning";
 
 const designHash = "a".repeat(64);
@@ -43,6 +43,7 @@ function plan(source = sourceWorkspace(), grid = initialGrid): FurnitureModulePl
     Object.assign(workspace.design, { design_id: moduleId, revision: 1 });
     Object.assign(workspace.design.intent, { width_um: widths[column]!, height_um: heights[row]!,
       shelf_count: grid.shelf_count_per_row[row], divider_count: grid.divider_count_per_module,
+      ...(grid.plinth_placement && row > 0 ? { plinth_height_um: 0 } : {}),
       ...(source.design.intent.shelf_load_basis !== "per_metre" ? {
         shelf_load_n: Math.ceil((source.design.intent.shelf_load_n ?? 200) * widths[column]! / widths.reduce((sum, value) => sum + value, 0)),
       } : {}),
@@ -102,6 +103,35 @@ function blobText(blob: Blob): Promise<string> {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("planering av separata stommoduler", () => {
+  it("föreslår startvärden från det valda valnötsämnet och hindrar oönskade socklar", async () => {
+    const source = sourceWorkspace();
+    Object.assign(source.design.intent, { width_um: 4_300_000, depth_um: 260_000, plinth_height_um: 90_000, divider_count: 5 });
+    source.design.material.material_id = "solid-walnut";
+    expect(gridFromBlankLength(source, 0)).toBeUndefined();
+    source.manufacturing!.material_stocks = [{
+      material_id: "solid-walnut", material_version: source.design.material.version,
+      measured_thickness_um: 18_000, stock_width_um: 2_440_000, stock_height_um: 300_000,
+      stock_grain_axis: "x", edge_margin_um: 5_000,
+    }];
+    const grid: FurnitureModuleGrid = { columns: 2, rows: 2, gap_um: 0, shelf_count_per_row: [2, 2],
+      divider_count_per_module: 2, plinth_placement: "floor_row_only" };
+    const response = plan(source, grid);
+    const api = client(response);
+    render(panel(api, source));
+    const calculate = screen.getByRole("button", { name: "Beräkna modulplan" });
+    fireEvent.change(screen.getByLabelText("Mellanrum mellan moduler (mm)"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Fyll i rutnät från råämnets längd" }));
+    expect(calculate).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Behåll sockeln endast på nedersta modulraden"));
+    await act(async () => { fireEvent.click(calculate); });
+    expect(api.planFurnitureModules).toHaveBeenCalledWith(source, grid);
+    expect(screen.getByRole("button", { name: "Hämta hela modulplanen" })).toBeEnabled();
+    const upper = response.modules.find(m => m.row === 1)!;
+    upper.workspace.design.intent.plinth_height_um = 90_000;
+    upper.preview.workspace.design.intent.plinth_height_um = 90_000;
+    expect(() => assertMatchingFurnitureModulePlan(response, source, designHash, grid)).toThrow();
+  });
+
   it("kräver uttryckligt mellanrum och hyllantal innan någon beräkning skickas", () => {
     const api = client();
     render(panel(api));

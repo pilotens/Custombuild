@@ -7,6 +7,14 @@ import pytest
 import yaml
 
 
+def test_web_builder_includes_the_walnut_customer_example() -> None:
+    dockerfile = Path("apps/web/Dockerfile").read_text(encoding="utf-8")
+    before_build = dockerfile.split("FROM dependencies AS builder", 1)[1].split("pnpm --dir", 1)[0]
+    example = Path("examples/furniture/walnut-shelving-4340x2540x280.json")
+    assert f"COPY {example.as_posix()} examples/furniture/" in before_build.splitlines()
+    assert example.is_file()
+
+
 def test_docker_context_excludes_generated_typescript_build_state() -> None:
     dockerignore = Path(".dockerignore").read_text(encoding="utf-8")
 

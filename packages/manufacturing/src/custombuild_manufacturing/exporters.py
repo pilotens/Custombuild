@@ -6,6 +6,7 @@ import csv
 import io
 import json
 from collections.abc import Iterable
+from decimal import Decimal
 from html import escape
 
 from .model import (
@@ -49,18 +50,24 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
     )
     outline_feature, outline_bounds = _outline_for_side(part, side_features)
     drawing_extents = _drawing_geometry_extents(part, side)
+    layers = (*DXF_LAYERS, "REFERENCE") if part.metadata.get("auxiliary_view") else DXF_LAYERS
     entities: list[str] = []
     if outline_feature is not None:
         entities.extend(("999", f"FEATURE:{_dxf_text(outline_feature.feature_id)}"))
-    entities.extend(
-        _dxf_rectangle(
-            "OUTLINE",
-            outline_bounds.x_um,
-            outline_bounds.y_um,
-            outline_bounds.width_um,
-            outline_bounds.height_um,
+    if part.metadata.get("circular_outline"):
+        entities.extend(
+            _dxf_circle("OUTLINE", part.width_um, part.height_um, part.width_um, half=True)
         )
-    )
+    else:
+        entities.extend(
+            _dxf_rectangle(
+                "REFERENCE" if part.metadata.get("auxiliary_view") else "OUTLINE",
+                outline_bounds.x_um,
+                outline_bounds.y_um,
+                outline_bounds.width_um,
+                outline_bounds.height_um,
+            )
+        )
     for edge in sorted(part.edge_bands):
         line = _edge_line(edge, part.width_um, part.height_um)
         if line:
@@ -77,16 +84,14 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
             )
         )
         if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}:
-            radius_um = (feature.diameter_um or 0) // 2
             for point in feature.points():
-                entities.extend(_dxf_circle("DRILL", point.x_um, point.y_um, radius_um))
+                entities.extend(_dxf_circle("DRILL", point.x_um * 2, point.y_um * 2,
+                                            feature.diameter_um or 0, half=True))
         elif feature.kind in {FeatureKind.GROOVE, FeatureKind.RABBET}:
             bounds = feature.bounds()
             layer = "RABBET" if feature.kind == FeatureKind.RABBET else "GROOVE"
             entities.extend(
-                _dxf_rectangle(
-                    layer, bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um
-                )
+                _dxf_rectangle(layer, bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um)
             )
             for relief_x_um, relief_y_um in _corner_relief_points(feature):
                 assert feature.corner_relief_radius_um is not None
@@ -100,15 +105,9 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
                 )
         elif feature.kind in {FeatureKind.POCKET, FeatureKind.INNER_CONTOUR}:
             bounds = feature.bounds()
-            layer = (
-                "INNER_CONTOUR"
-                if feature.kind == FeatureKind.INNER_CONTOUR
-                else "POCKET"
-            )
+            layer = "INNER_CONTOUR" if feature.kind == FeatureKind.INNER_CONTOUR else "POCKET"
             entities.extend(
-                _dxf_rectangle(
-                    layer, bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um
-                )
+                _dxf_rectangle(layer, bounds.x_um, bounds.y_um, bounds.width_um, bounds.height_um)
             )
             for relief_x_um, relief_y_um in _corner_relief_points(feature):
                 assert feature.corner_relief_radius_um is not None
@@ -203,9 +202,9 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
         "100",
         "AcDbSymbolTable",
         "70",
-        str(len(DXF_LAYERS)),
+        str(len(layers)),
     ]
-    for index, layer in enumerate(DXF_LAYERS, start=1):
+    for index, layer in enumerate(layers, start=1):
         tokens.extend(
             (
                 "0",
@@ -241,6 +240,12 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
     return ("\n".join(tokens) + "\n").encode("utf-8")
 
 
+def _fallback_outline_source(part: PartSpec) -> str:
+    if part.metadata.get("circular_outline"):
+        return "FINISHED_PART_CIRCULAR_OUTLINE"
+    return "FINISHED_PART_RECTANGULAR_FALLBACK"
+
+
 def svg_for_part(part: PartSpec, side: Side) -> bytes:
     if side not in (Side.A, Side.B):
         raise ValueError("SVG machining side must be A or B")
@@ -255,7 +260,7 @@ def svg_for_part(part: PartSpec, side: Side) -> bytes:
     )
     outline_feature, outline_bounds = _outline_for_side(part, side_features)
     outline_identity = (
-        ' data-outline-source="FINISHED_PART_RECTANGULAR_FALLBACK" '
+        f' data-outline-source="{_fallback_outline_source(part)}" '
         'data-tolerance-status="EXTERNAL_TOLERANCE_REQUIRED"'
         if outline_feature is None
         else (
@@ -270,12 +275,18 @@ def svg_for_part(part: PartSpec, side: Side) -> bytes:
         f'width="{um_to_mm(outline_bounds.width_um)}" '
         f'height="{um_to_mm(outline_bounds.height_um)}"/>',
     ]
+    if part.metadata.get("circular_outline"):
+        outline_radius = part.width_um / 2000
+        elements = [
+            f'<circle class="outline"{outline_identity} cx="{outline_radius}" '
+            f'cy="{outline_radius}" r="{outline_radius}"/>'
+        ]
     for feature in side_features:
         if feature.kind == FeatureKind.OUTER_CONTOUR:
             continue
         feature_id = escape(feature.feature_id, quote=True)
         if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}:
-            radius = um_to_mm((feature.diameter_um or 0) // 2)
+            radius = format(Decimal(feature.diameter_um or 0) / 2000, "f")
             for point in feature.points():
                 elements.append(
                     f'<circle class="drill" data-feature-id="{feature_id}" '
@@ -441,6 +452,8 @@ def _part_drawing_metadata(part: PartSpec, side: Side) -> dict[str, object]:
     physical_face = _drawing_physical_face(part, side)
     return {
         "schema_version": PART_DRAWING_CONTRACT_VERSION,
+        **({"outline_geometry": "circle"} if part.metadata.get("circular_outline") else {}),
+        **({"outline_purpose": "reference_only"} if part.metadata.get("auxiliary_view") else {}),
         "part_id": part.part_id,
         "part_name": part.name,
         "quantity": part.quantity,
@@ -497,12 +510,10 @@ def _part_drawing_metadata(part: PartSpec, side: Side) -> dict[str, object]:
             "source": (
                 "SEMANTIC_OUTER_CONTOUR"
                 if outline_feature is not None
-                else "FINISHED_PART_RECTANGULAR_FALLBACK"
+                else _fallback_outline_source(part)
             ),
             "feature": (
-                _feature_drawing_metadata(outline_feature)
-                if outline_feature is not None
-                else None
+                _feature_drawing_metadata(outline_feature) if outline_feature is not None else None
             ),
             "tolerance_mm": (
                 um_to_mm(outline_feature.tolerance_um)
@@ -574,13 +585,9 @@ def _feature_drawing_metadata(feature: ManufacturingFeature) -> dict[str, object
         "dimensions_mm": dimensions,
         "pattern_count": feature.pattern_count,
         "through": feature.through,
-        "tolerance_mm": (
-            um_to_mm(feature.tolerance_um) if feature.tolerance_um > 0 else None
-        ),
+        "tolerance_mm": (um_to_mm(feature.tolerance_um) if feature.tolerance_um > 0 else None),
         "tolerance_status": (
-            "DECLARED_IN_DESIGN"
-            if feature.tolerance_um > 0
-            else "EXTERNAL_TOLERANCE_REQUIRED"
+            "DECLARED_IN_DESIGN" if feature.tolerance_um > 0 else "EXTERNAL_TOLERANCE_REQUIRED"
         ),
         "fit_clearance_mm": um_to_mm(feature.fit_clearance_um),
         "corner_strategy": feature.corner_strategy,
@@ -623,9 +630,7 @@ def _svg_feature_attributes(feature: ManufacturingFeature) -> str:
         "data-depth-mm": um_to_mm(feature.depth_um),
         "data-through": "true" if feature.through else "false",
         "data-tolerance-status": (
-            "DECLARED_IN_DESIGN"
-            if feature.tolerance_um > 0
-            else "EXTERNAL_TOLERANCE_REQUIRED"
+            "DECLARED_IN_DESIGN" if feature.tolerance_um > 0 else "EXTERNAL_TOLERANCE_REQUIRED"
         ),
         "data-fit-clearance-mm": um_to_mm(feature.fit_clearance_um),
         "data-pattern-count": str(feature.pattern_count),
@@ -1053,7 +1058,13 @@ def _dxf_line(layer: str, x1_um: int, y1_um: int, x2_um: int, y2_um: int) -> lis
     ]
 
 
-def _dxf_circle(layer: str, x_um: int, y_um: int, radius_um: int) -> list[str]:
+def _dxf_circle(
+    layer: str, x_um: int, y_um: int, radius_um: int, *, half: bool = False
+) -> list[str]:
+    def coordinate(value: int) -> str:
+        # A whole-micrometre diameter can have a half-micrometre radius.
+        return format(Decimal(value) / 2000, "f") if half else um_to_mm(value)
+
     return [
         "0",
         "CIRCLE",
@@ -1064,11 +1075,11 @@ def _dxf_circle(layer: str, x_um: int, y_um: int, radius_um: int) -> list[str]:
         "100",
         "AcDbCircle",
         "10",
-        um_to_mm(x_um),
+        coordinate(x_um),
         "20",
-        um_to_mm(y_um),
+        coordinate(y_um),
         "40",
-        um_to_mm(radius_um),
+        coordinate(radius_um),
     ]
 
 

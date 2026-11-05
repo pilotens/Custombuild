@@ -105,3 +105,35 @@ def screening_mdf_6() -> MaterialVersion:
             note="Not certified material data; batch verification is required before production.",
         ),
     )
+
+
+def screening_solid_walnut_18() -> MaterialVersion:
+    """Dry, clear American black walnut. Species means are screening inputs only."""
+    return MaterialVersion(
+        material_id="solid-walnut",
+        version="screening-2026.1",
+        name="Massiv amerikansk svartvalnöt 18 mm",
+        material_type=MaterialType.SOLID_WOOD,
+        nominal_thickness_um=mm(18),
+        density_kg_m3=609,
+        elastic_modulus_mpa=11_584,
+        bending_strength_mpa=100,
+        shear_strength_mpa=9,
+        creep_factor_permille=500,
+        property_uncertainty_permille=400,
+        min_supported_thickness_um=mm(17),
+        max_supported_thickness_um=mm(19),
+        grain_direction=GrainDirection.X,
+        source=PropertySource(
+            source_id="ahec-usda-juglans-nigra",
+            title="AHEC American walnut species guide and USDA Wood Handbook chapter 5",
+            revision="FPL-GTR-282",
+            uri="https://www.americanhardwood.org/en/american-hardwood/american-walnut",
+            note=(
+                "Juglans nigra. Artmedel vid 12 % fuktkvot och last längs fibrerna. "
+                "Böj- och skjuvhållfasthet avrundas nedåt. 50 % kryptillägg och 40 % "
+                "osäkerhetsavdrag är modellantaganden för förhandsbedömning. "
+                "Kontrollera batch, fuktkvot, defekter och fuktrörelse med verkstaden."
+            ),
+        ),
+    )

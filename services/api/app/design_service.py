@@ -766,6 +766,8 @@ def _present_part(part: Any) -> dict[str, Any]:
     return {
         "part_id": part.part_id,
         "name": part.semantic_key,
+        "a_side": part.a_side.value,
+        "b_side": part.b_side.value,
         "kind": kind,
         "width_mm": _mm_value(width_um),
         "depth_mm": _mm_value(depth_um),

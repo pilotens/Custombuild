@@ -2,8 +2,9 @@ import { DESIGN_CONSTRAINTS } from "./design-constraints";
 import { resolveDesign } from "./design-engine";
 import type { ChangeDiff, DesignSpec, RuleEvaluation } from "./design-types";
 import { estimateMaterialRequirements } from "./material-requirements";
-import { DesignHydrationError } from "./workspace-design-envelope";
+import { DesignHydrationError, parseLocalDesignSpec } from "./workspace-design-envelope";
 import {
+  changedDesignFields,
   normalizeWorkspaceDesignTransaction,
   type PreviewWorkspaceDesignTransaction,
 } from "./workspace-design-transaction";
@@ -14,6 +15,12 @@ export class DesignChangeRejected extends DesignHydrationError {
     super("INVALID_LOCAL_DESIGN", [message]);
     this.name = "DesignChangeRejected";
   }
+}
+
+export type ConceptReview = "open" | "existing" | false;
+
+function stockOrMachineLimit(id: string) {
+  return id === "DFM-STOCK-001" || id === "DFM-MACHINE-001";
 }
 
 function needsDesignChange(rule: RuleEvaluation): boolean {
@@ -46,6 +53,42 @@ export function planWorkspaceDesignTransaction(
   source: DesignSpec,
   candidate: DesignSpec,
   requestedDiff: readonly ChangeDiff[] = [],
+  allowConceptReview: ConceptReview = false,
+): PreviewWorkspaceDesignTransaction {
+  function exactConcept() {
+    const normalizedSpec = parseLocalDesignSpec(candidate);
+    const design = resolveDesign(normalizedSpec);
+    const invalid = design.rule_evaluations.find(rule => rule.rule_id === "GEO-001" && rule.status === "BLOCK");
+    if (invalid) throw rejection(invalid);
+    return {
+      normalizedSpec, resolvedDesign: design,
+      requestedDiff: [...requestedDiff], structuralDiff: [], changeDiff: [...requestedDiff],
+      changedFields: changedDesignFields(source, normalizedSpec),
+    };
+  }
+  // Retain the photographed layout even when stock or machine capacity is exceeded.
+  if (candidate.reference_image_import?.verification_status === "concept") return exactConcept();
+  try {
+    return planFeasibleTransaction(source, candidate, requestedDiff);
+  } catch (error) {
+    // An explicitly conceptual template remains inspectable; its blocking rules
+    // and its real requested dimensions are returned with the original geometry.
+    if (!allowConceptReview || candidate.workshop_context || !(error instanceof DesignChangeRejected)
+        || !error.ruleIds.some(stockOrMachineLimit)) throw error;
+    if (allowConceptReview === "existing" && source !== candidate) {
+      const alreadyBlocked = resolveDesign(source).rule_evaluations.some(
+        rule => rule.status === "BLOCK" && stockOrMachineLimit(rule.rule_id),
+      );
+      if (!alreadyBlocked) throw error;
+    }
+    return exactConcept();
+  }
+}
+
+function planFeasibleTransaction(
+  source: DesignSpec,
+  candidate: DesignSpec,
+  requestedDiff: readonly ChangeDiff[],
 ): PreviewWorkspaceDesignTransaction {
   let transaction = normalizeWorkspaceDesignTransaction(source, candidate, requestedDiff);
   const autoDiff: ChangeDiff[] = [...transaction.structuralDiff];

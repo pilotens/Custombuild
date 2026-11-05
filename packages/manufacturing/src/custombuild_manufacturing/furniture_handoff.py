@@ -12,6 +12,7 @@ from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
 
 from .adapters import adapt_design_result
+from .furniture_faces import drawing_faces
 from .model import FeatureKind
 
 HANDOFF_VERSION = "furniture-workshop-handoff-1.1.0"
@@ -76,7 +77,17 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         }
         if isinstance(intent, ShelvingIntent)
         else None,
-        "hardware_requirements": list(hardware.required_evidence) if hardware else [],
+        "hardware_requirements": list(hardware.required_evidence)
+        if hardware
+        else (
+            [
+                "screw_and_pilot_fit_in_actual_stock",
+                "fastener_withdrawal_and_racking_test",
+                "assembled_stability",
+            ]
+            if intent.family in {"dining_table", "chair"}
+            else []
+        ),
         "required_workshop_inputs": [
             "material_batches_and_actual_thickness",
             "available_stock_formats_and_grain",
@@ -86,6 +97,11 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
             "qualified_adhesive_free_retention",
             "postprocessor_and_simulation",
             "physical_joint_coupon_and_first_article_measurements",
+            *(
+                ["timber_moisture_content", "cross_grain_movement_and_fixings"]
+                if result.spec.material.material_id == "solid-walnut"
+                else []
+            ),
         ],
         "scope": "Raw-blank dimensions exclude sheet margins, tool clearance and nesting waste. "
         "Area is not an order quantity. Oversized parts require a different stock/setup or an "
@@ -154,52 +170,56 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
             )
         )
 
+    sources = {p.part_id: p for p in result.parts}
     for part in adapt_design_result(result).parts:
         row(part.part_id, "", "finished_local_U", part.width_um)
         row(part.part_id, "", "finished_local_V", part.height_um)
         row(part.part_id, "", "actual_thickness", part.thickness_um)
-        for feature in part.features:
-            semantics = (
-                "FIRST_CENTRE"
-                if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}
-                else "LOWER_LEFT"
-            )
-            row(
-                part.part_id,
-                feature.feature_id,
-                "pattern_count",
-                feature.pattern_count,
-                unit="count",
-                side=feature.side.value,
-                origin_semantics=semantics,
-            )
-            for check, value in (("origin_U", feature.x_um), ("origin_V", feature.y_um)):
+        for view in drawing_faces(sources[part.part_id], part):
+            for feature in view.part.features:
+                if feature.side != view.side:
+                    continue
+                semantics = (
+                    "FIRST_CENTRE"
+                    if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}
+                    else "LOWER_LEFT"
+                )
                 row(
                     part.part_id,
                     feature.feature_id,
-                    check,
-                    value,
-                    feature.tolerance_um,
-                    side=feature.side.value,
+                    "pattern_count",
+                    feature.pattern_count,
+                    unit="count",
+                    side=view.name,
                     origin_semantics=semantics,
                 )
-            for field in (
-                "diameter_um",
-                "depth_um",
-                "width_um",
-                "length_um",
-                "radius_um",
-                "pitch_um",
-            ):
-                value = getattr(feature, field)
-                if value is not None:
+                for check, value in (("origin_U", feature.x_um), ("origin_V", feature.y_um)):
                     row(
                         part.part_id,
                         feature.feature_id,
-                        field.removesuffix("_um"),
+                        check,
                         value,
                         feature.tolerance_um,
-                        side=feature.side.value,
+                        side=view.name,
                         origin_semantics=semantics,
                     )
+                for field in (
+                    "diameter_um",
+                    "depth_um",
+                    "width_um",
+                    "length_um",
+                    "radius_um",
+                    "pitch_um",
+                ):
+                    value = getattr(feature, field)
+                    if value is not None:
+                        row(
+                            part.part_id,
+                            feature.feature_id,
+                            field.removesuffix("_um"),
+                            value,
+                            feature.tolerance_um,
+                            side=view.name,
+                            origin_semantics=semantics,
+                        )
     return output.getvalue().encode("utf-8-sig")

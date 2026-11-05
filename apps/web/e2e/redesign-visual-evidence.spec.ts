@@ -707,7 +707,8 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   await expect(removeShelf).toBeVisible();
   await expect(removeShelf).toBeEnabled();
   await expect(removeDivider).toBeVisible();
-  await expect(removeDivider).toBeEnabled();
+  await expect(removeDivider).toBeDisabled();
+  await expect(removeDivider).toHaveAttribute("title", /bärande stöd/);
 
   const paletteBox = await palette.boundingBox();
   const shelfBox = await shelf.boundingBox();
@@ -731,6 +732,7 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
     expect(box.height).toBeGreaterThanOrEqual(44);
     expect(box.y).toBeGreaterThanOrEqual(paletteBox.y);
     expect(box.y + box.height).toBeLessThanOrEqual(paletteBox.y + paletteBox.height);
+    if (await control.isDisabled()) continue;
     const exposedLabel = await page.evaluate(({ x, y }) => (
       document.elementFromPoint(x, y)?.closest("button")?.getAttribute("aria-label") ?? null
     ), { x: box.x + box.width / 2, y: box.y + box.height / 2 });
@@ -758,8 +760,8 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   await page.keyboard.press("Tab");
   await expect(divider).toBeFocused();
   await page.keyboard.press("Tab");
-  await expect(removeDivider).toBeFocused();
-  await removeDivider.evaluate((element) => element.blur());
+  await expect(removeDivider).not.toBeFocused();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await row.evaluate((element) => {
     (element as HTMLElement).style.scrollBehavior = "auto";
     element.scrollLeft = 0;

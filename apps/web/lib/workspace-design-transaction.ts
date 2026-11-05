@@ -154,7 +154,7 @@ function cleanupChangedTopologyCustomizations(
   };
 }
 
-function changedDesignFields(
+export function changedDesignFields(
   source: DesignSpec,
   normalizedSpec: DesignSpec,
 ): WorkspaceDesignFieldChange[] {

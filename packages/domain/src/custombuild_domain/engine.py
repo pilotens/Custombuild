@@ -343,7 +343,7 @@ class BookcaseEngine:
                     side_index,
                     Dimensions3D(
                         width_um=t,
-                        depth_um=p.base_cabinet_depth_um,
+                        depth_um=case_depth,
                         # The top edge enters a verified dado in the upper
                         # bottom.  That makes each internal side a direct
                         # vertical load path instead of a merely coincident
@@ -372,7 +372,7 @@ class BookcaseEngine:
                         # The lower bottom starts behind the front plane. Its
                         # requested depth therefore includes the inset-front
                         # thickness without creating a coincident solid.
-                        depth_um=p.base_cabinet_depth_um - t,
+                        depth_um=case_depth - t,
                         height_um=t,
                     ),
                     Placement(
@@ -432,9 +432,7 @@ class BookcaseEngine:
             ):
                 left_capture = dado_depth if bay_index == 0 else inset_back_divider_capture
                 right_capture = (
-                    dado_depth
-                    if bay_index == len(bay_widths) - 1
-                    else inset_back_divider_capture
+                    dado_depth if bay_index == len(bay_widths) - 1 else inset_back_divider_capture
                 )
                 add(
                     "back" if len(bay_widths) == 1 else f"back-b{bay_index}",
@@ -1588,7 +1586,11 @@ class BookcaseEngine:
                 sorted(
                     {
                         *required_tools,
-                        *(tool for joint in current for tool in tool_for[joint.joint_type]),
+                        *(
+                            tool
+                            for joint in current
+                            for tool in tool_for[JointType(joint.joint_type)]
+                        ),
                     }
                 )
             )

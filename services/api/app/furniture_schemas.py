@@ -13,7 +13,7 @@ from custombuild_domain.models import MaterialVersion
 from pydantic import BaseModel, ConfigDict, Field
 
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
-Family = Literal["shelving", "table", "chest_of_drawers"]
+Family = Literal["shelving", "table", "chest_of_drawers", "dining_table", "chair"]
 ScreeningStatus = Literal["PASS", "WARNING", "BLOCK"]
 
 

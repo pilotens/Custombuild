@@ -54,3 +54,13 @@ and is forbidden.
 
 This evidence does not change the release boundary: generated CAM remains validation-only and
 `physical_cutting_authorized` remains `false`.
+
+## Reviewing the assembled model against an image
+
+A reviewer can reposition, remove or add individual guide lines before accepting the layout. The original detection counts are retained alongside the corrected specification. A reference concept can be opened with a stock or construction failure so the reviewer can inspect the exact proposed parts. The concept planner preserves the chosen layout. The existing validation and release gates continue to apply.
+
+The saved construction record distinguishes panel supports from separate posts, upper-only from full rear coverage, continuous from split shelf rows, and the requested carcass material from the model material. Unknown fields and mismatches are returned per reference object. The server measures rear coverage across each clear opening using the union of actual back panel projections. A full surface back is available for wall-library comparison. Each individual part and its available stock determine whether it can be cut.
+
+Independently measured round or rectangular reference posts have their own IDs, dimensions and placement. They appear in the Studio model and can be selected, isolated, removed from the view, or downloaded as a dimensioned reference drawing. The server distinguishes touching, positive-volume intersection and clearance against the unmachined solids. It also checks posts against one another. A reference post has no inferred fastener, stock assignment or manufacturing authorization. The project keeps the measured entities separate from its production cut list.
+
+A confirmed interpretation requires matching the saved image, model specification and declared construction. The per-part review shows unrepresented details and underlying component IDs. Changing the reference requirements invalidates the prior confirmation.

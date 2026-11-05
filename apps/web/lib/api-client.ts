@@ -11,6 +11,7 @@ import {
   type FurnitureWorkspace,
 } from "./furniture-workspace";
 import { referenceImageVerificationIsCurrent } from "./reference-image";
+import { checkedInspection, type PartInspection } from "./part-inspection";
 import type { components, paths } from "./api-schema";
 import type {
   BackMaterialId,
@@ -138,6 +139,7 @@ export function toSourceProvenance(
   if (!provenance || !referenceImageVerificationIsCurrent(spec)) return undefined;
   return {
     source: provenance.source,
+    construction: provenance.construction,
     import_id: provenance.import_id,
     image_sha256: provenance.image_sha256,
     file_name: provenance.file_name,
@@ -492,7 +494,7 @@ function asStatus(value: unknown, fallback: ValidationStatus): ValidationStatus 
     : fallback;
 }
 
-function normalizeFeatures(value: unknown, partId: string, fallback: ManufacturingFeature[]): ManufacturingFeature[] {
+function normalizeFeatures(value: unknown, partId: string, fallback: ManufacturingFeature[], broadA?: string, broadB?: string): ManufacturingFeature[] {
   if (!Array.isArray(value)) return fallback;
   return value.map((raw, index) => {
     const feature = asRecord(raw) ?? {};
@@ -503,13 +505,14 @@ function normalizeFeatures(value: unknown, partId: string, fallback: Manufacturi
         ? "rabbet"
         : rawKind === "groove"
         ? "groove"
-        : rawKind === "pocket" || rawKind === "tenon"
+        : rawKind === "pocket" || rawKind === "tenon" || rawKind === "countersink" || rawKind === "edge_relief"
           ? "pocket"
-          : rawKind === "label"
+          : rawKind === "label" || rawKind === "mark"
             ? "label"
             : "outline";
     const rawFace = asString(feature.face, "A").toUpperCase();
-    const face: ManufacturingFeature["face"] = rawFace === "A" || rawFace === "B" ? rawFace : "EDGE";
+    const face: ManufacturingFeature["face"] = rawFace === "A" || rawFace === broadA?.toUpperCase() ? "A"
+      : rawFace === "B" || rawFace === broadB?.toUpperCase() ? "B" : "EDGE";
     const dimensions = asRecord(feature.dimensions);
     return {
       id: asString(feature.id ?? feature.feature_id, `${partId}:feature-${index + 1}`),
@@ -524,7 +527,7 @@ function normalizeFeatures(value: unknown, partId: string, fallback: Manufacturi
   });
 }
 
-function uiPartId(semanticKey: string, fallback: string): string {
+export function uiPartId(semanticKey: string, fallback: string): string {
   if (semanticKey === "left-side") return "side-left";
   if (semanticKey === "right-side") return "side-right";
   if (semanticKey === "back") return "back-panel";
@@ -585,6 +588,7 @@ function normalizeParts(value: unknown, fallback: ResolvedPart[], spec: DesignSp
       rawOrientation === "XZ" || rawOrientation === "YZ" ? rawOrientation : "XY";
     return {
       part_id: semanticPartId || fallbackPart.part_id,
+      server_part_id: asString(part.part_id, "") || undefined,
       name: fallbackPart.name,
       kind,
       width_mm: asNumber(part.width_mm, fallbackPart.width_mm),
@@ -602,7 +606,8 @@ function normalizeParts(value: unknown, fallback: ResolvedPart[], spec: DesignSp
         fallbackPart.kind === "back" ? spec.back_material_id : spec.material_id,
       ),
       weight_kg: asNumber(part.weight_kg, fallbackPart.weight_kg),
-      features: normalizeFeatures(part.features, asString(part.part_id, fallbackPart.part_id), fallbackPart.features),
+      features: normalizeFeatures(part.features, asString(part.part_id, fallbackPart.part_id), fallbackPart.features,
+        asString(part.a_side,""), asString(part.b_side,"")),
     };
   });
 }
@@ -1699,6 +1704,98 @@ export class CustombuildApiClient {
     return this.request<FurnitureCatalog>("/v1/furniture/catalog", { method: "GET" });
   }
 
+  async reviewMeasuredAssembly(input: components["schemas"]["MeasuredAssembly"], signal?: AbortSignal) {
+    return this.request<components["schemas"]["MeasuredReport"]>("/v1/measured-assemblies/review", {
+      method:"POST", body:JSON.stringify(input), signal,
+    });
+  }
+
+  async measuredTrestleExample() {
+    return this.request<components["schemas"]["MeasuredAssembly"]>("/v1/measured-assemblies/examples/trestle-table", {method:"GET"});
+  }
+
+  async constructTrestle(input: components["schemas"]["TrestleRequest"]) {
+    return this.request<components["schemas"]["TrestleConstruction"]>("/v1/constructions/trestle-table", {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  async constructSideboard(input: components["schemas"]["SideboardRequest"]) {
+    return this.request<components["schemas"]["SideboardConstruction"]>("/v1/constructions/sideboard", {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  async requestSideboardExport(input: components["schemas"]["SideboardExportRequest"], signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["TrestleExportAccepted"]>(
+      "/v1/constructions/sideboard/exports", { method: "POST", body: JSON.stringify(input), signal },
+    );
+    const id = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+    if (!id.test(result.project_id) || !id.test(result.job_id)) throw new ApiError("Ogiltig exportidentitet.");
+    return result;
+  }
+
+  async inspectSideboardExport(projectId: string, jobId: string, assemblyHash: string, signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["MeasuredReport"]>(
+      `/v1/constructions/sideboard/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}/inspection`,
+      { method: "GET", signal },
+    );
+    if (result.assembly_sha256 !== assemblyHash || result.physical_cutting_authorized !== false
+      || result.geometry_method !== "machined_wood") throw new ApiError("Granskningen gäller inte den aktuella skänken.");
+    return result;
+  }
+
+  async requestTrestleExport(input: components["schemas"]["TrestleExportRequest"], signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["TrestleExportAccepted"]>(
+      "/v1/constructions/trestle-table/exports", { method: "POST", body: JSON.stringify(input), signal },
+    );
+    const id = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/;
+    if (!id.test(result.project_id) || !id.test(result.job_id)) throw new ApiError("Ogiltig exportidentitet.");
+    return result;
+  }
+
+  async inspectTrestleExport(projectId: string, jobId: string, assemblyHash: string, signal?: AbortSignal) {
+    const result = await this.request<components["schemas"]["MeasuredReport"]>(
+      `/v1/constructions/trestle-table/projects/${encodeURIComponent(projectId)}/exports/${encodeURIComponent(jobId)}/inspection`,
+      { method: "GET", signal },
+    );
+    if (result.assembly_sha256 !== assemblyHash || result.physical_cutting_authorized !== false)
+      throw new ApiError("Granskningen gäller inte den aktuella konstruktionen.");
+    return result;
+  }
+
+  async inspectFurniturePart(workspace: FurnitureWorkspace, partId: string, hash: string, signal: AbortSignal) {
+    const result = await this.request<PartInspection>("/v1/furniture/inspect-part", {
+      method: "POST", signal, body: JSON.stringify({ workspace, part_id: partId, expected_design_hash: hash }),
+    });
+    return checkedInspection(result, partId, hash);
+  }
+
+  async inspectStudioPart(spec: DesignSpec, part: Pick<ResolvedPart, "part_id" | "server_part_id">, hash: string | undefined,
+    projectId: string | undefined, signal: AbortSignal) {
+    let id = part.server_part_id;
+    // A reference sketch uses local semantic IDs. Resolve them against the exact
+    // candidate first; never substitute a local index or its guessed features.
+    if (!hash || !id) {
+      const preview = await this.previewDesign(spec, signal, projectId);
+      id = preview.parts.find(p => p.part_id === part.part_id)?.server_part_id;
+      hash = preview.design_hash;
+    }
+    if (!id) throw new Error("Den synliga delen har ingen motsvarighet i servermodellen.");
+    const query = new URLSearchParams();
+    if (projectId) query.set("project_id", projectId);
+    const evidence = this.jointRetentionEvidence(projectId);
+    if (evidence) query.set("joint_retention_evidence_id", evidence);
+    const result = await this.request<PartInspection>(`/v1/designs/inspect-part?${query}`, {
+      method: "POST", signal, body: JSON.stringify({
+        spec: toPreviewRequest(spec), part_id: id, expected_design_hash: hash,
+        construction: spec.reference_image_import?.construction,
+        production_context: productionContextFromDesignSpec(spec),
+      }),
+    });
+    return checkedInspection(result, id, hash);
+  }
+
   async previewFurniture(workspace: FurnitureWorkspace): Promise<FurniturePreview> {
     return assertFurniturePreview(await this.request<FurniturePreview>("/v1/furniture/preview", {
       method: "POST", body: JSON.stringify(workspace),
@@ -1742,6 +1839,14 @@ export class CustombuildApiClient {
   async loadFurnitureDraft(projectId: string): Promise<FurnitureDraft> {
     const result = await this.request<FurnitureDraft>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/draft`, { method: "GET" });
     if (result.preview) assertFurniturePreview(result.preview);
+    return result;
+  }
+
+  async createFurnitureProject(name: string, workspace: FurnitureWorkspace): Promise<{project: ProjectRead; draft: FurnitureDraft}> {
+    const result = await this.request<{project: ProjectRead; draft: FurnitureDraft}>("/v1/furniture/projects",{
+      method:"POST",body:JSON.stringify({name,workspace})
+    });
+    if (result.draft.preview) assertFurniturePreview(result.draft.preview);
     return result;
   }
 

@@ -1,0 +1,71 @@
+{
+  "design": {
+    "intent": {
+      "family": "shelving",
+      "width_um": 4300000,
+      "height_um": 2540000,
+      "depth_um": 260000,
+      "shelf_count": 4,
+      "divider_count": 5,
+      "shelf_load_n": 450,
+      "plinth_height_um": 90000
+    },
+    "material": {
+      "material_id": "solid-walnut",
+      "version": "screening-2026.1",
+      "measured_thickness_um": 18000,
+      "batch_id": null
+    },
+    "installation": {
+      "width_um": 4340000,
+      "height_um": 2540000,
+      "depth_um": 280000,
+      "width_includes_trim": true,
+      "trim_profile": {
+        "height_um": 90000,
+        "width_um": 20000,
+        "use": "existing_room_trim",
+        "walls": [
+          "left",
+          "right",
+          "rear"
+        ]
+      },
+      "left_allowance_um": 20000,
+      "right_allowance_um": 20000,
+      "top_allowance_um": 0,
+      "bottom_allowance_um": 0,
+      "rear_allowance_um": 20000,
+      "front_allowance_um": 0
+    },
+    "schema_version": "custombuild.furniture-design.v1",
+    "design_id": "walnut-shelving-example",
+    "revision": 1,
+    "back_material": {
+      "material_id": "birch-plywood-6",
+      "version": "screening-2026.1",
+      "measured_thickness_um": 6000,
+      "batch_id": null
+    }
+  },
+  "manufacturing": {
+    "machine_profile_id": "custombuild-router-1325-linuxcnc",
+    "machine_profile_version": "1.0.0-validation",
+    "stock_width_um": 2440000,
+    "stock_height_um": 1220000,
+    "edge_margin_um": 5000,
+    "stock_grain_axis": "x",
+    "material_stocks": [
+      {
+        "material_id": "solid-walnut",
+        "material_version": "screening-2026.1",
+        "measured_thickness_um": 18000,
+        "stock_width_um": 2440000,
+        "stock_height_um": 300000,
+        "stock_grain_axis": "x",
+        "edge_margin_um": 5000
+      }
+    ]
+  },
+  "schema_version": "custombuild.furniture-workspace.v1"
+}

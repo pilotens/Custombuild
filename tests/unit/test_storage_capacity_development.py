@@ -19,7 +19,16 @@ from scripts.storage_capacity_preflight import CapacityPreflightError, canonical
 
 def test_development_capacity_is_derived_from_the_mounted_filesystem(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    filesystem = os.statvfs(tmp_path)
+
+    def statvfs_at_snapshot(path: Path) -> os.statvfs_result:
+        assert path == tmp_path
+        return filesystem
+
+    # Compare the calculation to the same mount sample, even during parallel exports.
+    monkeypatch.setattr(os, "statvfs", statvfs_at_snapshot)
     now = datetime(2026, 8, 28, 12, 34, 56, 789, tzinfo=UTC)
     config = development_operator_config(
         {
@@ -31,7 +40,6 @@ def test_development_capacity_is_derived_from_the_mounted_filesystem(
         volume_path=tmp_path,
     )
 
-    filesystem = os.statvfs(tmp_path)
     expected_total = filesystem.f_frsize * filesystem.f_blocks
     expected_available = filesystem.f_frsize * filesystem.f_bavail
     expected_emergency = max(expected_total // 100, 1)

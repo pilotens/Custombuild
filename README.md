@@ -7,11 +7,16 @@ customer can enter exact outer dimensions, bays and shelf levels, then one froze
 drawings, assembly data and a checksummed package for an external CNC shop. CAM
 validation is generated only when every structured CAM prerequisite is present.
 
-The `/furniture` workspace adds panel-end tables, chests with real drawer parts,
-and shelving through a common design model with interchangeable material,
-hardware and manufacturing profiles. It supports revision history and real
-STEP/GLB/DXF/PDF review exports. Table/chest hardware remains unqualified and
-does not unlock cutting CAM. See [scope and verification](docs/MULTI_FURNITURE_V1_IMPLEMENTATION.md).
+The `/furniture` workspace supports rectangular and round four-legged dining
+tables, dining chairs with a raked back, one- or two-column chests, panel-end
+tables and shelving. The workshop package includes STEP/GLB, dimensioned
+drawings, face-specific drilling and an assembly map. The documented Hettich
+KA 4532 drawer slides have separate hole patterns for the cabinet and drawer.
+Physical prototype testing and workshop acceptance remain required.
+See [scope and verification](docs/MULTI_FURNITURE_V1_IMPLEMENTATION.md).
+
+Run `make product-acceptance` for the five-level furniture work orders, measured
+results and expected rejections. [Product test matrix and commands (Swedish)](docs/PRODUCT_ACCEPTANCE.md).
 
 Furniture exports are durable, quota-accounted jobs with immutable object-store
 artifacts. Status polling returns metadata, and authenticated binary downloads

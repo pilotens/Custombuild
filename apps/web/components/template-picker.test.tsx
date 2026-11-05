@@ -15,6 +15,19 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof TemplatePic
 }
 
 describe("TemplatePicker Explore entry", () => {
+  it("opens the other catalogued templates and preserves their concept status", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", { name: /Välj en design/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Fler startmodeller" }));
+    for (const name of ["Skänk", "Hänghylla", "Förvaringsvägg"]) {
+      expect(screen.getByRole("button", { name: new RegExp(name + ".*Koncept") })).toBeEnabled();
+    }
+    fireEvent.click(screen.getByRole("button", { name: /Hänghylla.*Koncept/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Öppna Hänghylla i Studio" }));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "hanging-shelf", productionLevel: "concept" }), expect.anything());
+  });
+
   it("starts with four direct routes instead of a required wizard", () => {
     renderPicker({ required: true });
 

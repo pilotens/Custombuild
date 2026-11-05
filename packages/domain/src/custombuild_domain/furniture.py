@@ -12,7 +12,14 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 
 from .enums import BackPanelType, ShelfMount
-from .models import FrozenModel, RatioPpm, StableKey
+from .models import (
+    BookcaseDepthUm,
+    BookcaseHeightUm,
+    BookcaseWidthUm,
+    FrozenModel,
+    RatioPpm,
+    StableKey,
+)
 
 Length = Annotated[int, Field(strict=True, ge=1, le=6_000_000)]
 Thickness = Annotated[int, Field(strict=True, ge=1_000, le=100_000)]
@@ -21,7 +28,7 @@ Load = Annotated[int, Field(strict=True, ge=0, le=5_000)]
 FURNITURE_SCHEMA_VERSION: Literal["custombuild.furniture-design.v1"] = (
     "custombuild.furniture-design.v1"
 )
-FURNITURE_ENGINE_VERSION = "furniture-families-1.0.0"
+FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 
 class MaterialSelection(FrozenModel):
@@ -100,9 +107,9 @@ class InstallationSpace(FrozenModel):
 
 class ShelvingIntent(FrozenModel):
     family: Literal["shelving"] = "shelving"
-    width_um: Length = 900_000
-    height_um: Length = 1_800_000
-    depth_um: Length = 320_000
+    width_um: BookcaseWidthUm = 900_000
+    height_um: BookcaseHeightUm = 1_800_000
+    depth_um: BookcaseDepthUm = 320_000
     shelf_count: Annotated[int, Field(strict=True, ge=0, le=40)] = 4
     divider_count: Annotated[int, Field(strict=True, ge=0, le=16)] = 1
     shelf_load_n: Load = 200
@@ -158,18 +165,60 @@ class TableIntent(FrozenModel):
     top_load_n: Load = 300
 
 
+class DiningTableIntent(FrozenModel):
+    family: Literal["dining_table"] = "dining_table"
+    width_um: Length = 1_800_000
+    height_um: Length = 750_000
+    depth_um: Length = 900_000
+    top_shape: Literal["rectangle", "round"] = "rectangle"
+    leg_section_um: Annotated[int, Field(strict=True, ge=35_000, le=80_000)] = 55_000
+    end_inset_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] = 90_000
+    stretcher_height_um: Annotated[int, Field(strict=True, ge=65_000, le=250_000)] = 95_000
+    top_load_n: Load = 300
+
+
+class ChairIntent(FrozenModel):
+    family: Literal["chair"] = "chair"
+    width_um: Length = 460_000
+    height_um: Length = 850_000
+    depth_um: Length = 500_000
+    leg_section_um: Annotated[int, Field(strict=True, ge=35_000, le=75_000)] = 50_000
+    seat_height_um: Annotated[int, Field(strict=True, ge=250_000, le=700_000)] = 450_000
+    seat_depth_um: Annotated[int, Field(strict=True, ge=200_000, le=700_000)] = 450_000
+    back_angle_mdeg: Annotated[int, Field(strict=True, ge=0, le=18_000)] = 10_000
+    seat_load_n: Load = 900
+
+
 class ChestIntent(FrozenModel):
     family: Literal["chest_of_drawers"] = "chest_of_drawers"
-    width_um: Length = 800_000
-    height_um: Length = 900_000
-    depth_um: Length = 500_000
+    width_um: BookcaseWidthUm = 800_000
+    height_um: BookcaseHeightUm = 900_000
+    depth_um: BookcaseDepthUm = 500_000
     drawer_count: Annotated[int, Field(strict=True, ge=1, le=8)] = 3
     drawer_load_n: Load = 100
     front_gap_um: Annotated[int, Field(strict=True, ge=1_000, le=10_000)] = 3_000
 
+    drawer_columns: Literal[1, 2] = Field(default=1, exclude_if=lambda v: v == 1)
+    # Bottom-up front heights; the last row takes the exact remaining space.
+    row_front_heights_um: tuple[Length, ...] = Field(
+        default=(), max_length=7, exclude_if=lambda v: not v
+    )
+    gap_basis: Literal["per_edge", "clear_reveal"] = Field(
+        default="per_edge", exclude_if=lambda v: v == "per_edge"
+    )
+
+    @model_validator(mode="after")
+    def complete_drawer_rows(self) -> ChestIntent:
+        if self.drawer_count % self.drawer_columns:
+            raise ValueError("Antalet lådor måste vara delbart med antalet kolumner.")
+        if len(self.row_front_heights_um) >= self.drawer_count // self.drawer_columns:
+            raise ValueError("Lämna minst en lådrad för återstående höjd.")
+        return self
+
 
 FurnitureIntent = Annotated[
-    ShelvingIntent | TableIntent | ChestIntent, Field(discriminator="family")
+    ShelvingIntent | TableIntent | ChestIntent | DiningTableIntent | ChairIntent,
+    Field(discriminator="family"),
 ]
 
 
@@ -199,7 +248,9 @@ class FurnitureDesign(FrozenModel):
     def require_family_components(self) -> FurnitureDesign:
         if self.intent.family == "shelving" and self.hardware is not None:
             raise ValueError("shelving retention is selected through the existing signed catalogue")
-        if self.intent.family != "shelving" and self.hardware is None:
+        if self.intent.family in {"dining_table", "chair"} and self.hardware is not None:
+            raise ValueError("Ramens skruvförband ingår i konstruktionsmodellen.")
+        if self.intent.family in {"table", "chest_of_drawers"} and self.hardware is None:
             raise ValueError("table and drawer families require an explicit hardware selection")
         return self
 

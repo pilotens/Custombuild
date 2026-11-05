@@ -546,15 +546,17 @@ export function StudioInspector({
                 {
                   id: "surface_mounted",
                   label: "Utanpåliggande",
-                  description: "Inte tillgängligt för produktion: servern saknar en implementerad autentiserad retentionklass.",
-                  disabled: true,
+                  description: spec.furniture_type === "wall_library"
+                    ? "Hel rygg bakom överdel och underskåp. Granska råformat och infästningar."
+                    : "Inte tillgängligt för produktion: servern saknar en implementerad autentiserad retentionklass.",
+                  disabled: spec.furniture_type !== "wall_library",
                 },
               ]}
               onChange={(back_panel_type) => {
-                if (back_panel_type !== "inset_groove") return;
+                if (back_panel_type !== "inset_groove" && spec.furniture_type !== "wall_library") return;
                 onChange(
                   { back_panel_type },
-                  "Infällt bakstycke valdes",
+                  back_panel_type === "inset_groove" ? "Infällt bakstycke valdes" : "Hel utanpåliggande rygg valdes",
                 );
               }}
             />

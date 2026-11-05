@@ -19,6 +19,25 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       console.log("Furniture workspace at failure:", await page.locator("main").innerText());
     }
   });
+  test("stolsbenets delblad, monteringsförband och reversibla borttagning", async ({page, request}, info) => {
+    const project = await provisionLiveProject(request, info, "inspect-chair-leg");
+    await selectProjectBeforeNavigation(page, project);
+    await page.goto("/furniture?family=chair");
+    await page.getByRole("combobox", {name:"Granska en del"}).selectOption({label:"leg-front-left"});
+    const sheet = page.getByRole("region",{name:"Delritning och förband"});
+    await expect(sheet.getByRole("heading",{name:"leg-front-left"})).toBeVisible();
+    await sheet.getByRole("button",{name:"Visa utan delen"}).click();
+    await expect(sheet.getByRole("status")).toContainText("4 modellerade förband bryts");
+    await expect(sheet.getByRole("status")).toContainText("3 ramben");
+    await expect(page.getByRole("button",{name:"Spara revision"})).toBeDisabled();
+    await sheet.getByRole("button",{name:"Isolera delen"}).click();
+    const download = page.waitForEvent("download");
+    await sheet.getByRole("button",{name:"Hämta utskrivbart delblad med alla sidor"}).click();
+    expect((await download).suggestedFilename()).toMatch(/leg-front-left.*granskning\.html$/);
+    await sheet.getByRole("button",{name:"Hela möbeln"}).click();
+    await expect(page.getByRole("button",{name:"Spara revision"})).toBeEnabled();
+  });
+
   test("kundmått 4340 × 2540 × 280: arbetsfil, återöppning och spårbart CAD-underlag", async ({ page, request }, info) => {
     test.setTimeout(300_000);
     const provisioned = await provisionLiveProject(request, info, "customer-bookcase");
@@ -32,11 +51,11 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Höjd (mm)", { exact: true })).toHaveValue("2540");
     await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("280");
     await page.getByLabel("Projektnamn", { exact: true }).fill(`${provisioned.project.name}-import`);
-    const created = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/projects");
+    const created = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/furniture/projects");
     await page.getByRole("button", { name: "Spara revision" }).click();
     const response = await created;
     expect(response.status()).toBe(201);
-    const project = await response.json();
+    const { project } = await response.json();
     await expect(page.getByText("Revision 1 är sparad.")).toBeVisible();
     await page.reload();
     const projects = page.getByRole("combobox", { name: "Öppna möbelprojekt" });

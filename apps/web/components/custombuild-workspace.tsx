@@ -1,6 +1,9 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { FURNITURE_FAMILY_LABELS } from "@/lib/furniture-workspace";
 import {
   AlertTriangle,
   Box,
@@ -25,6 +28,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ApiError,
+  uiPartId,
   CustombuildApiClient,
   type CurrentPrincipal,
   type ProjectRead,
@@ -81,6 +85,11 @@ import { DraftConflictBanner } from "./draft-conflict-banner";
 import { TemplatePicker } from "./template-picker";
 import { ProductionDrawer } from "./production-drawer";
 import { ReferenceImageImporter } from "./reference-image-importer";
+import { inspectionDrillMarkers, type DrillMarker, type PartInspection, visibleAssembly, type InspectionView } from "@/lib/part-inspection";
+import { referenceConstructionIssues, UNKNOWN_CONSTRUCTION } from "@/lib/reference-image";
+import { ReferencePostReview, referencePostVisual } from "./reference-posts";
+import { ReferenceApproval, ReferenceConstructionFields } from "./reference-construction";
+import { AssemblyPartReview } from "./assembly-part-review";
 import { SelectedPartInspector } from "./selected-part-inspector";
 import { StudioInspector } from "./studio-inspector";
 import type { WorkshopContextDraftState } from "./workshop-context-editor";
@@ -115,7 +124,7 @@ import {
   previewWorkspaceDesignTransaction,
   type WorkspaceDesignFieldChange,
 } from "@/lib/workspace-design-transaction";
-import { DesignChangeRejected, planWorkspaceDesignTransaction } from "@/lib/workspace-design-planner";
+import { DesignChangeRejected, planWorkspaceDesignTransaction, type ConceptReview } from "@/lib/workspace-design-planner";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
 import { DEFAULT_WORKSPACE_UI_STATE, type WorkspaceUiState } from "@/lib/workspace-ui-state";
 import {
@@ -312,11 +321,18 @@ function isFurnitureTemplateId(value: unknown): value is FurnitureTemplateId {
 }
 
 function normalizedDefaultSpec(): DesignSpec {
-  return planWorkspaceDesignTransaction(DEFAULT_DESIGN_SPEC, DEFAULT_DESIGN_SPEC).normalizedSpec;
+  return planStudioChange(DEFAULT_DESIGN_SPEC, DEFAULT_DESIGN_SPEC).normalizedSpec;
 }
 
 function normalizedProjectDefaultSpec(projectId: string): DesignSpec {
   return { ...normalizedDefaultSpec(), design_id: projectId };
+}
+
+function planStudioChange(
+  source: DesignSpec, candidate: DesignSpec, requestedDiff: ChangeDiff[] = [],
+  allowConceptReview: ConceptReview = candidate.furniture_type === "wall_library" ? "existing" : false,
+) {
+  return planWorkspaceDesignTransaction(source, candidate, requestedDiff, allowConceptReview);
 }
 
 function initialRequestedWorkspaceMode(intent: ParsedWorkspaceUrl): WorkspaceStage | undefined {
@@ -330,7 +346,7 @@ function normalizeStoredWorkspace(value: unknown): { spec: DesignSpec; diff: Cha
   const adapted = adaptStructuralSupports(migrated.spec);
   const normalized = parseLocalDesignSpec(balanceDesignSymmetry(adapted.spec));
   try {
-    const planned = planWorkspaceDesignTransaction(normalized, normalized, [...migrated.diff, ...adapted.diff]);
+    const planned = planStudioChange(normalized, normalized, [...migrated.diff, ...adapted.diff]);
     return { spec: planned.normalizedSpec, diff: planned.changeDiff };
   } catch (error) {
     // Preserve unrepairable historical drafts for inspection; never replace or
@@ -381,8 +397,10 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const [future, setFuture] = useState<DesignSpec[]>([]);
   const [changeDiff, setChangeDiff] = useState<ChangeDiff[]>([]);
   const [selectedPartId, setSelectedPartId] = useState<string>();
+  const [partView, setPartView] = useState<InspectionView>();
   const [studioInspectorContext, setStudioInspectorContext] = useState<StudioInspectorContext>("furniture");
   const [partEditNotice, setPartEditNotice] = useState<string>();
+  const [furnitureProjectId, setFurnitureProjectId] = useState<string>();
   const [principal, setPrincipal] = useState<CurrentPrincipal>();
   const [authReady, setAuthReady] = useState(!api.configured);
   const [authError, setAuthError] = useState<string>();
@@ -473,6 +491,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, []);
 
   const changeSelectedPart = useCallback((partId?: string) => {
+    setPartView(undefined);
     setSelectedPartId(partId);
     setStudioInspectorContext(partId ? "part" : "furniture");
     if (!partId) setIsolateSelection(false);
@@ -584,7 +603,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
 
   const canRestoreHistory = useCallback((candidate: DesignSpec) => {
     try {
-      const checked = planWorkspaceDesignTransaction(candidate, candidate);
+      const checked = planStudioChange(candidate, candidate);
       if (workspaceSpecSignature(checked.normalizedSpec) === workspaceSpecSignature(candidate)) return true;
     } catch (error) {
       if (!(error instanceof DesignHydrationError)) throw error;
@@ -675,10 +694,14 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   }, [changeSelectedPart, principal]);
 
   const loadProjectWorkspace = useCallback(async (
-    project: Pick<ProjectRead, "id" | "name">,
+    project: Pick<ProjectRead, "id" | "name"> & Partial<Pick<ProjectRead, "furniture_type">>,
     requestedMode?: WorkspaceStage,
   ) => {
     if (!principal) return;
+    if (project.furniture_type && Object.hasOwn(FURNITURE_FAMILY_LABELS, project.furniture_type)) {
+      setFurnitureProjectId(project.id);
+      return;
+    }
     const identity = principal;
     const requestId = ++workspaceLoadRef.current;
     setHydrated(false);
@@ -910,8 +933,21 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
         if (cancelled) return;
         setProjects(availableProjects);
         const remembered = readSelectedProject(window.localStorage, principal);
+        const rootProjects = availableProjects.filter(
+          (project) => !Object.hasOwn(FURNITURE_FAMILY_LABELS, project.furniture_type),
+        );
+        if (!urlIntentRef.current.projectId && !rootProjects.length) {
+          applyHydratedWorkspace(undefined, undefined, false);
+          setProjectId(undefined);
+          setActiveProject(undefined);
+          setHydrated(true);
+          setServerDraftReady(false);
+          setApiState("synced");
+          setApiMessage("Välj ett sparat möbelprojekt eller börja med en möbeltyp.");
+          return;
+        }
         const selected = selectWorkspaceProject(
-          availableProjects,
+          urlIntentRef.current.projectId ? availableProjects : rootProjects,
           urlIntentRef.current.projectId,
           remembered?.id,
         );
@@ -1196,12 +1232,36 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     };
   }, [api, hydrated, hydrationBlocker, principal?.role, projectId, serverAvailable, serverPreviewRetryNonce, spec]);
 
-  const effectiveSelectedPartId = selectedPartId && design.parts.some((part) => part.part_id === selectedPartId)
+  const measuredPosts = spec.reference_image_import?.construction?.posts;
+  const modelParts = workspaceStage === "studio" && measuredPosts?.length
+    ? [...design.parts, ...measuredPosts.map(referencePostVisual)] : design.parts;
+  const selectedPost = workspaceStage === "studio" ? measuredPosts?.find(post => post.key === selectedPartId) : undefined;
+  const effectiveSelectedPartId = selectedPartId && modelParts.some((part) => part.part_id === selectedPartId)
     ? selectedPartId
     : undefined;
   const selectedPart = effectiveSelectedPartId
     ? design.parts.find((part) => part.part_id === effectiveSelectedPartId)
     : undefined;
+
+  const reviewKey = `${projectId}:${currentSpecSignature}:${design.design_hash}:${effectiveSelectedPartId}`;
+  const partMode = workspaceStage === "studio" && partView?.key === reviewKey ? partView.mode : "whole";
+  const [boreOverlay,setBoreOverlay] = useState<{key:string; markers:DrillMarker[]}>();
+  const showInspectedBores = useCallback((sheet:PartInspection) => {
+    setBoreOverlay({key:reviewKey, markers:inspectionDrillMarkers(sheet)});
+  }, [reviewKey]);
+  const selectedServerId = selectedPart?.server_part_id;
+  const reviewHash = design.source === "server-preview" ? design.design_hash : undefined;
+  const loadPart = useCallback((signal: AbortSignal) => {
+    if (!effectiveSelectedPartId) throw new Error("Välj en del i modellen.");
+    return api.inspectStudioPart(spec, {part_id: effectiveSelectedPartId, server_part_id: selectedServerId},
+      reviewHash, projectId, signal);
+  }, [api, spec, effectiveSelectedPartId, selectedServerId, reviewHash, projectId]);
+
+  const comparisonPart = design.parts[0];
+  const loadPostComparison = useCallback((signal: AbortSignal) => {
+    if (!comparisonPart) throw new Error("Stomdel att jämföra saknas.");
+    return api.inspectStudioPart(spec, comparisonPart, reviewHash, projectId, signal);
+  }, [api, spec, comparisonPart, reviewHash, projectId]);
 
   const removalConstraints = useMemo(() => {
     const constraints: Partial<Record<SemanticComponentKind, string>> = {};
@@ -1209,7 +1269,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     for (const kind of ["shelf_row", "divider", "base_cabinet", "back_panel", "plinth"] as const) {
       try {
         const removal = resolveSemanticRemoval(spec, kind, effectiveSelectedPartId);
-        const planned = planWorkspaceDesignTransaction(spec, removal.spec);
+        const planned = planStudioChange(spec, removal.spec);
         if (kind === "divider" && planned.normalizedSpec.divider_count > removal.spec.divider_count) {
           constraints[kind] = "Behövs som bärande stöd.";
         }
@@ -1223,10 +1283,11 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     return constraints;
   }, [effectiveSelectedPartId, hydrated, hydrationBlocker, spec, workspacePanels.componentLibraryOpen, workspaceStage]);
 
-  const replaceSpec = useCallback((next: DesignSpec, diff: ChangeDiff[] = []): boolean => {
+  const replaceSpec = useCallback((next: DesignSpec, diff: ChangeDiff[] = [],
+    allowConceptReview: ConceptReview = furnitureTemplate(selectedTemplateId).productionLevel === "concept" ? "existing" : false): boolean => {
     let transaction;
     try {
-      transaction = planWorkspaceDesignTransaction(spec, next, diff);
+      transaction = planStudioChange(spec, next, diff, allowConceptReview);
     } catch (error) {
       if (!(error instanceof DesignHydrationError)) throw error;
       setPartEditNotice(undefined);
@@ -1247,7 +1308,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       setApiMessage("Synkroniserar samma DesignSpec mot serverns auktoritativa motor.");
     }
     return true;
-  }, [serverAvailable, spec]);
+  }, [serverAvailable, spec, selectedTemplateId]);
 
   const updateSpec = useCallback((patch: Partial<DesignSpec>, reason?: string) => {
     try {
@@ -1277,7 +1338,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       if (!fix) return;
       const candidate = parseLocalDesignPatch(spec, fix.patch);
       const requestedDiff = requestedValidationDiff(spec, fix.patch, fix.reason);
-      const planned = planWorkspaceDesignTransaction(spec, candidate, requestedDiff);
+      const planned = planStudioChange(spec, candidate, requestedDiff);
       const transaction = previewWorkspaceDesignTransaction(spec, planned.normalizedSpec, planned.changeDiff);
       const token = `${evaluation.rule_id}:${evaluation.rule_version}:${++validationPreviewSequenceRef.current}`;
       setValidationFixPreview({
@@ -1521,8 +1582,9 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     };
     // Template quantities are starting estimates, not an explicit inventory
     // edit or a request to remove supports from the previous furniture.
-    const planned = planWorkspaceDesignTransaction(candidate, candidate);
-    replaceSpec(planned.normalizedSpec, planned.changeDiff);
+    const allowConceptReview = template.productionLevel === "concept" ? "open" : false;
+    const planned = planStudioChange(candidate, candidate, [], allowConceptReview);
+    replaceSpec(planned.normalizedSpec, planned.changeDiff, allowConceptReview);
     setSemanticNotice(undefined);
     setPlanningBrief(brief);
     setWorkspaceSelected(true);
@@ -1541,7 +1603,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       revision: specRef.current.revision,
       ...result.patch,
       reference_image_import: result.metadata,
-    }, [])) return;
+    }, [])) return false;
     setWorkspaceSelected(true);
     const templateId: FurnitureTemplateId = result.patch.furniture_type === "wall_library" ? "wall-library" : "shelving";
     setSelectedTemplateId(templateId);
@@ -1554,6 +1616,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
       startMode: "reference",
       selectedTemplateId: templateId,
     });
+    return true;
   }, [changeWorkspaceStage, persistLocalWorkspace, planningBrief, replaceSpec]);
 
   const inspectReferenceImage = useCallback(async (file: File) => {
@@ -1591,7 +1654,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
   const resizeDimension = useCallback((patch: Partial<Pick<DesignSpec, "width_mm" | "height_mm" | "depth_mm">>) => {
     try {
       const boundedNext = parseLocalDesignPatch(specRef.current, patch);
-      const transaction = planWorkspaceDesignTransaction(specRef.current, boundedNext);
+      const transaction = planStudioChange(specRef.current, boundedNext);
       const normalized = transaction.normalizedSpec;
       specRef.current = normalized;
       setSpec(normalized);
@@ -1628,7 +1691,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     const moved = movePartVertically(specRef.current, partId, positionZMm);
     let transaction;
     try {
-      transaction = planWorkspaceDesignTransaction(specRef.current, moved.spec);
+      transaction = planStudioChange(specRef.current, moved.spec);
     } catch (error) {
       if (!(error instanceof DesignHydrationError)) throw error;
       setSemanticNotice({ title: "Flytten stoppades", detail: error.message, error: true });
@@ -1649,7 +1712,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     if (!moved.supported) return;
     let transaction;
     try {
-      transaction = planWorkspaceDesignTransaction(specRef.current, moved.spec);
+      transaction = planStudioChange(specRef.current, moved.spec);
     } catch (error) {
       if (!(error instanceof DesignHydrationError)) throw error;
       setSemanticNotice({ title: "Flytten stoppades", detail: error.message, error: true });
@@ -1974,6 +2037,8 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
     || displayedApiState === "error",
   );
 
+  if (furnitureProjectId) redirect(`/furniture?project=${encodeURIComponent(furnitureProjectId)}`);
+
   return (
     <div className={`app-shell cb-redesign-shell ${studioStyles.productShell}`}>
       <a className="cb-skip-link" href="#workspace-mode-heading">Hoppa till huvudinnehåll</a>
@@ -2192,7 +2257,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
               onClose={() => { if (workspaceSelected) changeWorkspaceStage("studio"); }}
             />
             <p className="existing-product-explore-notice">
-              <a href="/furniture">Designa bord, byråer och hyllsystem med utbytbara profiler</a>
+              <a href="/furniture">Designa matbord, stolar, byråer och hyllsystem</a>
             </p>
           </div>
         ) : (
@@ -2259,7 +2324,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                   onChange={(event) => changeSelectedPart(event.target.value || undefined)}
                 >
                   <option value="">Välj del</option>
-                  {design.parts.map((part) => <option key={part.part_id} value={part.part_id}>{part.name}</option>)}
+                  {modelParts.map((part) => <option key={part.part_id} value={part.part_id}>{part.name}</option>)}
                 </select>
               </label>
             </div>
@@ -2307,11 +2372,12 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
               ) : null}
               <div className={`${styles.canvasStage} ${studioStyles.canvas}`}>
                 <div className={studioStyles.modelLabel} data-testid="current-design-label">
-                  <strong>Aktuell konstruktion</strong>
+                  <strong>{partMode === "without" ? "Simulering · delen uttagen" : partMode === "alone" ? "Isolerad del" : "Aktuell konstruktion"}</strong>
                   <small>{spec.width_mm} × {spec.height_mm} × {Math.max(spec.depth_mm, spec.base_cabinet_depth_mm)} mm</small>
                 </div>
                 <FurnitureViewer
-                  parts={design.parts}
+                  drillMarkers={boreOverlay?.key===reviewKey && !partCustomization && workspaceStage==="studio" && partMode!=="without" ? boreOverlay.markers : undefined}
+                  parts={visibleAssembly(modelParts, effectiveSelectedPartId, partMode)}
                   designSize={{ widthMm: spec.width_mm, heightMm: spec.height_mm, depthMm: spec.depth_mm }}
                   selectedPartId={effectiveSelectedPartId}
                   viewMode={viewMode}
@@ -2319,19 +2385,19 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                   transparent={transparent}
                   isolateSelection={isolateSelection}
                   onSelectPart={workspaceStage === "studio" ? changeSelectedPart : () => undefined}
-                  resizeEnabled={workspaceStage === "studio" && !exploded}
+                  resizeEnabled={workspaceStage === "studio" && !selectedPost && partMode === "whole" && !exploded}
                   onResizeStart={workspaceStage === "studio" ? beginDimensionResize : undefined}
                   onResize={workspaceStage === "studio" ? resizeDimension : undefined}
                   onResizeEnd={workspaceStage === "studio" ? finishDimensionResize : undefined}
-                  onPartMoveStart={workspaceStage === "studio" ? beginPartMove : undefined}
-                  onPartMove={workspaceStage === "studio" ? movePart : undefined}
+                  onPartMoveStart={workspaceStage === "studio" && !selectedPost && partMode === "whole" ? beginPartMove : undefined}
+                  onPartMove={workspaceStage === "studio" && !selectedPost && partMode === "whole" ? movePart : undefined}
                   onPartMoveEnd={workspaceStage === "studio" ? finishPartMove : undefined}
-                  onPartHorizontalMoveStart={workspaceStage === "studio" ? beginPartMove : undefined}
-                  onPartHorizontalMove={workspaceStage === "studio" ? movePartHorizontally : undefined}
+                  onPartHorizontalMoveStart={workspaceStage === "studio" && !selectedPost && partMode === "whole" ? beginPartMove : undefined}
+                  onPartHorizontalMove={workspaceStage === "studio" && !selectedPost && partMode === "whole" ? movePartHorizontally : undefined}
                   onPartHorizontalMoveEnd={workspaceStage === "studio" ? finishPartMove : undefined}
                   presentation={workspaceStage === "check" ? "validation" : workspaceStage === "build" ? "production" : "studio"}
                   cameraResetNonce={cameraResetNonce}
-                  semanticDropEnabled={workspaceStage === "studio"}
+                  semanticDropEnabled={workspaceStage === "studio" && !selectedPost && partMode === "whole"}
                   semanticSpec={spec}
                   semanticDragKind={semanticDragKind}
                   onSemanticDrop={applySemanticDrop}
@@ -2405,7 +2471,28 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                   ) : null}
                 </div>
                 <div className={studioStyles.contextPanelViewport}>
+                  {spec.reference_image_import && <details>
+                    <summary>Referensens stöd och baksida · {spec.reference_image_import.file_name}</summary>
+                    <p>Bildförslag: {spec.reference_image_import.detected_dividers} invändiga stödlinjer och {spec.reference_image_import.detected_shelves} hyllrader.
+                      Nuvarande modell: {spec.divider_count} avdelarskivor och {spec.shelf_count} hyllrader.</p>
+                    <p><Link href="/assembly">Öppna arbetsritning med måttsatta delar och förband</Link></p>
+                    <ReferenceConstructionFields value={spec.reference_image_import.construction ?? UNKNOWN_CONSTRUCTION}
+                      change={construction => updateSpec({ reference_image_import: { ...spec.reference_image_import!,
+                        construction, verification_status:"concept", verified_model_fingerprint:undefined } }, "Referenskraven ändrades")} />
+                    {referenceConstructionIssues(spec, spec.reference_image_import.construction).map(issue => <p key={issue}>{issue}</p>)}
+                    <ReferenceApproval key={currentSpecSignature} spec={spec} change={ref=>updateSpec(
+                      {reference_image_import:ref}, "Referenstolkningen kontrollerades")} />
+                  </details>}
+                  {selectedPost && studioInspectorContext === "part" && <ReferencePostReview key={reviewKey} post={selectedPost}
+                    load={loadPostComparison} mode={partMode} changeMode={mode => setPartView({key:reviewKey,mode})}
+                    select={(id,key) => changeSelectedPart(id.startsWith("ref-post-") ? id : uiPartId(key,id))} />}
                   {selectedPart && studioInspectorContext === "part" ? (
+                    <>
+                    {serverAvailable && !partCustomization && <AssemblyPartReview key={reviewKey} onInspection={showInspectedBores} load={loadPart}
+                      mode={partMode} changeMode={mode => setPartView({ key: reviewKey, mode })}
+                      concept={Boolean(spec.reference_image_import) || selectedTemplate.productionLevel === "concept"}
+                      selectMate={(id, key) => changeSelectedPart(uiPartId(key, id))} />}
+                    {partCustomization && <p>Lokala deländringar saknar serverberäknad delritning.</p>}
                     <SelectedPartInspector
                       part={selectedPart}
                       spec={spec}
@@ -2421,7 +2508,7 @@ export function CustombuildWorkspace({ runtimeConfig: suppliedConfig }: Custombu
                       onRemove={() => removeSelectedPart(selectedPart.part_id)}
                       onReset={() => resetSelectedPart(selectedPart.part_id)}
                       onClose={() => changeSelectedPart(undefined)}
-                    />
+                    /></>
                   ) : (
                     <StudioInspector
                       spec={spec}

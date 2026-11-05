@@ -723,7 +723,7 @@ function generateParts(spec: DesignSpec): ResolvedPart[] {
   }
 
   if (hasBaseCabinets) {
-    const baseDepth = depth;
+    const baseDepth = caseDepth;
     const availableWidth = Math.max(width - (baseCabinetCount + 1) * thickness, 1);
     const baseOpeningWidths = baseCabinetCount === resolvedBayWidths.length
       ? resolvedBayWidths

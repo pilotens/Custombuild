@@ -9,14 +9,15 @@ import zipfile
 from typing import Any
 
 from custombuild_cad import CadQueryAdapter
-from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWorkspace
+from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
 from custombuild_manufacturing.exporters import bom_csv, cut_list_csv, dxf_for_part, svg_for_part
+from custombuild_manufacturing.furniture_faces import drawing_faces
 from custombuild_manufacturing.furniture_handoff import furniture_first_article_checks
 from custombuild_manufacturing.furniture_profiles import preview_furniture
-from custombuild_manufacturing.model import Side
 
+from .furniture_assembly import assembly_documents
 from .part_drawings import part_drawings_pdf
 
 MAX_FURNITURE_REVIEW_PARTS = 128
@@ -53,6 +54,7 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
                 if preview["workshop_handoff"]["dimensions"]["issues"]
                 else "KONCEPT: Beslag, hålbilder och infästningar är inte verifierade."
                 if result.hardware_profile is not None
+                and not result.hardware_profile.drawer_holes_um
                 else "Granskningsunderlag. Tillverkning kräver separat frisläppning."
             ),
         ),
@@ -62,9 +64,12 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
             [g.model_dump(mode="json") for g in result.moving_groups]
         ),
     }
-    for part in adapted.parts:
-        for side in (Side.A, Side.B):
-            root = f"parts/{part.part_id}/{side.value}"
+    files.update(assembly_documents(result))
+    sources = {p.part_id: p for p in result.parts}
+    for original in adapted.parts:
+        for view in drawing_faces(sources[original.part_id], original):
+            part, side = view.part, view.side
+            root = f"parts/{part.part_id}/{view.name}"
             files[f"{root}.dxf"] = dxf_for_part(part, side)
             files[f"{root}.svg"] = svg_for_part(part, side)
     files["README.txt"] = (
@@ -74,8 +79,8 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "STEP, GLB, delritningar, DXF och kaplista beskriver samma genererade delar.\n"
         "DXF använder millimeter. Delritningarna visar varje dels lokala U/V-system.\n"
         "Detta paket innehåller INGEN skärande CAM eller körklar maskinkod.\n"
-        "Bordets/byråns layoutbeslag saknar tillverkarens hålbilder och verifierade\n"
-        "infästningar. Saknad bearbetning ska kompletteras i modellen före tillverkning.\n"
+        "Öppna documents/assembly.pdf, bom/hardware.csv och assembly/connections.csv.\n"
+        "Kantvyer har fysiska filnamn och referenskontur på lagret REFERENCE.\n"
         "Material, förband, stabilitet, lådbottnar, rörelse och montering behöver\n"
         "kvalificeras inom den valda möbelfamiljen. Se validation/review.json.\n"
         "En ny material-, beslags- eller maskinprofil kräver omräkning och ny granskning.\n"
@@ -91,7 +96,7 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
     ).encode()
     manifest = {
         "schema_version": "custombuild.furniture-review.v1",
-        "engine_version": FURNITURE_ENGINE_VERSION,
+        "engine_version": result.engine_version,
         "design_hash": result.design_hash,
         "revision": workspace.design.revision,
         "dependencies": preview["dependencies"],

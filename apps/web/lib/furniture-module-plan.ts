@@ -8,6 +8,34 @@ export interface FurnitureModuleGrid {
   gap_um: number;
   shelf_count_per_row: number[];
   divider_count_per_module: number;
+  plinth_placement?: "floor_row_only";
+}
+
+/** Form starting values. The server checks every actual raw blank when calculating the plan. */
+export function gridFromBlankLength(workspace: FurnitureWorkspace, gapUm: number): FurnitureModuleGrid | undefined {
+  const { intent, material } = workspace.design;
+  const selection = workspace.manufacturing;
+  if (intent.family !== "shelving" || !selection || !Number.isSafeInteger(gapUm) || gapUm < 0 || gapUm > 100_000
+    || intent.bay_width_ratios_ppm?.length || intent.shelf_height_ratios_ppm?.length) return;
+  const ownStock = selection.material_stocks?.find(s => s.material_id === material.material_id
+    && s.material_version === material.version && s.measured_thickness_um === material.measured_thickness_um);
+  if (material.material_id === "solid-walnut" && !ownStock) return;
+  const stock = ownStock ?? selection;
+  const axis = material.material_id === "mdf"
+    ? (stock.stock_width_um >= stock.stock_height_um ? "x" : "y") : stock.stock_grain_axis;
+  if (!axis) return;
+  const margin = 2 * (stock.edge_margin_um ?? 0);
+  const length = (axis === "x" ? stock.stock_width_um : stock.stock_height_um) - margin;
+  const breadth = (axis === "x" ? stock.stock_height_um : stock.stock_width_um) - margin;
+  if (length <= 0 || intent.depth_um > breadth) return;
+  const columns = Math.ceil((intent.width_um + gapUm) / (length + gapUm));
+  const rows = Math.ceil((intent.height_um + gapUm) / (length + gapUm));
+  if (rows > 4 || columns > 8 || rows * columns < 2 || rows * columns > 16) return;
+  const shelves = intent.shelf_count ?? 4;
+  return { columns, rows, gap_um: gapUm,
+    shelf_count_per_row: Array.from({ length: rows }, (_, i) => Math.floor(shelves / rows) + Number(i < shelves % rows)),
+    divider_count_per_module: Math.ceil(((intent.divider_count ?? 1) + 1) / columns) - 1,
+  };
 }
 
 export interface FurnitureModuleRequirement {
@@ -172,6 +200,8 @@ export function assertMatchingFurnitureModulePlan(
       || draft.workspace.design.intent.depth_um !== dimensions.depth_um
       || draft.workspace.design.intent.shelf_count !== grid.shelf_count_per_row[draft.row]
       || draft.workspace.design.intent.divider_count !== grid.divider_count_per_module
+      || (draft.workspace.design.intent.plinth_height_um ?? 0) !==
+        (grid.plinth_placement === "floor_row_only" && draft.row > 0 ? 0 : workspace.design.intent.plinth_height_um ?? 0)
       || (workspace.design.intent.shelf_load_basis !== "per_metre" && draft.workspace.design.intent.shelf_load_n
         !== Math.ceil((workspace.design.intent.shelf_load_n ?? 200) * dimensions.width_um! / widths.reduce((sum, value) => sum + value, 0)))
       || orderedJson(draft.placement) !== orderedJson({
@@ -185,6 +215,7 @@ export function assertMatchingFurnitureModulePlan(
       intent: { ...draft.workspace.design.intent, width_um: workspace.design.intent.width_um,
         height_um: workspace.design.intent.height_um, shelf_count: workspace.design.intent.shelf_count ?? 4,
         divider_count: workspace.design.intent.divider_count ?? 1,
+        ...(grid.plinth_placement ? { plinth_height_um: workspace.design.intent.plinth_height_um } : {}),
         ...(workspace.design.intent.shelf_load_basis !== "per_metre"
           ? { shelf_load_n: workspace.design.intent.shelf_load_n ?? 200 } : {}),
       },
@@ -247,6 +278,7 @@ export interface FurnitureModulePlan {
   requirements: FurnitureModuleRequirement[];
   review_status: "requires_review" | "blocked";
   can_export_drafts: boolean;
+  review_cut_list_csv?: string;
   can_apply: false;
   production_qualified: false;
   physical_cutting_authorized: false;
