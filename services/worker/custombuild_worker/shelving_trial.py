@@ -60,10 +60,9 @@ def shelving_trial_protocol(
         trim = result.spec.installation.trim_profile
         wall_names = {"left": "vänster vägg", "right": "höger vägg", "rear": "bakvägg"}
         walls = ", ".join(wall_names[w] for w in trim.walls) or "ej angivet"
-        lines.append(
-            f"Listens höjd {trim.height_um / 1000:g} mm, utstick {trim.width_um / 1000:g} mm. "
-            f"Placering: {walls}."
-        )
+        height = f"{trim.height_um / 1000:g} mm" if trim.height_um is not None else "ej angiven"
+        projection = f"{trim.width_um / 1000:g} mm" if trim.width_um is not None else "ej angivet"
+        lines.append(f"Listens höjd {height}, utstick {projection}. Placering: {walls}.")
         lines.append(
             "Kontrollera reserverade mått och verklig uppresnings-/monteringshöjd på plats."
         )
