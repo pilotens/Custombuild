@@ -24,7 +24,7 @@ HOLE_SETBACK = 18_000
 PLATE = 4_000
 # Design targets for a coupon; the screw vendor does not rate this wood connection.
 PILOT_DIAMETER = 3_500
-PILOT_DEPTH = 16_000 - PLATE
+PILOT_DEPTH = 16_000 - PLATE + 500  # Allow 0.5 mm below the nominal screw tip.
 
 Box = tuple[int, int, int, int, int, int]
 
@@ -64,7 +64,7 @@ def _pilot(
         face=face,
         origin=Point3D(x_um=world[0] - p.x_um, y_um=world[1] - p.y_um, z_um=world[2] - p.z_um),
         dimensions=FeatureDimensions(diameter_um=PILOT_DIAMETER, depth_um=PILOT_DEPTH),
-        tolerance_um=0,
+        tolerance_um=100,  # Trial machining target, not a supplier tolerance.
     )
 
 

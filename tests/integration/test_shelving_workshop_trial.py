@@ -115,6 +115,11 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
             ARTICLE: 6,
             "DIN-96-A4-5x16": 12,
         }
+        connections = list(
+            csv.DictReader(io.StringIO(z.read("assembly/connections.csv").decode("utf-8-sig")))
+        )
+        assert sum(int(c["angle_quantity"]) for c in connections) == 6
+        assert sum(int(c["screw_quantity"]) for c in connections) == 12
         occurrences = Counter(j for s in graph["graph"]["steps"] for j in s["joint_ids"])
         assert occurrences == Counter({j["joint_id"]: 1 for j in model["joints"]})
         # Inner left cheek x=18, bottom top z=18. The hole offsets are 18 from
@@ -133,7 +138,7 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
         assert len(assembly.toCompound().Solids()) == 12
         ls = assembly.objects["timber/" + left["part_id"]].toCompound().Solids()[0]
         bs = assembly.objects["timber/" + bottom["part_id"]].toCompound().Solids()[0]
-        # Sample the blind holes after reimport: open to 12 mm, with material behind.
+        # Sample the blind holes after reimport: open to 12.5 mm, with material behind.
         assert not ls.isInside((7, 20, 36)) and ls.isInside((5, 20, 36))
         assert not bs.isInside((36, 20, 7)) and bs.isInside((36, 20, 5))
         angle = next(

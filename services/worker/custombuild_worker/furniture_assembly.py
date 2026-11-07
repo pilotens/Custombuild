@@ -210,10 +210,17 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
             "quantity",
         )
     ]
+    angles = {a.joint_id: a for a in result.trial_angles}
+    if angles:
+        joint_rows[0] += ("trial_angle", "angle_quantity", "screw", "screw_quantity")
     for joint in result.joints:
         a, b = joint.members
         if joint.hardware_sku:
             counts[joint.hardware_sku] += joint.hardware_count
+        trial_hardware: tuple[object, ...] = ()
+        if angles:
+            trial = angles.get(joint.joint_id)
+            trial_hardware = (trial.article, 1, trial.screw, 2) if trial else ("", 0, "", 0)
         joint_rows.append(
             (
                 joint.joint_id,
@@ -225,6 +232,7 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                 " ".join(b.feature_ids),
                 joint.hardware_sku or "",
                 joint.hardware_count,
+                *trial_hardware,
             )
         )
     if result.trial_angles:

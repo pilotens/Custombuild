@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v3"
+        return "custombuild.shelving-workshop-review.v4"
     return "custombuild.furniture-review.v1"
 
 

@@ -38,18 +38,27 @@ def mounted_trial_angles(timber_step: bytes, angles: tuple[TrialAngle, ...]) -> 
         timber = cq.Assembly.load(str(file))
         assembly = cq.Assembly(name="bookcase-with-trial-angles")
         assembly.add(timber, name="timber")
-        for a in angles:
-            assembly.add(_angle_solid(a), name="angle-" + a.joint_id)
+        hardware = {"angle-" + a.joint_id: _angle_solid(a) for a in angles}
+        for name, body in hardware.items():
+            assembly.add(body, name=name)
         file = Path(directory) / "mounted.step"
         assembly.export(str(file), exportType="STEP")
         roundtrip = cq.Assembly.load(str(file))
-        for a in angles:
-            name = "angle-" + a.joint_id
+        timber_nodes = {
+            f"timber/{name}": n.toCompound()
+            for name, n in timber.objects.items()
+            if n.obj is not None
+        }
+        expected_shapes = {**timber_nodes, **hardware}
+        if len(roundtrip.toCompound().Solids()) != len(expected_shapes):
+            raise CADExportError("Mounted assembly has unexpected solids after STEP reimport")
+        occupied = [(solid, solid.BoundingBox()) for solid in timber_nodes.values()]
+        for name, expected in expected_shapes.items():
             node = roundtrip.objects.get(name)
             if node is None or node.obj is None:
-                raise CADExportError("Mounted trial angle missing after STEP reimport")
+                raise CADExportError("Mounted assembly component missing after STEP reimport")
             body = node.toCompound()
-            bounds, expected = body.BoundingBox(), _angle_solid(a)
+            bounds = body.BoundingBox()
             ref = expected.BoundingBox()
             if (
                 len(body.Solids()) != 1
@@ -59,5 +68,18 @@ def mounted_trial_angles(timber_step: bytes, angles: tuple[TrialAngle, ...]) -> 
                     for key in ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
                 )
             ):
-                raise CADExportError("Mounted trial angle changed shape or position in STEP")
+                raise CADExportError("Mounted assembly component changed shape or position in STEP")
+            if name in hardware:
+                for previous, bbox in occupied:
+                    if (
+                        all(
+                            min(getattr(bounds, i + "max"), getattr(bbox, i + "max"))
+                            - max(getattr(bounds, i + "min"), getattr(bbox, i + "min"))
+                            > 0.00001
+                            for i in "xyz"
+                        )
+                        and body.intersect(previous).Volume() > 0.001
+                    ):
+                        raise CADExportError(f"Purchased fitting {name} intersects a mounted part")
+                occupied.append((body, bounds))
         return _normalise_step(file.read_bytes())

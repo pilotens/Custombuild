@@ -958,6 +958,14 @@ def _assembly_step_hardware_text(
             "checksum-bundna installationsinstruktionen. Källautenticitet fastställs inte "
             "av nuvarande MVP och fysisk montering är inte frisläppt av detta designbevis"
         )
+    trial_count = sum(
+        angle.joint_id in selected_joint_ids for angle in getattr(design, "trial_angles", ())
+    )
+    if trial_count:
+        return (
+            f"Passa in spåren i detta steg. Efter stängning: {trial_count} GN 970-vinklar "
+            f"och {2 * trial_count} skruvar på fogarna i steget. Se beslagssidorna sist."
+        )
     hardware = _assembly_step_hardware(design, step)
     if hardware:
         identifiers = ", ".join(f"{sku} × {quantity}" for sku, quantity in hardware)

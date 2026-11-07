@@ -108,8 +108,12 @@ def shelving_trial_protocol(result: FurnitureResult, preview: dict[str, Any]) ->
                 f"Vald låsning för prov: {len(design.trial_angles)} GN 970-ALM-30-30-30-B "
                 f"och {2 * len(design.trial_angles)} DIN 96 A4 5×16 mm.",
                 "Vinkel 30×30×30 mm, 4 mm gods, Ø6,2 mm frigångshål, centrum 18 mm från böjen. "
-                "Skruvhuvud Ø10 mm. Ø3,5 × 12 mm pilothål är konstruktörens provmått. "
+                "Skruvhuvud Ø10 mm. Ø3,5 × 12,5 mm pilothål är konstruktörens provmått. "
                 "De ska verifieras mot skruvens kärna, art, faktisk batch och fuktkvot.",
+                "Provets måltolerans ±0,10 mm ger högst 0,142 mm diagonalt centrumfel i "
+                "ritningsplanet, mot nominellt 0,6 mm radiespel mellan Ø5 och Ø6,2 mm. "
+                "Återstoden måste rymma verkliga artikel- och montageavvikelser. "
+                "Pilothålet når 0,5 mm förbi nominell spets. Verifiera innan serieorder.",
                 "Mät skruvar, godstjocklek, huvudkontakt och skruvspetsens djup med provdelarna. "
                 "Registrera eventuell spricka, bottenkontakt eller genomslag. Prova demontering. "
                 "Mät tillgänglig plats för drivverktyg och hållande moment efter fuktcykling.",
