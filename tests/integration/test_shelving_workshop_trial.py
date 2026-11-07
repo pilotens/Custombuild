@@ -7,83 +7,10 @@ from collections import Counter
 from zipfile import ZipFile
 
 import pytest
-from custombuild_domain.furniture import FurnitureWorkspace
-from custombuild_domain.furniture_engine import build_furniture
-from custombuild_domain.models import DesignResult
 from custombuild_manufacturing.quality import validate_json_schema_instance
 from custombuild_worker.furniture_review import build_furniture_review
 
-ARTICLE = "GN-970-ALM-30-30-30-B"
-
-
-def trial(*, material="birch-plywood", thickness=18_000, **layout):
-    return FurnitureWorkspace.model_validate(
-        {
-            "design": {
-                "intent": {
-                    "family": "shelving",
-                    "width_um": 900_000,
-                    "height_um": 1_200_000,
-                    "depth_um": 280_000,
-                    "trial_angle": ARTICLE,
-                    **layout,
-                },
-                "material": {"material_id": material, "measured_thickness_um": thickness},
-            }
-        }
-    )
-
-
-@pytest.mark.parametrize(
-    ("material", "thickness", "layout", "count"),
-    [
-        ("birch-plywood", 17_000, {"divider_count": 0, "shelf_count": 0}, 4),
-        ("mdf", 19_000, {"divider_count": 0, "shelf_count": 2, "depth_um": 100_000}, 8),
-        ("solid-walnut", 18_000, {"divider_count": 1, "shelf_count": 2}, 14),
-        (
-            "solid-walnut",
-            18_000,
-            {
-                "divider_count": 2,
-                "shelf_count": 2,
-                "bay_width_ratios_ppm": [250000, 450000, 300000],
-            },
-            20,
-        ),
-    ],
-)
-def test_selected_profile_pairs_every_angle_with_two_distinct_pilots(
-    material, thickness, layout, count
-):
-    result = build_furniture(trial(material=material, thickness=thickness, **layout).design)
-    assert len(result.trial_angles) == count
-    ids = [fid for a in result.trial_angles for fid in (a.upright_hole, a.horizontal_hole)]
-    assert len(set(ids)) == 2 * count
-    assert {f.feature_id for p in result.parts for f in p.features if f.joint_id is None} == set(
-        ids
-    )
-    assert result.shelving_result
-    doc = result.shelving_result.model_dump(mode="json")
-    doc["trial_angles"].pop()
-    with pytest.raises(ValueError, match="varje bärande fog"):
-        DesignResult.model_validate(doc)
-
-
-@pytest.mark.parametrize(
-    ("layout", "message"),
-    [
-        ({"width_um": 249999}, "greater than or equal"),
-        ({"height_um": 4000001}, "less than or equal"),
-        ({"depth_um": 99999}, "greater than or equal"),
-        ({"shelf_load_n": 5001}, "less than or equal"),
-        ({"shelf_mount": "adjustable"}, "fasta hyllor"),
-        ({"plinth_height_um": 90000}, "utan sockel"),
-        ({"back_panel": "surface_mounted"}, "spårmonterad rygg"),
-    ],
-)
-def test_orders_outside_the_profile_get_specific_rejections(layout, message):
-    with pytest.raises(ValueError, match=message):
-        build_furniture(trial(**layout).design)
+from tests.unit.test_bookcase_angles import ARTICLE, trial
 
 
 @pytest.mark.cad
