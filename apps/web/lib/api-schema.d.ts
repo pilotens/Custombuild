@@ -4430,6 +4430,7 @@ export interface components {
             span_mm: number;
             /** Support Demand N */
             support_demand_n: number;
+            support_set?: components["schemas"]["SupportSetScreen"] | null;
         };
         /** ShelvingIntent */
         ShelvingIntent: {
@@ -4651,6 +4652,8 @@ export interface components {
              */
             material: "walnut-veneered-plywood";
             review?: components["schemas"]["SideboardReviewInputs"] | null;
+            /** Shelf Pin Article */
+            shelf_pin_article?: "282.43.905" | null;
             /**
              * Width Mm
              * @default 2400
@@ -4712,6 +4715,20 @@ export interface components {
              * @enum {string}
              */
             state: "fits" | "blocked" | "unresolved";
+        };
+        /** SupportSetScreen */
+        SupportSetScreen: {
+            /**
+             * Article
+             * @constant
+             */
+            article: "282.43.905";
+            /** Set Limit Kg */
+            set_limit_kg: number;
+            /** Total Shelf Mass Kg */
+            total_shelf_mass_kg: number;
+            /** Within Set Limit */
+            within_set_limit: boolean;
         };
         /**
          * TableIntent

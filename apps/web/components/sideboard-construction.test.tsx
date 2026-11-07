@@ -31,7 +31,7 @@ describe("sideboard construction", () => {
     fireEvent.click(screen.getByRole("button", { name: "Skapa skänk" }));
     fireEvent.click(await screen.findByRole("button", { name: "Öppna skänkens delar" }));
     expect(open).toHaveBeenCalledWith(result.assembly);
-    expect(call).toHaveBeenCalledWith(expect.objectContaining({ width_mm: 2200, door_count: 5 }));
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ width_mm: 2200, door_count: 5, shelf_pin_article: "282.43.905" }));
     fireEvent.change(screen.getByLabelText("Benhöjd (mm)"), { target: { value: "190" } });
     expect(screen.queryByRole("button", { name: "Öppna skänkens delar" })).toBeNull();
   });

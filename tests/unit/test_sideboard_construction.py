@@ -128,3 +128,37 @@ def test_actual_failures_are_detected_and_repaired(native_sideboard, fault):
     assert not failed["wood_and_boring_checks_passed"], fault
     repaired, _ = audit_sideboard(original)
     assert repaired["wood_and_boring_checks_passed"], repaired
+
+
+@pytest.mark.cad
+def test_missing_pin_and_duplicate_seat_fail_even_when_every_part_is_connected():
+    from custombuild_cad.sideboard_checks import audit_sideboard_with_supports
+
+    original = construct_sideboard(SideboardRequest(shelf_pin_article="282.43.905"))
+    first, second = (
+        next(f for f in original.fittings if f.id == key) for key in ("PIN-1-L-1", "PIN-1-L-2")
+    )
+    for fittings in (
+        tuple(f for f in original.fittings if f != first),
+        tuple(
+            f.model_copy(update={"mounts": first.mounts}) if f == second else f
+            for f in original.fittings
+        ),
+    ):
+        faulty = original.model_copy(
+            update={
+                "assembly": original.assembly.model_copy(update={"fittings": fittings}),
+                "fittings": fittings,
+            }
+        )
+        report, _ = audit_sideboard(faulty)
+        assert report["connected_parts"] == 38
+        assert not report["wood_and_boring_checks_passed"]
+        assert not report["shelf_support_sets"][0]["passed"]
+    repaired, _, pins = audit_sideboard_with_supports(original)
+    assert repaired["wood_and_boring_checks_passed"], repaired
+    assert all(s["passed"] and s["count"] == 4 for s in repaired["shelf_support_sets"])
+    assert len(pins) == 20
+    for pin in pins.values():
+        box = pin.BoundingBox()
+        assert (box.xlen, box.ylen, box.zlen) == pytest.approx((16.5, 7, 7))

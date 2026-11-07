@@ -12,6 +12,7 @@ from custombuild_domain.measured_assembly import (
 from custombuild_domain.sideboard_construction import construct_sideboard
 from custombuild_domain.sideboard_snapshot import SideboardWorkspace
 from custombuild_domain.sideboard_stability_report import ClosedStability
+from custombuild_domain.sideboard_supports import LEGACY
 from fastapi import APIRouter, HTTPException
 from sqlalchemy import select
 
@@ -114,6 +115,27 @@ def inspect_sideboard(
                 or (field != "back_coverage" and any(c.get("errors") != [] for c in checks))
             ):
                 raise ValueError("Alla anslutningar eller bakytor är inte kontrollerade.")
+        support_sets = cad.get("shelf_support_sets")
+        if package.request.shelf_pin_article or "shelf_support_sets" in cad:
+            article = package.request.shelf_pin_article or LEGACY.article
+            expected_sets = {
+                f"SHELF-{i}": {
+                    "shelf": f"SHELF-{i}",
+                    "article": article,
+                    "count": 4,
+                    "passed": True,
+                }
+                for i in range(1, 6)
+            }
+            if (
+                not isinstance(support_sets, list)
+                or len(support_sets) != len(expected_sets)
+                or not all(
+                    isinstance(row, dict) and row.get("passed") is True for row in support_sets
+                )
+                or {row["shelf"]: row for row in support_sets} != expected_sets
+            ):
+                raise ValueError("Fyra kontrollerade upplag saknas på ett eller flera hyllplan.")
         press = cad.get("door_press", [])
         if (
             not isinstance(press, list)
@@ -166,7 +188,10 @@ def inspect_sideboard(
                         id=f["id"],
                         state="aligned",
                         reason=(
-                            "Borrbild och anslutningsläge kontrollerade. Full "
+                            "CAD har kontrollerat bärarens nominella kropp, borrhål och upplag. "
+                            "Fyra separata upplag finns på hyllplanet."
+                            if support_sets is not None and f["kind"] == "shelf_pin"
+                            else "Borrbild och anslutningsläge kontrollerade. Full "
                             "beslagvolym, gångjärnsrörelse och lastklassning återstår."
                         ),
                     )

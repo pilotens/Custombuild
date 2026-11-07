@@ -5,6 +5,7 @@ from typing import Any
 
 from custombuild_domain.measured_assembly import NORMAL, MeasuredPart, measured_assembly_hash
 from custombuild_domain.sideboard_construction import SideboardConstruction
+from custombuild_domain.sideboard_supports import HAFELE, LEGACY
 
 from .measured_machining import _cq, machined_solid, operation_cutter
 from .measured_reference import reference_solid
@@ -35,6 +36,13 @@ def _entry(part: MeasuredPart, op: Any) -> list[float]:
 
 
 def audit_sideboard(package: SideboardConstruction) -> tuple[dict[str, Any], dict[str, Any]]:
+    report, wood, _ = audit_sideboard_with_supports(package)
+    return report, wood
+
+
+def audit_sideboard_with_supports(
+    package: SideboardConstruction,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     cq = _cq()
     assembly = package.assembly
     if len(assembly.parts) > 64 or len(assembly.joints) > 160:
@@ -136,10 +144,10 @@ def audit_sideboard(package: SideboardConstruction) -> tuple[dict[str, Any], dic
                     reasons.append(f"Förbandets nominella volym krockar med {key}.")
             hardware[joint.id] = cq.Compound.makeCompound(components)
         checks.append(dict(id=joint.id, passed=not reasons, errors=reasons))
-    fastener_hits = [
-        (a, b) for a, b in combinations(hardware, 2) if _collision(hardware[a], hardware[b])
-    ]
     fitting_checks = []
+    pin_solids = {}
+    seats: dict[str, list[tuple[int, float]]] = {}
+    expected_pin = HAFELE if package.request.shelf_pin_article else LEGACY
     for f in package.fittings:
         reasons = []
         if any(k not in parts for k in f.connects):
@@ -202,18 +210,45 @@ def audit_sideboard(package: SideboardConstruction) -> tuple[dict[str, Any], dic
                 shelf = parts[f.connects[0]]
                 point = _entry(support, op)
                 axis, sign = NORMAL[op.face]
-                if len(ops) != 1 or axis != 0 or op.width_um != 5000 or op.depth_um != 8000:
-                    reasons.append("Hyllbärarens hål avviker från Ø5 x 8 mm.")
+                if (
+                    len(ops) != 1
+                    or f.mounts[0].part != support.id
+                    or axis != 0
+                    or op.shape != "drill"
+                    or op.through
+                    or op.axes != "yz"
+                    or op.width_um != 5000
+                    or op.depth_um != round(expected_pin.bore * 1000)
+                    or f.article != expected_pin.article
+                ):
+                    reasons.append("Hyllbärarens artikel eller blindhål avviker från ritningen.")
                 if abs(origins[shelf.id][2] / 1000 - point[2] - 2.5) > 0.0001:
                     reasons.append("Hyllplanet vilar inte på hyllbäraren.")
                 edge = (origins[shelf.id][0] + (shelf.size_um[0] if sign < 0 else 0)) / 1000
-                if (
-                    abs(abs(edge - point[0]) - 1) > 0.0001
-                    or not origins[shelf.id][1] / 1000
-                    <= point[1]
-                    <= (origins[shelf.id][1] + shelf.size_um[1]) / 1000
-                ):
-                    reasons.append("Hyllbäraren når inte under hyllplanet.")
+                gap = sign * (edge - point[0])
+                y_min = origins[shelf.id][1] / 1000
+                y_max = y_min + shelf.size_um[1] / 1000
+                if abs(gap - 1) > 0.0001 or not y_min <= point[1] <= y_max:
+                    reasons.append("Hyllbäraren når inte under hyllplanet från angiven sida.")
+                if not reasons:
+                    direction = cq.Vector(sign, 0, 0)
+                    start = cq.Vector(*point) - direction * expected_pin.insert
+                    shaft = cq.Solid.makeCylinder(
+                        2.5, expected_pin.insert + expected_pin.projection, start, direction
+                    )
+                    if expected_pin.collar_width:
+                        collar = cq.Solid.makeCylinder(
+                            expected_pin.collar_diameter / 2,
+                            expected_pin.collar_width,
+                            cq.Vector(*point),
+                            direction,
+                        )
+                        shaft = shaft.fuse(collar).clean()
+                    for key, solid in solids.items():
+                        if _collision(shaft, solid):
+                            reasons.append(f"Hyllbärarens kropp krockar med {key}.")
+                    pin_solids[f.id] = shaft
+                    seats.setdefault(shelf.id, []).append((sign, point[1]))
             else:
                 body, catch = ops
                 block, door = parts[f.mounts[0].part], parts[f.mounts[1].part]
@@ -238,6 +273,26 @@ def audit_sideboard(package: SideboardConstruction) -> tuple[dict[str, Any], dic
         except (KeyError, IndexError, ValueError, TypeError):
             reasons.append("Beslagets kompletta borrbild saknas.")
         fitting_checks.append(dict(id=f.id, kind=f.kind, passed=not reasons, errors=reasons))
+    support_sets = []
+    for index in range(1, 6):
+        key = f"SHELF-{index}"
+        locations = seats.get(key, [])
+        center_y = (origins[key][1] + parts[key].size_um[1] / 2) / 1000 if key in origins else 0
+        quadrants = {(sign, y > center_y) for sign, y in locations if y != center_y}
+        support_sets.append(
+            dict(
+                shelf=key,
+                article=expected_pin.article,
+                count=len(locations),
+                passed=len(locations) == 4 and len(quadrants) == 4,
+            )
+        )
+    if package.hardware.get(expected_pin.article) != len(pin_solids):
+        errors.append("Antal hyllbärare i beslaglistan avviker från CAD-modellen.")
+    hardware.update(pin_solids)
+    fastener_hits = [
+        (a, b) for a, b in combinations(hardware, 2) if _collision(hardware[a], hardware[b])
+    ]
     # Coverage follows the aperture, not the outer bounding box or the top strip.
     backs = [p for p in assembly.parts if p.id.startswith("BACK-")]
     coverage = []
@@ -285,24 +340,29 @@ def audit_sideboard(package: SideboardConstruction) -> tuple[dict[str, Any], dic
         and not overlaps
         and not fastener_hits
         and len(seen) == len(parts)
-        and all(c["passed"] for c in checks + fitting_checks + coverage + press)
+        and all(c["passed"] for c in checks + fitting_checks + coverage + press + support_sets)
     )
-    return dict(
-        assembly_sha256=measured_assembly_hash(assembly),
-        wood_and_boring_checks_passed=passed,
-        parts=len(parts),
-        operations=len(operations),
-        pairs_checked=len(parts) * (len(parts) - 1) // 2,
-        errors=errors,
-        wood_intersections=overlaps,
-        fastener_intersections=fastener_hits,
-        joints=checks,
-        fittings=fitting_checks,
-        back_coverage=coverage,
-        door_press=press,
-        connected_parts=len(seen),
-        hinge_motion_verified=False,
-        hardware_body_collision_verified=False,
-        load_rating_verified=False,
-        physical_cutting_authorized=False,
-    ), solids
+    return (
+        dict(
+            assembly_sha256=measured_assembly_hash(assembly),
+            wood_and_boring_checks_passed=passed,
+            parts=len(parts),
+            operations=len(operations),
+            pairs_checked=len(parts) * (len(parts) - 1) // 2,
+            errors=errors,
+            wood_intersections=overlaps,
+            fastener_intersections=fastener_hits,
+            shelf_support_sets=support_sets,
+            joints=checks,
+            fittings=fitting_checks,
+            back_coverage=coverage,
+            door_press=press,
+            connected_parts=len(seen),
+            hinge_motion_verified=False,
+            hardware_body_collision_verified=False,
+            load_rating_verified=False,
+            physical_cutting_authorized=False,
+        ),
+        solids,
+        pin_solids,
+    )

@@ -226,3 +226,39 @@ def test_static_push_reserve_and_combined_base_record_are_bound_to_the_measured_
         == "wrong_batch"
     )
     assert screen().base_test_comparison == "missing"
+
+
+def test_catalogue_support_set_checks_total_weight_and_mounting_tolerances():
+    from custombuild_domain.sideboard_supports import HAFELE, SET_LIMIT_KG
+
+    def sample(**review):
+        return construct_sideboard(
+            SideboardRequest(shelf_pin_article="282.43.905", review=SideboardReviewInputs(**review))
+        )
+
+    nominal = sample()
+    assert nominal.hardware[HAFELE.article] == 20 and "SHELF-PIN-5x12" not in nominal.hardware
+    assert nominal.assembly_sha256 != package().assembly_sha256
+    assert all(
+        r.support_set.within_set_limit and r.pin_within_declared_load is None
+        for r in nominal.assessment.shelf_screens
+    )
+    row = nominal.assessment.shelf_screens[0]
+    own = row.support_set.total_shelf_mass_kg - 20
+    assert row.support_set.set_limit_kg == pytest.approx(75 * 0.45359237)
+    assert (
+        not sample(shelf_payload_kg=SET_LIMIT_KG - own + 0.001)
+        .assessment.shelf_screens[0]
+        .support_set.within_set_limit
+    )
+    assert (
+        sample(shelf_payload_kg=SET_LIMIT_KG - own - 0.001)
+        .assessment.shelf_screens[0]
+        .support_set.within_set_limit
+    )
+    assert nominal.assessment.minimum_divider_web_mm == pytest.approx(9.2)
+    assert not any("krage" in s for s in nominal.assessment.findings)
+    errors = sample(bore_depth_error_mm=0.6, edge_error_mm=0.3).assessment.findings
+    assert sum("krage" in s for s in errors) == 2
+    with pytest.raises(ValidationError, match="fyra bärare"):
+        sample(pin_working_load_n=999, pin_source="Fel kapacitetsenhet")

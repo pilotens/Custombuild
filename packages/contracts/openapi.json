@@ -9196,6 +9196,16 @@
           "support_demand_n": {
             "title": "Support Demand N",
             "type": "number"
+          },
+          "support_set": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SupportSetScreen"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -9667,6 +9677,18 @@
               }
             ]
           },
+          "shelf_pin_article": {
+            "anyOf": [
+              {
+                "const": "282.43.905",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shelf Pin Article"
+          },
           "width_mm": {
             "default": 2400,
             "maximum": 2600.0,
@@ -9832,6 +9854,36 @@
           "state"
         ],
         "title": "StockCheck",
+        "type": "object"
+      },
+      "SupportSetScreen": {
+        "additionalProperties": false,
+        "properties": {
+          "article": {
+            "const": "282.43.905",
+            "title": "Article",
+            "type": "string"
+          },
+          "set_limit_kg": {
+            "title": "Set Limit Kg",
+            "type": "number"
+          },
+          "total_shelf_mass_kg": {
+            "title": "Total Shelf Mass Kg",
+            "type": "number"
+          },
+          "within_set_limit": {
+            "title": "Within Set Limit",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "article",
+          "total_shelf_mass_kg",
+          "set_limit_kg",
+          "within_set_limit"
+        ],
+        "title": "SupportSetScreen",
         "type": "object"
       },
       "TableIntent": {

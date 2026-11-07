@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-from custombuild_cad.sideboard_checks import audit_sideboard
+from custombuild_cad.sideboard_checks import audit_sideboard_with_supports
 from custombuild_cad.sideboard_stability import closed_stability
 from custombuild_domain.sideboard_construction import SideboardConstruction, construct_sideboard
 from custombuild_domain.sideboard_snapshot import SideboardWorkspace
@@ -20,7 +20,7 @@ from .trestle_review import _csv, _json
 def sideboard_files(package: SideboardConstruction) -> dict[str, bytes]:
     import cadquery as cq
 
-    audit, solids = audit_sideboard(package)
+    audit, solids, pins = audit_sideboard_with_supports(package)
     if not audit["wood_and_boring_checks_passed"]:
         raise ValueError("Skänkens trä-/borrkontroll underkändes: " + str(audit))
     if package.request.review:
@@ -165,12 +165,37 @@ def sideboard_files(package: SideboardConstruction) -> dict[str, bytes]:
         if not isinstance(back, cq.Shape) or len(back.Solids()) != len(solids):
             raise ValueError("STEP-monteringen har tappat en trädel.")
         files["assembly/model.step"] = assembled.read_bytes()
+        for key, pin in pins.items():
+            path = Path(temporary) / (key + ".step")
+            cq.exporters.export(pin, str(path))
+            restored = cq.importers.importStep(str(path)).val()
+            if (
+                not isinstance(restored, cq.Shape)
+                or not restored.isValid()
+                or len(restored.Solids()) != 1
+                or abs(restored.Volume() - pin.Volume()) > 1e-6
+                or any(
+                    abs(getattr(pin.BoundingBox(), a) - getattr(restored.BoundingBox(), a)) > 0.005
+                    for a in ("xmin", "xmax", "ymin", "ymax", "zmin", "zmax")
+                )
+            ):
+                raise ValueError("Hyllbärarens STEP-återimport underkänd: " + key)
+            files[f"fittings/{key}.step"] = path.read_bytes()
+        mounted = Path(temporary) / "mounted.step"
+        cq.exporters.export(
+            cq.Compound.makeCompound([*solids.values(), *pins.values()]), str(mounted)
+        )
+        restored = cq.importers.importStep(str(mounted)).val()
+        if not isinstance(restored, cq.Shape) or len(restored.Solids()) != len(solids) + len(pins):
+            raise ValueError("STEP med monterade hyllbärare har tappat en komponent.")
+        files["assembly/wood-and-shelf-pins.step"] = mounted.read_bytes()
     files["validation/step-roundtrips.json"] = _json(roundtrips)
     files["README.txt"] = (
         "CUSTOMBUILD / SKÄNK S1\n\nÖppna viewer.html eller documents/ritningar.pdf.\n"
         "Alla mått är mm. DXF INSUNITS=4. D..._UM anger borrdjup i mikrometer.\n"
         "Vald konstruktion efter foto, inte uppmätta originalmått.\n"
-        "38 STEP-delar visar bearbetat trä. Köpta beslag är poster med borrbilder,\n"
+        "38 trädelar och 20 nominella hyllbärare finns som separata STEP-filer.\n"
+        "assembly/wood-and-shelf-pins.step visar deras montering. Övriga beslag är borrbilder,\n"
         "inte kompletta 3D-beslag. 10 gångjärn, 20 hyllbärare, 5 trycköppnare;\n"
         "montageplattor och skruvar finns i BOM. 90 träförband i nominell geometri.\n"
         "Limfogar och förband är inte lastklassade. Fem baköppningar är täckta.\n"

@@ -180,7 +180,9 @@ def test_real_export_includes_machined_step_face_drawings_and_every_operation(cl
     assert checked["geometry_method"] == "machined_wood"
     with zipfile.ZipFile(io.BytesIO(blob)) as archive:
         names = archive.namelist()
-        assert sum(n.endswith(".step") for n in names) == 39
+        assert sum(n.startswith("parts/") and n.endswith(".step") for n in names) == 38
+        assert sum(n.startswith("fittings/") and n.endswith(".step") for n in names) == 20
+        assert "assembly/model.step" in names and "assembly/wood-and-shelf-pins.step" in names
         assert sum(n.endswith(".dxf") for n in names) == 228
         assert sum(n.endswith(".svg") for n in names) == 228
         audit = json.loads(archive.read("validation/sideboard.json"))
@@ -206,7 +208,11 @@ def test_reference_layout_and_planning_survive_the_real_export_and_inspection(
 ):
     install_review_storage(monkeypatch)
     path = "/v1/constructions/sideboard"
-    request = {"front_percent": [21, 17, 23, 20, 19], "review": {}}
+    request = {
+        "shelf_pin_article": "282.43.905",
+        "front_percent": [21, 17, 23, 20, 19],
+        "review": {},
+    }
     preview = client.post(path, headers=HEADERS, json=request).json()
     body = {
         "expected_construction_sha256": preview["construction_sha256"],
@@ -239,6 +245,7 @@ def test_reference_layout_and_planning_survive_the_real_export_and_inspection(
         f"{path}/projects/{job['project_id']}/exports/{job['job_id']}/inspection", headers=HEADERS
     )
     assert proof.status_code == 200, proof.text
+    assert sum("Fyra separata upplag" in f["reason"] for f in proof.json()["fitting_checks"]) == 20
     assert proof.json()["closed_stability"] == evidence["closed_stability"]
     assert proof.json()["assembly_sha256"] == preview["assembly_sha256"]
     assert proof.json()["physical_cutting_authorized"] is False

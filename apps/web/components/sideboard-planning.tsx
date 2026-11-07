@@ -18,6 +18,7 @@ function numberField(form: FormData, name: string): number {
 }
 
 export async function readSideboardPlan(form: FormData): Promise<{
+  shelf_pin_article?: "282.43.905";
   front_percent?: number[];
   review: Review;
 }> {
@@ -68,10 +69,11 @@ export async function readSideboardPlan(form: FormData): Promise<{
       throw new Error("Rörelseprofilen ska innehålla en eller två artikelbanor.");
     review.hinge_paths = paths; // The API validates the complete shape and mounting configuration.
   }
-  if (!form.has("share_1")) return { review };
+  const support = form.get("pin_article") === "282.43.905" ? { shelf_pin_article: "282.43.905" as const } : {};
+  if (!form.has("share_1")) return { review, ...support };
   const shares = defaultShares.map((_, i) => numberField(form, "share_" + (i + 1)));
   if (shares.reduce((a, b) => a + b, 0) !== 100) throw new Error("Luckandelarna måste summera till 100 %.");
-  return { front_percent: shares, review };
+  return { front_percent: shares, review, ...support };
 }
 
 function NumericField({ label, name, value, min, max, step = "any", optional = false }: {
@@ -82,6 +84,7 @@ function NumericField({ label, name, value, min, max, step = "any", optional = f
 }
 
 export function SideboardPlanningFields({ invalidate }: { invalidate: () => void }) {
+  const [pin, setPin] = useState("282.43.905");
   const [custom, setCustom] = useState(false);
   const [base, setBase] = useState(false);
   const [batch, setBatch] = useState(false);
@@ -121,10 +124,14 @@ export function SideboardPlanningFields({ invalidate }: { invalidate: () => void
           ["Front", "front_mm"], ["Stomme", "carcass_mm"]].map(([label, name]) =>
           <NumericField key={name} label={label+" (mm)"} name={name!} min={1} max={60}/>)}
       </div>}
-      <div className={css.toolbar}>
+      <label>Hyllbärare <select name="pin_article" value={pin} onChange={e=>setPin(e.target.value)}>
+        <option value="282.43.905">Häfele 282.43.905 med krage</option>
+        <option value="legacy">Cylindrisk Ø5 × 12 mm med egen lastuppgift</option>
+      </select></label>
+      {pin === "282.43.905" ? <p>Fyra bärare per hylla. Beräkningen jämför hyllans egenvikt och jämnt fördelade nyttolast med artikelns kataloggräns.</p> : <div className={css.toolbar}>
         <NumericField label="Tillåten brukslast per hyllbärare (N)" name="pin_n" min={0.01} max={10000} optional/>
         <label>Hyllbärarens artikel och datakälla <input name="pin_source" maxLength={120}/></label>
-      </div>
+      </div>}
       <label><input type="checkbox" checked={base} onChange={e=>setBase(e.target.checked)}/>
         Jämför med underredets provprotokoll</label>
       {base && <fieldset><legend>Dokumenterat kombinerat provfall</legend>
@@ -154,13 +161,14 @@ export function SideboardPlanningResult({ report }: { report: Assessment }) {
     <h3>Konstruktionsprov</h3>
     <p>{mm(report.total_shelf_payload_kg)} kg vald nyttolast fördelad över fem hyllplan.
       Tabellen antar jämnt utbredd last. Materialunderlag: {report.material_profile}.</p>
-    <table><thead><tr><th>Hyllplan</th><th>Nedböjning / gräns (mm)</th><th>Böjspänning</th><th>Brukslast per bärare</th></tr></thead>
+    <table><thead><tr><th>Hyllplan</th><th>Nedböjning / gräns (mm)</th><th>Böjspänning</th><th>Hyllbärare</th></tr></thead>
       <tbody>{report.shelf_screens.map(s => <tr key={s.part_id}><td>{s.part_id}</td>
         <td>{mm(s.deflection_mm)} / {mm(s.limit_mm)} · {s.deflection_within_limit ? "inom gräns" : "överskriden"}</td>
         <td>{mm(s.bending_stress_mpa)} MPa · {s.bending_within_declared_limit === null ? "gräns saknas" :
           s.bending_within_declared_limit ? "inom angiven gräns" : "överskriden"}</td>
-        <td>{mm(s.support_demand_n)} N · {s.pin_within_declared_load === null ? "artikeldata saknas" :
-          s.pin_within_declared_load ? "inom angiven kapacitet" : "för hög last"}</td></tr>)}</tbody>
+        <td>{s.support_set ? <>{s.support_set.article} · {mm(s.support_set.total_shelf_mass_kg)} / {mm(s.support_set.set_limit_kg)} kg för fyra · {s.support_set.within_set_limit ? "inom kataloggräns" : "över kataloggräns"}</> :
+          <>{mm(s.support_demand_n)} N · {s.pin_within_declared_load === null ? "artikeldata saknas" :
+          s.pin_within_declared_load ? "inom angiven kapacitet" : "för hög last"}</>}</td></tr>)}</tbody>
     </table>
     <table><thead><tr><th>Lucka</th><th>Minsta springa / krav (mm)</th><th>Öppning 0–110°</th></tr></thead>
       <tbody>{report.hinge_gaps.map(g => {
@@ -169,7 +177,7 @@ export function SideboardPlanningResult({ report }: { report: Assessment }) {
           <td>{m && motionLabels[m.state]} {m?.obstacle && `· ${m.obstacle} vid ${mm(m.angle_deg ?? 0)}°`}</td></tr>;
       })}</tbody>
     </table>
-    <p>Kvarvarande trä mellan motstående hyllborrningar: {mm(report.minimum_divider_web_mm)} mm.
+    <p>Minsta kvarvarande trä bakom hyllbärarnas hål i mellanväggarna: {mm(report.minimum_divider_web_mm)} mm.
       Kvar till luckans framsida: {mm(report.minimum_front_skin_mm)} mm.</p>
     <p>Skivbatch: {{ missing: "mätvärden saknas", matches_nominal: "matchar ritmåtten",
       revise_dimensions: "avviker från ritmåtten" }[report.batch_state]}.

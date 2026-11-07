@@ -9,6 +9,7 @@ from .measured_assembly import MeasuredAssembly
 from .models import FrozenModel
 from .sideboard_motion import HingePath, MotionResult, door_motion
 from .sideboard_stability_report import BaseTestRecord
+from .sideboard_supports import HAFELE, SET_LIMIT_KG, divider_web_mm
 
 PositiveThickness = Annotated[float, Field(strict=True, ge=1, le=60, allow_inf_nan=False)]
 
@@ -50,7 +51,15 @@ class SideboardReviewInputs(FrozenModel):
         return self
 
 
+class SupportSetScreen(FrozenModel):
+    article: Literal["282.43.905"]
+    total_shelf_mass_kg: float
+    set_limit_kg: float
+    within_set_limit: bool
+
+
 class ShelfScreen(FrozenModel):
+    support_set: SupportSetScreen | None = Field(default=None, exclude_if=lambda v: v is None)
     part_id: str
     span_mm: float
     deflection_mm: float
@@ -121,6 +130,12 @@ def assess_sideboard(
         issues.append(
             "Hyllberäkningen använder indikativa plywooddata. Ange materialets bruksvärden."
         )
+    catalogue = any(f.article == HAFELE.article for f in assembly.fittings)
+    if catalogue:
+        if HAFELE.bore - inputs.bore_depth_error_mm < HAFELE.insert:
+            issues.append("Borrtoleransen kan hindra hyllbärarens krage från att ligga an.")
+        if 1 - 2 * inputs.edge_error_mm < HAFELE.collar_width:
+            issues.append("Kanttoleransen kan ge kollision mellan hyllplan och bärarens krage.")
     for p in assembly.parts:
         if not p.id.startswith("SHELF-"):
             continue
@@ -134,6 +149,16 @@ def assess_sideboard(
         demand = force / 2
         shelves.append(
             ShelfScreen(
+                support_set=(
+                    SupportSetScreen(
+                        article="282.43.905",
+                        total_shelf_mass_kg=own_kg + inputs.shelf_payload_kg,
+                        set_limit_kg=SET_LIMIT_KG,
+                        within_set_limit=own_kg + inputs.shelf_payload_kg <= SET_LIMIT_KG,
+                    )
+                    if catalogue
+                    else None
+                ),
                 part_id=p.id,
                 span_mm=span,
                 deflection_mm=delta,
@@ -155,13 +180,19 @@ def assess_sideboard(
         issues.append("Vald last överskrider gränsen för beräknad hyllnedböjning.")
     if any(s.bending_within_declared_limit is False for s in shelves):
         issues.append("Minst ett hyllplan överskrider materialets angivna böjspänning.")
-    if any(s.pin_within_declared_load is not True for s in shelves):
+    if any(s.support_set and not s.support_set.within_set_limit for s in shelves):
+        issues.append("Minst ett hyllplan överskrider kataloggränsen för fyra bärare tillsammans.")
+    if not catalogue and any(s.pin_within_declared_load is not True for s in shelves):
         issues.append(
             "Minst en hyllbärare belastas över angiven brukslast."
             if inputs.pin_working_load_n is not None
             else "Ange artikelns tillåtna brukslast per hyllbärare."
         )
-    web = thick - 2 * (8 + inputs.bore_depth_error_mm)
+    web = (
+        divider_web_mm(assembly, thick, inputs.bore_depth_error_mm)
+        if catalogue
+        else thick - 2 * (8 + inputs.bore_depth_error_mm)
+    )
     skin = front - (15 + inputs.bore_depth_error_mm)
     if min(web, skin) <= 0:
         issues.append("Borrtoleransen kan ge genombrott i mellanvägg eller lucka.")

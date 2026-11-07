@@ -183,7 +183,7 @@ def sideboard_pdf(package: SideboardConstruction, audit: dict[str, Any]) -> byte
                 "Skivbatch: "
                 + (review.measurements.batch if review.measurements else "ej registrerad")
                 + ". "
-                + f"Trä mellan borrningar {assessment.minimum_divider_web_mm:.2f} mm. "
+                + f"Minsta trä bakom hyllbärarhål {assessment.minimum_divider_web_mm:.2f} mm. "
                 f"återstående frontskikt {assessment.minimum_front_skin_mm:.2f} mm."
             ),
         ]
@@ -201,13 +201,42 @@ def sideboard_pdf(package: SideboardConstruction, audit: dict[str, Any]) -> byte
                         f"{review.shelf_material.allowable_bending_mpa:g}"
                         if review.shelf_material
                         else "saknas",
-                        f"{review.pin_working_load_n:g}" if review.pin_working_load_n else "saknas",
+                        (
+                            "Se gräns för fyra"
+                            if r.support_set
+                            else f"{review.pin_working_load_n:g}"
+                            if review.pin_working_load_n
+                            else "saknas"
+                        ),
                     ]
                     for r in assessment.shelf_screens
                 ],
                 [120, 125, 125, 140],
             ),
         ]
+        if package.request.shelf_pin_article:
+            story += [
+                p(
+                    "Häfele 282.43.905. Jämnt fördelad last inklusive hyllans egenvikt. "
+                    "Den lägre publicerade uppgiften, 75 lb, används för hela uppsättningen."
+                ),
+                table(
+                    [["Hyllplan", "Total massa kg", "Gräns för fyra kg", "Utfall"]]
+                    + [
+                        [
+                            row.part_id,
+                            f"{row.support_set.total_shelf_mass_kg:.2f}",
+                            f"{row.support_set.set_limit_kg:.2f}",
+                            "Inom kataloggräns"
+                            if row.support_set.within_set_limit
+                            else "Överskriden",
+                        ]
+                        for row in assessment.shelf_screens
+                        if row.support_set
+                    ],
+                    [120, 125, 125, 140],
+                ),
+            ]
         if review.pin_source:
             story.append(p("Hyllbärarens artikel/källa: " + review.pin_source))
         if review.measurements:

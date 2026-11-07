@@ -12,6 +12,7 @@ from pydantic import Field, model_validator
 from .identity import content_hash
 from .measured_assembly import MeasuredAssembly, MeasuredFitting, measured_assembly_hash
 from .models import FrozenModel
+from .sideboard_supports import CATALOGUE, DATASHEET, HAFELE, LEGACY
 from .sideboard_verification import SideboardAssessment, SideboardReviewInputs, assess_sideboard
 
 SOURCE = "Custombuild S1: vald skänkkonstruktion efter foto IMG_8289; inga fotoavlästa mått."
@@ -34,6 +35,9 @@ class SideboardRequest(FrozenModel):
     front_percent: tuple[Annotated[int, Field(strict=True, ge=10, le=32)], ...] | None = Field(
         default=None, min_length=5, max_length=5, exclude_if=lambda v: v is None
     )
+    shelf_pin_article: Literal["282.43.905"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     review: SideboardReviewInputs | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
@@ -42,6 +46,10 @@ class SideboardRequest(FrozenModel):
             raise ValueError("Stommen behöver minst 450 mm höjd för denna beslagssättning.")
         if self.front_percent is not None and sum(self.front_percent) != 100:
             raise ValueError("De fem luckandelarna måste summera till 100 %.")
+        if self.shelf_pin_article and self.review and self.review.pin_working_load_n is not None:
+            raise ValueError(
+                "Katalogartikeln jämförs med tillåten last för fyra bärare tillsammans."
+            )
         return self
 
 
@@ -77,6 +85,7 @@ def construct_sideboard(request: SideboardRequest) -> SideboardConstruction:
     t, divider, door_t, back_t, gap = 24, 18, 19, 6, 3
     body_d, clear_h = d - back_t, h - leg - 2 * t
     bay = (w - 2 * t - 4 * divider) / 5
+    pin = HAFELE if request.shelf_pin_article else LEGACY
     parts: dict[str, dict[str, Any]] = {}
     joints: list[dict[str, Any]] = []
     fittings: list[dict[str, Any]] = []
@@ -404,22 +413,21 @@ def construct_sideboard(request: SideboardRequest) -> SideboardConstruction:
         for side, support, face in (("L", left_part, "right"), ("R", right_part, "left")):
             for n, y in enumerate((110, body_d - 30), 1):
                 key = f"PIN-{i + 1}-{side}-{n}"
-                pin_mount = bore(support, key, face, "yz", y, shelf_z - 2.5, 5, 8)
+                # Offset alternating bays so two deeper blind holes never meet in a divider.
+                pin_y = y + (12 if request.shelf_pin_article and i % 2 else 0)
+                pin_mount = bore(support, key, face, "yz", pin_y, shelf_z - 2.5, 5, pin.bore)
                 fittings.append(
                     dict(
                         id=key,
-                        article="SHELF-PIN-5x12",
+                        article=pin.article,
                         kind="shelf_pin",
                         connects=(shelf, support),
                         mounts=(pin_mount,),
-                        specification=(
-                            "Cylindrisk hyllbärare Ø5; 8 mm i blindhålet och 4 mm "
-                            "utstick. Ej lastklassad artikel."
-                        ),
-                        source=SOURCE,
+                        specification=pin.specification,
+                        source=CATALOGUE if request.shelf_pin_article else SOURCE,
                     )
                 )
-                hardware["SHELF-PIN-5x12"] += 1
+                hardware[pin.article] += 1
         block = f"LATCH-BLOCK-{i + 1}"
         cx = door_right - 35
         z = h - t - 12
@@ -511,6 +519,7 @@ def construct_sideboard(request: SideboardRequest) -> SideboardConstruction:
         fittings=assembly.fittings,
         hardware=dict(sorted(hardware.items())),
         purchase_blanks=tuple(blanks),
+        sources=(*SOURCES, CATALOGUE, DATASHEET) if request.shelf_pin_article else SOURCES,
         outstanding_acceptance=outstanding,
         assumptions=(
             (

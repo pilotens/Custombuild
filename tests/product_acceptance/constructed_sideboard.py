@@ -13,7 +13,7 @@ def exercise_constructed_sideboard(client, case, e, tmp_path):
     path = "/v1/constructions/sideboard"
     before = response_json(client.post(path, json={}))
     package = SideboardConstruction.model_validate(before)
-    plan = {"front_percent": [21, 17, 23, 20, 19], "review": {}}
+    plan = {"shelf_pin_article": "282.43.905", "front_percent": [21, 17, 23, 20, 19], "review": {}}
     if case.level == "easy":
         assessed = response_json(client.post(path, json=plan))
         e.equal(
@@ -117,6 +117,19 @@ def exercise_constructed_sideboard(client, case, e, tmp_path):
             assert restored.intersect(skin).Volume() > 1500
         e.equal(
             "STEP_parts", sum(p.startswith("parts/") and p.endswith(".step") for p in files), 38
+        )
+        e.equal(
+            "separate_pin_STEPs",
+            sum(p.startswith("fittings/") and p.endswith(".step") for p in files),
+            20,
+        )
+        assert all(
+            row["support_set"]["within_set_limit"] for row in report["assessment"]["shelf_screens"]
+        )
+        assembled = tmp_path / "mounted.step"
+        assembled.write_bytes(files["assembly/wood-and-shelf-pins.step"])
+        e.equal(
+            "wood_and_pin_solids", len(cq.importers.importStep(str(assembled)).val().Solids()), 58
         )
         e.equal("DXF_face_files", 228, 228)
         e.note(
