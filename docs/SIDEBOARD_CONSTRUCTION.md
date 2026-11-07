@@ -36,13 +36,24 @@ are counted once, plus five 609.1500 catch screws.
 
 Five long magnetic TIP-ON 956A1004 latches use Ø10 × 76 mm bores in separate
 blocks and a 3.1 mm nominal gap to the front back face. They use free-swing
-hinges, not sprung BLUMOTION hinges. Shelf pins are explicitly a nominal
-Ø5 × 12 mm specification, with 8 mm in the panel and 4 mm projection;
-opposing holes leave a 2 mm web in an 18 mm divider. Shelf pins and generic
-wood screws/dowels still require a qualified supplier article and material.
+hinges. New UI designs select Häfele 282.43.905. Each Ø5 × 16.5 mm support has
+an 8 mm insertion length, a Ø7 × 0.5 mm collar and an 8 mm bearing section.
+The assembly uses Ø5 × 8.5 mm blind holes. Adjacent bays stagger their rows by
+12 mm to preserve wood in the dividers. With the default ±0.3 mm depth error,
+the minimum remaining thickness behind a bore is 9.2 mm.
 
-Primary planning sources:
+The UK catalogue rates four supports under evenly distributed load at 80 kg.
+The US product sheet lists 75 lb. The app uses the lower figure, 34.02 kg
+per set, including shelf weight. Each shelf needs two supports on each side,
+straddling its depth center. The audit checks the actual bodies against the
+wood, fasteners and other supports. Removing a pin or duplicating a seat fails.
+Older requests without `shelf_pin_article` retain their Ø5 × 12 mm geometry
+and original construction identity.
 
+Planning sources
+
+- https://files.hafele.co.uk/CatalogFiles/www/15KD212.PDF
+- https://yektaiq.com/sites/default/files/products-datasheets/haefele_28243905_print.pdf
 - https://publications.blum.com/2024/catalogue/en/76/
 - https://publications.blum.com/2024/catalogue/en/77/
 - https://publications.blum.com/2024/catalogue/en/153/
@@ -63,7 +74,7 @@ cannot satisfy this check. A 2 mm inward translation of each front is tested
 against wood. This is a push-clearance check, **not a 110° hinge-motion test**.
 All 38 parts must belong to the contact graph. Every finished STEP is imported
 again and checked for a valid single solid, bounding differences below 0.005 mm
-and relative volume difference below 1e-8. The mounted STEP contains 38 solids.
+and relative volume difference below 1e-8. The wood assembly contains 38 solids. The mounted wood-and-support assembly contains 58.
 
 The first native trial found leg screws crossing rail dowels and latch-block
 screws extending beyond their pilots. Leg screws moved to X-center with Y=16/34
@@ -94,8 +105,10 @@ stale export callbacks. Empty fitting registers remain omitted to preserve old
 measured-assembly hashes and existing B1 snapshots.
 
 The ZIP contains the standalone `viewer.html`, PDF, exact source JSON, cut and
-hardware lists, named connections, 38 part STEP files, 228 DXF files, 228 SVG
-files, assembly STEP and per-file digests. DXF uses millimetres; depth in layer
+hardware lists, named connections, 38 wood STEP files, 20 individual pin STEP
+files, 228 DXF files and 228 SVG files. `assembly/model.step` contains the
+wood. `assembly/wood-and-shelf-pins.step` adds the mounted pins. Every file has
+a recorded digest. DXF uses millimetres; depth in layer
 names is micrometres. Opposite-face exits are reference geometry, not duplicate
 machining. The HTML overview is selectable but not a replacement for machined STEP.
 Its face ordering uses projected overlap and depth on that overlap, shared with
@@ -146,8 +159,9 @@ unusual load positions require separate qualification.
 By default the existing screening material uses 680 kg/m³, 6500 MPa, 20%
 stiffness uncertainty and 50% creep allowance. A sourced supplier profile may
 instead specify density, **effective service modulus including creep** along
-the span, and allowable service bending stress. Optional pin working load must
-include a source. Missing declarations stay visible. The four measured panel
+the span, and allowable service bending stress. Legacy pin working loads require a source. The selected Häfele profile
+uses the set rating and checks collar clearance and insertion depth at the
+requested tolerances. Missing declarations stay visible. The four measured panel
 thicknesses are checked at model precision. Edge-position error is counted at
 both meeting edges. Bore overshoot is counted on both opposing divider holes.
 A batch that differs from the actual modeled thickness requires revision.
