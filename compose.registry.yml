@@ -9,7 +9,7 @@ services:
   postgres:
     image: cgr.dev/chainguard/postgres@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
   redis:
-    image: docker.io/library/redis@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
+    image: ${CUSTOMBUILD_DEPLOY_REDIS_IMAGE:?Set from a verified deploy descriptor}
   object-storage-init:
     image: docker.io/library/busybox@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478
   object-storage:

@@ -32,33 +32,35 @@ APPLICATION_DIGESTS = {
     "worker": f"sha256:{'2' * 64}",
     "web": f"sha256:{'3' * 64}",
     "seaweedfs": f"sha256:{'4' * 64}",
+    "redis": f"sha256:{'9' * 64}",
 }
 APPLICATION_CONFIG_DIGESTS = {
     "api": f"sha256:{'5' * 64}",
     "worker": f"sha256:{'6' * 64}",
     "web": f"sha256:{'7' * 64}",
     "seaweedfs": f"sha256:{'8' * 64}",
+    "redis": f"sha256:{'a' * 64}",
 }
 APPLICATION_ARCHIVE_DIGESTS = {
     "api": "9" * 64,
     "worker": "a" * 64,
     "web": "c" * 64,
     "seaweedfs": "d" * 64,
+    "redis": "f" * 64,
 }
 LOCAL_APPLICATION_MANIFEST_DIGESTS = {
     "api": f"sha256:{'a' * 64}",
     "worker": f"sha256:{'b' * 64}",
     "web": f"sha256:{'c' * 64}",
     "seaweedfs": f"sha256:{'d' * 64}",
+    "redis": f"sha256:{'f' * 64}",
 }
 PINNED_PLATFORM_MANIFEST_DIGESTS = {
     "postgres": f"sha256:{'e' * 64}",
-    "redis": f"sha256:{'f' * 64}",
     "volume-init": f"sha256:{'0' * 64}",
 }
 PINNED_CONFIG_DIGESTS = {
     "postgres": f"sha256:{'b' * 64}",
-    "redis": f"sha256:{'c' * 64}",
     "volume-init": f"sha256:{'d' * 64}",
 }
 
@@ -339,6 +341,7 @@ def test_compose_environment_contains_only_verified_application_references() -> 
         f"CUSTOMBUILD_DEPLOY_WORKER_IMAGE={application_images()['worker']}\n"
         f"CUSTOMBUILD_DEPLOY_WEB_IMAGE={application_images()['web']}\n"
         f"CUSTOMBUILD_DEPLOY_SEAWEEDFS_IMAGE={application_images()['seaweedfs']}\n"
+        f"CUSTOMBUILD_DEPLOY_REDIS_IMAGE={application_images()['redis']}\n"
     ).encode("ascii")
 
 
@@ -545,7 +548,7 @@ def test_descriptor_rejects_oversized_input() -> None:
         (("runtime_deployment_reference_digests", "postgres"), f"sha256:{'9' * 64}"),
         (("runtime_image_config_digests", "api"), f"sha256:{'9' * 64}"),
         (
-            ("runtime_registry_resolutions", "redis", "runtime_platform_manifest_digest"),
+            ("runtime_registry_resolutions", "volume-init", "runtime_platform_manifest_digest"),
             f"sha256:{'9' * 64}",
         ),
     ),
@@ -592,8 +595,9 @@ def test_render_requires_complete_repository_content_root_evidence(
         ("runtime_platform_manifest_digests", "api"),
         ("runtime_deployment_reference_digests", "postgres"),
         ("runtime_image_config_digests", "api"),
+        ("runtime_image_config_digests", "redis"),
         ("runtime_scan_inputs", "api"),
-        ("runtime_registry_resolutions", "redis"),
+        ("runtime_registry_resolutions", "volume-init"),
     ),
 )
 def test_render_requires_complete_release_evidence_image_set(

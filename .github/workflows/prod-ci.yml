@@ -204,6 +204,7 @@ jobs:
             echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
             echo "DEPENDENCY_LOCK_SHA256=$(sha256sum uv.lock | awk '{print $1}')"
             echo "FRONTEND_LOCK_SHA256=$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+            echo "REDIS_RECIPE_SHA256=$(sha256sum infra/redis/Dockerfile | awk '{print $1}')"
           } >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
@@ -364,7 +365,7 @@ jobs:
       - name: Generate exact Redis runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
+          image: custombuild-redis:${{ github.sha }}
           format: spdx-json
           output-file: artifacts/release-evidence/sbom-redis.spdx.json
           upload-artifact: false
@@ -492,7 +493,7 @@ jobs:
       - name: Scan exact Redis runtime image
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
+          image: custombuild-redis:${{ github.sha }}
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -540,7 +541,7 @@ jobs:
           web_ref="custombuild-web:${GITHUB_SHA}"
           seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
           postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4'
-          redis_ref='redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c'
+          redis_ref="custombuild-redis:${GITHUB_SHA}"
           volume_init_ref='busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478'
           api_id="$(image_id "$api_ref")"
           worker_id="$(image_id "$worker_ref")"

@@ -199,7 +199,8 @@ def test_compose_sets_resource_limits_and_passes_release_identity() -> None:
     assert compose.count("mem_limit:") == 13
     assert compose.count("cpus:") == 13
     assert compose.count("*python-release-build-args") == 8
-    assert compose.count("*release-build-args") == 2
+    assert compose.count("*release-build-args") == 3
+    assert "REDIS_RECIPE_SHA256:-unknown" in compose
 
 
 def test_one_image_tag_never_has_conflicting_build_definitions() -> None:

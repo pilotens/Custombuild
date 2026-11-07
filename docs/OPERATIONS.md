@@ -439,8 +439,8 @@ configuration approval.
 
 `scripts/deploy_descriptor.py` is the repository-owned boundary between completed
 release evidence and `.github/workflows/cd.yml`. It renders canonical
-JSON for exactly four application images (`api`, `worker`, `web`, `seaweedfs`) plus
-the reviewed PostgreSQL, Redis and volume-initializer digests. The descriptor also
+JSON for five repository-built images (`api`, `worker`, `web`, `seaweedfs`, `redis`) plus
+the reviewed PostgreSQL and volume-initializer digests. The descriptor also
 binds the full source commit, source-manifest digest, final release-evidence digest,
 workflow run/attempt, exact Compose service-to-image roles and the expected GitHub
 OIDC/Cosign and artifact-attestation identities. Tags, additional fields, duplicate
@@ -488,6 +488,7 @@ python3 scripts/deploy_descriptor.py render \
   --worker-image "ghcr.io/pilotens/custombuild-worker@sha256:<digest>" \
   --web-image "ghcr.io/pilotens/custombuild-web@sha256:<digest>" \
   --seaweedfs-image "ghcr.io/pilotens/custombuild-seaweedfs@sha256:<digest>" \
+  --redis-image "ghcr.io/pilotens/custombuild-redis@sha256:<digest>" \
   --output artifacts/deploy-descriptor.json \
   --sha256-output artifacts/deploy-descriptor.sha256
 

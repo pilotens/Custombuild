@@ -29,17 +29,12 @@ EXTERNAL_SBOM_IDENTITIES = {
         "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4",
         "latest",
     ),
-    "redis": ("redis", "7.2.16-alpine", "7.2.16-alpine"),
     "volume-init": ("busybox", "1.37.0-musl", "1.37.0-musl"),
 }
 EXTERNAL_RUNTIME_IDENTITIES = {
     "postgres": (
         "sha256:090173413bfc70ef815772bbaaafcc5dd14b24fa51a96d50e9de8199cc512786",
         "sha256:4c182473bc16ff3c0d11b6c7cec116889c65f93162540f72a90ad0b1b957fba9",
-    ),
-    "redis": (
-        "sha256:305eb88302bd3271bb2cb79f16c334da746511fb308bf5cdc36bced178d215d8",
-        "sha256:86a6ce875fe0a233e015f09c2b6dacd9e30e6074499e9ee715f2dafeb902e872",
     ),
     "volume-init": (
         "sha256:93007eb2eb686f408f418ce3a2aa44a638392fd1e2b65a73082c6a81608f4e31",
@@ -465,8 +460,8 @@ def test_pinned_registry_resolution_mutations_fail_closed(
         pinned_registry_inputs=True,
     )
     payload = json.loads(runtime.read_text(encoding="utf-8"))
-    redis = next(item for item in payload["images"] if item["component"] == "redis")
-    redis["registry_resolution"][field] = replacement
+    postgres = next(item for item in payload["images"] if item["component"] == "postgres")
+    postgres["registry_resolution"][field] = replacement
     _write(runtime, payload)
     _stub_source_identity(monkeypatch)
 
@@ -497,14 +492,18 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
     assert release_evidence_gate._expected_scan_input(
         "postgres", REVISION, pinned_registry_inputs=True
     ) == release_evidence_gate._expected_image_reference("postgres", REVISION)
-    for component in ("postgres", "redis", "volume-init"):
+    for component in ("postgres", "volume-init"):
         assert "@sha256:" in release_evidence_gate._expected_scan_input(component, REVISION)
+    assert (
+        release_evidence_gate._expected_scan_input("redis", REVISION)
+        == f"custombuild-redis:{REVISION}"
+    )
     assert len(release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]) == 53
     assert ("mesa-gl", "26.2.6-r0") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
     assert ("libxcb", "1.17.0-r19") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
 
 
-@pytest.mark.parametrize("component", ("postgres", "redis", "volume-init"))
+@pytest.mark.parametrize("component", ("postgres", "volume-init"))
 def test_final_gate_rejects_tag_only_external_scan_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -531,7 +530,7 @@ def test_final_gate_rejects_tag_only_external_scan_input(
         )
 
 
-@pytest.mark.parametrize("component", ("postgres", "redis", "volume-init"))
+@pytest.mark.parametrize("component", ("postgres", "volume-init"))
 def test_final_gate_rejects_registry_selector_as_persisted_scan_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -562,7 +561,7 @@ def test_final_gate_rejects_registry_selector_as_persisted_scan_input(
         )
 
 
-@pytest.mark.parametrize("component", ("postgres", "redis", "volume-init"))
+@pytest.mark.parametrize("component", ("postgres", "volume-init"))
 def test_final_gate_rejects_tag_only_external_image_reference(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

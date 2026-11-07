@@ -190,6 +190,7 @@ def test_copy_contract_rejects_a_new_unhashed_source_root(tmp_path: Path) -> Non
     repo = _repo(tmp_path)
     for relative in (
         "apps/web/Dockerfile",
+        "infra/redis/Dockerfile",
         "infra/seaweedfs/Dockerfile",
         "services/api/Dockerfile",
         "services/worker/Dockerfile",
@@ -222,6 +223,7 @@ def test_manifest_rejects_the_retired_duplicate_prod_source(tmp_path: Path) -> N
         "compose.external-production.yml",
         "compose.registry.yml",
         "infra/postgres/init-roles.sh",
+        "infra/redis/Dockerfile",
         "infra/seaweedfs/Dockerfile",
         "infra/seaweedfs/security-overrides.sum",
         ".github/workflows/prod-ci.yml",
@@ -236,6 +238,7 @@ def test_release_runtime_inputs_change_source_identity(
     repo = _repo(tmp_path)
     for dockerfile_relative in (
         "apps/web/Dockerfile",
+        "infra/redis/Dockerfile",
         "infra/seaweedfs/Dockerfile",
         "services/api/Dockerfile",
         "services/worker/Dockerfile",

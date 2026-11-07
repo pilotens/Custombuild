@@ -104,15 +104,12 @@ BUILT_IMAGE_NAMES = {
     "worker": "custombuild-worker",
     "web": "custombuild-web",
     "seaweedfs": "custombuild-seaweedfs",
+    "redis": "custombuild-redis",
 }
 EXTERNAL_IMAGE_REFERENCES = {
     "postgres": (
         "cgr.dev/chainguard/postgres:latest@"
         "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
-    ),
-    "redis": (
-        "redis:7.2.16-alpine@"
-        "sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c"
     ),
     "volume-init": (
         "busybox:1.37.0-musl@"

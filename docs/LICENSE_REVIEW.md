@@ -17,7 +17,7 @@ to their own licences and the release gates documented below.
 | Component | Pinned image | Upstream licence | Engineering decision |
 | --- | --- | --- | --- |
 | PostgreSQL | Chainguard PostgreSQL 18.6, digest pinned | PostgreSQL License plus package-specific notices | Minimal non-root runtime; retain copyright and licence notices. |
-| Redis | `redis:7.2.16-alpine` | BSD-3-Clause | Redis states that 7.2.x and earlier remain BSD-3-Clause. Do not upgrade this image across the 7.4 or 8.x licence boundaries without a new review. |
+| Redis | Redis 7.2.17 from the digest-pinned Docker Official Image on Alpine 3.24, built by `infra/redis/Dockerfile` | BSD-3-Clause | Redis states that 7.2.x and earlier remain BSD-3-Clause. Do not upgrade this image across the 7.4 or 8.x licence boundaries without a new review. |
 | SeaweedFS | repository-built `4.45` from a checksum-pinned source archive | Apache-2.0 | Permissive, actively maintained S3-compatible runtime; retain the Apache-2.0 licence and notices. The minimal image is built with pinned Go 1.26.9 plus checksum-locked security overrides and scanned before release. |
 | Volume init | Docker Official Image `busybox:1.37.0-musl`, digest pinned | GPL-2.0-only plus package-specific notices | Minimal one-shot ownership initialization; run only with the explicit root UID and `CHOWN` capability, then exit. |
 

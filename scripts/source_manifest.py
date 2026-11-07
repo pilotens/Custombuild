@@ -54,6 +54,7 @@ APPLICATION_BUILD_INPUTS = (
 APPLICATION_DOCKERFILES = (
     "apps/web/Dockerfile",
     "infra/seaweedfs/Dockerfile",
+    "infra/redis/Dockerfile",
     "services/api/Dockerfile",
     "services/worker/Dockerfile",
 )

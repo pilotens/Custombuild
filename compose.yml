@@ -45,13 +45,19 @@ services:
     networks: [backend]
 
   redis:
-    image: redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
+    image: custombuild-redis:${VCS_REF:-uncommitted}
+    build:
+      context: .
+      dockerfile: infra/redis/Dockerfile
+      args:
+        <<: *release-build-args
+        DEPENDENCY_LOCK_SHA256: ${REDIS_RECIPE_SHA256:-unknown}
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-redis}
     command:
       - /bin/sh
       - -ec
-      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+      - exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
     volumes:
       - redis-data:/data
     healthcheck:
