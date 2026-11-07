@@ -11,6 +11,7 @@ from custombuild_domain.furniture_catalog import resolve_material
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.furniture_frames import rotated_yz
+from custombuild_domain.models import TRIAL_ANGLE_SET_MASS_G
 
 from .engine import RuleEngine
 
@@ -57,6 +58,21 @@ def evaluate_furniture(result: FurnitureResult) -> dict[str, Any]:
                 "rules_version": rule.rule_version,
             }
             for rule in report.evaluations
+        )
+    if result.trial_angles and result.shelving_result:
+        rules.append(
+            _rule(
+                "CB-SHELF-ANGLE-001",
+                "Mekanisk låsning för konstruktionsprov",
+                "BLOCK",
+                "Vinklarnas hålbild och infästningssidor är modellerade. Utdrag, skjuvning, "
+                "åtdragning och fuktrörelse i träbatchen saknar ännu verifierad brukskapacitet. "
+                "Tippningsscreeningen tillgodoräknar ingen stabiliserande beslagsvikt.",
+                angle_count=len(result.trial_angles),
+                screw_count=2 * len(result.trial_angles),
+                estimated_fitting_mass_g=len(result.trial_angles) * TRIAL_ANGLE_SET_MASS_G,
+                required_joint_shear_n=result.shelving_result.minimum_retention_shear_load_n,
+            )
         )
     if isinstance(p, DiningTableIntent | TableIntent):
         t = result.spec.material.measured_thickness_um

@@ -16,7 +16,7 @@ test("fackförslag: granska, tillämpa, spara och behåll revision vid oföränd
   expect(saved.status(), await saved.text()).toBe(200);
   await page.goto("/furniture");
   await page.getByRole("combobox", { name: "Öppna möbelprojekt" }).selectOption(project.project.id);
-  await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4340");
+  await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4300");
   const panel = page.getByRole("region", { name: "Förslag på hyllfack" });
   await panel.getByRole("button", { name: "Föreslå fackindelning" }).click();
   await expect(panel.getByRole("table")).toBeVisible();
@@ -30,9 +30,9 @@ test("fackförslag: granska, tillämpa, spara och behåll revision vid oföränd
   await panel.getByRole("button", { name: "Använd föreslagen fackindelning" }).click();
   await expect(page.getByText(/Fackindelningen är ändrad/)).toBeVisible();
   expect(Number(await page.getByLabel("Avdelare", { exact: true }).inputValue())).toBeGreaterThan(1);
-  await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4340");
+  await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4300");
   await expect(page.getByLabel("Höjd (mm)", { exact: true })).toHaveValue("2540");
-  await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("280");
+  await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("260");
   await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
   await page.getByRole("button", { name: "Spara revision" }).click();
   await expect(page.getByText("Revision 2 är sparad.")).toBeVisible();

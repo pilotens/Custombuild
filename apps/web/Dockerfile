@@ -39,6 +39,7 @@ COPY apps/web apps/web
 COPY packages/contracts packages/contracts
 COPY packages/scene-geometry packages/scene-geometry
 COPY examples/furniture/walnut-shelving-4340x2540x280.json examples/furniture/
+COPY examples/furniture/bookcase-4340x2540x280.json examples/furniture/
 RUN mkdir -p apps/web/public && pnpm --dir apps/web build
 
 

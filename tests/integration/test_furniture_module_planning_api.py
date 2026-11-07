@@ -15,7 +15,7 @@ GRID = {"columns": 5, "rows": 2, "gap_um": 0, "shelf_count_per_row": [2, 2]}
 
 
 def test_customer_module_plan_preserves_saved_source_and_blocks_unresolved_installation():
-    original = json.loads(Path("examples/furniture/bookcase-4340x2540x280.json").read_text())
+    original = json.loads(Path("tests/fixtures/furniture/bookcase-unresolved.json").read_text())
     with TestClient(app) as client:
         project = client.post(
             "/v1/projects", headers=HEADERS, json={"name": f"Module-plan-{uuid4()}"}
@@ -63,7 +63,7 @@ def test_customer_module_plan_preserves_saved_source_and_blocks_unresolved_insta
 
 
 def test_module_plan_requires_authentication_explicit_gaps_and_bounded_grid():
-    original = json.loads(Path("examples/furniture/bookcase-4340x2540x280.json").read_text())
+    original = json.loads(Path("tests/fixtures/furniture/bookcase-unresolved.json").read_text())
     with TestClient(app) as client:
         assert client.post(
             "/v1/furniture/module-plan", json={"workspace": original, "grid": GRID}

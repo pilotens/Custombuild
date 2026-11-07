@@ -16,6 +16,7 @@ export interface FurnitureIntent {
   shelf_height_ratios_ppm?: number[];
   bay_width_ratios_ppm?: number[];
   back_panel?: "none" | "surface_mounted" | "inset_groove";
+  trial_angle?: "GN-970-ALM-30-30-30-B" | null;
   shelf_mount?: "fixed" | "adjustable";
   plinth_height_um?: number;
   end_inset_um?: number;
@@ -122,6 +123,7 @@ export interface FurniturePreview {
     design_hash: string;
     intent_hash: string;
     parts: FurniturePart[];
+    trial_angles?: components["schemas"]["TrialAngle"][];
     moving_groups: { group_id: string; part_ids: string[]; travel_um: number }[];
     total_weight_g: number;
   };
@@ -294,7 +296,7 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
   }
   const yz = new Set(["left_side", "right_side", "divider", "table_end", "drawer_side", "frame_leg", "frame_rail_y"]);
   const xz = new Set(["back", "plinth", "table_stretcher", "drawer_front", "drawer_back", "frame_rail_x", "chair_back"]);
-  return preview.design.parts.map((part): ResolvedPart => {
+  const timber = preview.design.parts.map((part): ResolvedPart => {
     const size = part.finished_size;
     const angle = (part.placement.rotation_x_mdeg ?? 0)*Math.PI/180_000;
     const centreY = (size.depth_um*Math.cos(angle)-size.height_um*Math.sin(angle))/2;
@@ -315,10 +317,25 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
       },
       ...(angle ? {rotation_x_rad:angle} : {}), ...(part.circular_outline ? {circular_outline:true}:{}),
       material_id: part.material_id, weight_kg: part.weight_g/1_000,
-      color: part.material_id.startsWith("mdf") ? "#b7a587" : "#d8c4a0",
+      color: part.material_id === "solid-walnut" ? "#79553f" : part.material_id.startsWith("mdf") ? "#b7a587" : "#d8c4a0",
       features: (part.features ?? []).map(f => domainFeatureSummary(f, part.a_side, part.b_side)),
     };
   });
+  const metal = (preview.design.trial_angles ?? []).flatMap((a): ResolvedPart[] => {
+    const leg = a.leg_um / 1000, wall = a.wall_um / 1000;
+    const x = a.corner.x_um / 1000, y = a.corner.y_um / 1000, z = a.corner.z_um / 1000;
+    const common = { name: a.article, material_id: "aluminium", weight_kg: 0,
+      color: "#85929c", features: [], fitting_part_ids: [a.upright_id, a.horizontal_id] };
+    return [
+      { ...common, part_id: a.joint_id + "-horizontal", kind: "shelf", orientation: "XY",
+        width_mm: leg, depth_mm: leg, thickness_mm: wall,
+        position_mm: { x: x + a.x_sign*leg/2, y, z: z + a.z_sign*wall/2 } },
+      { ...common, part_id: a.joint_id + "-upright", kind: "side", orientation: "YZ",
+        width_mm: leg-wall, depth_mm: leg, thickness_mm: wall,
+        position_mm: { x: x + a.x_sign*wall/2, y, z: z + a.z_sign*(leg+wall)/2 } },
+    ];
+  });
+  return [...timber, ...metal];
 }
 
 export function assertFurniturePreview(value: FurniturePreview): FurniturePreview {

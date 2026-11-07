@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -255,6 +255,9 @@ class BookcaseParameters(FrozenModel):
     plinth_height_um: NonNegativeUm = mm(80)
     shelf_side_clearance_um: NonNegativeUm = mm(1)
     edge_band_thickness_um: NonNegativeUm = 0
+    trial_angle: Literal["GN-970-ALM-30-30-30-B"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     joint_system: JointType = JointType.DADO
     reinforcement_mode: ReinforcementMode = ReinforcementMode.MANUAL
     max_deflection_um: PositiveUm = mm(3)
@@ -269,6 +272,16 @@ class BookcaseParameters(FrozenModel):
         # Pydantic schema module during package initialisation.
         from .support import SUPPORTED_BOOKCASE_PRIMARY_JOINTS
 
+        if self.trial_angle and (
+            self.shelf_mount != ShelfMount.FIXED
+            or self.back_panel != BackPanelType.INSET_GROOVE
+            or self.plinth_height_um
+            or self.base_cabinet_count
+        ):
+            raise ValueError(
+                "Vinkelprov kräver fasta hyllor, spårmonterad rygg och stomme utan sockel "
+                "eller underskåp. Ändra dessa val eller avmarkera vinkelprovet."
+            )
         if self.joint_system not in SUPPORTED_BOOKCASE_PRIMARY_JOINTS:
             supported = ", ".join(
                 sorted(joint.value for joint in SUPPORTED_BOOKCASE_PRIMARY_JOINTS)
@@ -454,6 +467,8 @@ class BookcaseDesignSpec(FrozenModel):
         if retention is None:
             return self
         parameters = self.parameters
+        if parameters.trial_angle:
+            raise ValueError("Provbeslaget saknar kvalificerad koppling till retentionsintyget.")
         if retention.joint_type != JointType.DADO:
             raise ValueError("the current bookcase retention contract applies only to DADO joints")
         if retention.application_class != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO:
@@ -968,6 +983,26 @@ def validate_part_connections(
             raise ValueError("joint-owned manufacturing feature is absent from its joint")
 
 
+# Catalogue mass 18 g per aluminium bracket and 3.06 g per A4 screw.
+# Round the complete 24.12 g assembly up to a whole gram for load screening.
+TRIAL_ANGLE_SET_MASS_G = 25
+
+
+class TrialAngle(FrozenModel):
+    article: Literal["GN-970-ALM-30-30-30-B"] = "GN-970-ALM-30-30-30-B"
+    screw: Literal["DIN-96-A4-5x16"] = "DIN-96-A4-5x16"
+    leg_um: Literal[30000] = 30000
+    wall_um: Literal[4000] = 4000
+    joint_id: str
+    upright_id: str
+    horizontal_id: str
+    upright_hole: str
+    horizontal_hole: str
+    corner: Point3D
+    x_sign: Literal[-1, 1]
+    z_sign: Literal[-1, 1]
+
+
 class DesignResult(FrozenModel):
     design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     engine_version: StableKey
@@ -978,6 +1013,8 @@ class DesignResult(FrozenModel):
     assembly_graph: AssemblyGraph
     total_weight_g: PositiveInt
 
+    trial_angles: tuple[TrialAngle, ...] = Field(default=(), exclude_if=lambda v: not v)
+
     @property
     def minimum_retention_shear_load_n(self) -> int:
         """Conservative gravity envelope for the shared carcass contract.
@@ -987,14 +1024,20 @@ class DesignResult(FrozenModel):
         payloads. Never infer equal sharing between joints or omit self weight.
         This bound is intentionally stricter than the local shelf support screen.
         """
-        own_weight_n = (self.total_weight_g * 981 + 99_999) // 100_000
+        mass_g = self.total_weight_g + len(self.trial_angles) * TRIAL_ANGLE_SET_MASS_G
+        own_weight_n = (mass_g * 981 + 99_999) // 100_000
         p = self.spec.parameters
         return own_weight_n + p.shelf_count * p.shelf_load_n
 
     @model_validator(mode="after")
     def validate_result_integrity(self) -> DesignResult:
         part_by_id = {part.part_id: part for part in self.parts}
+        from .bookcase_angles import check_trial_angles
+
         validate_part_connections(self.parts, self.joints, self.assembly_graph)
+        check_trial_angles(
+            self.spec.parameters.trial_angle, self.parts, self.joints, self.trial_angles
+        )
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
                 if (

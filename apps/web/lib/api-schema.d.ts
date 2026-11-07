@@ -1219,6 +1219,8 @@ export interface components {
              * @default 1800
              */
             structural_safety_factor_permille: number;
+            /** Trial Angle */
+            trial_angle?: "GN-970-ALM-30-30-30-B" | null;
             /**
              * Vertical Divider Count
              * @default 0
@@ -1348,6 +1350,8 @@ export interface components {
              * @enum {string}
              */
             shelf_mount: "fixed" | "adjustable";
+            /** Trial Angle */
+            trial_angle?: "GN-970-ALM-30-30-30-B" | null;
             /**
              * Wall Anchor Required
              * @default false
@@ -1573,6 +1577,11 @@ export interface components {
             template_version: string;
             /** Total Weight G */
             total_weight_g: number;
+            /**
+             * Trial Angles
+             * @default []
+             */
+            trial_angles: components["schemas"]["TrialAngle"][];
         };
         /** DesignReviewBundleReceipt */
         DesignReviewBundleReceipt: {
@@ -2455,6 +2464,11 @@ export interface components {
             template_version: string;
             /** Total Weight G */
             total_weight_g: number;
+            /**
+             * Trial Angles
+             * @default []
+             */
+            trial_angles: components["schemas"]["TrialAngle"][];
         };
         /** FurnitureRuleRead */
         FurnitureRuleRead: {
@@ -4494,6 +4508,8 @@ export interface components {
             shelf_load_per_metre_n: number;
             /** @default fixed */
             shelf_mount: components["schemas"]["ShelfMount"];
+            /** Trial Angle */
+            trial_angle?: "GN-970-ALM-30-30-30-B" | null;
             /**
              * Width Um
              * @default 900000
@@ -4913,6 +4929,54 @@ export interface components {
             top_thickness_mm: number;
             /** Width Change Mm */
             width_change_mm: number;
+        };
+        /** TrialAngle */
+        TrialAngle: {
+            /**
+             * Article
+             * @default GN-970-ALM-30-30-30-B
+             * @constant
+             */
+            article: "GN-970-ALM-30-30-30-B";
+            corner: components["schemas"]["Point3D"];
+            /** Horizontal Hole */
+            horizontal_hole: string;
+            /** Horizontal Id */
+            horizontal_id: string;
+            /** Joint Id */
+            joint_id: string;
+            /**
+             * Leg Um
+             * @default 30000
+             * @constant
+             */
+            leg_um: 30000;
+            /**
+             * Screw
+             * @default DIN-96-A4-5x16
+             * @constant
+             */
+            screw: "DIN-96-A4-5x16";
+            /** Upright Hole */
+            upright_hole: string;
+            /** Upright Id */
+            upright_id: string;
+            /**
+             * Wall Um
+             * @default 4000
+             * @constant
+             */
+            wall_um: 4000;
+            /**
+             * X Sign
+             * @enum {integer}
+             */
+            x_sign: -1 | 1;
+            /**
+             * Z Sign
+             * @enum {integer}
+             */
+            z_sign: -1 | 1;
         };
         /**
          * TrimProfile

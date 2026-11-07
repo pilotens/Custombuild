@@ -28,7 +28,7 @@ def grid(**changes):
 
 
 def customer(**intent_changes):
-    document = json.loads(Path("examples/furniture/bookcase-4340x2540x280.json").read_text())
+    document = json.loads(Path("tests/fixtures/furniture/bookcase-unresolved.json").read_text())
     document["design"]["intent"].update(intent_changes)
     document["manufacturing"] = {
         "machine_profile_id": "custombuild-router-1325-linuxcnc",
@@ -142,18 +142,6 @@ def test_zero_payload_retains_self_weight_in_real_rules():
 
 def test_real_stock_check_fits_modules_whose_source_contains_oversize_parts():
     source = customer()
-    # Explicitly plan sheet stock for this plywood case.
-    source = source.model_copy(
-        update={
-            "design": source.design.model_copy(
-                update={
-                    "material": source.design.material.model_copy(
-                        update={"material_id": "birch-plywood"}
-                    )
-                }
-            )
-        }
-    )
     before = preview_furniture(source)
     assert not before["manufacturing"]["geometry_compatible"]
     assert any(issue["code"] == "PART_EXCEEDS_STOCK" for issue in before["manufacturing"]["issues"])

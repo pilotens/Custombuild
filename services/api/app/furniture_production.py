@@ -43,6 +43,7 @@ def furniture_production_input(workspace: FurnitureWorkspace) -> BookcasePreview
         measured_back_thickness_mm=p.back_thickness_um / 1_000,
         shelf_count=p.shelf_count,
         shelf_mount=p.shelf_mount.value,
+        trial_angle=p.trial_angle,
         divider_count=p.vertical_divider_count,
         bay_width_ratios=[v / 1_000_000 for v in p.bay_width_ratios_ppm],
         shelf_height_ratios=[v / 1_000_000 for v in p.shelf_height_ratios_ppm],

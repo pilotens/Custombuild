@@ -416,7 +416,10 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
           {preview ? <Viewer drillMarkers={boreOverlay?.key===partKey && mode!=="without" ? boreOverlay.markers : undefined} parts={visibleAssembly(viewerParts, selectedPart, mode)} designSize={{ widthMm: intent.width_um/1_000,
             heightMm: intent.height_um/1_000, depthMm: intent.depth_um/1_000 }}
             viewMode="perspective" exploded={exploded} transparent={false} isolateSelection={false}
-            selectedPartId={selectedPart} onSelectPart={selectPart} presentation="studio" />
+            selectedPartId={selectedPart} onSelectPart={id => {
+              const fitting = viewerParts.find(part => part.part_id === id)?.fitting_part_ids;
+              selectPart(fitting?.[0] ?? id);
+            }} presentation="studio" />
             : <p role="status">{error ? "Kontrollera måtten för att visa möbeln." : "Räknar om delarna…"}</p>}
         </div>
         {preview && <label>Granska en del <select aria-label="Granska en del" value={selectedPart ?? ""}

@@ -857,6 +857,18 @@
             "title": "Structural Safety Factor Permille",
             "type": "integer"
           },
+          "trial_angle": {
+            "anyOf": [
+              {
+                "const": "GN-970-ALM-30-30-30-B",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Angle"
+          },
           "vertical_divider_count": {
             "default": 0,
             "maximum": 16.0,
@@ -1077,6 +1089,18 @@
             ],
             "title": "Shelf Mount",
             "type": "string"
+          },
+          "trial_angle": {
+            "anyOf": [
+              {
+                "const": "GN-970-ALM-30-30-30-B",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Angle"
           },
           "wall_anchor_required": {
             "default": false,
@@ -1543,6 +1567,14 @@
             "exclusiveMinimum": 0.0,
             "title": "Total Weight G",
             "type": "integer"
+          },
+          "trial_angles": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TrialAngle"
+            },
+            "title": "Trial Angles",
+            "type": "array"
           }
         },
         "required": [
@@ -3911,6 +3943,14 @@
             "exclusiveMinimum": 0.0,
             "title": "Total Weight G",
             "type": "integer"
+          },
+          "trial_angles": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/TrialAngle"
+            },
+            "title": "Trial Angles",
+            "type": "array"
           }
         },
         "required": [
@@ -9319,6 +9359,18 @@
             "$ref": "#/components/schemas/ShelfMount",
             "default": "fixed"
           },
+          "trial_angle": {
+            "anyOf": [
+              {
+                "const": "GN-970-ALM-30-30-30-B",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trial Angle"
+          },
           "width_um": {
             "default": 900000,
             "maximum": 6000000.0,
@@ -10235,6 +10287,86 @@
           "sources"
         ],
         "title": "TrestleSizing",
+        "type": "object"
+      },
+      "TrialAngle": {
+        "additionalProperties": false,
+        "properties": {
+          "article": {
+            "const": "GN-970-ALM-30-30-30-B",
+            "default": "GN-970-ALM-30-30-30-B",
+            "title": "Article",
+            "type": "string"
+          },
+          "corner": {
+            "$ref": "#/components/schemas/Point3D"
+          },
+          "horizontal_hole": {
+            "title": "Horizontal Hole",
+            "type": "string"
+          },
+          "horizontal_id": {
+            "title": "Horizontal Id",
+            "type": "string"
+          },
+          "joint_id": {
+            "title": "Joint Id",
+            "type": "string"
+          },
+          "leg_um": {
+            "const": 30000,
+            "default": 30000,
+            "title": "Leg Um",
+            "type": "integer"
+          },
+          "screw": {
+            "const": "DIN-96-A4-5x16",
+            "default": "DIN-96-A4-5x16",
+            "title": "Screw",
+            "type": "string"
+          },
+          "upright_hole": {
+            "title": "Upright Hole",
+            "type": "string"
+          },
+          "upright_id": {
+            "title": "Upright Id",
+            "type": "string"
+          },
+          "wall_um": {
+            "const": 4000,
+            "default": 4000,
+            "title": "Wall Um",
+            "type": "integer"
+          },
+          "x_sign": {
+            "enum": [
+              -1,
+              1
+            ],
+            "title": "X Sign",
+            "type": "integer"
+          },
+          "z_sign": {
+            "enum": [
+              -1,
+              1
+            ],
+            "title": "Z Sign",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "joint_id",
+          "upright_id",
+          "horizontal_id",
+          "upright_hole",
+          "horizontal_hole",
+          "corner",
+          "x_sign",
+          "z_sign"
+        ],
+        "title": "TrialAngle",
         "type": "object"
       },
       "TrimProfile": {

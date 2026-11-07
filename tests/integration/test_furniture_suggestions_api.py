@@ -51,7 +51,7 @@ def test_customer_shelf_proposal_is_read_only_until_explicitly_saved():
         assert not suggestion["physical_cutting_authorized"]
         assert (
             suggestion["proposed"]["workshop_handoff"]["dimensions"]["state"]
-            == "requires_resolution"
+            == "reconciled"
         )
         reviewed = client.post("/v1/furniture/preview", headers=HEADERS, json=proposed)
         assert reviewed.json() == suggestion["proposed"]

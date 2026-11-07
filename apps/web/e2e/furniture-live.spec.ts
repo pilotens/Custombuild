@@ -47,9 +47,11 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.getByLabel("Läs arbetsfil (JSON)").setInputFiles(fileURLToPath(new URL(
       "../../../examples/furniture/bookcase-4340x2540x280.json", import.meta.url)));
     await expect(page.getByText(/Arbetsfilen har kontrollerats/)).toBeVisible();
-    await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4340");
+    await expect(page.getByLabel("Bredd (mm)", { exact: true })).toHaveValue("4300");
     await expect(page.getByLabel("Höjd (mm)", { exact: true })).toHaveValue("2540");
-    await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("280");
+    await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("260");
+    await page.getByText("Fack, hyllhöjder och rygg", { exact: true }).click();
+    await page.getByRole("checkbox", { name: /Prova mekanisk låsning/ }).check();
     await page.getByLabel("Projektnamn", { exact: true }).fill(`${provisioned.project.name}-import`);
     const created = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/furniture/projects");
     await page.getByRole("button", { name: "Spara revision" }).click();
@@ -66,8 +68,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Längden inkluderar list", { exact: true })).toBeChecked();
     await expect(page.getByLabel("Listhöjd (mm)", { exact: true })).toHaveValue("90");
     await expect(page.getByLabel("Listbredd/utstick (mm)", { exact: true })).toHaveValue("20");
-    await expect(page.getByLabel("Listens funktion", { exact: true })).toHaveValue("unassigned");
-    await expect(page.getByLabel("Vänster · reserverat (mm)")).toBeEmpty();
+    await expect(page.getByLabel("Listens funktion", { exact: true })).toHaveValue("existing_room_trim");
+    await expect(page.getByLabel("Vänster · reserverat (mm)")).toHaveValue("20");
     await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
     await page.getByText("Råformat att stämma av med verkstaden", { exact: true }).click();
     await expect(page.getByRole("table")).toHaveCount(2);
@@ -93,6 +95,10 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " assert json.loads(z.read('design/workspace.json'))['manufacturing'] is None",
       " assert all(p['material_id']=='solid-walnut' for p in model['parts'] if p['role']!='back')",
       " assert len(graph['graph']['steps'])>1",
+      " fittings=json.loads(z.read('assembly/trial-angles.json'))",
+      " assert len(fittings['angles'])==22 and fittings['revision']==manifest['revision']",
+      " assert len(fittings['straight_access_um_by_pilot'])==44",
+      " assert z.read('design/with-mounted-angles.step').startswith(b'ISO-10303-21;')",
       " rows=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
       " assert rows and all(not r['measured'] and not r['result'] for r in rows)",
       " print(z.read('manufacturing/workshop-handoff.json').decode())",
@@ -101,16 +107,16 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     expect(exported.dimensions.installation.height_um).toBe(2_540_000);
     expect(exported.dimensions.installation.depth_um).toBe(280_000);
     expect(exported.dimensions.installation.trim_profile).toEqual({
-      height_um: 90_000, width_um: 20_000, use: "unassigned", walls: [],
+      height_um: 90_000, width_um: 20_000, use: "existing_room_trim", walls: ["left", "right", "rear"],
     });
-    expect(exported.dimensions.state).toBe("requires_resolution");
+    expect(exported.dimensions.state).toBe("reconciled");
     await attachView(page, info, "customer-bookcase-dimensions");
     const width = page.getByLabel("Bredd (mm)", { exact: true });
     await width.fill("6000.001");
     await width.blur();
     await expect(link).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Spara revision" })).toBeDisabled();
-    await width.fill("4340");
+    await width.fill("4300");
     await width.blur();
     await page.getByLabel("Hyllrader", { exact: true }).fill("2");
     await page.getByRole("button", { name: "Spara revision" }).click();
@@ -145,7 +151,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     const headers = { Authorization: `Bearer ${process.env.PLAYWRIGHT_DEMO_TOKEN || "demo-nordic-owner"}` };
     const path = `${base}/v1/furniture/projects/${provisioned.project.id}`;
     const workspace = JSON.parse(await readFile(new URL(
-      "../../../examples/furniture/bookcase-4340x2540x280.json", import.meta.url), "utf8"));
+      "../../../tests/fixtures/furniture/bookcase-unresolved.json", import.meta.url), "utf8"));
     const saved = await request.put(`${path}/draft`, { headers, data: { expected_revision: 0, workspace } });
     expect(saved.status(), await saved.text()).toBe(200);
     const source = await saved.json();

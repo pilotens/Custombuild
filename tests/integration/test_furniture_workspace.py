@@ -90,7 +90,7 @@ def test_customer_measurements_survive_save_reload_history_and_cannot_skip_dimen
     from pathlib import Path
 
     project, previous = save(client, "shelving")
-    selected = json.loads(Path("examples/furniture/bookcase-4340x2540x280.json").read_text())
+    selected = json.loads(Path("tests/fixtures/furniture/bookcase-unresolved.json").read_text())
     path = f"/v1/furniture/projects/{project['id']}"
     saved = client.put(
         f"{path}/draft",
@@ -553,7 +553,7 @@ def test_real_family_review_exports_match_parts_and_contain_no_machine_programs(
             assert handoff["dimensions"]["installation"]["width_um"] == 4_340_000
             assert handoff["dimensions"]["installation"]["trim_profile"]["height_um"] == 90_000
             assert handoff["dimensions"]["installation"]["trim_profile"]["width_um"] == 20_000
-            assert handoff["dimensions"]["state"] == "requires_resolution"
+            assert handoff["dimensions"]["state"] == "reconciled"
         assert not manifest["physical_cutting_authorized"]
         assert not any(n.endswith((".ngc", ".nc", ".gcode")) for n in names)
         assert archive.read("design/model.step").startswith(b"ISO-10303-21;")

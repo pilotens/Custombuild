@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v2"
+        return "custombuild.shelving-workshop-review.v3"
     return "custombuild.furniture-review.v1"
 
 
@@ -113,6 +113,9 @@ class InstallationSpace(FrozenModel):
 
 class ShelvingIntent(FrozenModel):
     family: Literal["shelving"] = "shelving"
+    trial_angle: Literal["GN-970-ALM-30-30-30-B"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     width_um: BookcaseWidthUm = 900_000
     height_um: BookcaseHeightUm = 1_800_000
     depth_um: BookcaseDepthUm = 320_000

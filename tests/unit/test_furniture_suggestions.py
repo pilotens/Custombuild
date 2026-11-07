@@ -16,9 +16,7 @@ from tests.unit.test_furniture_families import workspace
 
 
 def _customer_workspace() -> FurnitureWorkspace:
-    document = json.loads(Path("examples/furniture/bookcase-4340x2540x280.json").read_text())
-    # Preserve the plywood baseline for the published divider-count and sheet-stock cases.
-    document["design"]["material"]["material_id"] = "birch-plywood"
+    document = json.loads(Path("tests/fixtures/furniture/bookcase-unresolved.json").read_text())
     return FurnitureWorkspace.model_validate(document)
 
 

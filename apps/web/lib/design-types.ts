@@ -173,6 +173,7 @@ export interface ManufacturingFeature {
 }
 
 export interface ResolvedPart {
+  fitting_part_ids?: string[];
   server_part_id?: string;
   rotation_x_rad?: number;
   circular_outline?: boolean;

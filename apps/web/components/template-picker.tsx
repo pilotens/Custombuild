@@ -514,8 +514,9 @@ function OpenTemplatePicker({
                 <ArrowRight aria-hidden="true" size={20} />
               </button>
             </div>
-            <p>Fler möbeltyper i möbelstudion</p>
+            <p>Öppna möbelstudion</p>
             <nav aria-label="Designa andra möbler" className={styles.familyLinks}>
+              <a href="/furniture?family=shelving">Bokhylla med verkstadsunderlag</a>
               <a href="/furniture?family=dining_table">Matbord</a><a href="/furniture?family=chair">Matstol</a>
               <a href="/furniture?family=chest_of_drawers">Byrå</a>
             </nav>

@@ -9,6 +9,7 @@ import zipfile
 from typing import Any
 
 from custombuild_cad import CadQueryAdapter
+from custombuild_domain.bookcase_angles import screw_access
 from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
@@ -25,6 +26,7 @@ from custombuild_manufacturing.quality import (
 from .documents import assembly_manual_pdf
 from .furniture_assembly import assembly_documents
 from .part_drawings import part_drawings_pdf
+from .shelving_trial import shelving_trial_protocol
 
 MAX_FURNITURE_REVIEW_PARTS = 128
 MAX_FURNITURE_REVIEW_BYTES = 16 * 1024 * 1024
@@ -73,6 +75,7 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
     files.update(assembly_documents(result))
     shelving = result.shelving_result
     if shelving is not None:
+        files["inspection/provprotokoll.txt"] = shelving_trial_protocol(result, preview)
         files["documents/assembly-overview.pdf"] = files["documents/assembly.pdf"]
         files["documents/assembly.pdf"] = assembly_manual_pdf(
             shelving, package_design_hash=result.design_hash
@@ -91,6 +94,27 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
             design_hash=result.design_hash,
         )
         files["schemas/manufacturing-intent.schema.json"] = manufacturing_intent_json_schema()
+        if shelving.trial_angles:
+            from custombuild_cad.bookcase_angles import mounted_trial_angles
+
+            files["design/with-mounted-angles.step"] = mounted_trial_angles(
+                cad.step, shelving.trial_angles
+            )
+            files["assembly/trial-angles.json"] = _json(
+                {
+                    "design_hash": result.design_hash,
+                    "revision": workspace.design.revision,
+                    "units": "micrometres",
+                    "corners": "World X/Y/Z at outer bend, Y at bracket centreline.",
+                    "angles": [a.model_dump(mode="json") for a in shelving.trial_angles],
+                    "straight_access_um_by_pilot": screw_access(
+                        result.parts, shelving.trial_angles
+                    ),
+                    "access_scope": "10 mm square axial envelope from screw seat, in final "
+                    "assembly; null means open in this model. Verify actual handle and hands.",
+                    "qualification": "geometry_trial_only",
+                }
+            )
     sources = {p.part_id: p for p in result.parts}
     for original in adapted.parts:
         for view in drawing_faces(sources[original.part_id], original):

@@ -132,6 +132,10 @@ export function ShelvingLayoutEditor({ workspace, onChange, onError }: EditorPro
       onChange={e => patch({ shelf_mount: e.target.value as "fixed" | "adjustable" }, "layout.mount")}>
       <option value="fixed">Fasta hyllor</option><option value="adjustable">Flyttbara hyllor med hyllbärare</option>
     </select></label>
+    <label><input type="checkbox" checked={Boolean(intent.trial_angle)}
+      onChange={e => patch({ trial_angle: e.target.checked ? "GN-970-ALM-30-30-30-B" : null }, "layout.angle")} />
+      Prova mekanisk låsning med GN 970-vinkel</label>
+    {intent.trial_angle ? <p>Fasta hyllor och infälld rygg. Vinklar och pilothål ingår i underlaget. Hållfasthet och fuktrörelse återstår att prova.</p> : null}
     <label>Ryggkonstruktion<select value={intent.back_panel ?? "inset_groove"}
       onChange={e => patch({ back_panel: e.target.value as "none" | "surface_mounted" | "inset_groove" }, "layout.back")}>
       <option value="inset_groove">Rygg i spår</option><option value="none">Utan rygg</option>

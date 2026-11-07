@@ -18,6 +18,7 @@ from custombuild_domain import (
     build_bookcase,
     stable_id,
 )
+from custombuild_domain.models import TRIAL_ANGLE_SET_MASS_G
 
 from .models import (
     ActionType,
@@ -263,7 +264,11 @@ class RuleEngine:
         representative_row = sorted(shelves, key=lambda part: part.instance_index)[:bay_count]
         row_width = sum(part.finished_size.width_um for part in representative_row)
         widest = max(part.finished_size.width_um for part in shelves)
-        dead_weight_n = _ceil(Fraction(max(part.weight_g for part in shelves) * 981, 100_000))
+        shelf_mass_g = max(part.weight_g for part in shelves)
+        if design.trial_angles:
+            # Conservatively place both end fittings in the distributed shelf load.
+            shelf_mass_g += 2 * TRIAL_ANGLE_SET_MASS_G
+        dead_weight_n = _ceil(Fraction(shelf_mass_g * 981, 100_000))
         return Fraction(widest, row_width), dead_weight_n
 
     @staticmethod

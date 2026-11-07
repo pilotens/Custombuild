@@ -15,7 +15,9 @@ export function visibleAssembly(
 ) {
   if (!selected || mode === "whole") return parts;
   return parts.filter(
-    (part) => (part.part_id === selected) === (mode === "alone"),
+    (part) => part.fitting_part_ids
+      ? mode === "without" && !part.fitting_part_ids.includes(selected)
+      : (part.part_id === selected) === (mode === "alone"),
   );
 }
 

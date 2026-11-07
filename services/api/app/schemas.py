@@ -315,6 +315,9 @@ class BookcasePreviewInput(BaseModel):
         ),
     )
     shelf_count: int = Field(default=5, ge=0, le=40)
+    trial_angle: Literal["GN-970-ALM-30-30-30-B"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     shelf_mount: Literal["fixed", "adjustable"] = "fixed"
     load_per_shelf_kg: float = Field(default=30, ge=0, le=500)
     back_panel: bool | Literal["none", "surface_mounted", "inset_groove"] = True

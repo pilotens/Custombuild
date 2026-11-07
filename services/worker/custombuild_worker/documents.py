@@ -398,15 +398,12 @@ def hardware_csv(
         joints = joints_by_sku[sku]
         contracts = tuple(getattr(joint, "retention", None) for joint in joints)
         contract = (
-            contracts[0]
-            if contracts and all(item == contracts[0] for item in contracts)
-            else None
+            contracts[0] if contracts and all(item == contracts[0] for item in contracts) else None
         )
         contract_is_bound = (
             contract is not None
             and all(
-                str(getattr(joint.joint_type, "value", joint.joint_type)).casefold()
-                == "dado"
+                str(getattr(joint.joint_type, "value", joint.joint_type)).casefold() == "dado"
                 for joint in joints
             )
             and not dado_retention_evidence_missing(design)
@@ -749,6 +746,39 @@ def assembly_manual_pdf(
                     leading=10,
                 )
             _footer(canvas, "Följ alltid arbetsplatsens lyft-, kläm- och verktygsinstruktioner")
+    if getattr(design, "trial_angles", ()):
+        # Fit the angles after all captured panels are positioned; none obstruct panel entry.
+        for start in range(0, len(design.trial_angles), 8):
+            canvas.showPage()
+            y = _header(canvas, "Fäst låsvinklarna efter stommonteringen", identity)
+            canvas.setFont("Helvetica", 8)
+            y = _draw_wrapped_text(
+                canvas,
+                (
+                    "Stöd stommen i monteringsjiggen. Varje listad GN 970-ALM-30-30-30-B "
+                    "monteras inne i facket mot de två markerade ytorna. Rikta vinkelns hål "
+                    "mot pilothålen. Montera två DIN 96 A4 5 x 16 mm, en i varje skänkel. "
+                    "Dra först båda löst, kontrollera fullt instick och anliggning innan "
+                    "åtdragning. Slutmoment, pilotdiameter och utdragskapacitet kräver prov."
+                ),
+                MARGIN,
+                y,
+                max_chars=106,
+            )
+            for a in design.trial_angles[start : start + 8]:
+                y -= 20
+                canvas.setFont("Helvetica-Bold", 8)
+                canvas.drawString(
+                    MARGIN,
+                    y,
+                    f"{part_by_id[a.upright_id].semantic_key} + "
+                    f"{part_by_id[a.horizontal_id].semantic_key} · {a.joint_id}",
+                )
+                canvas.setFont("Helvetica", 7)
+                canvas.drawString(MARGIN, y - 12, f"Stående del: {a.upright_hole}")
+                canvas.drawString(MARGIN, y - 23, f"Liggande del: {a.horizontal_hole}")
+                y -= 25
+            _footer(canvas, "Provmontage · kontrollera åtkomst innan låsning och belastning")
     return _finish(buffer, canvas)
 
 

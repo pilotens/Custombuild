@@ -33,6 +33,7 @@ from .models import (
     PartInstance,
     Placement,
     Point3D,
+    TrialAngle,
     validate_part_connections,
 )
 
@@ -58,6 +59,7 @@ class FurnitureResult(FrozenModel):
     hardware_profile: HardwareProfile | None = None
     total_weight_g: int = Field(gt=0)
     # Retain the existing, validated result for the shelving rule adapter.
+    trial_angles: tuple[TrialAngle, ...] = Field(default=(), exclude_if=lambda v: not v)
     shelving_result: DesignResult | None = Field(default=None, exclude=True)
 
     @model_validator(mode="after")
@@ -154,6 +156,7 @@ def _carcass(design: FurnitureDesign, *, shelving: bool) -> DesignResult:
                 plinth_height_um=shelf.plinth_height_um if shelf else 0,
                 back_panel=shelf.back_panel if shelf else BackPanelType.INSET_GROOVE,
                 shelf_mount=shelf.shelf_mount if shelf else ShelfMount.FIXED,
+                trial_angle=shelf.trial_angle if shelf else None,
                 shelf_count=shelf.shelf_count if shelving and shelf else 0,
                 shelf_load_n=shelf.resolved_shelf_load_n if shelving and shelf else 0,
                 vertical_divider_count=shelf.divider_count
@@ -493,6 +496,11 @@ def build_furniture(design: FurnitureDesign) -> FurnitureResult:
                 "parts": [p.model_dump(mode="json", exclude={"revision"}) for p in parts],
                 "joints": joints,
                 "groups": groups,
+                **(
+                    {"trial_angles": carcass.trial_angles}
+                    if carcass and carcass.trial_angles
+                    else {}
+                ),
                 "materials": used_materials,
                 "selections": selections,
                 "hardware": hardware,
@@ -509,5 +517,6 @@ def build_furniture(design: FurnitureDesign) -> FurnitureResult:
         moving_groups=groups,
         hardware_profile=hardware,
         total_weight_g=sum(part.weight_g for part in parts),
+        trial_angles=carcass.trial_angles if carcass else (),
         shelving_result=carcass if design.intent.family == "shelving" else None,
     )

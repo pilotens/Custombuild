@@ -114,7 +114,7 @@ def test_old_workspaces_keep_their_canonical_schema_and_hash_when_extensions_are
     assert FurnitureProductionSource.model_validate(source).model_dump(mode="json") == source
 
 
-def test_new_customer_dimensions_replace_the_old_dimensions_without_selecting_trim_width():
+def test_reference_preserves_outer_dimensions_and_reserves_the_three_measured_walls():
     import json
     from pathlib import Path
 
@@ -130,10 +130,13 @@ def test_new_customer_dimensions_replace_the_old_dimensions_without_selecting_tr
     assert measurement["installation"]["trim_profile"] == {
         "height_um": 90_000,
         "width_um": 20_000,
-        "use": "unassigned",
-        "walls": [],
+        "use": "existing_room_trim",
+        "walls": ["left", "right", "rear"],
     }
-    assert measurement["required_carcass_dimensions_um"] is None
+    assert measurement["state"] == "reconciled"
+    assert measurement["required_carcass_dimensions_um"] == {
+        "width_um": 4_300_000, "height_um": 2_540_000, "depth_um": 260_000
+    }
     assert result["manufacturing"]["state"] == "not_selected"
     with pytest.raises(ValueError):
         furniture_production_source(selected)

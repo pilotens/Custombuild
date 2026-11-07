@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from .bookcase_angles import fit_trial_angles
 from .enums import (
     AssemblyDirection,
     BackPanelType,
@@ -32,6 +33,7 @@ from .models import (
     PartInstance,
     Placement,
     Point3D,
+    TrialAngle,
 )
 from .units import mm
 
@@ -71,6 +73,9 @@ class BookcaseEngine:
     def build(self, spec: BookcaseDesignSpec) -> DesignResult:
         parts = self._build_parts(spec)
         parts, joints = self._build_joints(spec, parts)
+        angles: tuple[TrialAngle, ...] = ()
+        if spec.parameters.trial_angle:
+            parts, angles = fit_trial_angles(parts, joints)
         graph = self._build_assembly_graph(parts, joints)
         total_weight = sum(part.weight_g for part in parts)
         hash_payload = {
@@ -82,6 +87,7 @@ class BookcaseEngine:
             "parts": tuple(part.model_dump(mode="python", exclude={"revision"}) for part in parts),
             "joints": joints,
             "assembly_graph": graph,
+            **({"trial_angles": angles} if angles else {}),
         }
         return DesignResult(
             design_hash=content_hash(hash_payload),
@@ -91,6 +97,7 @@ class BookcaseEngine:
             parts=parts,
             joints=joints,
             assembly_graph=graph,
+            trial_angles=angles,
             total_weight_g=total_weight,
         )
 

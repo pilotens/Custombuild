@@ -227,6 +227,10 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                 joint.hardware_count,
             )
         )
+    if result.trial_angles:
+        for angle in result.trial_angles:
+            counts[angle.article] += 1
+            counts[angle.screw] += 2
     instructions = []
     if isinstance(intent, ChairIntent | DiningTableIntent):
         leg_wood = (
