@@ -42,7 +42,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     test.setTimeout(300_000);
     const provisioned = await provisionLiveProject(request, info, "customer-bookcase");
     await selectProjectBeforeNavigation(page, provisioned);
-    await page.goto("/furniture");
+    await page.goto("/");
+    await page.getByRole("link", { name: "Bokhylla med verkstadsunderlag" }).click();
     await expect(page.getByRole("button", { name: "Spara revision" })).toBeEnabled();
     await page.getByLabel("Läs arbetsfil (JSON)").setInputFiles(fileURLToPath(new URL(
       "../../../examples/furniture/bookcase-4340x2540x280.json", import.meta.url)));
