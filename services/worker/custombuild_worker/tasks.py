@@ -339,7 +339,6 @@ TERMINAL_JOB_STATUSES = frozenset({JobStatus.succeeded, JobStatus.failed, JobSta
 GENERATION_DEADLINE_ERROR = "Generation job exceeded the server deadline of 120 minutes"
 FURNITURE_REVIEW_ARTIFACT_KIND = "furniture_review_bundle"
 FURNITURE_REVIEW_CONTENT_TYPE = "application/zip"
-FURNITURE_REVIEW_SCHEMA_VERSION = "custombuild.furniture-review.v1"
 S3_CONNECT_TIMEOUT_SECONDS = 3
 S3_READ_TIMEOUT_SECONDS = 30
 S3_TOTAL_MAX_ATTEMPTS = 2
@@ -1452,7 +1451,11 @@ def _generation_storage_claims(
 def _validated_furniture_review_snapshot(
     job: GenerationJob,
 ) -> tuple[Any, str, str, int, str]:
-    from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWorkspace
+    from custombuild_domain.furniture import (
+        FURNITURE_ENGINE_VERSION,
+        FurnitureWorkspace,
+        furniture_review_schema,
+    )
     from custombuild_domain.furniture_engine import build_furniture
     from custombuild_domain.identity import content_hash
 
@@ -1468,10 +1471,15 @@ def _validated_furniture_review_snapshot(
         "engine_version",
         "requested_by",
     }
+    source = request.get("workspace") if isinstance(request, dict) else None
+    design_input = source.get("design") if isinstance(source, dict) else None
+    intent = design_input.get("intent") if isinstance(design_input, dict) else None
     expected_engine_context = {
         "job_type": GenerationJobType.furniture_review.value,
         "furniture_engine_version": FURNITURE_ENGINE_VERSION,
-        "review_schema_version": FURNITURE_REVIEW_SCHEMA_VERSION,
+        "review_schema_version": furniture_review_schema(
+            intent.get("family") if isinstance(intent, dict) else None
+        ),
     }
     if (
         _job_type(job) is not GenerationJobType.furniture_review
@@ -1504,7 +1512,6 @@ def _validated_furniture_review_snapshot(
         raise ProductionBlockedError("furniture review job snapshot fields are invalid")
     from custombuild_domain.trestle_snapshot import TrestleWorkspace
 
-    source = request.get("workspace")
     if (
         isinstance(source, dict)
         and source.get("schema_version") == "custombuild.sideboard-workspace.v1"

@@ -31,6 +31,12 @@ FURNITURE_SCHEMA_VERSION: Literal["custombuild.furniture-design.v1"] = (
 FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 
+def furniture_review_schema(family: str | None) -> str:
+    if family == "shelving":
+        return "custombuild.shelving-workshop-review.v2"
+    return "custombuild.furniture-review.v1"
+
+
 class MaterialSelection(FrozenModel):
     material_id: StableKey
     version: StableKey = "screening-2026.1"

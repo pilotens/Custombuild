@@ -353,7 +353,7 @@ def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> 
                         y -= 10
                     y -= 10
                 canvas.setFillColor(MUTED)
-                _text(canvas, MARGIN, 52, f"DXF: parts/{part.part_id}/{side.value}.dxf", size=7)
+                _text(canvas, MARGIN, 52, f"DXF: parts/{part.part_id}/{view.name}.dxf", size=7)
                 _text(
                     canvas,
                     MARGIN,

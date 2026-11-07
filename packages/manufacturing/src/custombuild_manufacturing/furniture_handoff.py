@@ -91,11 +91,17 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         "required_workshop_inputs": [
             "material_batches_and_actual_thickness",
             "available_stock_formats_and_grain",
-            "machine_axes_work_area_and_controller",
-            "tools_holders_and_reach",
-            "workholding_and_face_registration",
+            *(
+                []
+                if isinstance(intent, ShelvingIntent)
+                else [
+                    "machine_axes_work_area_and_controller",
+                    "tools_holders_and_reach",
+                    "workholding_and_face_registration",
+                    "postprocessor_and_simulation",
+                ]
+            ),
             "qualified_adhesive_free_retention",
-            "postprocessor_and_simulation",
             "physical_joint_coupon_and_first_article_measurements",
             *(
                 ["timber_moisture_content", "cross_grain_movement_and_fixings"]

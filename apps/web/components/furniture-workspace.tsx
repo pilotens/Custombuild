@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import customerBookcase from "../../../examples/furniture/bookcase-4340x2540x280.json";
 import walnutExample from "../../../examples/furniture/walnut-shelving-4340x2540x280.json";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { CustombuildApiClient, type CurrentPrincipal, type ProjectRead } from "@/lib/api-client";
@@ -116,7 +117,8 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
   };
   const inputError = (message: string, field: string) => {
-    mutationEpoch.current += 1; setPreview(undefined); setInputErrors(previous => ({ ...previous, [field]: message }));
+    mutationEpoch.current += 1; setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
+    setPreview(undefined); setInputErrors(previous => ({ ...previous, [field]: message }));
   };
   const clearInputError = (field: string) => {
     setInputErrors(previous => Object.fromEntries(Object.entries(previous)
@@ -278,17 +280,17 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     } catch (reason) { setExportMessage(errorText(reason)); }
     finally { setBusy(false); }
   };
-  const importWorkspace = async (file?: File) => {
+  const importWorkspace = async (file?: File, example = walnutExample as unknown as FurnitureWorkspace) => {
     setBusy(true); const epoch = ++mutationEpoch.current;
     try {
       if (file && file.size > 256 * 1024) throw new Error("Arbetsfilen får vara högst 256 kB.");
-      const document = (file ? JSON.parse(await file.text()) : walnutExample) as FurnitureWorkspace;
+      const document = (file ? JSON.parse(await file.text()) : example) as FurnitureWorkspace;
       const proposed = { ...document, design: { ...document.design, design_id: "furniture", revision: 1 } };
       const checked = await api.previewFurniture(proposed);
       if (epoch !== mutationEpoch.current) return;
       resetInputDrafts(); update(checked.workspace); setBaseline(""); setProjectId(undefined); setRevision(0);
       setPreview(checked); setHistory({ items: [], next_offset: null });
-      setName(file ? file.name.replace(/\.json$/i, "").slice(0, 180) : "Hyllstomme i valnöt");
+      setName(file ? file.name.replace(/\.json$/i, "").slice(0, 180) : example.design.design_id === customerBookcase.design.design_id ? "Kundbokhylla i massiv valnöt" : "Hyllstomme i valnöt");
       setSelectedPart(undefined); setDrawersOpen(false);
       setNotice("Arbetsfilen har kontrollerats. Spara som ett nytt projekt för att skapa underlag.");
     } catch (reason) { setError(errorText(reason)); }
@@ -316,6 +318,10 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
         <label>Läs arbetsfil (JSON)<input type="file" accept=".json,application/json" disabled={busy || !mayEdit}
           onChange={e => { const file = e.target.files?.[0]; e.target.value = "";
             if (file) navigate(() => { void importWorkspace(file); }); }} /></label>
+        {intent.family === "shelving" ? <button disabled={busy || !mayEdit}
+          onClick={() => navigate(() => { void importWorkspace(undefined, customerBookcase as FurnitureWorkspace); })}>
+          Öppna kundbokhylla 4340 × 2540 × 280
+        </button> : null}
         <button disabled={busy || !mayEdit} onClick={() => navigate(() => { void importWorkspace(); })}>
           Öppna valnötsexempel
         </button>
@@ -434,7 +440,9 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     </div>
     <section className={styles.review}>
       <div><h2>Kontroll och underlag</h2>
-        <p>Designunderlag för granskning. Skärande CAM kräver verifierade beslag, konstruktion och maskin.</p>
+        <p>{intent.family === "shelving"
+          ? "Spara din revision och skapa granskningspaketet för verkstaden utan maskinval. Det innehåller CAD, bearbetningsmått och monteringssteg."
+          : "Designunderlag för granskning. Skärande CAM kräver verifierade beslag, konstruktion och maskin."}</p>
         {preview ? <p>{(preview.design.total_weight_g/1_000).toFixed(1)} kg beräknad bruttovikt · {dirty ? "Osparade ändringar" : revision ? "Sparad revision" : "Nytt utkast"}</p> : null}
       </div>
       {intent.family === "shelving" ? <div>
@@ -451,7 +459,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       <button className={styles.primary} disabled={mode === "without" || !mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
         onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
       {exportMessage ? <p role="status">{exportMessage}</p> : null}
-      {download && !profileDirty && mode !== "without" ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
+      {download && !dirty && preview && mode !== "without" ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
       {intent.family === "shelving" && preview ? <FurnitureShelfSuggestionPanel
         key={`${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}
         designHash={preview.design.design_hash} disabled={busy || invalidInput || profileDirty || !mayEdit}

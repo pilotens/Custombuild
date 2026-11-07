@@ -33,7 +33,7 @@
       "rear_allowance_um": null
     },
     "material": {
-      "material_id": "birch-plywood",
+      "material_id": "solid-walnut",
       "version": "screening-2026.1",
       "measured_thickness_um": 18000,
       "batch_id": null

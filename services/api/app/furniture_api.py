@@ -10,6 +10,7 @@ from custombuild_domain.furniture import (
     FURNITURE_ENGINE_VERSION,
     FurnitureWorkspace,
     ProfileChange,
+    furniture_review_schema,
 )
 from custombuild_domain.furniture_catalog import furniture_catalog
 from custombuild_domain.identity import content_hash
@@ -78,7 +79,6 @@ DesignerDep = Annotated[Principal, Depends(require_capability(Capability.DESIGN)
 GeneratorDep = Annotated[Principal, Depends(require_capability(Capability.GENERATE))]
 _SCHEMA = "custombuild.furniture-design.v1"
 _EXPORT_JOB_SCHEMA = "custombuild.furniture-review-job.v1"
-_EXPORT_REVIEW_SCHEMA = "custombuild.furniture-review.v1"
 _EXPORT_ARTIFACT_KIND = "furniture_review_bundle"
 _EXPORT_CONTENT_TYPE = "application/zip"
 _MAX_EXPORT_BYTES = 16 * 1024 * 1024
@@ -468,7 +468,7 @@ def request_export(
     engine_context = {
         "job_type": GenerationJobType.furniture_review.value,
         "furniture_engine_version": FURNITURE_ENGINE_VERSION,
-        "review_schema_version": _EXPORT_REVIEW_SCHEMA,
+        "review_schema_version": furniture_review_schema(workspace.design.intent.family),
     }
     # The project row lock serializes duplicate requests across API replicas.
     reusable_jobs = session.scalars(

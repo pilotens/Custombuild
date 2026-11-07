@@ -86,6 +86,13 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       "  assert hashlib.sha256(z.read(entry['path'])).hexdigest()==entry['sha256']",
       " assert z.read('design/model.step').startswith(b'ISO-10303-21;')",
       " assert manifest['physical_cutting_authorized'] is False",
+      " model=json.loads(z.read('design/resolved.json'))",
+      " ops=json.loads(z.read('manufacturing/manufacturing-intent.json'))",
+      " graph=json.loads(z.read('assembly/graph.json'))",
+      " assert manifest['design_hash']==model['design_hash']==graph['design_hash']==ops['document_identity']['design_hash']",
+      " assert json.loads(z.read('design/workspace.json'))['manufacturing'] is None",
+      " assert all(p['material_id']=='solid-walnut' for p in model['parts'] if p['role']!='back')",
+      " assert len(graph['graph']['steps'])>1",
       " rows=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
       " assert rows and all(not r['measured'] and not r['result'] for r in rows)",
       " print(z.read('manufacturing/workshop-handoff.json').decode())",
@@ -98,6 +105,35 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     });
     expect(exported.dimensions.state).toBe("requires_resolution");
     await attachView(page, info, "customer-bookcase-dimensions");
+    const width = page.getByLabel("Bredd (mm)", { exact: true });
+    await width.fill("6000.001");
+    await width.blur();
+    await expect(link).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    await width.fill("4340");
+    await width.blur();
+    await page.getByLabel("Hyllrader", { exact: true }).fill("2");
+    await page.getByRole("button", { name: "Spara revision" }).click();
+    await expect(page.getByText("Revision 2 är sparad.")).toBeVisible();
+    await page.getByRole("button", { name: "Skapa granskningspaket" }).click();
+    const second = page.getByRole("link", { name: /Hämta STEP.*revision 2/ });
+    await expect(second).toBeVisible({ timeout: 200_000 });
+    const secondEvent = page.waitForEvent("download");
+    await second.click();
+    const regenerated = await secondEvent;
+    expect(await regenerated.failure()).toBeNull();
+    execFileSync("python3", ["-c", [
+      "import json,sys,zipfile",
+      "with zipfile.ZipFile(sys.argv[1]) as before, zipfile.ZipFile(sys.argv[2]) as after:",
+      " old,new=[json.loads(z.read('design/resolved.json')) for z in (before,after)]",
+      " assert new['spec']['revision']==2 and new['design_hash']!=old['design_hash']",
+      " removed={p['part_id'] for p in old['parts']}-{p['part_id'] for p in new['parts']}",
+      " assert len(removed)==4",
+      " for name in after.namelist():",
+      "  assert all(p not in name for p in removed)",
+      "  if name.endswith(('.json','.csv','.dxf','.svg','.step')):",
+      "   data=after.read(name); assert all(p.encode() not in data for p in removed)",
+    ].join("\n"), (await download.path())!, (await regenerated.path())!]);
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await attachView(page, info, "customer-bookcase-mobile");

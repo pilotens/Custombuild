@@ -298,8 +298,8 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
     elif isinstance(intent, ShelvingIntent):
         instructions = [
             (
-                "Identifiera stommens sidor, hyllplan och rygg. Följ den separata "
-                "produktionsberedningen för fogarnas monteringsordning och låsning."
+                "Följ documents/assembly.pdf. Varje steg visar inkommande delgrupp, "
+                "rörelseriktning och de förband som ska passa samtidigt."
             )
         ]
     else:

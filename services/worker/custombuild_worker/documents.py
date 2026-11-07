@@ -530,15 +530,20 @@ def _unresolved_front_hardware_part_ids(design: Any) -> tuple[str, ...]:
 def assembly_manual_pdf(
     design: Any,
     retention_trust: VerifiedRetentionTrust | None = None,
+    *,
+    package_design_hash: str | None = None,
 ) -> bytes:
     buffer, canvas = _canvas()
+    identity = f"Designhash {design.design_hash}"
+    if package_design_hash:
+        identity = f"Designhash {package_design_hash} · rev {design.spec.revision}"
     steps = design.assembly_graph.steps
     part_by_id = {part.part_id: part for part in design.parts}
     manual_plan = _assembly_manual_plan(design)
     y = _header(
         canvas,
         "START HÄR – monteringsgranskning",
-        f"Designhash {design.design_hash}",
+        identity,
     )
     canvas.setFillColor(BLOCK)
     canvas.setFont("Helvetica-Bold", 10)
@@ -626,7 +631,7 @@ def assembly_manual_pdf(
             y = _header(
                 canvas,
                 title + continuation,
-                f"Designhash {design.design_hash}",
+                identity,
             )
             if step is None:
                 canvas.drawString(MARGIN, y, "Inga separata förbandssteg krävs.")

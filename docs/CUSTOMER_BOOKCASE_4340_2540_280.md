@@ -17,9 +17,9 @@ exakta uppgifter ligger i `design.installation`. Alla sex reserverade utrymmen
 funktionen `unassigned`; inga placeringar eller montagespel har hittats på.
 
 Filens CAD-stomme är tills vidare en illustration av hela den uppmätta volymen.
-De fyra hyllraderna, en avdelare, 200 N nyttig last per **hel hyllrad** och plywoodprofilerna är
+De fyra hyllraderna, en avdelare, 200 N nyttig last per **hel hyllrad** och den spårmonterade 6 mm björkplywoodryggen är
 **arbetsytans standardvärden, inte en godkänd kundkonstruktion eller materialorder**.
-Listen ingår inte som en tillverkad del. Den här filen är inte ett tillstånd
+Stommen använder massiv amerikansk svartvalnöt, nominellt 18 mm. Ryggmaterialet är ett öppet konstruktionsval. Listen ingår inte som en tillverkad del. Den här filen är inte ett tillstånd
 att skära material eller beställa det dyra tillverkningsprovet.
 
 ## Implementerad måttkedja
@@ -90,10 +90,10 @@ uppspänning och eventuella nya modulfogar behöver fortfarande fastställas.
 | --- | --- |
 | Godkänd konstruktion | Skiss/ritning med fackindelning, hyllhöjder, eventuella underskåp och rygg. Dagens standardlayout är inte kundens beslut. |
 | List och montage | Profilen är 90 × 20 mm. Funktion, placering och montagemått återstår. Befintlig rumslist kan hanteras med explicit frigång. Tillverkad möbellist kräver listdelar och förband. |
-| Långa delar | Faktiska tillgängliga råformat och maskinområde eller en uttryckligen vald, dimensionerad modulkonstruktion. |
-| Material | Verkligt synligt/dolt material, batch, tjocklek och underbyggda egenskaper. Katalogens MDF/björkplywood är screeningprofiler; ek är inte implementerad som kvalificerad ersättning. |
+| Långa delar | Faktiska tillgängliga råformat eller en uttryckligen vald, dimensionerad modulkonstruktion. |
+| Material | Verkligt synligt/dolt material, batch, tjocklek och underbyggda egenskaper. Valnötsprofilen använder indikativa artvärden. Mät tjocklek och fuktkvot, verifiera rörelsemån och styrk bruksvärden för tilltänkt virke. |
 | Last och förankring | Böckernas dimensioner/last, belastningsfördelning, vägg/golv och verifierade infästningar. |
-| Förband och CAM | Kvalificerad limfri retention, maskin, verktyg, uppspänning, tvåsidig registrering och verifierad postprocessor. |
+| Förband och CAM | Modellerad, verifierad limfri låsning. Verkstaden väljer verktyg, uppspänning och CAM efter att den fått den maskinoberoende geometrin. |
 | Fysiskt prov | Ett uppmätt fog-/beslagsprov och överenskomna acceptansmått före komplett tillverkningsprov. |
 
 Bord och byråer använder samma kundmått, profilhantering och CAD-/formatunderlag.

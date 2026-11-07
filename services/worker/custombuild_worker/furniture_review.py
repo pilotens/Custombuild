@@ -9,14 +9,20 @@ import zipfile
 from typing import Any
 
 from custombuild_cad import CadQueryAdapter
-from custombuild_domain.furniture import FurnitureWorkspace
+from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
 from custombuild_manufacturing.exporters import bom_csv, cut_list_csv, dxf_for_part, svg_for_part
 from custombuild_manufacturing.furniture_faces import drawing_faces
 from custombuild_manufacturing.furniture_handoff import furniture_first_article_checks
 from custombuild_manufacturing.furniture_profiles import preview_furniture
+from custombuild_manufacturing.quality import (
+    MANUFACTURING_INTENT_PATH,
+    manufacturing_intent_json,
+    manufacturing_intent_json_schema,
+)
 
+from .documents import assembly_manual_pdf
 from .furniture_assembly import assembly_documents
 from .part_drawings import part_drawings_pdf
 
@@ -65,6 +71,26 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         ),
     }
     files.update(assembly_documents(result))
+    shelving = result.shelving_result
+    if shelving is not None:
+        files["documents/assembly-overview.pdf"] = files["documents/assembly.pdf"]
+        files["documents/assembly.pdf"] = assembly_manual_pdf(
+            shelving, package_design_hash=result.design_hash
+        )
+        files["assembly/graph.json"] = _json(
+            {
+                "design_hash": result.design_hash,
+                "revision": workspace.design.revision,
+                "graph": shelving.assembly_graph.model_dump(mode="json"),
+            }
+        )
+        files[MANUFACTURING_INTENT_PATH] = manufacturing_intent_json(
+            parts=adapted.parts,
+            project_id=workspace.design.design_id,
+            revision=str(workspace.design.revision),
+            design_hash=result.design_hash,
+        )
+        files["schemas/manufacturing-intent.schema.json"] = manufacturing_intent_json_schema()
     sources = {p.part_id: p for p in result.parts}
     for original in adapted.parts:
         for view in drawing_faces(sources[original.part_id], original):
@@ -94,8 +120,14 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "modellens featuretoleranser. Verkstaden fastställer avtalade toleranser och\n"
         "fyller i mätning och granskare. Tomma resultat är inte godkända mätningar.\n"
     ).encode()
+    if shelving is not None:
+        files["README.txt"] += (
+            "\nBOKHYLLA – börja med documents/assembly.pdf för numrerade steg och del-ID.\n"
+            "manufacturing/manufacturing-intent.json anger bearbetningar med sida, datum, "
+            "speldimension och tolerans. Maskinval krävs inte för detta underlag.\n"
+        ).encode()
     manifest = {
-        "schema_version": "custombuild.furniture-review.v1",
+        "schema_version": furniture_review_schema(workspace.design.intent.family),
         "engine_version": result.engine_version,
         "design_hash": result.design_hash,
         "revision": workspace.design.revision,
