@@ -76,7 +76,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const [inputErrors, setInputErrors] = useState<Record<string, string>>({});
+  const [inputErrors, setInputErrors] = useState<Record<string, { message: string; raw?: string }>>({});
   const [inputEpoch, setInputEpoch] = useState(0);
   const [profileDirty, setProfileDirty] = useState(false);
   const [productionOpen, setProductionOpen] = useState(false);
@@ -116,9 +116,9 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     setProfileDirty(false);
     setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
   };
-  const inputError = (message: string, field: string) => {
+  const inputError = (message: string, field: string, raw?: string) => {
     mutationEpoch.current += 1; setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
-    setPreview(undefined); setInputErrors(previous => ({ ...previous, [field]: message }));
+    setPreview(undefined); setInputErrors(previous => ({ ...previous, [field]: { message, raw } }));
   };
   const clearInputError = (field: string) => {
     setInputErrors(previous => Object.fromEntries(Object.entries(previous)
@@ -235,7 +235,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       }
       changeDimension(key, value);
     }
-    catch (reason) { inputError(errorText(reason), `carcass.${key}`); }
+    catch (reason) { inputError(errorText(reason), `carcass.${key}`, raw); }
   };
   const openProject = (id: string) => navigate(() => {
     setBusy(true); const epoch = ++mutationEpoch.current;
@@ -344,7 +344,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       <button onClick={() => { pendingNavigation(); setPendingNavigation(null); }}>Fortsätt utan att spara</button>
     </section> : null}
     {error ? <p role="alert" className={styles.error}>{error}</p> : null}
-    {Object.entries(inputErrors).map(([field, message]) => <p key={field} role="alert" className={styles.error}>{message}</p>)}
+    {Object.entries(inputErrors).map(([field, { message }]) => <p key={field} role="alert" className={styles.error}>{message}</p>)}
     {notice ? <p role="status" className={styles.notice}>{notice}</p> : null}
     {profileDirty ? <p role="status" className={styles.notice}>
       Kontrollera och använd profilbytet, eller återställ profilförslaget, innan du ändrar formen, sparar eller skapar underlag.
@@ -363,20 +363,20 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
           ).map(([key, label]) =>
             <label key={key}>{label}<input aria-label={`${label} (mm)`} type="number" step="0.001"
               min={envelopeRange(key)?.minimum ?? 0.001} max={envelopeRange(key)?.maximum ?? 6000}
-              value={intent[key] / 1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
+              value={inputErrors[`carcass.${key}`]?.raw ?? intent[key] / 1_000} onChange={e => changeMillimetres(key, e.target.value)} /></label>)}
           <FurnitureFamilyControls intent={intent} onError={inputError} update={(patch, field) => updateInput(
             { ...workspace, design: { ...workspace.design, intent: { ...intent, ...patch } } },
             field ? `family.${field}` : "family",
           )} />
           {intent.family === "table" ? <>
-            <label>Gavelns indrag (mm)<input type="number" step="1" min="0" value={(intent.end_inset_um ?? 0)/1_000}
+            <label>Gavelns indrag (mm)<input type="number" step="1" min="0" value={inputErrors["carcass.end_inset_um"]?.raw ?? (intent.end_inset_um ?? 0)/1_000}
               onChange={e => changeMillimetres("end_inset_um", e.target.value)} /></label>
-            <label>Sargens höjd (mm)<input type="number" step="1" min="40" max="300" value={(intent.stretcher_height_um ?? 0)/1_000}
+            <label>Sargens höjd (mm)<input type="number" step="1" min="40" max="300" value={inputErrors["carcass.stretcher_height_um"]?.raw ?? (intent.stretcher_height_um ?? 0)/1_000}
               onChange={e => changeMillimetres("stretcher_height_um", e.target.value)} /></label>
           </> : intent.family === "chest_of_drawers" ? <>
             <label>Antal lådor<input type="number" min="1" max="8" value={intent.drawer_count}
               onChange={e => changeDimension("drawer_count", Number(e.target.value))} /></label>
-            <label>Frontspel (mm)<input type="number" min="1" max="10" step="0.1" value={(intent.front_gap_um ?? 0)/1_000}
+            <label>Frontspel (mm)<input type="number" min="1" max="10" step="0.1" value={inputErrors["carcass.front_gap_um"]?.raw ?? (intent.front_gap_um ?? 0)/1_000}
               onChange={e => changeMillimetres("front_gap_um", e.target.value)} /></label>
           </> : intent.family==="shelving" ? <>
             <label>Hyllrader<input type="number" min="0" max="40" value={intent.shelf_count}

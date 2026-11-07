@@ -247,6 +247,20 @@ describe("möbelstudions revisions- och profilflöde", () => {
     expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
   });
 
+  it("visar felaktig bredd tills kunden skriver tillbaka det giltiga värdet", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} initialFamily="shelving" />);
+    const width = screen.getByLabelText("Bredd (mm)") as HTMLInputElement;
+    const original = width.value;
+    fireEvent.change(width, { target: { value: "6000.001" } });
+    expect(width).toHaveValue(6000.001);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(width, { target: { value: original } });
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent.width_um)
+      .toBe(Number(original)*1000));
+  });
+
   it("ersätter även osparad indelningstext när en kontrollerad arbetsfil med samma grundmått öppnas", async () => {
     const api = setup();
     render(<FurnitureStudio api={api} principal={principal} />);
