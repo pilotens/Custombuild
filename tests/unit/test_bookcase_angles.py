@@ -206,7 +206,6 @@ def test_negative_trial_fit_budget_cannot_be_serialized_as_valid(fault):
     if fault == "short-cut":
         groove["dimensions"]["depth_um"] -= 300
     else:
-        groove["dimensions"]["width_um"] += 100
         groove["dimensions"]["length_um"] += 100
     with pytest.raises(ValueError, match="spårbottenmån"):
         DesignResult.model_validate(doc)
@@ -224,17 +223,46 @@ def test_continuous_assembly_stroke_includes_room_and_rejects_wrong_direction():
     assert design is not None
     step_bytes = CadQueryAdapter().export_design(result).step
     space = verify_assembly_space(design, step_bytes)
-    # Both outer sides slide 6 mm beyond the standing 900 mm carcass.
-    # Back 1176 mm high enters from above a divider ending at Z=1188 mm.
-    assert space.world_min_um == (-6000, 0, 0)
-    assert space.world_max_um == (906000, 280000, 2364000)
-    assert any(t.travel_um == 1176000 for t in space.steps)
-    # Final CAD is unchanged. Reversing a shelf's insertion drives it
-    # through the divider's solid cheek before reaching its final position.
-    first, *rest = design.assembly_graph.steps
-    assert first.direction == AssemblyDirection.POS_X
-    reverse = AssemblyDirection.NEG_X
-    first = first.model_copy(update={"direction": reverse, "motion_path": (reverse,)})
-    graph = design.assembly_graph.model_copy(update={"steps": (first, *rest)})
+    # The 268 mm divider enters from the front. The 18 mm top starts just
+    # above the side cheeks. The back is seated before either side closes.
+    assert space.world_min_um == (-6000, -268000, 0)
+    assert space.world_max_um == (906000, 280000, 1218000)
+    steps = design.assembly_graph.steps
+    roles = {p.part_id: p.role.value for p in design.parts}
+    assert all(len(s.moving_part_ids) == 1 for s in steps)
+    assert [roles[s.moving_part_ids[0]] for s in steps] == [
+        "back",
+        "back",
+        "divider",
+        "left_side",
+        "right_side",
+        "top",
+        "shelf",
+        "shelf",
+    ]
+    # Keep final CAD untouched and try to feed the last shelf from behind.
+    # The back and the stopped grooves obstruct that direction.
+    *prior, last = steps
+    assert last.direction == AssemblyDirection.POS_Y
+    reverse = AssemblyDirection.NEG_Y
+    last = last.model_copy(update={"direction": reverse, "motion_path": (reverse,)})
+    graph = design.assembly_graph.model_copy(update={"steps": (*prior, last)})
     with pytest.raises(ValueError, match="fri införingsväg"):
         verify_assembly_space(design.model_copy(update={"assembly_graph": graph}), step_bytes)
+
+
+@pytest.mark.parametrize("fault", ["closed-entry", "short-stop", "false-allowance"])
+def test_front_entry_rejects_a_closed_mouth_or_an_underlength_stop(fault):
+    design = build_furniture(trial(divider_count=1, shelf_count=1).design).shelving_result
+    assert design
+    doc = design.model_dump(mode="json")
+    divider = next(p for p in doc["parts"] if p["role"] == "divider")
+    groove = next(f for f in divider["features"] if f.get("front_stop_clearance_um"))
+    if fault == "closed-entry":
+        groove["open_end_reliefs"] = []
+    elif fault == "short-stop":
+        groove["dimensions"]["width_um"] -= 350
+    else:
+        groove["front_stop_clearance_um"] = 0
+    with pytest.raises(ValueError, match="öppen ingång eller säkerställd bakre stoppmån"):
+        DesignResult.model_validate(doc)

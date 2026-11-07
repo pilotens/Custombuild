@@ -6169,6 +6169,12 @@
             "title": "Fit Clearance Um",
             "type": "integer"
           },
+          "front_stop_clearance_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Front Stop Clearance Um",
+            "type": "integer"
+          },
           "groove_bottom_clearance_um": {
             "default": 0,
             "minimum": 0.0,

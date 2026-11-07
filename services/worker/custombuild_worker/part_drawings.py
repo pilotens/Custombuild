@@ -109,12 +109,15 @@ def feature_note_lines(feature: ManufacturingFeature) -> tuple[str, ...]:
         else "EJ ANGIVEN - ska fastställas"
     )
     lines.append(f"Tolerans: {tolerance} | Passningsspel: {um_to_mm(feature.fit_clearance_um)} mm")
+    front_stop = feature.metadata.get("front_stop_clearance_um")
+    if isinstance(front_stop, int) and front_stop:
+        lines.append(
+            f"Öppet till fronten. Stoppmån Y {um_to_mm(front_stop)} mm vid inriktad framkant."
+        )
     bottom_gap = feature.metadata.get("groove_bottom_clearance_um")
     if isinstance(bottom_gap, int) and bottom_gap:
         engagement = feature.depth_um - bottom_gap
-        lines.append(
-            f"Instick {um_to_mm(engagement)} mm | Spårbottenmån {um_to_mm(bottom_gap)} mm"
-        )
+        lines.append(f"Instick {um_to_mm(engagement)} mm | Spårbottenmån {um_to_mm(bottom_gap)} mm")
     if feature.corner_strategy:
         lines.append(
             f"Hörnstrategi: {feature.corner_strategy} | Avlastningsradie: "

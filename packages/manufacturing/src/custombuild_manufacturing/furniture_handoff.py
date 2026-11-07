@@ -234,6 +234,23 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
     if result.trial_angles:
         for fit in trial_groove_fits(result.parts, result.joints):
             axis = fit.normal_axis.upper()
+            if fit.minimum_front_stop_gap_um is not None:
+                mate = sources[fit.inserted_part_id]
+                row(
+                    fit.inserted_part_id,
+                    "",
+                    f"front_alignment_Y_{fit.joint_id}",
+                    mate.placement.y_um,
+                    TRIAL_FACE_TOLERANCE_UM,
+                    origin_semantics="INSTALLED_FRONT_DATUM",
+                )
+                row(
+                    fit.host_id,
+                    fit.groove_id,
+                    "front_entry_stop_gap_minimum",
+                    fit.minimum_front_stop_gap_um,
+                    origin_semantics="LOWER_ACCEPTANCE_LIMIT",
+                )
             row(
                 fit.host_id,
                 fit.groove_id,

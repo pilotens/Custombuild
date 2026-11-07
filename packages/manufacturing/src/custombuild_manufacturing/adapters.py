@@ -313,6 +313,11 @@ def adapt_domain_feature(
         metadata={
             "domain_face": face,
             **(
+                {"front_stop_clearance_um": feature.front_stop_clearance_um}
+                if getattr(feature, "front_stop_clearance_um", 0)
+                else {}
+            ),
+            **(
                 {"groove_bottom_clearance_um": feature.groove_bottom_clearance_um}
                 if getattr(feature, "groove_bottom_clearance_um", 0)
                 else {}

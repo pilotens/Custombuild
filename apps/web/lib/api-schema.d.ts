@@ -3297,6 +3297,11 @@ export interface components {
              */
             fit_clearance_um: number;
             /**
+             * Front Stop Clearance Um
+             * @default 0
+             */
+            front_stop_clearance_um: number;
+            /**
              * Groove Bottom Clearance Um
              * @default 0
              */

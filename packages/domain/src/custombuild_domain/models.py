@@ -573,6 +573,9 @@ TRIAL_EDGE_TOLERANCE_UM = 100
 TRIAL_FACE_TOLERANCE_UM = 100
 TRIAL_STOCK_TOLERANCE_UM = 100
 TRIAL_GROOVE_BOTTOM_CLEARANCE_UM = 300
+# Along the front-entry stroke: ±0.05 position and length, ±0.10 front datum
+# and part length, leaving 0.05 mm behind the seated panel in the worst case.
+TRIAL_FRONT_STOP_CLEARANCE_UM = 350
 
 
 class ManufacturingFeature(FrozenModel):
@@ -589,6 +592,7 @@ class ManufacturingFeature(FrozenModel):
     tolerance_um: NonNegativeUm = mm("0.15")
     fit_clearance_um: NonNegativeUm = 0
     corner_strategy: StableKey | None = None
+    front_stop_clearance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
     groove_bottom_clearance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
     requires_square_corners: bool = False
     open_end_reliefs: tuple[OpenEndRelief, ...] = ()
@@ -1057,7 +1061,11 @@ class DesignResult(FrozenModel):
         )
         if self.spec.parameters.trial_angle:
             trial_groove_fits(self.parts, self.joints)
-        elif any(f.groove_bottom_clearance_um for p in self.parts for f in p.features):
+        elif any(
+            f.groove_bottom_clearance_um or f.front_stop_clearance_um
+            for p in self.parts
+            for f in p.features
+        ):
             raise ValueError("Extra spårbottenmån kräver vinkelprovets toleransmodell.")
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:

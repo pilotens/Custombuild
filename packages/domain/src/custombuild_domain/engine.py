@@ -18,6 +18,7 @@ from .geometry import allocate_bay_widths_um, allocate_shelf_positions_um
 from .identity import content_hash, stable_id
 from .models import (
     TRIAL_EDGE_TOLERANCE_UM,
+    TRIAL_FRONT_STOP_CLEARANCE_UM,
     TRIAL_GROOVE_BOTTOM_CLEARANCE_UM,
     TRIAL_STOCK_TOLERANCE_UM,
     AssemblyEdge,
@@ -79,7 +80,7 @@ class BookcaseEngine:
         angles: tuple[TrialAngle, ...] = ()
         if spec.parameters.trial_angle:
             parts, angles = fit_trial_angles(parts, joints)
-        graph = self._build_assembly_graph(parts, joints)
+        graph = self._build_assembly_graph(parts, joints, front_entry=bool(angles))
         total_weight = sum(part.weight_g for part in parts)
         hash_payload = {
             "spec": spec.model_dump(
@@ -139,6 +140,9 @@ class BookcaseEngine:
                 else case_depth - DADO_REAR_RELIEF_CLEARANCE_UM
             )
         )
+        if p.trial_angle:
+            # Keep the cutter and rear relief clear of the original back groove.
+            shelf_depth -= TRIAL_FRONT_STOP_CLEARANCE_UM
         divider_depth = (
             p.depth_um - mm(12) if p.back_panel == BackPanelType.INSET_GROOVE else shelf_depth
         )
@@ -1182,6 +1186,11 @@ class BookcaseEngine:
                 requires_square_corners=kind == JointType.DADO,
                 open_end_reliefs=first_open_end_reliefs,
                 groove_bottom_clearance_um=bottom_clearance_um,
+                front_stop_clearance_um=(
+                    TRIAL_FRONT_STOP_CLEARANCE_UM
+                    if bottom_clearance_um and second.role in {PartRole.SHELF, PartRole.DIVIDER}
+                    else 0
+                ),
             ),
             ManufacturingFeature(
                 feature_id=second_id,
@@ -1335,6 +1344,20 @@ class BookcaseEngine:
                     raise ValueError(
                         f"dado members {owner.semantic_key}/{mate.semantic_key} "
                         f"do not overlap on {axis}"
+                    )
+            if (
+                bottom_clearance_um
+                and axis == "y"
+                and mate.role in {PartRole.SHELF, PartRole.DIVIDER}
+            ):
+                end += TRIAL_FRONT_STOP_CLEARANCE_UM
+                if (
+                    start != owner_interval[0]
+                    or start != mate_interval[0]
+                    or end > owner_interval[1]
+                ):
+                    raise ValueError(
+                        "Den främre spåröppningen eller bakre stoppmånen ryms inte i värddelen."
                     )
             global_starts[axis] = start
             global_lengths[axis] = end - start
@@ -1554,6 +1577,8 @@ class BookcaseEngine:
     def _build_assembly_graph(
         parts: tuple[PartInstance, ...],
         joints: tuple[Joint, ...],
+        *,
+        front_entry: bool = False,
     ) -> AssemblyGraph:
         nodes = tuple(
             AssemblyNode(part_id=part.part_id, semantic_key=part.semantic_key) for part in parts
@@ -1631,6 +1656,77 @@ class BookcaseEngine:
                 )
             )
             used.update(joint_ids)
+
+        if front_entry:
+            # The bottom is supported at its final datum. Each joint is made once,
+            # when the second of its members is inserted. No joined group is lifted.
+            present = {by_key["bottom"].part_id}
+            for role, direction, instruction in (
+                (
+                    PartRole.BACK,
+                    AssemblyDirection.NEG_Z,
+                    "Ställ botten i dess slutläge. Sänk ryggfältet i bottenspåret och fixera "
+                    "det lodrätt i tillfälligt sidostöd.",
+                ),
+                (
+                    PartRole.DIVIDER,
+                    AssemblyDirection.POS_Y,
+                    "Skjut in avdelaren framifrån i bottenspåret. Fånga ryggkanterna i "
+                    "sidospåren och fixera avdelaren lodrätt.",
+                ),
+                (
+                    PartRole.LEFT_SIDE,
+                    AssemblyDirection.POS_X,
+                    "För vänster gavel från vänster över botten- och ryggkanterna. Stöd gaveln "
+                    "mot tippning.",
+                ),
+                (
+                    PartRole.RIGHT_SIDE,
+                    AssemblyDirection.NEG_X,
+                    "För höger gavel från höger över botten- och ryggkanterna. Stöd gaveln mot "
+                    "tippning.",
+                ),
+                (
+                    PartRole.TOP,
+                    AssemblyDirection.NEG_Z,
+                    "Sänk toppen över de fixerade gavlarna, avdelarna om sådana finns och "
+                    "ryggfälten. Lasta inte plywoodryggen under lyftet.",
+                ),
+                (
+                    PartRole.SHELF,
+                    AssemblyDirection.POS_Y,
+                    "Skjut in endast denna hylla framifrån i båda spåren. Rikta framkanten mot "
+                    "frontdatum och kontrollera pilothålen före låsning.",
+                ),
+            ):
+                for part in sorted(
+                    (p for p in parts if p.role == role), key=lambda p: p.instance_index
+                ):
+                    selected = tuple(
+                        j
+                        for j in joints
+                        if part.part_id in {m.part_id for m in j.members}
+                        and all(
+                            m.part_id == part.part_id or m.part_id in present for m in j.members
+                        )
+                    )
+                    if not selected:
+                        raise ValueError(
+                            f"{part.semantic_key}: inget upplag i detta monteringssteg."
+                        )
+                    add_step(
+                        selected,
+                        direction,
+                        instruction,
+                        moving_parts=(part,),
+                        required_tools=("panel-positioning-jig",) if role != PartRole.SHELF else (),
+                    )
+                    present.add(part.part_id)
+            if len(present) != len(parts) or len(used) != len(joints):
+                raise ValueError(
+                    "Monteringsordningen täcker inte alla delar och förband i bokhylleprovet."
+                )
+            return AssemblyGraph(nodes=nodes, edges=edges, steps=tuple(steps_list))
 
         # Build the internal lower-cabinet bank from left to right while both
         # full-height outer sides remain open.  Each internal side captures the

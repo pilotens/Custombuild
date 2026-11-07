@@ -3,10 +3,11 @@
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from .enums import FaceName, FeatureKind, JointType, PartRole
+from .enums import FaceName, FeatureKind, JointType, OpenEndRelief, PartRole
 from .models import (
     TRIAL_EDGE_TOLERANCE_UM,
     TRIAL_FACE_TOLERANCE_UM,
+    TRIAL_FRONT_STOP_CLEARANCE_UM,
     TRIAL_GROOVE_BOTTOM_CLEARANCE_UM,
     Joint,
     ManufacturingFeature,
@@ -41,6 +42,7 @@ class GrooveFit:
     minimum_remaining_web_um: int
     maximum_bottom_gap_um: int
     minimum_floating_capture_um: int | None = None
+    minimum_front_stop_gap_um: int | None = None
 
 
 def _physical_face(p: PartInstance, face: FaceName) -> FaceName:
@@ -130,6 +132,28 @@ def trial_groove_fits(
         normal_to_mate = _AXIS[mate.a_side]
         u_axis, v_axis = (i for i in range(3) if i != axis)
         spans = {u_axis: f.dimensions.width_um, v_axis: f.dimensions.length_um}
+        stop_gap = None
+        if mate.role in {PartRole.SHELF, PartRole.DIVIDER}:
+            opening = OpenEndRelief.U_MIN if u_axis == 1 else OpenEndRelief.V_MIN
+            cut_end = host.placement.y_um + f.origin.y_um + (spans.get(1) or 0)
+            mate_end = mate.placement.y_um + mate.finished_size.depth_um
+            gap_y = cut_end - mate_end
+            stop_gap = (
+                gap_y - 2 * f.tolerance_um - mate.profile_tolerance_um - TRIAL_FACE_TOLERANCE_UM
+            )
+            if (
+                opening not in f.open_end_reliefs
+                or f.origin.y_um != 0
+                or host.placement.y_um != mate.placement.y_um
+                or gap_y != TRIAL_FRONT_STOP_CLEARANCE_UM
+                or gap_y != f.front_stop_clearance_um
+                or stop_gap <= 0
+            ):
+                raise ValueError(
+                    "Det frontmatade spåret saknar öppen ingång eller säkerställd bakre stoppmån."
+                )
+        elif f.front_stop_clearance_um:
+            raise ValueError("Stoppmån i Y kräver en hylla eller avdelare som skjuts in framifrån.")
         slot_width = spans.get(normal_to_mate) or 0
         transverse_gap = slot_width - mate.actual_thickness_um
         width_clearance = transverse_gap - f.tolerance_um - mate.stock_tolerance_um
@@ -168,6 +192,7 @@ def trial_groove_fits(
                 minimum_total_width_clearance_um=width_clearance,
                 minimum_remaining_web_um=webs[f.feature_id],
                 maximum_bottom_gap_um=gap + end_budget + f.tolerance_um,
+                minimum_front_stop_gap_um=stop_gap,
             )
         )
     # An inset plywood field can settle against either groove bottom. The edge

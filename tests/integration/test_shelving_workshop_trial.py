@@ -95,16 +95,31 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
         assert ply.isInside((12.2, y, 600)) and not ls.isInside((12.2, y, 600))
         assert not ply.isInside((11.8, y, 600)) and not ls.isInside((11.8, y, 600))
         assert ls.isInside((11.5, y, 600))
+        # Shelf ends at Y=257.65; the rear wall of each side groove is Y=258.
+        shelf = next(p for p in model["parts"] if p["role"] == "shelf")
+        wood = assembly.objects["timber/" + shelf["part_id"]].toCompound().Solids()[0]
+        bb = wood.BoundingBox()
+        zmid = (bb.zmin + bb.zmax) / 2
+        assert bb.ymax == pytest.approx(257.65, abs=0.001)
+        assert wood.isInside((15, 257.55, zmid)) and not ls.isInside((15, 257.55, zmid))
+        assert not wood.isInside((15, 257.85, zmid)) and not ls.isInside((15, 257.85, zmid))
+        assert ls.isInside((15, 258.2, zmid))
         fit_report = json.loads(z.read("inspection/groove-fits.json"))
         assert (
             fit_report["revision"] == manifest["revision"]
             and fit_report["design_hash"] == model["design_hash"]
         )
         assert all(f["minimum_bottom_gap_um"] == 50 for f in fit_report["joints"])
+        stop_fits = [f for f in fit_report["joints"] if f["minimum_front_stop_gap_um"] is not None]
+        assert len(stop_fits) == 2 and all(f["minimum_front_stop_gap_um"] == 50 for f in stop_fits)
         datum_rows = list(
             csv.DictReader(
                 io.StringIO(z.read("inspection/first-article-checks.csv").decode("utf-8-sig"))
             )
+        )
+        alignment_rows = [r for r in datum_rows if r["origin_semantics"] == "INSTALLED_FRONT_DATUM"]
+        assert len(alignment_rows) == 2 and all(
+            r["model_tolerance"] == "0.100" for r in alignment_rows
         )
         for check in ("finished_local_U", "finished_local_V", "actual_thickness"):
             rows = [r for r in datum_rows if r["check"] == check]

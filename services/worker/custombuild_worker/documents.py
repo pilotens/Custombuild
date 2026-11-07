@@ -597,7 +597,20 @@ def assembly_manual_pdf(
         )
         y -= 12
     if assembly_space:
-        y = _draw_wrapped_text(canvas, assembly_space.description(), MARGIN, y, max_chars=105) - 6
+        y = _draw_wrapped_text(canvas, assembly_space.description(), MARGIN, y, max_chars=105)
+        y = (
+            _draw_wrapped_text(
+                canvas,
+                "Börja med botten på plan yta. "
+                "Säkra varje lös rygg, avdelare och gavel mot tippning. "
+                "Behåll stöden tills vinklarna är monterade och stommen är säkrad. "
+                "Håll hjälputrustningen utanför de redovisade införingsbanorna.",
+                MARGIN,
+                y,
+                max_chars=105,
+            )
+            - 6
+        )
     unresolved = (
         ", ".join(manual_plan.unresolved_tool_ids)
         if manual_plan.unresolved_tool_ids

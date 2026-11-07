@@ -40,6 +40,16 @@ def shelving_trial_protocol(
         "gavlar och topp vid stående montering. Rummets verkliga takhöjd är inte uppmätt här."
     )
     if space:
+        lines.append(
+            "Stöd botten på plan yta. Håll varje ryggfält, avdelare och gavel lodrätt med "
+            "separata stöd "
+            "mot tippning tills stommen är säkrad. Avsätt plats utanför införingsbanorna för "
+            "fixturer och lyfthjälp. "
+            "Provpassa frontöppningen i varje frontmatat spår. Med framkanterna inriktade "
+            "(±0,10 mm) ska "
+            "hyllan eller avdelaren ha minst 0,05 mm kvar till det bakre stoppet. Mät mot "
+            "inspection/groove-fits.json."
+        )
         lines.extend(
             [
                 space.description(),
@@ -48,8 +58,11 @@ def shelving_trial_protocol(
         )
     if result.spec.installation and result.spec.installation.trim_profile:
         trim = result.spec.installation.trim_profile
+        wall_names = {"left": "vänster vägg", "right": "höger vägg", "rear": "bakvägg"}
+        walls = ", ".join(wall_names[w] for w in trim.walls) or "ej angivet"
         lines.append(
-            f"List {trim.height_um} × {trim.width_um} µm. Placering: {', '.join(trim.walls)}."
+            f"Listens höjd {trim.height_um / 1000:g} mm, utstick {trim.width_um / 1000:g} mm. "
+            f"Placering: {walls}."
         )
         lines.append(
             "Kontrollera reserverade mått och verklig uppresnings-/monteringshöjd på plats."
