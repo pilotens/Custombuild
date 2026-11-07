@@ -30,11 +30,7 @@ EXTERNAL_SBOM_IDENTITIES = {
         "latest",
     ),
     "redis": ("redis", "7.2.16-alpine", "7.2.16-alpine"),
-    "volume-init": (
-        "cgr.dev/chainguard/busybox",
-        "sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db",
-        "latest",
-    ),
+    "volume-init": ("busybox", "1.37.0-musl", "1.37.0-musl"),
 }
 EXTERNAL_RUNTIME_IDENTITIES = {
     "postgres": (

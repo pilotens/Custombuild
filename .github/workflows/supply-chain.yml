@@ -161,7 +161,7 @@ jobs:
           - component: redis
             image: redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
           - component: volume-init
-            image: cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db
+            image: busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -229,7 +229,7 @@ jobs:
           grpc_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-grpc.version" }}')"
           image_id="$(docker image inspect "$image" --format '{{.Id}}')"
           test "$source_sha256" = "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
-          test "$security_overrides_sha256" = "764834e3b01cb6a4c3affcc14e3560d4ca3ffc5fe1706e683116ebb40eb39f31"
+          test "$security_overrides_sha256" = "b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1"
           test "$go_version" = "1.26.9"
           test "$apache_thrift_version" = "0.24.0"
           test "$etcd_client_pkg_version" = "3.7.1"

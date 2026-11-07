@@ -782,7 +782,7 @@ def test_checked_in_registry_overlay_is_exact() -> None:
     ("original", "replacement"),
     (
         ("required-up-flag: --no-build", "required-up-flag: --build"),
-        ("sha256:f275a", "sha256:a275a"),
+        (PINNED_RUNTIME_IMAGES["postgres"], "cgr.dev/chainguard/postgres@sha256:" + "0" * 64),
         ("CUSTOMBUILD_DEPLOY_API_IMAGE", "CUSTOMBUILD_DEPLOY_WEB_IMAGE"),
         ("services:\n", "services:\n  unexpected:\n    build: .\n"),
     ),
@@ -793,6 +793,7 @@ def test_registry_overlay_mutations_fail_closed(
     replacement: str,
 ) -> None:
     overlay = tmp_path / "compose.registry.yml"
+    assert original in EXPECTED_REGISTRY_OVERLAY and original != replacement
     overlay.write_text(EXPECTED_REGISTRY_OVERLAY.replace(original, replacement), encoding="utf-8")
 
     assert registry_overlay_issues(overlay)

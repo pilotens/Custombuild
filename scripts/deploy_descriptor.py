@@ -36,8 +36,8 @@ PINNED_RUNTIME_IMAGES = {
         "sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c"
     ),
     "volume-init": (
-        "cgr.dev/chainguard/busybox@"
-        "sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db"
+        "docker.io/library/busybox@"
+        "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
     ),
 }
 PINNED_RUNTIME_SCAN_REFERENCES = {
@@ -50,8 +50,8 @@ PINNED_RUNTIME_SCAN_REFERENCES = {
         "sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c"
     ),
     "volume-init": (
-        "cgr.dev/chainguard/busybox:latest@"
-        "sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db"
+        "busybox:1.37.0-musl@"
+        "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
     ),
 }
 ALL_COMPONENTS = (*APPLICATION_COMPONENTS, *PINNED_RUNTIME_IMAGES)

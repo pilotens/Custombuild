@@ -676,7 +676,7 @@ jobs:
       - name: Generate reviewed volume-init runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: registry:cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db
+          image: registry:busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478
           format: spdx-json
           output-file: artifacts/release-images/sbom-volume-init.spdx.json
           upload-artifact: false
@@ -704,7 +704,7 @@ jobs:
       - name: Scan reviewed volume-init runtime
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: registry:cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db
+          image: registry:busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -741,7 +741,7 @@ jobs:
           seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
           postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4'
           redis_ref='redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c'
-          volume_init_ref='cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db'
+          volume_init_ref='busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478'
           api_id="$(image_id "$api_ref")"
           worker_id="$(image_id "$worker_ref")"
           web_id="$(image_id "$web_ref")"

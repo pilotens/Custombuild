@@ -497,7 +497,7 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
         "ADD --checksum=sha256:800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
     ) in dockerfile
     overrides_sha256 = hashlib.sha256(overrides).hexdigest()
-    assert overrides_sha256 == "764834e3b01cb6a4c3affcc14e3560d4ca3ffc5fe1706e683116ebb40eb39f31"
+    assert overrides_sha256 == "b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1"
     assert f"ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256={overrides_sha256}" in dockerfile
     assert "github.com/apache/thrift@v0.24.0" in dockerfile
     assert "go.etcd.io/etcd/client/pkg/v3@v3.7.1" in dockerfile

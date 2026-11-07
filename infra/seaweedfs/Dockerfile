@@ -7,7 +7,7 @@ FROM golang:1.26.9-alpine3.24@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a6
 
 ARG SEAWEEDFS_VERSION=4.45
 ARG SEAWEEDFS_SOURCE_SHA256=800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30
-ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=764834e3b01cb6a4c3affcc14e3560d4ca3ffc5fe1706e683116ebb40eb39f31
+ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1
 ENV GOTOOLCHAIN=local \
     GOSUMDB=sum.golang.org
 
@@ -26,6 +26,8 @@ RUN tar --extract --gzip --file=/tmp/seaweedfs.tar.gz --strip-components=1 \
     && go mod edit -go=1.26.0 \
     && go mod edit -dropreplace=github.com/apache/thrift \
     && go mod edit \
+      -require=github.com/andybalholm/brotli@v1.2.7 \
+      -require=github.com/klauspost/compress@v1.20.2 \
       -require=github.com/apache/thrift@v0.24.0 \
       -require=github.com/go-jose/go-jose/v4@v4.1.6 \
       -require=golang.org/x/mod@v0.41.0 \
@@ -53,6 +55,8 @@ RUN tar --extract --gzip --file=/tmp/seaweedfs.tar.gz --strip-components=1 \
       -require=google.golang.org/genproto/googleapis/api@v0.0.0-20260817212433-ac3dfec99bb1 \
     && cat /tmp/security-overrides.sum >> go.sum \
     && go mod download \
+      github.com/andybalholm/brotli@v1.2.7 \
+      github.com/klauspost/compress@v1.20.2 \
       github.com/go-jose/go-jose/v4@v4.1.6 \
       golang.org/x/net@v0.62.0 \
       github.com/apache/thrift@v0.24.0 \
@@ -107,7 +111,7 @@ FROM scratch AS runtime
 
 ARG SEAWEEDFS_VERSION=4.45
 ARG SEAWEEDFS_SOURCE_SHA256=800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30
-ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=764834e3b01cb6a4c3affcc14e3560d4ca3ffc5fe1706e683116ebb40eb39f31
+ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1
 LABEL org.opencontainers.image.title="Custombuild SeaweedFS" \
       org.opencontainers.image.description="Minimal source-verified SeaweedFS S3 runtime" \
       org.opencontainers.image.version="${SEAWEEDFS_VERSION}" \
