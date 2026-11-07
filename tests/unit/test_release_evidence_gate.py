@@ -26,13 +26,13 @@ SEAWEED_ID = "sha256:" + "3" * 64
 EXTERNAL_SBOM_IDENTITIES = {
     "postgres": (
         "cgr.dev/chainguard/postgres",
-        "sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9",
+        "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4",
         "latest",
     ),
     "redis": ("redis", "7.2.16-alpine", "7.2.16-alpine"),
     "volume-init": (
         "cgr.dev/chainguard/busybox",
-        "sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba",
+        "sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db",
         "latest",
     ),
 }
@@ -228,12 +228,12 @@ def _evidence(
             {
                 "name": "python",
                 "SPDXID": "SPDXRef-Package-binary-python-1111222233334444",
-                "versionInfo": "3.13.15",
+                "versionInfo": "3.13.18",
                 "externalRefs": [
                     {
                         "referenceCategory": "PACKAGE-MANAGER",
                         "referenceType": "purl",
-                        "referenceLocator": "pkg:generic/python@3.13.15",
+                        "referenceLocator": "pkg:generic/python@3.13.18",
                     }
                 ],
             },
@@ -299,9 +299,9 @@ def _evidence(
                         "artifact": {
                             "id": "1111222233334444",
                             "name": "python",
-                            "version": "3.13.15",
+                            "version": "3.13.18",
                             "type": "binary",
-                            "purl": "pkg:generic/python@3.13.15",
+                            "purl": "pkg:generic/python@3.13.18",
                         },
                     },
                 ],
@@ -383,7 +383,7 @@ def test_final_gate_binds_all_release_evidence(
     assert report["runtime_image_references"]["api"] == f"custombuild-api:{REVISION}"
     assert report["runtime_scan_inputs"]["postgres"] == (
         "cgr.dev/chainguard/postgres:latest@"
-        "sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
+        "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
     )
     assert set(report["runtime_sbom_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_scan_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
@@ -493,7 +493,7 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
         == release_evidence_gate.REQUIRED_IMAGES
     )
     assert release_evidence_gate._expected_image_reference("postgres", REVISION).endswith(
-        "@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
+        "@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
     )
     assert release_evidence_gate._expected_scan_input(
         "postgres", REVISION
@@ -503,9 +503,9 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
     ) == release_evidence_gate._expected_image_reference("postgres", REVISION)
     for component in ("postgres", "redis", "volume-init"):
         assert "@sha256:" in release_evidence_gate._expected_scan_input(component, REVISION)
-    assert len(release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]) == 49
-    assert ("mesa-gl", "26.2.1-r0") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
-    assert ("libxcb", "1.17.0-r15") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
+    assert len(release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]) == 53
+    assert ("mesa-gl", "26.2.6-r0") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
+    assert ("libxcb", "1.17.0-r19") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
 
 
 @pytest.mark.parametrize("component", ("postgres", "redis", "volume-init"))
@@ -1139,7 +1139,7 @@ def test_final_gate_rejects_wrong_native_interpreter_version(
         "libmd",
         "libgomp",
         "libxcb",
-        "libLLVM-22",
+        "libLLVM-23",
         "wayland-libs-client",
     ),
 )

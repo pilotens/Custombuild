@@ -24,7 +24,7 @@ jobs:
       contents: read
     services:
       postgres:
-        image: cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
+        image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -60,7 +60,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Install exact release dependencies
@@ -297,6 +297,8 @@ jobs:
       contents: read
     container:
       image: debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+      volumes:
+        - /etc/ssl/certs/ca-certificates.crt:/run/custombuild-runner-ca.crt:ro
     env:
       DEBIAN_FRONTEND: noninteractive
       GIT_CONFIG_COUNT: "1"
@@ -307,20 +309,20 @@ jobs:
         run: |
           printf '%s\n' \
             'Types: deb' \
-            'URIs: http://snapshot.debian.org/archive/debian/20260824T000000Z' \
+            'URIs: https://snapshot.debian.org/archive/debian/20260824T000000Z' \
             'Suites: trixie trixie-updates' \
             'Components: main' \
             'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
             '' \
             'Types: deb' \
-            'URIs: http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
+            'URIs: https://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
             'Suites: trixie-security' \
             'Components: main' \
             'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
             > /etc/apt/sources.list.d/debian.sources
           printf 'Acquire::Check-Valid-Until "false";\n' \
             > /etc/apt/apt.conf.d/99snapshot
-          printf '%s\n' 'Acquire::Retries "5";' \
+          printf '%s\n' 'Acquire::https::CaInfo "/run/custombuild-runner-ca.crt";' 'Acquire::Retries "5";' \
             'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             'APT::Update::Error-Mode "any";' > /etc/apt/apt.conf.d/80custombuild-downloads
           apt-get update
@@ -370,7 +372,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Download the exact build-once image archives
@@ -578,7 +580,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.19.0"
+          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.22.2"
           docker compose --file compose.yml exec -T web /usr/bin/node -e \
             "if (process.execPath !== '/usr/bin/node' || process.getuid() !== 65532) throw new Error(process.execPath + ':' + process.getuid())"
           docker compose --file compose.yml exec -T api /opt/custombuild-venv/bin/python - <<'PY'
@@ -590,7 +592,7 @@ jobs:
           import uvicorn
           from app.main import app
 
-          assert sys.version_info[:3] == (3, 13, 15), sys.version
+          assert sys.version_info[:3] == (3, 13, 18), sys.version
           assert os.getuid() == 65532, os.getuid()
           assert Path(sys.executable).resolve() == Path("/usr/bin/python3.13").resolve()
           assert callable(app)
@@ -610,7 +612,7 @@ jobs:
           import vtkmodules.vtkCommonCore
           from custombuild_worker.tasks import celery_app
 
-          assert sys.version_info[:3] == (3, 13, 15), sys.version
+          assert sys.version_info[:3] == (3, 13, 18), sys.version
           assert os.getuid() == 65532, os.getuid()
           assert Path(sys.executable).resolve() == Path("/usr/bin/python3.13").resolve()
           assert celery_app is not None
@@ -658,7 +660,7 @@ jobs:
       - name: Generate reviewed PostgreSQL runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: registry:cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
+          image: registry:cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
           format: spdx-json
           output-file: artifacts/release-images/sbom-postgres.spdx.json
           upload-artifact: false
@@ -666,7 +668,7 @@ jobs:
       - name: Generate reviewed Redis runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: registry:redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
+          image: registry:redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
           format: spdx-json
           output-file: artifacts/release-images/sbom-redis.spdx.json
           upload-artifact: false
@@ -674,7 +676,7 @@ jobs:
       - name: Generate reviewed volume-init runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: registry:cgr.dev/chainguard/busybox:latest@sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba
+          image: registry:cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db
           format: spdx-json
           output-file: artifacts/release-images/sbom-volume-init.spdx.json
           upload-artifact: false
@@ -682,7 +684,7 @@ jobs:
       - name: Scan reviewed PostgreSQL runtime
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: registry:cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
+          image: registry:cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -692,7 +694,7 @@ jobs:
       - name: Scan reviewed Redis runtime
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: registry:redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
+          image: registry:redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -702,7 +704,7 @@ jobs:
       - name: Scan reviewed volume-init runtime
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: registry:cgr.dev/chainguard/busybox:latest@sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba
+          image: registry:cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -737,9 +739,9 @@ jobs:
           worker_ref="custombuild-worker:${GITHUB_SHA}"
           web_ref="custombuild-web:${GITHUB_SHA}"
           seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
-          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9'
-          redis_ref='redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0'
-          volume_init_ref='cgr.dev/chainguard/busybox:latest@sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba'
+          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4'
+          redis_ref='redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c'
+          volume_init_ref='cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db'
           api_id="$(image_id "$api_ref")"
           worker_id="$(image_id "$worker_ref")"
           web_id="$(image_id "$web_ref")"

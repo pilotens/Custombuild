@@ -157,11 +157,11 @@ jobs:
       matrix:
         include:
           - component: postgres
-            image: cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
+            image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
           - component: redis
-            image: redis:7.2.16-alpine@sha256:29e8589c3f9ba699b5f7aa4b3c7733c58852a3626439e619aa0ee78de08c6ca0
+            image: redis:7.2.16-alpine@sha256:ee061d86c25773048211e99f00d63b47b9ecfe28560113e16cce2c962d5bec1c
           - component: volume-init
-            image: cgr.dev/chainguard/busybox:latest@sha256:b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba
+            image: cgr.dev/chainguard/busybox:latest@sha256:6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -229,13 +229,13 @@ jobs:
           grpc_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-grpc.version" }}')"
           image_id="$(docker image inspect "$image" --format '{{.Id}}')"
           test "$source_sha256" = "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
-          test "$security_overrides_sha256" = "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f"
-          test "$go_version" = "1.26.6"
+          test "$security_overrides_sha256" = "764834e3b01cb6a4c3affcc14e3560d4ca3ffc5fe1706e683116ebb40eb39f31"
+          test "$go_version" = "1.26.9"
           test "$apache_thrift_version" = "0.24.0"
           test "$etcd_client_pkg_version" = "3.7.1"
-          test "$x_crypto_version" = "0.56.0"
+          test "$x_crypto_version" = "0.58.0"
           test "$x_image_version" = "0.45.0"
-          test "$x_text_version" = "0.41.0"
+          test "$x_text_version" = "0.43.0"
           test "$grpc_version" = "v1.85.0-dev.0.20260825072537-93e31b48545e"
           jq -n \
             --arg schema_version "custombuild.seaweedfs-release.v2" \

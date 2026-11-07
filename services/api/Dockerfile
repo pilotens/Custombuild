@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM python:3.13.15-slim-trixie@sha256:7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4 AS builder
+FROM python:3.13.18-slim-trixie@sha256:09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc AS builder
 
 ARG DEBIAN_SNAPSHOT=20260825T000000Z
 ARG DEPENDENCY_LOCK_SHA256=unknown
@@ -13,13 +13,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN printf '%s\n' \
       'Types: deb' \
-      "URIs: http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
+      "URIs: https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" \
       'Suites: trixie trixie-updates' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
       '' \
       'Types: deb' \
-      "URIs: http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
+      "URIs: https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" \
       'Suites: trixie-security' \
       'Components: main' \
       'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
@@ -59,36 +59,47 @@ RUN python -m compileall -f -q packages cad cam postprocessors services/api scri
       /usr/local/bin/uv /usr/local/bin/uvx
 
 
-FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:6acf5a19a988abdaf0f3d30247561431a206034e702871442bed66a2c68cc1a2 AS runtime-base
+FROM cgr.dev/chainguard/glibc-dynamic:latest@sha256:aab5cd0b4cc5edd9c87b6e7aa9ddaa3fb6ffcec559b9e5473c55bbc937b65399 AS runtime-base
 
 
-FROM cgr.dev/chainguard/python:latest-dev@sha256:2d5551e22013aa1bb69c070398273171941c4a0d80414e7f786db8e6d966bb83 AS runtime-assembler
+FROM cgr.dev/chainguard/python:latest-dev@sha256:64f414bffa25ca9ff518f35975ad153a921b2e4850c4a84c31a96885fdb86a02 AS runtime-assembler
 
 USER root
 COPY --from=runtime-base / /base-chroot
 RUN apk add --no-cache --no-scripts --root /base-chroot \
-      py3-pip-wheel=26.2.1-r0 \
-      libbz2-1=1.0.8-r23 \
-      libcrypto3=3.6.4-r0 \
-      libexpat1=2.8.3-r0 \
-      libffi=3.8.0-r0 \
-      gdbm=1.26-r5 \
-      xz=5.8.3-r2 \
-      mpdecimal=4.0.1-r3 \
-      ncurses-terminfo-base=6.6.20260822-r0 \
-      ncurses=6.6.20260822-r0 \
-      readline=8.3-r2 \
-      sqlite-libs=3.53.4-r0 \
-      libssl3=3.6.4-r0 \
-      libuuid=2.42.2-r3 \
-      zlib=1.3.2.1_rc20260601-r0 \
-      python-3.13-base=3.13.15_git20260918-r2 \
-      python-3.13=3.13.15_git20260918-r2 \
+      ca-certificates-bundle=20261020-r0 \
+      gdbm=1.26-r9 \
+      glibc-2.44-locale-posix=2.44-r14 \
+      glibc-2.44=2.44-r14 \
+      ld-linux-2.44=2.44-r14 \
+      libbrotlicommon1=1.2.1-r3 \
+      libbrotlidec1=1.2.1-r3 \
+      libbrotlienc1=1.2.1-r3 \
+      libbz2-1=1.0.8-r30 \
+      libexpat1=2.10.0-r1 \
+      libffi=3.8.0-r2 \
+      libgcc=16.2.0-r2 \
+      libstdc++=16.2.0-r2 \
+      libuuid=2.42.4-r2 \
+      mpdecimal=4.0.1-r6 \
+      ncurses-terminfo-base=6.6.20261031-r0 \
+      ncurses=6.6.20261031-r0 \
+      openssl-4.0-libcrypto=4.0.3-r8 \
+      openssl-4.0-libssl=4.0.3-r8 \
+      openssl-provider-legacy-allowed=4.1.0-r0 \
+      py3-pip-wheel=26.2.2-r2 \
+      python-3.13-base=3.13.18_git20261030-r0 \
+      python-3.13=3.13.18_git20261030-r0 \
+      readline=8.3-r3 \
+      sqlite-libs=3.54.1-r0 \
+      wolfi-baselayout=20230201-r31 \
+      xz=5.8.4-r1 \
+      zlib=1.3.2.1_rc20260921-r2 \
     && ldconfig -r /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
-    && test "$(wc -l < /tmp/runtime-package-closure)" = "24" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "3ff9f734716757ab88abf71fd3c537a9aa9c0f807847d665657c60be3a3a1b6a"
+    && test "$(wc -l < /tmp/runtime-package-closure)" = "28" \
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "7c3ee343ab7b5ce429bf3e4261742aee04b8e80151a459ed76dd30cc25ea6dc2"
 
 COPY --from=builder /opt/custombuild-venv /base-chroot/opt/custombuild-venv
 COPY --from=builder /app/packages /base-chroot/app/packages
@@ -113,7 +124,7 @@ RUN rm -f \
     && PYTHONPATH=/app/packages/domain/src:/app/packages/rule-engine/src:/app/packages/manufacturing/src:/app/packages/template-sdk/src:/app/cad/src:/app/cam/src:/app/postprocessors/src:/app/services/api:/app/services/worker \
       PATH=/opt/custombuild-venv/bin:/usr/bin:/usr/sbin:/sbin:/bin \
       chroot /base-chroot /opt/custombuild-venv/bin/python -c \
-      "import importlib.util, pathlib, shutil, ssl, sys; assert sys.version_info[:3] == (3, 13, 15); import uvicorn; import app.main; assert ssl.create_default_context().get_ca_certs(); assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('uv') is None; assert shutil.which('pip') is None; assert shutil.which('uv') is None; assert shutil.which('FreeCAD') is None; assert not pathlib.Path('/usr/local').exists()" \
+      "import importlib.util, pathlib, shutil, ssl, sys; assert sys.version_info[:3] == (3, 13, 18); import uvicorn; import app.main; assert ssl.create_default_context().get_ca_certs(); assert importlib.util.find_spec('pip') is None; assert importlib.util.find_spec('uv') is None; assert shutil.which('pip') is None; assert shutil.which('uv') is None; assert shutil.which('FreeCAD') is None; assert not pathlib.Path('/usr/local').exists()" \
     && test ! -e /base-chroot/opt/custombuild-venv/bin/pip \
     && test ! -e /base-chroot/opt/custombuild-venv/bin/uv \
     && test ! -e /base-chroot/usr/bin/FreeCAD
@@ -149,7 +160,7 @@ LABEL org.opencontainers.image.title="Custombuild API" \
       org.opencontainers.image.source="${SOURCE_URL}" \
       io.custombuild.source-manifest.sha256="${SOURCE_MANIFEST_SHA256}" \
       io.custombuild.dependency-lock.sha256="${DEPENDENCY_LOCK_SHA256}" \
-      io.custombuild.python.version="3.13.15" \
+      io.custombuild.python.version="3.13.18" \
       org.opencontainers.image.source-integrity="6"
 
 WORKDIR /app

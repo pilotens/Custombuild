@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: cgr.dev/chainguard/postgres:latest@sha256:f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9
+        image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
         env:
           POSTGRES_DB: custombuild
           POSTGRES_USER: postgres
@@ -154,6 +154,8 @@ jobs:
       contents: read
     container:
       image: debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+      volumes:
+        - /etc/ssl/certs/ca-certificates.crt:/run/custombuild-runner-ca.crt:ro
     env:
       DEBIAN_FRONTEND: noninteractive
       GIT_CONFIG_COUNT: "1"
@@ -164,20 +166,20 @@ jobs:
         run: |
           printf '%s\n' \
             'Types: deb' \
-            'URIs: http://snapshot.debian.org/archive/debian/20260824T000000Z' \
+            'URIs: https://snapshot.debian.org/archive/debian/20260824T000000Z' \
             'Suites: trixie trixie-updates' \
             'Components: main' \
             'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
             '' \
             'Types: deb' \
-            'URIs: http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
+            'URIs: https://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
             'Suites: trixie-security' \
             'Components: main' \
             'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
             > /etc/apt/sources.list.d/debian.sources
           printf 'Acquire::Check-Valid-Until "false";\n' \
             > /etc/apt/apt.conf.d/99snapshot
-          printf '%s\n' 'Acquire::Retries "5";' \
+          printf '%s\n' 'Acquire::https::CaInfo "/run/custombuild-runner-ca.crt";' 'Acquire::Retries "5";' \
             'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             'APT::Update::Error-Mode "any";' > /etc/apt/apt.conf.d/80custombuild-downloads
           apt-get update
@@ -221,7 +223,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Generated API client drift
@@ -364,7 +366,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install live-browser matrix

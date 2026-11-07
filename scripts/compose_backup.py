@@ -34,11 +34,11 @@ except ModuleNotFoundError:  # Direct script execution.
 
 VOLUME_INIT_IMAGE = (
     "cgr.dev/chainguard/busybox:latest@sha256:"
-    "b2953ab1cae4a6265e18cf675851bd99975211b150d7a014774911d76eb309ba"
+    "6590218b01ae8feb8272f07c5ec59e5306eb4d586d4eab2ff9e72ed3bd5429db"
 )
 POSTGRES_IMAGE = (
     "cgr.dev/chainguard/postgres:latest@sha256:"
-    "f275a6af53e35eedcde7de7ce521a23ae093338bffe3ae1aa640152f9838e8d9"
+    "f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
 )
 SEAWEEDFS_IMAGE = "custombuild-seaweedfs:uncommitted"
 SEAWEEDFS_IMAGE_PATTERN = re.compile(

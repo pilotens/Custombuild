@@ -2069,7 +2069,7 @@ def test_vulnerability_exception_gate_rejects_expired_or_untracked_entries(tmp_p
     ("field", "mismatched"),
     [
         ("package", "python-other"),
-        ("version", "3.13.15"),
+        ("version", "3.13.18"),
         ("type", "library"),
     ],
 )

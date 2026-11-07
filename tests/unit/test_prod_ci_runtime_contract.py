@@ -32,12 +32,15 @@ def test_release_workflows_use_identical_sha_bound_linuxcnc_oracle() -> None:
         "GIT_CONFIG_KEY_0": "safe.directory",
         "GIT_CONFIG_VALUE_0": "${{ github.workspace }}",
     }
+    assert oracle["container"]["volumes"] == [
+        "/etc/ssl/certs/ca-certificates.crt:/run/custombuild-runner-ca.crt:ro"
+    ]
     assert len(oracle["steps"]) == 4
     install = oracle["steps"][0]["run"]
     snapshot = "20260824T000000Z"
     assert install.count(snapshot) == 2
-    assert f"snapshot.debian.org/archive/debian/{snapshot}" in install
-    assert f"snapshot.debian.org/archive/debian-security/{snapshot}" in install
+    assert f"https://snapshot.debian.org/archive/debian/{snapshot}" in install
+    assert f"https://snapshot.debian.org/archive/debian-security/{snapshot}" in install
     assert 'Acquire::Check-Valid-Until "false";' in install
     assert "linuxcnc-uspace=1:2.9.4-2+deb13u1" in install
     assert oracle["steps"][1]["with"] == {
@@ -117,11 +120,11 @@ def test_prod_ci_probes_the_exact_executed_native_runtimes() -> None:
 
     for required in (
         "exec -T web /usr/bin/node --version",
-        '"v24.19.0"',
+        '"v24.22.2"',
         "process.execPath !== '/usr/bin/node'",
         "exec -T api /opt/custombuild-venv/bin/python -",
         "exec -T worker /opt/custombuild-venv/bin/python -",
-        "assert sys.version_info[:3] == (3, 13, 15)",
+        "assert sys.version_info[:3] == (3, 13, 18)",
         'Path("/usr/bin/python3.13").resolve()',
         "import uvicorn",
         "from app.main import app",
@@ -154,7 +157,7 @@ def test_prod_ci_sboms_prove_native_interpreter_package_versions() -> None:
         "require_exact_package",
         "reject_package_prefix",
         "sbom-web.spdx.json",
-        "nodejs-24 24.19.0-r0",
+        "nodejs-24 24.22.2-r2",
         "nodejs-26",
         "sbom-${component}.spdx.json",
         "python-3.14",
@@ -183,31 +186,31 @@ def test_prod_ci_worker_sbom_proves_the_exact_native_cad_runtime() -> None:
     workflow = _workflow()
     worker = Path("services/worker/Dockerfile").read_text(encoding="utf-8")
     native_packages = (
-        "mesa-gl 26.2.1-r0",
-        "libx11 1.8.13-r5",
-        "libxau 1.0.12-r7",
-        "libxdmcp 1.1.5-r9",
-        "libbsd 0.12.2-r7",
-        "libmd 1.2.0-r2",
-        "libgomp 16.2.0-r1",
-        "libxcb 1.17.0-r15",
-        "libglvnd 1.7.0-r10",
+        "mesa-gl 26.2.6-r0",
+        "libx11 1.8.14-r3",
+        "libxau 1.0.12-r11",
+        "libxdmcp 1.1.5-r14",
+        "libbsd 0.12.2-r11",
+        "libmd 1.3.0-r2",
+        "libgomp 16.2.0-r2",
+        "libxcb 1.17.0-r19",
+        "libglvnd 1.7.0-r12",
         "libxml2 2.15.0-r0",
-        "libLLVM-22 22.1.8-r2",
-        "libpciaccess 0.19-r2",
+        "libLLVM-23 23.1.5-r0",
+        "libpciaccess 0.19-r4",
         "libdrm 2.4.134-r0",
-        "libzstd1 1.5.7-r8",
-        "libelf 0.195-r2",
-        "libxshmfence 1.3.3-r2",
-        "mesa-libgallium 26.2.1-r0",
-        "mesa-gbm 26.2.1-r0",
-        "libudev 261.2-r1",
-        "wayland-libs-client 1.26.0-r0",
-        "wayland-protocols 1.49-r0",
-        "mesa 26.2.1-r0",
-        "libxext 1.3.7-r0",
-        "libxxf86vm 1.1.7-r2",
-        "mesa-glx 26.2.1-r0",
+        "libzstd1 1.5.7-r13",
+        "libelf 0.197-r0",
+        "libxshmfence 1.3.3-r7",
+        "mesa-libgallium 26.2.6-r0",
+        "mesa-gbm 26.2.6-r0",
+        "libudev 262.2-r1",
+        "wayland-libs-client 1.26.0-r3",
+        "wayland-protocols 1.50-r0",
+        "mesa 26.2.6-r0",
+        "libxext 1.3.7-r4",
+        "libxxf86vm 1.1.7-r5",
+        "mesa-glx 26.2.6-r0",
     )
 
     assert '"$RELEASE_EVIDENCE_DIR/sbom-worker.spdx.json"' in workflow
