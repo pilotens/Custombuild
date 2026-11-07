@@ -98,6 +98,13 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
                 io.StringIO(z.read("inspection/first-article-checks.csv").decode("utf-8-sig"))
             )
         )
+        for check in ("finished_local_U", "finished_local_V", "actual_thickness"):
+            rows = [r for r in datum_rows if r["check"] == check]
+            assert len(rows) == len(named) and all(r["model_tolerance"] == "0.100" for r in rows)
+        outlines = [r for r in datum_rows if r["feature_id"].startswith("outline:")]
+        assert outlines and all(
+            r["model_tolerance"] == "0.100" for r in outlines if r["check"] != "pattern_count"
+        )
         assert sum(r["origin_semantics"] == "INSTALLED_WORLD_DATUM" for r in datum_rows) == 2 * len(
             fit_report["joints"]
         )

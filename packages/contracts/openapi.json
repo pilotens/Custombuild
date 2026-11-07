@@ -7849,6 +7849,12 @@
           "placement": {
             "$ref": "#/components/schemas/Placement"
           },
+          "profile_tolerance_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Profile Tolerance Um",
+            "type": "integer"
+          },
           "raw_size": {
             "$ref": "#/components/schemas/Dimensions3D"
           },
@@ -7864,6 +7870,12 @@
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
             "title": "Semantic Key",
             "type": "string"
+          },
+          "stock_tolerance_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Stock Tolerance Um",
+            "type": "integer"
           },
           "visible_faces": {
             "default": [],

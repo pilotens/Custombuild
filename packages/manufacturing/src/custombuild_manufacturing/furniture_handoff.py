@@ -180,9 +180,10 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
 
     sources = {p.part_id: p for p in result.parts}
     for part in adapt_design_result(result).parts:
-        row(part.part_id, "", "finished_local_U", part.width_um)
-        row(part.part_id, "", "finished_local_V", part.height_um)
-        row(part.part_id, "", "actual_thickness", part.thickness_um)
+        source = sources[part.part_id]
+        row(part.part_id, "", "finished_local_U", part.width_um, source.profile_tolerance_um)
+        row(part.part_id, "", "finished_local_V", part.height_um, source.profile_tolerance_um)
+        row(part.part_id, "", "actual_thickness", part.thickness_um, source.stock_tolerance_um)
         for view in drawing_faces(sources[part.part_id], part):
             for feature in view.part.features:
                 if feature.side != view.side:

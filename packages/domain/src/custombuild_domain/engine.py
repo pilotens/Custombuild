@@ -17,7 +17,9 @@ from .enums import (
 from .geometry import allocate_bay_widths_um, allocate_shelf_positions_um
 from .identity import content_hash, stable_id
 from .models import (
+    TRIAL_EDGE_TOLERANCE_UM,
     TRIAL_GROOVE_BOTTOM_CLEARANCE_UM,
+    TRIAL_STOCK_TOLERANCE_UM,
     AssemblyEdge,
     AssemblyGraph,
     AssemblyNode,
@@ -197,6 +199,8 @@ class BookcaseEngine:
                     material_id=part_material.material_id,
                     material_version=part_material.version,
                     actual_thickness_um=t if role != PartRole.BACK else p.back_thickness_um,
+                    profile_tolerance_um=TRIAL_EDGE_TOLERANCE_UM if p.trial_angle else 0,
+                    stock_tolerance_um=TRIAL_STOCK_TOLERANCE_UM if p.trial_angle else 0,
                     grain_direction=effective_grain,
                     a_side=a_side,
                     b_side=b_side,

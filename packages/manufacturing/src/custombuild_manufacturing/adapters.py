@@ -202,6 +202,7 @@ def adapt_domain_part(part: Any) -> PartSpec:
         depth_um=thickness_um,
         width_um=width_um,
         length_um=height_um,
+        tolerance_um=int(getattr(part, "profile_tolerance_um", 0)),
         through=True,
         metadata={
             "derived": True,

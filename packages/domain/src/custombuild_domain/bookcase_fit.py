@@ -8,7 +8,6 @@ from .models import (
     TRIAL_EDGE_TOLERANCE_UM,
     TRIAL_FACE_TOLERANCE_UM,
     TRIAL_GROOVE_BOTTOM_CLEARANCE_UM,
-    TRIAL_STOCK_TOLERANCE_UM,
     Joint,
     ManufacturingFeature,
     PartInstance,
@@ -81,7 +80,7 @@ def _remaining_web(p: PartInstance) -> dict[str, int]:
         )
         web = (
             p.actual_thickness_um
-            - TRIAL_STOCK_TOLERANCE_UM
+            - p.stock_tolerance_um
             - (f.dimensions.depth_um or 0)
             - f.tolerance_um
             - other
@@ -99,6 +98,8 @@ def trial_groove_fits(
     parts: tuple[PartInstance, ...], joints: tuple[Joint, ...]
 ) -> tuple[GrooveFit, ...]:
     by_id = {p.part_id: p for p in parts}
+    if any(p.profile_tolerance_um <= 0 or p.stock_tolerance_um <= 0 for p in parts):
+        raise ValueError("Provdelarna kräver angiven kontur- och tjocklekstolerans.")
     bores = {f.feature_id: f for p in parts for f in p.features}
     webs = {fid: web for p in parts for fid, web in _remaining_web(p).items()}
     fits: list[GrooveFit] = []
@@ -131,7 +132,7 @@ def trial_groove_fits(
         spans = {u_axis: f.dimensions.width_um, v_axis: f.dimensions.length_um}
         slot_width = spans.get(normal_to_mate) or 0
         transverse_gap = slot_width - mate.actual_thickness_um
-        width_clearance = transverse_gap - f.tolerance_um - TRIAL_STOCK_TOLERANCE_UM
+        width_clearance = transverse_gap - f.tolerance_um - mate.stock_tolerance_um
         from_low = face in {FaceName.LEFT, FaceName.FRONT, FaceName.BOTTOM}
         entry = lo if from_low else lo + getattr(host.finished_size, dim)
         end = start + getattr(mate.finished_size, dim) if from_low else start

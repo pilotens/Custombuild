@@ -3907,12 +3907,22 @@ export interface components {
             /** Part Id */
             part_id: string;
             placement: components["schemas"]["Placement"];
+            /**
+             * Profile Tolerance Um
+             * @default 0
+             */
+            profile_tolerance_um: number;
             raw_size: components["schemas"]["Dimensions3D"];
             /** Revision */
             revision: number;
             role: components["schemas"]["PartRole"];
             /** Semantic Key */
             semantic_key: string;
+            /**
+             * Stock Tolerance Um
+             * @default 0
+             */
+            stock_tolerance_um: number;
             /**
              * Visible Faces
              * @default []

@@ -638,6 +638,8 @@ class PartInstance(FrozenModel):
     visible_faces: tuple[FaceName, ...] = ()
     edge_bands: tuple[EdgeBand, ...] = ()
     features: tuple[ManufacturingFeature, ...] = ()
+    profile_tolerance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
+    stock_tolerance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
     circular_outline: bool = Field(default=False, exclude_if=lambda v: not v)
     weight_g: PositiveInt
 
