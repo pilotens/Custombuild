@@ -210,3 +210,31 @@ def test_negative_trial_fit_budget_cannot_be_serialized_as_valid(fault):
         groove["dimensions"]["length_um"] += 100
     with pytest.raises(ValueError, match="spårbottenmån"):
         DesignResult.model_validate(doc)
+
+
+@pytest.mark.cad
+def test_continuous_assembly_stroke_includes_room_and_rejects_wrong_direction():
+    pytest.importorskip("cadquery")
+    from custombuild_cad import CadQueryAdapter
+    from custombuild_cad.bookcase_motion import verify_assembly_space
+    from custombuild_domain.enums import AssemblyDirection
+
+    result = build_furniture(trial(divider_count=1, shelf_count=1).design)
+    design = result.shelving_result
+    assert design is not None
+    step_bytes = CadQueryAdapter().export_design(result).step
+    space = verify_assembly_space(design, step_bytes)
+    # Both outer sides slide 6 mm beyond the standing 900 mm carcass.
+    # Back 1176 mm high enters from above a divider ending at Z=1188 mm.
+    assert space.world_min_um == (-6000, 0, 0)
+    assert space.world_max_um == (906000, 280000, 2364000)
+    assert any(t.travel_um == 1176000 for t in space.steps)
+    # Final CAD is unchanged. Reversing a shelf's insertion drives it
+    # through the divider's solid cheek before reaching its final position.
+    first, *rest = design.assembly_graph.steps
+    assert first.direction == AssemblyDirection.POS_X
+    reverse = AssemblyDirection.NEG_X
+    first = first.model_copy(update={"direction": reverse, "motion_path": (reverse,)})
+    graph = design.assembly_graph.model_copy(update={"steps": (first, *rest)})
+    with pytest.raises(ValueError, match="fri införingsväg"):
+        verify_assembly_space(design.model_copy(update={"assembly_graph": graph}), step_bytes)

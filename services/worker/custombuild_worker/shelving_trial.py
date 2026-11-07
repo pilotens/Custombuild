@@ -5,12 +5,15 @@ from __future__ import annotations
 from math import isqrt
 from typing import Any
 
+from custombuild_cad.bookcase_motion import AssemblySpace
 from custombuild_domain.bookcase_angles import ANGLE_SOURCE, SCREW_SOURCE
 from custombuild_domain.enums import JointType, MaterialType
 from custombuild_domain.furniture_engine import FurnitureResult
 
 
-def shelving_trial_protocol(result: FurnitureResult, preview: dict[str, Any]) -> bytes:
+def shelving_trial_protocol(
+    result: FurnitureResult, preview: dict[str, Any], space: AssemblySpace | None = None
+) -> bytes:
     design = result.shelving_result
     assert design is not None
     handoff = preview["workshop_handoff"]
@@ -36,6 +39,13 @@ def shelving_trial_protocol(result: FurnitureResult, preview: dict[str, Any]) ->
         "takhöjd, beräknat på höjd–djup-diagonalen. Kontrollera arbetsutrymme för "
         "gavlar och topp vid stående montering. Rummets verkliga takhöjd är inte uppmätt här."
     )
+    if space:
+        lines.extend(
+            [
+                space.description(),
+                "Mät det tillgängliga utrymmet mot assembly/required-space.json före provmontage.",
+            ]
+        )
     if result.spec.installation and result.spec.installation.trim_profile:
         trim = result.spec.installation.trim_profile
         lines.append(
@@ -55,7 +65,7 @@ def shelving_trial_protocol(result: FurnitureResult, preview: dict[str, Any]) ->
         # The projection is per percentage point, not an invented site moisture range.
         movement_mm = p.depth_um / 1000 * 0.00274
         lines.append(
-            f"Stommens nominella djup {p.depth_um/1000:g} mm tvärs fibrerna: "
+            f"Stommens nominella djup {p.depth_um / 1000:g} mm tvärs fibrerna: "
             f"{movement_mm:.3f} mm fri tangentiell rörelse per procentenhet ändrad "
             "träfuktkvot (artmedel, giltigt inom 6–14 %). Detta är fri rörelse; "
             "differensen mellan spår, fast punkt och rygg måste kontrolleras separat."

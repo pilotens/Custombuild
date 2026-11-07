@@ -33,6 +33,14 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
             == intent["document_identity"]["design_hash"]
             == manifest["design_hash"]
         )
+        space = json.loads(z.read("assembly/required-space.json"))
+        assert space["design_hash"] == manifest["design_hash"]
+        assert space["revision"] == manifest["revision"]
+        assert [s["step_number"] for s in space["steps"]] == [
+            s["step_number"] for s in graph["graph"]["steps"]
+        ]
+        assert space["world_min_um"][0] == -6000 and space["world_max_um"][0] == 906000
+        assert b"assembly/required-space.json" in z.read("inspection/provprotokoll.txt")
         assert not manifest["physical_cutting_authorized"] and not manifest["production_qualified"]
         named = {p["semantic_key"]: p for p in model["parts"]}
         left, bottom = named["left-side"], named["bottom"]

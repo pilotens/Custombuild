@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from custombuild_cad.bookcase_motion import AssemblySpace
 from custombuild_manufacturing import (
     canonical_json_bytes,
     dado_retention_evidence_missing,
@@ -529,6 +530,7 @@ def assembly_manual_pdf(
     retention_trust: VerifiedRetentionTrust | None = None,
     *,
     package_design_hash: str | None = None,
+    assembly_space: AssemblySpace | None = None,
 ) -> bytes:
     buffer, canvas = _canvas()
     identity = f"Designhash {design.design_hash}"
@@ -537,6 +539,7 @@ def assembly_manual_pdf(
     steps = design.assembly_graph.steps
     part_by_id = {part.part_id: part for part in design.parts}
     manual_plan = _assembly_manual_plan(design)
+    travel = {s.step_number: s.travel_um for s in assembly_space.steps} if assembly_space else {}
     y = _header(
         canvas,
         "START HÄR – monteringsgranskning",
@@ -593,6 +596,8 @@ def assembly_manual_pdf(
             f"maxmått {heaviest.max_dimension_um / 1000:g} mm",
         )
         y -= 12
+    if assembly_space:
+        y = _draw_wrapped_text(canvas, assembly_space.description(), MARGIN, y, max_chars=105) - 6
     unresolved = (
         ", ".join(manual_plan.unresolved_tool_ids)
         if manual_plan.unresolved_tool_ids
@@ -643,7 +648,8 @@ def assembly_manual_pdf(
                 y,
                 "Monteringsbana: "
                 + " -> ".join(segment.value for segment in step.motion_path)
-                + " (högerhänt X/Y/Z-system)",
+                + " (högerhänt X/Y/Z-system)"
+                + (f" · Slaglängd {travel[step.step_number] / 1000:g} mm" if travel else ""),
             )
             y -= 18
             canvas.setFont("Helvetica", 8)

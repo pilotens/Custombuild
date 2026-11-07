@@ -10,6 +10,7 @@ from dataclasses import asdict
 from typing import Any
 
 from custombuild_cad import CadQueryAdapter
+from custombuild_cad.bookcase_motion import verify_assembly_space
 from custombuild_domain.bookcase_angles import screw_access
 from custombuild_domain.bookcase_fit import trial_groove_fits
 from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
@@ -77,10 +78,21 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
     files.update(assembly_documents(result))
     shelving = result.shelving_result
     if shelving is not None:
-        files["inspection/provprotokoll.txt"] = shelving_trial_protocol(result, preview)
+        space = verify_assembly_space(shelving, cad.step) if shelving.trial_angles else None
+        if space:
+            files["assembly/required-space.json"] = _json(
+                {
+                    "design_hash": result.design_hash,
+                    "revision": workspace.design.revision,
+                    "units": "integer_micrometres",
+                    "scope": "Rigid timber, straight translations, no fixtures or human clearance.",
+                    **asdict(space),
+                }
+            )
+        files["inspection/provprotokoll.txt"] = shelving_trial_protocol(result, preview, space)
         files["documents/assembly-overview.pdf"] = files["documents/assembly.pdf"]
         files["documents/assembly.pdf"] = assembly_manual_pdf(
-            shelving, package_design_hash=result.design_hash
+            shelving, package_design_hash=result.design_hash, assembly_space=space
         )
         files["assembly/graph.json"] = _json(
             {
