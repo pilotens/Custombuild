@@ -311,6 +311,11 @@ def adapt_domain_feature(
         fit_clearance_um=int(getattr(feature, "fit_clearance_um", 0)),
         metadata={
             "domain_face": face,
+            **(
+                {"groove_bottom_clearance_um": feature.groove_bottom_clearance_um}
+                if getattr(feature, "groove_bottom_clearance_um", 0)
+                else {}
+            ),
             "joint_id": getattr(feature, "joint_id", None),
             "requires_square_corners": bool(getattr(feature, "requires_square_corners", False)),
         },

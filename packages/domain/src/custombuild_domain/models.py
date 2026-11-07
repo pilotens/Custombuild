@@ -567,6 +567,14 @@ class FeatureDimensions(FrozenModel):
         return self
 
 
+# Trial assembly targets, all in micrometres. The edge and the supporting face
+# are independently gauged from their installed datums, not from a joint total.
+TRIAL_EDGE_TOLERANCE_UM = 100
+TRIAL_FACE_TOLERANCE_UM = 100
+TRIAL_STOCK_TOLERANCE_UM = 100
+TRIAL_GROOVE_BOTTOM_CLEARANCE_UM = 300
+
+
 class ManufacturingFeature(FrozenModel):
     feature_id: str = Field(min_length=8, max_length=64)
     part_id: str = Field(min_length=8, max_length=64)
@@ -581,11 +589,17 @@ class ManufacturingFeature(FrozenModel):
     tolerance_um: NonNegativeUm = mm("0.15")
     fit_clearance_um: NonNegativeUm = 0
     corner_strategy: StableKey | None = None
+    groove_bottom_clearance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
     requires_square_corners: bool = False
     open_end_reliefs: tuple[OpenEndRelief, ...] = ()
 
     @model_validator(mode="after")
     def validate_pattern(self) -> ManufacturingFeature:
+        if self.groove_bottom_clearance_um and (
+            self.kind != FeatureKind.GROOVE
+            or (self.dimensions.depth_um or 0) <= self.groove_bottom_clearance_um
+        ):
+            raise ValueError("A groove bottom allowance requires positive retained engagement.")
         if self.pattern_count > 1 and self.pitch_um is None:
             raise ValueError("a feature pattern with multiple items needs a pitch")
         if len(set(self.open_end_reliefs)) != len(self.open_end_reliefs):
@@ -1033,11 +1047,16 @@ class DesignResult(FrozenModel):
     def validate_result_integrity(self) -> DesignResult:
         part_by_id = {part.part_id: part for part in self.parts}
         from .bookcase_angles import check_trial_angles
+        from .bookcase_fit import trial_groove_fits
 
         validate_part_connections(self.parts, self.joints, self.assembly_graph)
         check_trial_angles(
             self.spec.parameters.trial_angle, self.parts, self.joints, self.trial_angles
         )
+        if self.spec.parameters.trial_angle:
+            trial_groove_fits(self.parts, self.joints)
+        elif any(f.groove_bottom_clearance_um for p in self.parts for f in p.features):
+            raise ValueError("Extra spårbottenmån kräver vinkelprovets toleransmodell.")
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
                 if (

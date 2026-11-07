@@ -6,10 +6,12 @@ import hashlib
 import io
 import json
 import zipfile
+from dataclasses import asdict
 from typing import Any
 
 from custombuild_cad import CadQueryAdapter
 from custombuild_domain.bookcase_angles import screw_access
+from custombuild_domain.bookcase_fit import trial_groove_fits
 from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
@@ -99,6 +101,15 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
 
             files["design/with-mounted-angles.step"] = mounted_trial_angles(
                 cad.step, shelving.trial_angles
+            )
+            files["inspection/groove-fits.json"] = _json(
+                {
+                    "design_hash": result.design_hash,
+                    "revision": workspace.design.revision,
+                    "unit": "integer_micrometres",
+                    "qualification": "trial_targets_only",
+                    "joints": [asdict(f) for f in trial_groove_fits(result.parts, result.joints)],
+                }
             )
             files["assembly/trial-angles.json"] = _json(
                 {

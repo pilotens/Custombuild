@@ -3296,6 +3296,11 @@ export interface components {
              * @default 0
              */
             fit_clearance_um: number;
+            /**
+             * Groove Bottom Clearance Um
+             * @default 0
+             */
+            groove_bottom_clearance_um: number;
             /** Joint Id */
             joint_id?: string | null;
             kind: components["schemas"]["FeatureKind"];

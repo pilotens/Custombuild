@@ -18,7 +18,11 @@ from custombuild_domain import (
     build_bookcase,
     stable_id,
 )
-from custombuild_domain.models import TRIAL_ANGLE_SET_MASS_G
+from custombuild_domain.models import (
+    TRIAL_ANGLE_SET_MASS_G,
+    TRIAL_EDGE_TOLERANCE_UM,
+    TRIAL_FACE_TOLERANCE_UM,
+)
 
 from .models import (
     ActionType,
@@ -647,8 +651,13 @@ class RuleEngine:
             assumptions=(
                 "Radlasten fördelas efter fackbredd och ger halva "
                 "facklasten inklusive hyllans egenvikt som reaktion i vardera stödfogen.",
-                "Bärande area härleds från den kanoniska fogens verkliga spårdjup gånger "
-                "hyllans överlappande djup; nominell materialtjocklek används inte som instick.",
+                (
+                    "Bärande area använder minsta instick efter spårbottenmån och provets "
+                    "kant- och datumtoleranser."
+                    if p.trial_angle
+                    else "Bärande area härleds från den kanoniska fogens verkliga spårdjup gånger "
+                    "hyllans överlappande djup; nominell materialtjocklek används inte som instick."
+                ),
                 "Versionspostens skjuvhållfasthet används konservativt som screening för "
                 "lokal bärning/skjuvning och reduceras för osäkerhet, krypning och "
                 "strukturell säkerhetsfaktor.",
@@ -745,7 +754,9 @@ class RuleEngine:
             )
             if not in_plane_lengths:
                 continue
-            engagement_um = feature.dimensions.depth_um
+            engagement_um = feature.dimensions.depth_um - feature.groove_bottom_clearance_um
+            if feature.groove_bottom_clearance_um:
+                engagement_um -= TRIAL_EDGE_TOLERANCE_UM + TRIAL_FACE_TOLERANCE_UM
             bearing_length_um = min(
                 shelf.finished_size.depth_um,
                 max(in_plane_lengths),

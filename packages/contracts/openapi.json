@@ -6169,6 +6169,12 @@
             "title": "Fit Clearance Um",
             "type": "integer"
           },
+          "groove_bottom_clearance_um": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Groove Bottom Clearance Um",
+            "type": "integer"
+          },
           "joint_id": {
             "anyOf": [
               {

@@ -107,6 +107,17 @@ def shelving_trial_protocol(result: FurnitureResult, preview: dict[str, Any]) ->
             [
                 f"Vald låsning för prov: {len(design.trial_angles)} GN 970-ALM-30-30-30-B "
                 f"och {2 * len(design.trial_angles)} DIN 96 A4 5×16 mm.",
+                "Spårprov: jämför varje fog med inspection/groove-fits.json. "
+                "Mät skuren spårbotten mot ingångsytan (±0,05 mm); mät motdelens ände och "
+                "ingångsytans läge från monteringsdatum (vardera ±0,10 mm). Målen ger "
+                "0,30 mm nominell bottenmån och minst 0,05 mm vid kombinerade avvikelser. "
+                "Det gäller delarna på sina monteringsdatum. Den lösa plywoodryggen kan sedan "
+                "ligga mot en spårbotten. För den åt båda håll och kontrollera minsta kvarvarande "
+                "instick i motsatt spår enligt minimum_floating_capture_um. "
+                "Upprepa vid avtalad bruksfukt. "
+                "Uppmätt lokal tjocklek ska ligga inom ±0,10 mm av modellens tjocklek. "
+                "Nominellt 0,50 mm totalt breddspel lämnar minst 0,35 mm under dessa provmål. "
+                "Styrk verklig processduglighet innan ett intervall godkänns.",
                 "Vinkel 30×30×30 mm, 4 mm gods, Ø6,2 mm frigångshål, centrum 18 mm från böjen. "
                 "Skruvhuvud Ø10 mm. Ø3,5 × 12,5 mm pilothål är konstruktörens provmått. "
                 "De ska verifieras mot skruvens kärna, art, faktisk batch och fuktkvot.",

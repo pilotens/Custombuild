@@ -17,6 +17,7 @@ from .enums import (
 from .geometry import allocate_bay_widths_um, allocate_shelf_positions_um
 from .identity import content_hash, stable_id
 from .models import (
+    TRIAL_GROOVE_BOTTOM_CLEARANCE_UM,
     AssemblyEdge,
     AssemblyGraph,
     AssemblyNode,
@@ -610,6 +611,11 @@ class BookcaseEngine:
                 mating,
                 first_feature_dimensions,
                 dado_depth_um,
+                bottom_clearance_um=(
+                    TRIAL_GROOVE_BOTTOM_CLEARANCE_UM
+                    if p.trial_angle and kind == JointType.DADO
+                    else 0
+                ),
             )
             feature_map[first.part_id].append(first_feature)
             if second_feature is not None:
@@ -1063,6 +1069,8 @@ class BookcaseEngine:
         mating: Point3D,
         first_dimensions_override: FeatureDimensions | None = None,
         dado_depth_override_um: int | None = None,
+        *,
+        bottom_clearance_um: int = 0,
     ) -> tuple[ManufacturingFeature, ManufacturingFeature | None]:
         depth = max(mm(1), min(mm(12), thickness_um // 3))
         if dado_depth_override_um is not None:
@@ -1088,6 +1096,7 @@ class BookcaseEngine:
                 owner_face=first_face,
                 depth_um=depth,
                 fit_clearance_um=DADO_FIT_CLEARANCE_UM,
+                bottom_clearance_um=bottom_clearance_um,
             )
             if kind == JointType.DADO
             else None
@@ -1168,6 +1177,7 @@ class BookcaseEngine:
                 corner_strategy="dogbone-v2" if kind == JointType.DADO else None,
                 requires_square_corners=kind == JointType.DADO,
                 open_end_reliefs=first_open_end_reliefs,
+                groove_bottom_clearance_um=bottom_clearance_um,
             ),
             ManufacturingFeature(
                 feature_id=second_id,
@@ -1258,6 +1268,7 @@ class BookcaseEngine:
         owner_face: FaceName,
         depth_um: int,
         fit_clearance_um: int,
+        bottom_clearance_um: int = 0,
     ) -> tuple[FeatureDimensions, Point3D]:
         """Derive a groove from the actual global intersection of both members."""
 
@@ -1332,7 +1343,7 @@ class BookcaseEngine:
         return (
             FeatureDimensions(
                 width_um=global_lengths[panel_axes[0]],
-                depth_um=depth_um,
+                depth_um=depth_um + bottom_clearance_um,
                 length_um=global_lengths[panel_axes[1]],
                 radius_um=DADO_CORNER_RELIEF_RADIUS_UM,
             ),
@@ -1484,8 +1495,9 @@ class BookcaseEngine:
                 owner=by_id[cut_member.part_id],
                 mate=by_id[mate_member.part_id],
                 owner_face=feature.face,
-                depth_um=feature.dimensions.depth_um,
+                depth_um=feature.dimensions.depth_um - feature.groove_bottom_clearance_um,
                 fit_clearance_um=joint.tolerance_um,
+                bottom_clearance_um=feature.groove_bottom_clearance_um,
             )
             if feature.dimensions != expected_dimensions or feature.origin != expected_origin:
                 raise ValueError(f"dado feature geometry diverges for joint {joint.joint_id}")

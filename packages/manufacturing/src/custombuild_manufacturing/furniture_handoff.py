@@ -7,9 +7,11 @@ import io
 from collections import defaultdict
 from typing import Any
 
+from custombuild_domain.bookcase_fit import trial_groove_fits
 from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
+from custombuild_domain.models import TRIAL_EDGE_TOLERANCE_UM, TRIAL_FACE_TOLERANCE_UM
 
 from .adapters import adapt_design_result
 from .furniture_faces import drawing_faces
@@ -228,4 +230,30 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
                             side=view.name,
                             origin_semantics=semantics,
                         )
+    if result.trial_angles:
+        for fit in trial_groove_fits(result.parts, result.joints):
+            axis = fit.normal_axis.upper()
+            row(
+                fit.host_id,
+                fit.groove_id,
+                f"entry_face_{axis}",
+                fit.entry_face_world_um,
+                TRIAL_FACE_TOLERANCE_UM,
+                origin_semantics="INSTALLED_WORLD_DATUM",
+            )
+            row(
+                fit.inserted_part_id,
+                "",
+                f"inserted_edge_{axis}_{fit.joint_id}",
+                fit.inserted_end_world_um,
+                TRIAL_EDGE_TOLERANCE_UM,
+                origin_semantics="INSTALLED_WORLD_DATUM",
+            )
+            row(
+                fit.host_id,
+                fit.groove_id,
+                "assembled_bottom_gap_minimum",
+                fit.minimum_bottom_gap_um,
+                origin_semantics="LOWER_ACCEPTANCE_LIMIT",
+            )
     return output.getvalue().encode("utf-8-sig")

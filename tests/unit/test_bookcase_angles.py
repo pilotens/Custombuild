@@ -156,3 +156,57 @@ def test_trial_hardware_loads_are_counted_without_granting_a_rating():
         "required_joint_shear_n": own_n + 600,
     }
     assert not preview["production_qualified"]
+
+
+def test_fit_budget_uses_actual_intersection_and_does_not_credit_empty_groove_as_bearing():
+    from custombuild_domain.bookcase_fit import trial_groove_fits
+    from custombuild_rules.engine import RuleEngine
+
+    design = build_furniture(trial(divider_count=1, shelf_count=1).design)
+    shelved = design.shelving_result
+    assert shelved
+    fits = trial_groove_fits(design.parts, design.joints)
+    assert len(fits) == len(design.joints)
+    assert all(f.nominal_bottom_gap_um == 300 and f.minimum_bottom_gap_um == 50 for f in fits)
+    assert all(f.minimum_total_width_clearance_um == 350 for f in fits)
+    assert min(f.minimum_remaining_web_um for f in fits) > 0
+    capture = [f.minimum_floating_capture_um for f in fits if f.minimum_floating_capture_um]
+    assert len(capture) == 8
+    assert set(capture) == {5200, 5250}
+    # A 6 mm load-bearing tongue still enters a now 6.30 mm slot by only 6 mm.
+    # The two 0.10 mm datum errors can reduce the true bearing overlap to 5.80 mm.
+    report = RuleEngine().evaluate(shelved)
+    bearing = next(rule for rule in report.evaluations if rule.rule_id == "CB-JOINT-001")
+    assert next(v.value for v in bearing.inputs if v.name == "dado_engagement") == 5800
+    assert {f.cut_depth_um for f in fits} == {6250, 6300}
+
+
+@pytest.mark.parametrize("fault", ["short-cut", "oversize-slot", "opposing-pilots"])
+def test_negative_trial_fit_budget_cannot_be_serialized_as_valid(fault):
+    s = build_furniture(trial(divider_count=1, shelf_count=1).design).shelving_result
+    assert s
+    doc = s.model_dump(mode="json")
+    divider = next(p for p in doc["parts"] if p["role"] == "divider")
+    if fault == "opposing-pilots":
+        pilots = [f for f in divider["features"] if f["kind"] == "drill"]
+        a = next(f for f in pilots if f["face"] == "left")
+        b = next(f for f in pilots if f["face"] == "right")
+        b["origin"].update(y_um=a["origin"]["y_um"], z_um=a["origin"]["z_um"])
+        # Invoke the groove/web check independently of the fitting-hole ownership check.
+        from custombuild_domain.bookcase_fit import trial_groove_fits
+        from custombuild_domain.models import Joint, PartInstance
+
+        with pytest.raises(ValueError, match="bryta igenom"):
+            trial_groove_fits(
+                tuple(PartInstance.model_validate(p) for p in doc["parts"]),
+                tuple(Joint.model_validate(j) for j in doc["joints"]),
+            )
+        return
+    groove = next(f for f in divider["features"] if f["kind"] == "groove")
+    if fault == "short-cut":
+        groove["dimensions"]["depth_um"] -= 300
+    else:
+        groove["dimensions"]["width_um"] += 100
+        groove["dimensions"]["length_um"] += 100
+    with pytest.raises(ValueError, match="spårbottenmån"):
+        DesignResult.model_validate(doc)

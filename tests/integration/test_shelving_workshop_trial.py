@@ -76,5 +76,30 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
         steel = assembly.objects["angle-" + angle["joint_id"]].toCompound().Solids()[0]
         assert not steel.isInside((20, 20, 36)) and steel.isInside((20, 25, 36))
         assert not steel.isInside((36, 20, 20)) and steel.isInside((36, 25, 20))
+        # The left cheek occupies X=0..18. The back edge is captured at X=12.
+        # On the trial profile the real STEP must be empty at X=11.8 and contain
+        # wood at X=11.5: the extra depth belongs to the groove, not the back.
+        back = next(p for p in model["parts"] if p["role"] == "back")
+        ply = assembly.objects["timber/" + back["part_id"]].toCompound().Solids()[0]
+        bb = ply.BoundingBox()
+        y = (bb.ymin + bb.ymax) / 2
+        assert bb.xmin == pytest.approx(12, abs=0.001)
+        assert ply.isInside((12.2, y, 600)) and not ls.isInside((12.2, y, 600))
+        assert not ply.isInside((11.8, y, 600)) and not ls.isInside((11.8, y, 600))
+        assert ls.isInside((11.5, y, 600))
+        fit_report = json.loads(z.read("inspection/groove-fits.json"))
+        assert (
+            fit_report["revision"] == manifest["revision"]
+            and fit_report["design_hash"] == model["design_hash"]
+        )
+        assert all(f["minimum_bottom_gap_um"] == 50 for f in fit_report["joints"])
+        datum_rows = list(
+            csv.DictReader(
+                io.StringIO(z.read("inspection/first-article-checks.csv").decode("utf-8-sig"))
+            )
+        )
+        assert sum(r["origin_semantics"] == "INSTALLED_WORLD_DATUM" for r in datum_rows) == 2 * len(
+            fit_report["joints"]
+        )
         # Only the occupied quadrant is available for installation from inside the bay.
         assert not steel.isInside((15, 20, 36)) and not steel.isInside((36, 20, 15))
