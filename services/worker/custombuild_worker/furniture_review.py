@@ -198,7 +198,9 @@ def build_furniture_review(
             "speldimension och tolerans. Maskinval krävs inte för detta underlag.\n"
         ).encode()
     if identity:
-        files["inspection/geometry-readback.json"] = _json(verify_bookcase_delivery(result, files))
+        report, joint_sheet = verify_bookcase_delivery(result, files)
+        files["inspection/geometry-readback.json"] = _json(report)
+        files["inspection/fogprov.csv"] = joint_sheet
     if workshop_profile:
         if not identity:
             raise ValueError("Verkstadsritningar kräver fullständig geometrikontroll av bokhyllan.")

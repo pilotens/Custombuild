@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
+from custombuild_domain.bookcase_site import WALL_NAMES, review_standing_site
 from custombuild_domain.furniture import (
     FURNITURE_ENGINE_VERSION,
     FurnitureWorkspace,
@@ -25,7 +26,7 @@ from custombuild_rules.furniture import FURNITURE_RULES_VERSION, evaluate_furnit
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 REGISTRY = Path(__file__).with_name("bookcase_qualifications")
-READBACK_SCHEMA = "custombuild.fixed-bookcase-readback.v1"
+READBACK_SCHEMA = "custombuild.fixed-bookcase-readback.v2"
 Category = Literal["materials", "connection", "service_load", "stability", "installation"]
 REQUIRED_REPORTS = {"materials", "connection", "service_load", "stability", "installation"}
 
@@ -110,6 +111,15 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
     site = spec.installation
     if not site or not site.measured_ceiling_height_um or not site.measured_front_space_um:
         raise ValueError("Ange uppmätt takhöjd och fritt utrymme framför möbeln.")
+    assert design.shelving_result is not None
+    survey = review_standing_site(design.shelving_result, site)
+    missing = [WALL_NAMES[wall.wall] for wall in survey.walls if wall.measured_distance_um is None]
+    if missing:
+        raise ValueError(
+            "Mät avståndet från färdig stomme till väggytan bakom eventuell list vid "
+            + ", ".join(missing)
+            + ". Ange platsmätningen separat från reservationen."
+        )
     if not site.qualified_site_ref:
         raise ValueError("Ange plats-ID för provad vägginfästning, golv, fixturer och bruksmiljö.")
     if not spec.material.batch_id or not spec.back_material.batch_id:

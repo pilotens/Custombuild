@@ -85,7 +85,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Vänster · reserverat (mm)")).toHaveValue("20");
     await expect(page.getByRole("button", { name: "Förbered tillverkning" })).toBeDisabled();
     await page.getByText("Råformat att stämma av med verkstaden", { exact: true }).click();
-    await expect(page.getByRole("table")).toHaveCount(2);
+    await expect(page.getByRole("table", {name: "Reserverade och uppmätta väggavstånd"})).toContainText("Ej uppmätt");
+    await expect(page.getByRole("table")).toHaveCount(3);
     await page.getByRole("button", { name: "Skapa granskningspaket" }).click();
     const link = page.getByRole("link", { name: /Hämta STEP, GLB, DXF/ });
     await expect(link).toBeVisible({ timeout: 360_000 });
@@ -112,6 +113,9 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " assert readback['design_hash']==manifest['design_hash'] and readback['revision']==1",
       " assert [readback[k] for k in ('timber_solids','pilot_holes','dxf_faces','grooves','stopped_grooves','assembly_steps')]==[57,196,114,122,94,56]",
       " assert len(graph['graph']['steps'])==56",
+      " pairs=list(csv.DictReader(io.StringIO(z.read('inspection/fogprov.csv').decode('utf-8-sig'))))",
+      " assert len(pairs)==196 and len({r['joint_id'] for r in pairs})==98",
+      " assert all(r['design_hash']==manifest['design_hash'] and r['drawing'] in z.namelist() and not r['inspection_result'] for r in pairs)",
       " fittings=json.loads(z.read('assembly/trial-angles.json'))",
       " assert len(fittings['angles'])==98 and fittings['revision']==manifest['revision']",
       " assert len(fittings['straight_access_um_by_pilot'])==196",
@@ -152,6 +156,13 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.getByRole("button", {name: "Räkna om stommen från kundmåtten"}).click();
     await expect(width).toHaveValue("4280");
     await expect(page.getByLabel("Höjd (mm)", {exact: true})).toHaveValue("2500");
+    const leftMeasurement = page.getByLabel("Vänster vägg · uppmätt avstånd (mm)");
+    await leftMeasurement.fill("25");
+    await expect(page.getByText(/Uppmätt avstånd från stommens slutläge till vänster vägg är 25 mm/).first()).toBeVisible();
+    await expect(width).toHaveValue("4280");
+    await leftMeasurement.fill("30");
+    await page.getByLabel("Höger vägg · uppmätt avstånd (mm)").fill("30");
+    await page.getByLabel("Bakre vägg · uppmätt avstånd (mm)").fill("20");
     await expect(page.getByLabel("Hyllrader", { exact: true })).toHaveValue("7");
     await page.getByRole("button", { name: "Spara revision" }).click();
     await expect(page.getByText("Revision 2 är sparad.")).toBeVisible();
@@ -171,6 +182,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " assert site['state']=='nominal_clear' and site['minimum_ceiling_height_um']==2518000",
       " assert site['measured_ceiling_height_um']==2540000 and not site['issues']",
       " assert [w['margin_um'] for w in site['walls']]==[4000,4000,0]",
+      " assert [w['measured_distance_um'] for w in site['walls']]==[30000,30000,20000]",
+      " assert [w['measured_margin_um'] for w in site['walls']]==[4000,4000,0]",
       " assert new['spec']['revision']==2 and new['design_hash']!=old['design_hash']",
       " readback=json.loads(after.read('inspection/geometry-readback.json'))",
       " assert readback['design_hash']==new['design_hash'] and readback['revision']==2",
@@ -195,7 +208,9 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Vänster · vägg utan list")).toBeChecked();
     await expect(page.getByText(/vid vänster vägg behöver 6 mm nominellt/).first()).toBeVisible();
     await page.getByLabel("Övriga sidor är kontrollerade på plats").uncheck();
-    await expect(page.getByText(/Kontrollera väggläget vid/).first()).toBeVisible();
+    await expect(page.getByText(/Kontrollera väggläget vid/)).toHaveCount(0);
+    await leftMeasurement.fill("");
+    await expect(page.getByText(/Kontrollera väggläget vid vänster vägg/).first()).toBeVisible();
     await page.getByLabel("Ange separata kundmått").uncheck();
     await expect(page.getByText(/Monteringsplatsen är inte angiven/).first()).toBeVisible();
     await expect(second).toHaveCount(0);

@@ -1,5 +1,6 @@
 """Standing assembly at the installed datum, using the same strokes as the CAD check."""
 
+from collections.abc import Mapping
 from typing import Literal
 
 from .bookcase_motion import Bounds, assembly_strokes
@@ -7,7 +8,11 @@ from .furniture import InstallationSpace, Wall
 from .models import DesignResult, FrozenModel
 from .units import to_mm
 
-WALL_NAMES = {"left": "vänster vägg", "right": "höger vägg", "rear": "bakväggen"}
+WALL_NAMES: Mapping[Wall, str] = {
+    "left": "vänster vägg",
+    "right": "höger vägg",
+    "rear": "bakväggen",
+}
 
 
 class WallTravel(FrozenModel):
@@ -16,6 +21,8 @@ class WallTravel(FrozenModel):
     required_reservation_um: int | None
     reserved_um: int | None
     margin_um: int | None
+    measured_distance_um: int | None = None
+    measured_margin_um: int | None = None
 
 
 class StandingSiteReview(FrozenModel):
@@ -46,7 +53,9 @@ def review_standing_site(
     trim = site.trim_profile if site else None
     trimmed = trim.walls if trim and trim.use == "existing_room_trim" else ()
     bare = site.additional_bounded_walls if site else None
-    walls = tuple(dict.fromkeys((*trimmed, *(bare or ()))))
+    measured = {wall: getattr(site, f"measured_{wall}_wall_um", None) for wall in WALL_NAMES}
+    observed_walls = (wall for wall in WALL_NAMES if measured[wall] is not None)
+    walls = tuple(dict.fromkeys((*trimmed, *(bare or ()), *observed_walls)))
     floor = site.bottom_allowance_um if site else None
     params = design.spec.parameters
     peak = 0
@@ -125,6 +134,8 @@ def review_standing_site(
             and floor is not None
         )
         margin = reserved - required if known and reserved is not None else None
+        observed = measured[wall]
+        observed_margin = observed - required if known and observed is not None else None
         reports.append(
             WallTravel(
                 wall=wall,
@@ -132,6 +143,8 @@ def review_standing_site(
                 required_reservation_um=required if known else None,
                 reserved_um=reserved,
                 margin_um=margin,
+                measured_distance_um=observed,
+                measured_margin_um=observed_margin,
             )
         )
         if step is None and margin is not None and margin < 0:
@@ -152,6 +165,20 @@ def review_standing_site(
                     f"{to_mm(required):f} mm nominellt från väggen. Reserverat "
                     f"{to_mm(reserved):f} mm. Reservera mer än {to_mm(required):f} mm inklusive "
                     "montagespel och räkna om stommen från kundmåtten.",
+                }
+            )
+        if (
+            observed is not None
+            and observed_margin is not None
+            and (observed_margin < 0 or (observed_margin == 0 and step is not None))
+        ):
+            conflicts = True
+            issues.append(
+                {
+                    "code": f"STANDING_{wall.upper()}_MEASURED_CLEARANCE",
+                    "message": f"Uppmätt avstånd från stommens slutläge till {WALL_NAMES[wall]} är "
+                    f"{to_mm(observed):f} mm. Konstruktionen behöver {to_mm(required):f} mm från "
+                    "väggytan bakom eventuell list. Ändra stomläget eller måtten och mät på nytt.",
                 }
             )
         if reserved is None:

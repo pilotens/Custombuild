@@ -5527,6 +5527,45 @@
             ],
             "title": "Measured Front Space Um"
           },
+          "measured_left_wall_um": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Left Wall Um"
+          },
+          "measured_rear_wall_um": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Rear Wall Um"
+          },
+          "measured_right_wall_um": {
+            "anyOf": [
+              {
+                "maximum": 9007199254740991.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Right Wall Um"
+          },
           "qualified_site_ref": {
             "anyOf": [
               {
@@ -10729,6 +10768,28 @@
               }
             ],
             "title": "Margin Um"
+          },
+          "measured_distance_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Distance Um"
+          },
+          "measured_margin_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Margin Um"
           },
           "required_reservation_um": {
             "anyOf": [

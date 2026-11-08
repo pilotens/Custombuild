@@ -607,9 +607,6 @@ jobs:
         run: |
           pnpm --dir apps/web exec playwright test --project=chromium-desktop \
             --output=test-results/chromium-live
-          pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
-            --project=firefox-desktop --project=webkit-desktop \
-            --output=test-results/crossbrowser-live
       - name: Preserve furniture workspace visual evidence
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -626,6 +623,17 @@ jobs:
           path: apps/web/test-results/chromium-live/furniture-live-*/Custombuild-Bokhylla-*.zip
           if-no-files-found: error
           retention-days: 30
+      - name: Cross-browser production acceptance
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+          PLAYWRIGHT_API_URL: http://127.0.0.1:8000
+          PLAYWRIGHT_ENVIRONMENT: test
+          PLAYWRIGHT_REAL_API: "1"
+          PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
+            --project=firefox-desktop --project=webkit-desktop \
+            --output=test-results/crossbrowser-live
       - name: Collect Compose diagnostics
         if: failure()
         run: |

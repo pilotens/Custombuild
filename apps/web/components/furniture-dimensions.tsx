@@ -18,7 +18,7 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
   const changeMm = (key: keyof FurnitureInstallation, raw: string, nullable = false) => {
     if (!installation) return;
     try {
-      const isSiteMeasurement = key === "measured_front_space_um" || key === "measured_ceiling_height_um";
+      const isSiteMeasurement = key.startsWith("measured_");
       const value = nullable && !raw.trim() ? null : exactMillimetreTextToMicrometres(raw,
         { minimumUm: nullable || key === "measured_front_space_um" ? 0 : 1, maximumUm: isSiteMeasurement ? Number.MAX_SAFE_INTEGER : nullable ? 500_000 : 6_000_000 });
       apply({ ...installation, [key]: value }, `installation.${key}`);
@@ -50,6 +50,16 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
             value={installation.measured_front_space_um == null ? "" : installation.measured_front_space_um / 1_000}
             onChange={e => e.target.value.trim() ? changeMm("measured_front_space_um", e.target.value)
               : apply({ ...installation, measured_front_space_um: null }, "installation.measured_front_space_um")} /></label>
+        <fieldset><legend>Uppmätt på monteringsplatsen</legend>
+          <p>Mät vinkelrätt från stommens planerade slutläge till väggytan bakom eventuell list. Ange det minsta avståndet längs rörelsebanan.</p>
+          {([["left","Vänster"],["right","Höger"],["rear","Bakre"]] as const).map(([wall,label]) => {
+            const key = `measured_${wall}_wall_um` as const;
+            const value = installation[key];
+            return <label key={key}>{label} vägg · uppmätt avstånd (mm)<input type="number" min="0" step="0.001"
+              placeholder="Ej uppmätt" value={value == null ? "" : value / 1_000}
+              onChange={e => changeMm(key,e.target.value,true)} /></label>;
+          })}
+        </fieldset>
         <label>Plats-ID för provad montering<input value={installation.qualified_site_ref ?? ""} maxLength={128}
           onChange={e => apply({ ...installation, qualified_site_ref: e.target.value || undefined }, "installation.qualified_site_ref")} /></label>
         <StandingWalls installation={installation} onChange={apply} />

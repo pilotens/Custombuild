@@ -8,11 +8,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { CustombuildApiClient, type CurrentPrincipal, type ProjectRead } from "@/lib/api-client";
 import {
   FURNITURE_FAMILY_LABELS, furnitureViewerParts, newFurnitureWorkspace,
-  type FurnitureCatalog, type FurnitureFamily, type FurnitureHistory, type FurniturePreview,
+  type FurnitureCatalog, type FurnitureExportReady, type FurnitureFamily, type FurnitureHistory, type FurniturePreview,
   type FurnitureProfileComparison, type FurnitureWorkspace,
 } from "@/lib/furniture-workspace";
 import type { PublicRuntimeConfig } from "@/lib/runtime-config";
-import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
+import { exactMillimetreTextToMicrometres, micrometresToMillimetreText } from "@/lib/workshop-production-context";
 import styles from "./furniture-workspace.module.css";
 import { DESIGN_CONSTRAINTS } from "@/lib/design-constraints";
 import { inspectionDrillMarkers, type DrillMarker, type PartInspection, visibleAssembly, type InspectionView } from "@/lib/part-inspection";
@@ -24,6 +24,7 @@ import { FurnitureRuleValues } from "./furniture-rule-values";
 import { FurnitureShelfSuggestionPanel } from "./furniture-shelf-suggestion";
 import { FurnitureModulePlanningPanel } from "./furniture-module-planning";
 import { FurnitureStockEditor, FurnitureStockPlan } from "./furniture-stock-planning";
+import { WorkshopDrawingsDownload } from "./workshop-drawings-download";
 
 const Viewer = dynamic(() => import("./furniture-viewer"), {
   ssr: false, loading: () => <p>Öppnar 3D-vyn…</p>,
@@ -99,7 +100,10 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   const [history, setHistory] = useState<FurnitureHistory>({ items: [], next_offset: null });
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
   const [exportJob, setExportJob] = useState<{ id: string; project: string; revision: number; hash: string; workshop: boolean }>();
-  const [download, setDownload] = useState<{ url: string; name: string; revision: number; workshop: boolean }>();
+  const [download, setDownload] = useState<
+    { kind: "review"; url: string; name: string; revision: number }
+    | { kind: "workshop"; artifact: FurnitureExportReady }
+  >();
   const [exportMessage, setExportMessage] = useState<string>();
   const mutationEpoch = useRef(0);
   const invalidInput = Object.keys(inputErrors).length > 0;
@@ -160,7 +164,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   }, [dirty]);
 
   useEffect(() => {
-    if (!download) return;
+    if (download?.kind !== "review") return;
     return () => URL.revokeObjectURL(download.url);
   }, [download]);
 
@@ -174,13 +178,22 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
         const result = await api.furnitureExportResult(exportJob.project, exportJob.id, abort.signal);
         if (!active) return;
         if (result.state === "succeeded") {
+          if (exportJob.workshop) {
+            if (result.revision !== exportJob.revision || result.design_hash !== exportJob.hash
+                || result.file_name !== `custombuild-workshop-drawings-${exportJob.revision}.zip`) {
+              throw new Error("Verkstadsritningarna stämmer inte med den beställda revisionen.");
+            }
+            setDownload({kind: "workshop", artifact: result});
+            setExportMessage("Verkstadsritningarna är klara att hämta.");
+            return;
+          }
           const blob = await api.downloadFurnitureExport(
             exportJob.project, exportJob.id, exportJob.revision, exportJob.hash, result, abort.signal,
           );
           if (!active) return;
-          setDownload({ url: URL.createObjectURL(blob),
-            name: result.file_name, revision: exportJob.revision, workshop: exportJob.workshop });
-          setExportMessage(exportJob.workshop ? "Verkstadsritningarna är frisläppta för denna revision." : "Granskningspaketet är klart.");
+          setDownload({kind: "review", url: URL.createObjectURL(blob),
+            name: result.file_name, revision: exportJob.revision});
+          setExportMessage("Granskningspaketet är klart.");
         } else if (result.state === "failed" || result.state === "cancelled") {
           setExportMessage(result.message ?? "Exporten kunde inte slutföras.");
         } else {
@@ -271,15 +284,15 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   };
   const exportDrawings = async (workshop = false) => {
     if (!projectId || !preview || dirty || exceedsExportLimit || mode === "without") return;
-    setBusy(true); setDownload(undefined); setExportMessage(undefined);
-    const epoch = mutationEpoch.current;
+    setBusy(true); setExportJob(undefined); setDownload(undefined); setExportMessage(undefined);
+    const epoch = ++mutationEpoch.current;
     try {
       const result = workshop
         ? await api.requestFurnitureExport(projectId, revision, preview.design.design_hash, "workshop_drawings")
         : await api.requestFurnitureExport(projectId, revision, preview.design.design_hash);
       if (epoch !== mutationEpoch.current) return;
       setExportJob({ id: result.job_id, project: projectId, revision, hash: preview.design.design_hash, workshop });
-    } catch (reason) { setExportMessage(errorText(reason)); }
+    } catch (reason) { if (epoch === mutationEpoch.current) setExportMessage(errorText(reason)); }
     finally { setBusy(false); }
   };
   const importWorkspace = async (file?: File, example = walnutExample as unknown as FurnitureWorkspace) => {
@@ -470,10 +483,27 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       {preview?.workshop_handoff?.dimensions.standing_assembly ? <div>
         <h3>Stående montering på plats</h3>
         <p>Trädelarna behöver {preview.workshop_handoff.dimensions.standing_assembly.minimum_height_from_base_um / 1_000} mm över stommens botten och {preview.workshop_handoff.dimensions.standing_assembly.minimum_front_space_um / 1_000} mm framför stommen. Arbetsutrymme tillkommer.</p>
+        {preview.workshop_handoff.dimensions.standing_assembly.walls.length > 0 && (
+          <table aria-label="Reserverade och uppmätta väggavstånd">
+            <thead><tr><th>Vägg</th><th>Reserverat</th><th>Uppmätt</th><th>Krävs</th></tr></thead>
+            <tbody>{preview.workshop_handoff.dimensions.standing_assembly.walls.map(wall => (
+              <tr key={wall.wall}>
+                <th scope="row">{{left:"Vänster",right:"Höger",rear:"Bakre"}[wall.wall]}</th>
+                <td>{wall.reserved_um == null ? "Ej angivet" : micrometresToMillimetreText(wall.reserved_um)+" mm"}</td>
+                <td>{wall.measured_distance_um == null ? "Ej uppmätt" : micrometresToMillimetreText(wall.measured_distance_um)+" mm"}</td>
+                <td>{wall.required_reservation_um == null ? "Ej beräknat" : micrometresToMillimetreText(wall.required_reservation_um)+" mm"}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        )}
         {preview.workshop_handoff.dimensions.standing_assembly.issues.map(issue =>
           <p key={issue.code}>{issue.message}</p>)}
       </div> : null}
-      {download && !dirty && preview && mode !== "without" ? <a href={download.url} download={download.name}>{download.workshop ? "Hämta frisläppta verkstadsritningar" : "Hämta STEP, GLB, DXF, delritningar och kaplista"} · revision {download.revision}</a> : null}
+      {download?.kind === "review" && !dirty && preview && mode !== "without" ?
+        <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
+      {download?.kind === "workshop" && exportJob && !dirty && preview && mode !== "without" ?
+        <WorkshopDrawingsDownload key={exportJob.id} api={api} project={exportJob.project}
+          revision={exportJob.revision} hash={exportJob.hash} artifact={download.artifact} /> : null}
       {intent.family === "shelving" && preview ? <FurnitureShelfSuggestionPanel
         key={`${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}
         designHash={preview.design.design_hash} disabled={busy || invalidInput || profileDirty || !mayEdit}

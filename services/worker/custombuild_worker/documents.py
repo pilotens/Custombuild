@@ -701,6 +701,22 @@ def assembly_manual_pdf(
                     y - 8,
                     max_chars=88,
                 )
+            observed = (
+                um_to_mm(wall.measured_distance_um) + " mm"
+                if wall.measured_distance_um is not None
+                else "ej uppmätt"
+            )
+            planned = (
+                um_to_mm(wall.reserved_um) + " mm" if wall.reserved_um is not None else "saknas"
+            )
+            y = _draw_wrapped_text(
+                canvas,
+                f"  Reservation: {planned}. Platsmätning till "
+                f"väggytan bakom eventuell list: {observed}.",
+                MARGIN,
+                y - 4,
+                max_chars=88,
+            )
         _draw_wrapped_text(
             canvas,
             "Mät även fri plats framför möbeln för den angivna "

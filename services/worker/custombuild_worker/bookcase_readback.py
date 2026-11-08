@@ -20,6 +20,7 @@ from custombuild_manufacturing.bookcase_qualification import READBACK_SCHEMA
 from pypdf import PdfReader
 
 from .bookcase_drawings import mm, verify_panel_dxf
+from .bookcase_joint_sheet import joint_measurement_sheet
 
 
 def order_identity(result: FurnitureResult) -> dict[str, object]:
@@ -242,16 +243,19 @@ def _documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
             raise ValueError(f"Fel beslagsparning: {joint.joint_id}")
 
 
-def verify_bookcase_delivery(result: FurnitureResult, files: dict[str, bytes]) -> dict[str, Any]:
+def verify_bookcase_delivery(
+    result: FurnitureResult, files: dict[str, bytes]
+) -> tuple[dict[str, Any], bytes]:
     assert result.shelving_result is not None
     identity = order_identity(result)
     _panels_from_order(result)
     expected = {f"parts/{p.part_id}/{s}.dxf" for p in result.parts for s in ("A", "B")}
     if {p for p in files if p.endswith(".dxf")} != expected:
         raise ValueError("DXF-inventariet avviker från beställningen.")
+    pilots = []
     for p in result.parts:
         for s in ("A", "B"):
-            verify_panel_dxf(files[f"parts/{p.part_id}/{s}.dxf"], p, s, identity)
+            pilots.extend(verify_panel_dxf(files[f"parts/{p.part_id}/{s}.dxf"], p, s, identity))
     _documents(result, files)
     verify_bookcase_steps(
         result, files["design/model.step"], files["design/with-mounted-angles.step"]
@@ -268,4 +272,4 @@ def verify_bookcase_delivery(result: FurnitureResult, files: dict[str, bytes]) -
         "grooves": sum(f.kind == FeatureKind.GROOVE for f in features),
         "stopped_grooves": sum(bool(f.front_stop_clearance_um) for f in features),
         "assembly_steps": len(result.shelving_result.assembly_graph.steps),
-    }
+    }, joint_measurement_sheet(result, pilots)

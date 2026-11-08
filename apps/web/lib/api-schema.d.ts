@@ -3054,6 +3054,12 @@ export interface components {
             measured_ceiling_height_um?: number | null;
             /** Measured Front Space Um */
             measured_front_space_um?: number | null;
+            /** Measured Left Wall Um */
+            measured_left_wall_um?: number | null;
+            /** Measured Rear Wall Um */
+            measured_rear_wall_um?: number | null;
+            /** Measured Right Wall Um */
+            measured_right_wall_um?: number | null;
             /** Qualified Site Ref */
             qualified_site_ref?: string | null;
             /** Rear Allowance Um */
@@ -5102,6 +5108,10 @@ export interface components {
         WallTravel: {
             /** Margin Um */
             margin_um: number | null;
+            /** Measured Distance Um */
+            measured_distance_um?: number | null;
+            /** Measured Margin Um */
+            measured_margin_um?: number | null;
             /** Required Reservation Um */
             required_reservation_um: number | null;
             /** Reserved Um */

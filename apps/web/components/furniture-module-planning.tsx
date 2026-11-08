@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CustombuildApiClient } from "@/lib/api-client";
+import { downloadFile } from "@/lib/download-file";
 import { assertMatchingFurnitureModulePlan, gridFromBlankLength, type FurnitureModuleGrid, type FurnitureModulePlan, type FurnitureModuleRequirement } from "@/lib/furniture-module-plan";
 import type { FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
@@ -26,20 +27,6 @@ const requirementLabels: Record<string, string> = {
 
 function requirementText(requirement: FurnitureModuleRequirement) {
   return requirementLabels[requirement.code] ?? requirement.message;
-}
-
-function downloadFile(blob: Blob, name: string) {
-  const url = URL.createObjectURL(blob);
-  try {
-    const anchor = window.document.createElement("a");
-    anchor.href = url;
-    anchor.download = name.replace(/[^a-zA-Z0-9._-]/g, "-");
-    window.document.body.appendChild(anchor);
-    try { anchor.click(); } finally { anchor.remove(); }
-  } finally {
-    // Give the browser's download dispatch a turn before releasing the data.
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  }
 }
 
 type RequestScope = { key: string; api: CustombuildApiClient };

@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v13"
+        return "custombuild.shelving-workshop-review.v14"
     return "custombuild.furniture-review.v1"
 
 
@@ -52,6 +52,7 @@ class HardwareSelection(FrozenModel):
 Wall = Literal["left", "right", "rear"]
 # Site measurements cross the JSON/JavaScript boundary as exact integer µm.
 MAX_EXACT_SITE_UM = 2**53 - 1
+MeasuredWallUm = Annotated[int, Field(strict=True, ge=0, le=MAX_EXACT_SITE_UM)]
 
 
 class TrimProfile(FrozenModel):
@@ -82,6 +83,17 @@ class InstallationSpace(FrozenModel):
     height_um: Length
     depth_um: Length
     qualified_site_ref: StableKey | None = Field(default=None, exclude_if=lambda v: v is None)
+    # From the finished carcass plane to the wall face behind any trim.
+    measured_left_wall_um: MeasuredWallUm | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    measured_right_wall_um: MeasuredWallUm | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    measured_rear_wall_um: MeasuredWallUm | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+
     additional_bounded_walls: tuple[Wall, ...] | None = Field(
         default=None,
         max_length=3,

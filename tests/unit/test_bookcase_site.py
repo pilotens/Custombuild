@@ -210,3 +210,48 @@ def test_site_message_preserves_one_micrometre_of_insufficient_ceiling_height():
     assert site["state"] == "blocked"
     ceiling = next(i for i in site["issues"] if i["code"] == "STANDING_CEILING_CLEARANCE")
     assert "1218.001 mm" in ceiling["message"] and "Uppmätt 1218 mm" in ceiling["message"]
+
+
+@pytest.mark.parametrize(
+    ("measured", "state", "margin"),
+    [
+        (25_999, "blocked", -1),
+        (26_000, "blocked", 0),
+        (26_001, "nominal_clear", 1),
+        (None, "nominal_clear", None),
+    ],
+)
+def test_measured_wall_is_independent_of_reserved_space(measured, state, margin):
+    workspace = installed_trial(30_000, 30_000, ceiling=1_300_000, front=600_000)
+    original = workspace.design
+    site = original.installation.model_copy(update={"measured_left_wall_um": measured})
+    changed = original.model_copy(update={"installation": site})
+    review = review_furniture_dimensions(changed)["standing_assembly"]
+    left = next(w for w in review["walls"] if w["wall"] == "left")
+    assert left["reserved_um"] == 30_000 and left["margin_um"] == 4_000
+    assert left["measured_distance_um"] == measured and left["measured_margin_um"] == margin
+    assert review["state"] == state
+    assert (
+        changed.intent == original.intent
+        and changed.installation.width_um == original.installation.width_um
+    )
+    assert bool(
+        [i for i in review["issues"] if i["code"] == "STANDING_LEFT_MEASURED_CLEARANCE"]
+    ) == (state == "blocked")
+
+
+def test_actual_observation_of_bare_wall_remains_when_wall_survey_is_unset():
+    w = installed_trial(30_000, 30_000, ceiling=1_300_000, front=600_000)
+    s = w.design.installation.model_copy(
+        update={
+            "trim_profile": None,
+            "additional_bounded_walls": None,
+            "width_includes_trim": False,
+            "measured_left_wall_um": 5_999,
+        }
+    )
+    actual = review_furniture_dimensions(w.design.model_copy(update={"installation": s}))[
+        "standing_assembly"
+    ]
+    assert actual["state"] == "blocked" and actual["walls"][0]["required_reservation_um"] == 6_000
+    assert any(i["code"] == "STANDING_LEFT_MEASURED_CLEARANCE" for i in actual["issues"])

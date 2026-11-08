@@ -88,6 +88,33 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
             for a in model["trial_angles"]
             if a["upright_id"] == left["part_id"] and a["horizontal_id"] == bottom["part_id"]
         )
+        pairs = list(
+            csv.DictReader(io.StringIO(z.read("inspection/fogprov.csv").decode("utf-8-sig")))
+        )
+        assert len(pairs) == 12
+        assert Counter(r["joint_id"] for r in pairs) == {
+            a["joint_id"]: 2 for a in model["trial_angles"]
+        }
+        pair = {r["part_name"]: r for r in pairs if r["joint_id"] == angle["joint_id"]}
+        for role, mate, world, uv, face in (
+            ("left-side", "bottom", ("18", "20", "36"), ("20", "36"), "right"),
+            ("bottom", "left-side", ("36", "20", "18"), ("24", "20"), "top"),
+        ):
+            row = pair[role]
+            assert row["mate_id"] == pair[mate]["part_id"] and row["physical_face"] == face
+            assert (row["world_X_mm"], row["world_Y_mm"], row["world_Z_mm"]) == world
+            assert (row["U_mm"], row["V_mm"]) == uv
+            assert (row["diameter_mm"], row["depth_mm"], row["model_tolerance_mm"]) == (
+                "3.5",
+                "12.5",
+                "0.1",
+            )
+            assert row["drawing"] == f"parts/{row['part_id']}/{row['side']}.dxf"
+            assert row["drawing"] in z.namelist() and row["revision"] == str(manifest["revision"])
+            assert row["design_hash"] == manifest["design_hash"]
+            assert not any(
+                v for k, v in row.items() if k.startswith("measured_") or k == "inspection_result"
+            )
         steel = assembly.objects["angle-" + angle["joint_id"]].toCompound().Solids()[0]
         assert not steel.isInside((20, 20, 36)) and steel.isInside((20, 25, 36))
         assert not steel.isInside((36, 20, 20)) and steel.isInside((36, 25, 20))

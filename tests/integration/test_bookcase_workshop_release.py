@@ -42,6 +42,9 @@ def measured_order():
         measured_ceiling_height_um=1_100_000,
         measured_front_space_um=600_000,
         qualified_site_ref="test-fixture",
+        measured_left_wall_um=50_000,
+        measured_right_wall_um=50_000,
+        measured_rear_wall_um=20_000,
     )
     design["material"]["batch_id"] = "test-stock"
     design["back_material"]["batch_id"] = "test-back"
@@ -221,6 +224,21 @@ def test_exact_profile_releases_current_revision_and_revocation_closes_direct_ap
         request = {**body, "purpose": "workshop_drawings"}
         assert client.post(path + "/exports", headers=HEADERS, json=request).status_code == 409
         profile = _install_test_profile(tmp_path, monkeypatch, w)
+        # Identical design reservation cannot stand in for the measured installation.
+        unknown = w.model_copy(
+            update={
+                "design": w.design.model_copy(
+                    update={
+                        "installation": w.design.installation.model_copy(
+                            update={"measured_left_wall_um": None}
+                        )
+                    }
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="Mät avståndet"):
+            qualifications.qualified_bookcase(unknown, TENANT)
+
         r = client.post(path + "/exports", headers=HEADERS, json=request)
         assert r.status_code == 202, r.text
         job = r.json()["job_id"]

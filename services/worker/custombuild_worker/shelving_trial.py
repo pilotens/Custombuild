@@ -163,6 +163,11 @@ def shelving_trial_protocol(
                 "Mät tillgänglig plats för drivverktyg och hållande moment efter fuktcykling.",
                 "design/with-mounted-angles.step visar trädelar och nominella vinklar. "
                 "Skruvar finns i BOM och borrbild. Gänga och brukskapacitet är ej verifierade.",
+                "inspection/fogprov.csv parar ihop vinkelns två pilothål och visar respektive "
+                "DXF, fysisk yta, lokalt centrum U/V och centrum i monterad position. Mät från "
+                "färdigdelens U0/V0 på angiven sida. Fyll i uppmätt U, V, diameter, djup och "
+                "mätosäkerhet för båda delarna av samma joint_id. Kolumnerna measured_* "
+                "är tomma tills provbitarna faktiskt har mätts.",
                 f"Vinkelritning: {ANGLE_SOURCE}",
                 f"Skruvdata: {SCREW_SOURCE}",
             ]

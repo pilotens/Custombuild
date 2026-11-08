@@ -77,6 +77,9 @@ export interface FurnitureTrimProfile {
 }
 export interface FurnitureInstallation {
   qualified_site_ref?: string | null;
+  measured_left_wall_um?: number | null;
+  measured_right_wall_um?: number | null;
+  measured_rear_wall_um?: number | null;
   remaining_walls_unmeasured?: boolean | null;
   additional_bounded_walls?: FurnitureTrimProfile["walls"] | null;
   measured_front_space_um?: number | null;

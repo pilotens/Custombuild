@@ -3,6 +3,7 @@
 import io
 import json
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -72,9 +73,22 @@ def _entity(entity: Any) -> tuple[object, ...]:
     raise ValueError(f"Oväntad DXF-geometri: {entity.dxftype()} på {layer}")
 
 
+@dataclass(frozen=True)
+class ReadbackPilot:
+    feature_id: str
+    part_id: str
+    side: str
+    face: str
+    u_um: int
+    v_um: int
+    diameter_um: int
+    depth_um: int
+    tolerance_um: int
+
+
 def verify_panel_dxf(
     raw: bytes, part: PartInstance, side: str, identity: dict[str, object]
-) -> None:
+) -> list[ReadbackPilot]:
     text = raw.decode("utf-8")
     meta = _metadata(text)
     if meta.get("CUSTOMBUILD_ORDER_JSON") != identity:
@@ -105,6 +119,7 @@ def verify_panel_dxf(
     records = [v for k, v in meta.items() if k.startswith("CUSTOMBUILD_FEATURE_")]
     if len(records) != len(features) or {r["feature_id"] for r in records} != set(features):
         raise ValueError(f"DXF saknar rätt bearbetningar: {part.part_id}/{side}")
+    pilots = []
     for record in records:
         f = features[record["feature_id"]]
         cut = panel_cut(part, f)
@@ -135,8 +150,22 @@ def verify_panel_dxf(
             expected.extend(("GROOVE", "circle", x, y, cut.radius) for x, y in cut.corners)
         else:
             expected.append(("DRILL", "circle", cut.u, cut.v, cut.radius))
+            pilots.append(
+                ReadbackPilot(
+                    f.feature_id,
+                    part.part_id,
+                    side,
+                    face.value,
+                    cut.u,
+                    cut.v,
+                    2 * cut.radius,
+                    cut.depth,
+                    f.tolerance_um,
+                )
+            )
     actual = Counter(_entity(e) for e in doc.modelspace())
     if actual != Counter(expected):
         raise ValueError(
             f"DXF-geometrin avviker från orderns hål eller kontur: {part.part_id}/{side}"
         )
+    return pilots

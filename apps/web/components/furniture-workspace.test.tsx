@@ -50,7 +50,7 @@ describe("durable furniture export downloads", () => {
     design_hash: "a".repeat(64), revision: 1, sha256: "b".repeat(64),
     size_bytes: 3, content_type: "application/zip", physical_cutting_authorized: false,
   };
-  async function savedStudio() {
+  async function savedStudio(family: "table" | "shelving" = "table") {
     const api = setup();
     vi.spyOn(api, "createProject").mockResolvedValue({ id: "project", name: "Mitt bord", furniture_type: "table",
       current_revision: 0, description: "", archived: false, created_at: "2026-09-07T12:00:00Z",
@@ -60,8 +60,13 @@ describe("durable furniture export downloads", () => {
       return { project_id: id, revision: revision + 1, workspace: saved, preview: preview(saved) };
     });
     vi.spyOn(api, "requestFurnitureExport").mockResolvedValue({ job_id: jobId, state: "queued" });
-    render(<FurnitureStudio api={api} principal={principal} />);
+    render(<FurnitureStudio api={api} principal={principal} initialFamily={family} />);
     await screen.findByText("5 delar");
+    if (family === "shelving") {
+      fireEvent.click(screen.getByText("Fack, hyllhöjder och rygg"));
+      fireEvent.click(screen.getByRole("checkbox", {name:/Prova mekanisk låsning/}));
+      await screen.findByText("5 delar");
+    }
     fireEvent.click(screen.getByRole("button", { name: "Spara revision" }));
     await waitFor(() => expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeEnabled());
     return api;
@@ -83,6 +88,43 @@ describe("durable furniture export downloads", () => {
     fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1200" } });
     expect(screen.queryByRole("link", { name: /Hämta STEP/ })).toBeNull();
     expect(revokeUrl).toHaveBeenCalledWith("blob:verified-review");
+  });
+
+  it("checks the current workshop order on every download click", async () => {
+    const api = await savedStudio("shelving");
+    const artifact = {...ready, file_name:"custombuild-workshop-drawings-1.zip"};
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue(artifact);
+    const fetchFile = vi.spyOn(api, "downloadFurnitureExport")
+      .mockRejectedValueOnce(new Error("Verkstadsritningarna avser en tidigare revision."))
+      .mockResolvedValue(new Blob(["zip"]));
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:current-workshop");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const saveFile = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", {name: "Beställ verkstadsritningar"}));
+    const download = await screen.findByRole("button", {name:/Hämta frisläppta verkstadsritningar/});
+    expect(fetchFile).not.toHaveBeenCalled();
+    fireEvent.click(download);
+    await screen.findByText(/avser en tidigare revision/);
+    expect(createUrl).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+    fireEvent.click(download);
+    await waitFor(() => expect(saveFile).toHaveBeenCalledOnce());
+    expect(fetchFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards workshop bytes if the user edits the order while a download is in flight", async () => {
+    const api = await savedStudio("shelving");
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue({...ready, file_name:"custombuild-workshop-drawings-1.zip"});
+    let finish!: (blob: Blob) => void;
+    const get = vi.spyOn(api, "downloadFurnitureExport").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const saveFile = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", {name:"Beställ verkstadsritningar"}));
+    fireEvent.click(await screen.findByRole("button", {name:/Hämta frisläppta verkstadsritningar/}));
+    await waitFor(() => expect(get).toHaveBeenCalledOnce());
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), {target:{value:"1200"}});
+    expect(get.mock.calls[0]![5]?.aborted).toBe(true);
+    await act(async () => finish(new Blob(["old"])));
+    expect(saveFile).not.toHaveBeenCalled();
   });
 
   it("aborts a download and ignores late bytes after editing the design", async () => {
