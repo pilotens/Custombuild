@@ -3,10 +3,9 @@
 from typing import Literal
 
 from .bookcase_motion import Bounds, assembly_strokes
-from .furniture import InstallationSpace
+from .furniture import InstallationSpace, Wall
 from .models import DesignResult, FrozenModel
 
-Wall = Literal["left", "right", "rear"]
 WALL_NAMES = {"left": "vänster vägg", "right": "höger vägg", "rear": "bakväggen"}
 
 
@@ -42,7 +41,9 @@ def _wall_excursion(wall: Wall, bounds: Bounds, width: int, depth: int) -> int:
 
 def review_standing_site(design: DesignResult, site: InstallationSpace) -> StandingSiteReview:
     trim = site.trim_profile
-    walls = trim.walls if trim and trim.use == "existing_room_trim" else ()
+    trimmed = trim.walls if trim and trim.use == "existing_room_trim" else ()
+    walls = tuple(dict.fromkeys((*trimmed, *(site.additional_bounded_walls or ()))))
+    unknown_walls = site.additional_bounded_walls is None and set(trimmed) != set(WALL_NAMES)
     floor = site.bottom_allowance_um
     params = design.spec.parameters
     peak = 0
@@ -60,7 +61,8 @@ def review_standing_site(design: DesignResult, site: InstallationSpace) -> Stand
                 # Above the skirting only the bare wall constrains the stroke.
                 # Unknown heights are reported separately, never assumed clear.
                 in_trim = (
-                    trim
+                    wall in trimmed
+                    and trim
                     and trim.height_um is not None
                     and floor is not None
                     and (bounds[0][2] + floor < trim.height_um and bounds[1][2] + floor > 0)
@@ -71,11 +73,21 @@ def review_standing_site(design: DesignResult, site: InstallationSpace) -> Stand
                     reservations[wall] = (needed, stroke.travel.step_number)
 
     issues = []
+    if unknown_walls:
+        missing = ", ".join(WALL_NAMES[wall] for wall in WALL_NAMES if wall not in trimmed)
+        issues.append(
+            {
+                "code": "STANDING_WALL_LAYOUT_UNMEASURED",
+                "message": f"Kontrollera väggläget vid {missing}. Ange var en vägg begränsar "
+                "införingen vid kundens yttermått och bekräfta vilka övriga sidor som är fria.",
+            }
+        )
     conflicts = False
     reports = []
     for wall, (required, step) in reservations.items():
         if (
-            trim
+            wall in trimmed
+            and trim
             and trim.width_um is not None
             and trim.height_um is not None
             and floor is not None
@@ -84,7 +96,7 @@ def review_standing_site(design: DesignResult, site: InstallationSpace) -> Stand
         ):
             required, step = trim.width_um, None
         reserved = getattr(site, f"{wall}_allowance_um")
-        known = (
+        known = wall not in trimmed or (
             trim is not None
             and trim.width_um is not None
             and trim.height_um is not None
@@ -118,6 +130,14 @@ def review_standing_site(design: DesignResult, site: InstallationSpace) -> Stand
                     f"{required / 1000:g} mm nominellt från väggen. Reserverat "
                     f"{reserved / 1000:g} mm. Reservera mer än {required / 1000:g} mm inklusive "
                     "montagespel och räkna om stommen från kundmåtten.",
+                }
+            )
+        if reserved is None:
+            issues.append(
+                {
+                    "code": f"STANDING_{wall.upper()}_UNMEASURED",
+                    "message": f"Ange reserverat avstånd från stommen till {WALL_NAMES[wall]} "
+                    "och räkna om stommen.",
                 }
             )
     ceiling = site.measured_ceiling_height_um
@@ -170,7 +190,7 @@ def review_standing_site(design: DesignResult, site: InstallationSpace) -> Stand
             or any(w.reserved_um is None for w in reports)
         )
     ) or bool(
-        trim and (trim.use == "unassigned" or (trim.use == "existing_room_trim" and not walls))
+        trim and (trim.use == "unassigned" or (trim.use == "existing_room_trim" and not trimmed))
     )
     expected = site.carcass_dimensions()
     incomplete |= expected != {k: getattr(params, k) for k in ("width_um", "height_um", "depth_um")}

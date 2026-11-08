@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v9"
+        return "custombuild.shelving-workshop-review.v10"
     return "custombuild.furniture-review.v1"
 
 
@@ -49,13 +49,18 @@ class HardwareSelection(FrozenModel):
     version: StableKey = "layout-1.0.0"
 
 
+Wall = Literal["left", "right", "rear"]
+# Site measurements cross the JSON/JavaScript boundary as exact integer µm.
+MAX_EXACT_SITE_UM = 2**53 - 1
+
+
 class TrimProfile(FrozenModel):
     """Measured profile; use and placement are explicit customer decisions."""
 
     height_um: Annotated[int, Field(strict=True, ge=1, le=500_000)] | None = None
     width_um: Annotated[int, Field(strict=True, ge=1, le=100_000)] | None = None
     use: Literal["unassigned", "existing_room_trim", "furniture_trim"] = "unassigned"
-    walls: tuple[Literal["left", "right", "rear"], ...] = ()
+    walls: tuple[Wall, ...] = ()
 
     @model_validator(mode="after")
     def validate_placement(self) -> TrimProfile:
@@ -76,10 +81,19 @@ class InstallationSpace(FrozenModel):
     width_um: Length
     height_um: Length
     depth_um: Length
-    measured_front_space_um: Annotated[int, Field(strict=True, ge=0, le=6_000_000)] | None = Field(
-        default=None, exclude_if=lambda v: v is None
+    additional_bounded_walls: tuple[Wall, ...] | None = Field(
+        default=None,
+        max_length=3,
+        exclude_if=lambda v: v is None,
+        description="Walls at the customer envelope, in addition to walls with known skirting. "
+        "An empty list confirms that the remaining sides are open. Null means not surveyed.",
     )
-    measured_ceiling_height_um: Length | None = Field(default=None, exclude_if=lambda v: v is None)
+    measured_front_space_um: (
+        Annotated[int, Field(strict=True, ge=0, le=MAX_EXACT_SITE_UM)] | None
+    ) = Field(default=None, exclude_if=lambda v: v is None)
+    measured_ceiling_height_um: (
+        Annotated[int, Field(strict=True, ge=1, le=MAX_EXACT_SITE_UM)] | None
+    ) = Field(default=None, exclude_if=lambda v: v is None)
     width_includes_trim: bool = False
     trim_profile: TrimProfile | None = Field(default=None, exclude_if=lambda value: value is None)
     left_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
@@ -105,6 +119,10 @@ class InstallationSpace(FrozenModel):
 
     @model_validator(mode="after")
     def positive_remaining_space(self) -> InstallationSpace:
+        if self.additional_bounded_walls and len(set(self.additional_bounded_walls)) != len(
+            self.additional_bounded_walls
+        ):
+            raise ValueError("Varje begränsande vägg får bara anges en gång.")
         for overall, a, b in (
             (self.width_um, self.left_allowance_um, self.right_allowance_um),
             (self.height_um, self.top_allowance_um, self.bottom_allowance_um),

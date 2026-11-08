@@ -3029,6 +3029,11 @@ export interface components {
          *     means unmeasured, never zero. They do not create a trim part or qualify it.
          */
         InstallationSpace: {
+            /**
+             * Additional Bounded Walls
+             * @description Walls at the customer envelope, in addition to walls with known skirting. An empty list confirms that the remaining sides are open. Null means not surveyed.
+             */
+            additional_bounded_walls?: ("left" | "right" | "rear")[] | null;
             /** Bottom Allowance Um */
             bottom_allowance_um?: number | null;
             /** Depth Um */

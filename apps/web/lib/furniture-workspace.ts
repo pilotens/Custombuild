@@ -76,6 +76,7 @@ export interface FurnitureTrimProfile {
   walls: ("left" | "right" | "rear")[];
 }
 export interface FurnitureInstallation {
+  additional_bounded_walls?: FurnitureTrimProfile["walls"] | null;
   measured_front_space_um?: number | null;
   measured_ceiling_height_um?: number | null;
   width_um: number;

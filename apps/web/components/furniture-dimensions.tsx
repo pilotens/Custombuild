@@ -18,8 +18,9 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
   const changeMm = (key: keyof FurnitureInstallation, raw: string, nullable = false) => {
     if (!installation) return;
     try {
+      const isSiteMeasurement = key === "measured_front_space_um" || key === "measured_ceiling_height_um";
       const value = nullable && !raw.trim() ? null : exactMillimetreTextToMicrometres(raw,
-        { minimumUm: nullable || key === "measured_front_space_um" ? 0 : 1, maximumUm: nullable ? 500_000 : 6_000_000 });
+        { minimumUm: nullable || key === "measured_front_space_um" ? 0 : 1, maximumUm: isSiteMeasurement ? Number.MAX_SAFE_INTEGER : nullable ? 500_000 : 6_000_000 });
       apply({ ...installation, [key]: value }, `installation.${key}`);
     } catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera måttet.", `installation.${key}`); }
   };
@@ -38,17 +39,18 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
       {([['width_um', 'Kundlängd inklusive reserverat utrymme'], ['height_um', 'Kundhöjd'], ['depth_um', 'Kunddjup']] as const).map(([key, label]) =>
         <label key={key}>{label} (mm)<input type="number" min="1" max="6000" step="0.001"
           value={installation[key]/1_000} onChange={e => changeMm(key, e.target.value)} /></label>)}
-        {workspace.design.intent.family === "shelving" && workspace.design.intent.trial_angle ? <>
+      {workspace.design.intent.family === "shelving" && workspace.design.intent.trial_angle ? <>
         <label>Uppmätt fri takhöjd från golv (mm)
-        <input type="number" min="0.001" max="6000" step="0.001" placeholder="Ej uppmätt"
+          <input type="number" min="0.001" step="0.001" placeholder="Ej uppmätt"
           value={installation.measured_ceiling_height_um == null ? "" : installation.measured_ceiling_height_um / 1_000}
           onChange={e => e.target.value.trim() ? changeMm("measured_ceiling_height_um", e.target.value)
             : apply({ ...installation, measured_ceiling_height_um: null }, "installation.measured_ceiling_height_um")} /></label>
         <label>Fri plats framför stommens front (mm)
-          <input type="number" min="0" max="6000" step="0.001" placeholder="Ej uppmätt"
+          <input type="number" min="0" step="0.001" placeholder="Ej uppmätt"
             value={installation.measured_front_space_um == null ? "" : installation.measured_front_space_um / 1_000}
             onChange={e => e.target.value.trim() ? changeMm("measured_front_space_um", e.target.value)
               : apply({ ...installation, measured_front_space_um: null }, "installation.measured_front_space_um")} /></label>
+        <StandingWalls installation={installation} onChange={apply} />
       </> : null}
       <label><input type="checkbox" checked={installation.width_includes_trim}
         onChange={e => apply({ ...installation, width_includes_trim: e.target.checked })} />Längden inkluderar list</label>
@@ -66,6 +68,29 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
         ? <p>Listdelar och deras mekaniska infästning saknas ännu i modellen. Reserverat utrymme är inte en listkonstruktion.</p> : null}
     </> : null}
   </details>;
+}
+
+function StandingWalls({ installation, onChange }: {
+  installation: FurnitureInstallation;
+  onChange: (installation: FurnitureInstallation, field: string) => void;
+}) {
+  const trimmed = installation.trim_profile?.use === "existing_room_trim" ? installation.trim_profile.walls : [];
+  const walls = ([["left", "Vänster"], ["right", "Höger"], ["rear", "Bakom"]] as const)
+    .filter(([wall]) => !trimmed.includes(wall));
+  if (!walls.length) return null;
+  const surveyed = installation.additional_bounded_walls;
+  const update = (value: FurnitureInstallation["additional_bounded_walls"]) =>
+    onChange({ ...installation, additional_bounded_walls: value }, "installation.walls");
+  return <fieldset>
+    <legend>Väggar vid stående montering</legend>
+    <label><input type="checkbox" checked={surveyed != null}
+      onChange={e => update(e.target.checked ? [] : null)} />Övriga sidor är kontrollerade på plats</label>
+    {surveyed != null ? <>
+      <p>Markera väggar som ligger vid kundens yttermått. Omarkerade sidor räknas som fria. Listväggar ingår automatiskt.</p>
+      {walls.map(([wall, label]) => <label key={wall}><input type="checkbox" checked={surveyed.includes(wall)}
+        onChange={e => update(e.target.checked ? [...surveyed, wall] : surveyed.filter(v => v !== wall))} />{label} · vägg utan list</label>)}
+    </> : null}
+  </fieldset>;
 }
 
 function TrimProfileEditor({ installation, onChange, onError }: {

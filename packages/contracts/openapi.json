@@ -5420,6 +5420,27 @@
         "additionalProperties": false,
         "description": "Customer measurements, distinct from the generated carcass dimensions.\n\nAllowances reserve space for installation or separately designed trim. None\nmeans unmeasured, never zero. They do not create a trim part or qualify it.",
         "properties": {
+          "additional_bounded_walls": {
+            "anyOf": [
+              {
+                "items": {
+                  "enum": [
+                    "left",
+                    "right",
+                    "rear"
+                  ],
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Walls at the customer envelope, in addition to walls with known skirting. An empty list confirms that the remaining sides are open. Null means not surveyed.",
+            "title": "Additional Bounded Walls"
+          },
           "bottom_allowance_um": {
             "anyOf": [
               {
@@ -5474,7 +5495,7 @@
           "measured_ceiling_height_um": {
             "anyOf": [
               {
-                "maximum": 6000000.0,
+                "maximum": 9007199254740991.0,
                 "minimum": 1.0,
                 "type": "integer"
               },
@@ -5487,7 +5508,7 @@
           "measured_front_space_um": {
             "anyOf": [
               {
-                "maximum": 6000000.0,
+                "maximum": 9007199254740991.0,
                 "minimum": 0.0,
                 "type": "integer"
               },

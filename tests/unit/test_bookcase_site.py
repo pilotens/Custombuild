@@ -122,3 +122,42 @@ def test_unavailable_rear_space_blocks_even_if_that_wall_has_no_outward_stroke()
     result = review_furniture_dimensions(w.design.model_copy(update={"installation": changed}))
     assert result["standing_assembly"]["state"] == "blocked"
     assert "STANDING_REAR_CLEARANCE" in {i["code"] for i in result["issues"]}
+
+
+@pytest.mark.parametrize(
+    ("survey", "left_gap", "state"),
+    [
+        (None, 0, "requires_measurement"),
+        ((), 0, "nominal_clear"),
+        (("left",), 0, "blocked"),
+        (("left",), 6000, "blocked"),
+        (("left",), 6001, "nominal_clear"),
+    ],
+)
+def test_bare_wall_and_unsurveyed_space_are_distinct_from_an_open_side(survey, left_gap, state):
+    w = installed_trial(left=left_gap, ceiling=7_000_000, front=10_000_000)
+    site = w.design.installation.model_dump()
+    site.update(trim_profile=None, additional_bounded_walls=survey)
+    selected = InstallationSpace.model_validate(site)
+    check = review_furniture_dimensions(w.design.model_copy(update={"installation": selected}))
+    assert check["standing_assembly"]["state"] == state
+    if survey:
+        assert check["standing_assembly"]["walls"][0]["required_reservation_um"] == 6000
+    if survey is None:
+        assert "STANDING_WALL_LAYOUT_UNMEASURED" in {i["code"] for i in check["issues"]}
+
+
+def test_bare_wall_next_to_a_trimmed_wall_does_not_inherit_its_projection():
+    w = installed_trial(27_000, 7000, ceiling=1_300_000, front=600_000, walls=["left"])
+    site = w.design.installation.model_dump()
+    site["additional_bounded_walls"] = ["right"]
+    selected = InstallationSpace.model_validate(site)
+    check = review_furniture_dimensions(w.design.model_copy(update={"installation": selected}))
+    report = check["standing_assembly"]
+    assert report["state"] == "nominal_clear"
+    assert [(v["wall"], v["required_reservation_um"]) for v in report["walls"]] == [
+        ("left", 26_000),
+        ("right", 6000),
+    ]
+    with pytest.raises(ValueError):
+        InstallationSpace.model_validate({**site, "additional_bounded_walls": ["right", "right"]})
