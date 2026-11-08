@@ -257,6 +257,17 @@ describe("TemplatePicker Explore entry", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("öppnar den separata 700 mm underskåpsstommen som en måttstudie", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", {name:"Öppna referens med 700 mm underskåpsstomme"}));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({
+      id:"wall-library", productionLevel:"concept", patch:expect.objectContaining({
+        width_mm:4280, height_mm:2500, depth_mm:260, base_cabinet_height_mm:700, base_cabinet_count:6,
+      }),
+    }), expect.objectContaining({dimensionsConfirmed:false}));
+  });
+
   it("opens an empty frame immediately from Börja tomt", () => {
     const onSelect = vi.fn();
     renderPicker({ onSelect });

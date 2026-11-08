@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v15"
+        return "custombuild.shelving-workshop-review.v16"
     return "custombuild.furniture-review.v1"
 
 
@@ -50,6 +50,7 @@ class HardwareSelection(FrozenModel):
 
 
 Wall = Literal["left", "right", "rear"]
+SurveyField = Literal["ceiling_height", "front_space", "left_wall", "right_wall", "rear_wall"]
 # Site measurements cross the JSON/JavaScript boundary as exact integer µm.
 MAX_EXACT_SITE_UM = 2**53 - 1
 MeasuredWallUm = Annotated[int, Field(strict=True, ge=0, le=MAX_EXACT_SITE_UM)]
@@ -83,6 +84,10 @@ class InstallationSpace(FrozenModel):
     height_um: Length
     depth_um: Length
     qualified_site_ref: StableKey | None = Field(default=None, exclude_if=lambda v: v is None)
+    # Older saved workspaces can contain simulated numbers in the measured fields.
+    surveyed_fields: tuple[SurveyField, ...] = Field(
+        default=(), max_length=5, exclude_if=lambda v: not v
+    )
     # From the finished carcass plane to the wall face behind any trim.
     measured_left_wall_um: MeasuredWallUm | None = Field(
         default=None, exclude_if=lambda v: v is None
@@ -122,6 +127,17 @@ class InstallationSpace(FrozenModel):
     bottom_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
     front_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
     rear_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+
+    @field_validator("surveyed_fields")
+    @classmethod
+    def canonical_survey_fields(cls, fields: tuple[SurveyField, ...]) -> tuple[SurveyField, ...]:
+        return tuple(sorted(set(fields)))
+
+    def observed(self, field: SurveyField) -> int | None:
+        if field not in self.surveyed_fields:
+            return None
+        value: int | None = getattr(self, f"measured_{field}_um")
+        return value
 
     def carcass_dimensions(self) -> dict[str, int] | None:
         dimensions: dict[str, int] = {}

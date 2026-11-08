@@ -23,6 +23,7 @@ def installed_trial(left=20_000, right=20_000, floor=0, ceiling=None, front=None
         front_allowance_um=0,
         top_allowance_um=0,
         bottom_allowance_um=floor,
+        surveyed_fields=("ceiling_height", "front_space", "left_wall", "right_wall", "rear_wall"),
         measured_ceiling_height_um=ceiling,
         measured_front_space_um=front,
         trim_profile={
@@ -255,3 +256,25 @@ def test_actual_observation_of_bare_wall_remains_when_wall_survey_is_unset():
     ]
     assert actual["state"] == "blocked" and actual["walls"][0]["required_reservation_um"] == 6_000
     assert any(i["code"] == "STANDING_LEFT_MEASURED_CLEARANCE" for i in actual["issues"])
+
+
+def test_legacy_example_values_are_not_observations():
+    workspace = installed_trial(30_000, 30_000, ceiling=1_400_000, front=600_000)
+    site = workspace.design.installation.model_copy(
+        update={
+            "surveyed_fields": (),
+            "measured_left_wall_um": 30_000,
+        }
+    )
+
+    def review(installation):
+        design = workspace.design.model_copy(update={"installation": installation})
+        return review_furniture_dimensions(design)["standing_assembly"]
+
+    legacy = review(site)
+    assert legacy["state"] == "requires_measurement"
+    assert legacy["measured_ceiling_height_um"] is legacy["measured_front_space_um"] is None
+    assert legacy["walls"][0]["measured_distance_um"] is None
+    wall_only = review(site.model_copy(update={"surveyed_fields": ("left_wall",)}))
+    assert wall_only["walls"][0]["measured_margin_um"] == 4000
+    assert wall_only["measured_front_space_um"] is None

@@ -400,7 +400,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
               onChange={e => changeDimension("divider_count", Number(e.target.value))} /></label>
           </> : null}
           <ShelvingLayoutEditor key={`layout-${projectId}-${revision}-${inputEpoch}`} workspace={workspace} onChange={updateInput} onError={inputError} />
-          <InstallationEditor workspace={workspace} onChange={updateInput} onError={inputError} />
+          <InstallationEditor preview={preview} workspace={workspace} onChange={updateInput} onError={inputError} />
           {intent.family === "shelving" ? <label>Hur anges hyllasten?<select value={intent.shelf_load_basis ?? "per_row"}
             onChange={e => updateInput({ ...workspace, design: { ...workspace.design, intent: {
               ...intent, shelf_load_basis: e.target.value as "per_row" | "per_metre",
@@ -483,6 +483,8 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       {preview?.workshop_handoff?.dimensions.standing_assembly ? <div>
         <h3>Stående montering på plats</h3>
         <p>Trädelarna behöver {preview.workshop_handoff.dimensions.standing_assembly.minimum_height_from_base_um / 1_000} mm över stommens botten och {preview.workshop_handoff.dimensions.standing_assembly.minimum_front_space_um / 1_000} mm framför stommen. Arbetsutrymme tillkommer.</p>
+        {preview.workshop_handoff.dimensions.standing_assembly.envelope_top_margin_um != null ?
+          <p>Beräknad höjdmarginal inom kundmåttet: {preview.workshop_handoff.dimensions.standing_assembly.envelope_top_margin_um / 1000} mm.</p> : null}
         {preview.workshop_handoff.dimensions.standing_assembly.walls.length > 0 && (
           <table aria-label="Reserverade och uppmätta väggavstånd">
             <thead><tr><th>Vägg</th><th>Reserverat</th><th>Uppmätt</th><th>Krävs</th></tr></thead>

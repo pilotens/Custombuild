@@ -75,7 +75,9 @@ export interface FurnitureTrimProfile {
   use: "unassigned" | "existing_room_trim" | "furniture_trim";
   walls: ("left" | "right" | "rear")[];
 }
+export type SurveyField = "left_wall" | "right_wall" | "rear_wall" | "front_space" | "ceiling_height";
 export interface FurnitureInstallation {
+  surveyed_fields?: SurveyField[];
   qualified_site_ref?: string | null;
   measured_left_wall_um?: number | null;
   measured_right_wall_um?: number | null;

@@ -318,13 +318,22 @@ def part_drawings_pdf(
                     f"Material: {part.material_id}@{part.material_version}",
                     size=7.5,
                 )
+                grain_axis = {
+                    "X": ("U", part.axis_mapping.u_axis),
+                    "Y": ("V", part.axis_mapping.v_axis),
+                }.get(part.grain_direction)
+                grain_text = (
+                    f"Fiber längs {grain_axis[0]} (stomaxel {grain_axis[1].upper()})"
+                    if grain_axis
+                    else "Ingen angiven fiberriktning"
+                )
                 _text(
                     canvas,
                     MARGIN,
                     726,
                     f"Fysisk yta: {metadata['physical_face']} | "
                     f"U={part.axis_mapping.u_axis.upper()}, "
-                    f"V={part.axis_mapping.v_axis.upper()} | Delfiber: {part.grain_direction}",
+                    f"V={part.axis_mapping.v_axis.upper()} | {grain_text}",
                 )
                 _text(
                     canvas,

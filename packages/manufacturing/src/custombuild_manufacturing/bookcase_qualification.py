@@ -137,7 +137,7 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
     if problems:
         raise ValueError(" ".join(problems))
     site = spec.installation
-    if not site or not site.measured_ceiling_height_um or not site.measured_front_space_um:
+    if not site or not site.observed("ceiling_height") or not site.observed("front_space"):
         raise ValueError("Ange uppmätt takhöjd och fritt utrymme framför möbeln.")
     assert design.shelving_result is not None
     survey = review_standing_site(design.shelving_result, site)

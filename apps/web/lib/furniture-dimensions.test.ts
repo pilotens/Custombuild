@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { changeTrimProfile, installationCarcassDimensions, parseFurniturePercentages } from "./furniture-dimensions";
-import type { FurnitureInstallation, FurnitureTrimProfile } from "./furniture-workspace";
+import { changeTrimProfile, installationCarcassDimensions, parseFurniturePercentages, standingFitAlternative, invalidateMovedDatums, updateSurvey } from "./furniture-dimensions";
+import type { FurnitureInstallation, FurniturePreview, FurnitureTrimProfile } from "./furniture-workspace";
 
 const measured: FurnitureInstallation = {
   width_um: 4_340_007, height_um: 2_540_009, depth_um: 280_001, width_includes_trim: true,
@@ -40,5 +40,33 @@ describe("kundmått och proportioner", () => {
   });
   it.each(["5; 7; 80", "40; 10; 80", "10; 50; 98"])("avvisar hyllor med fel ordning eller avstånd: %s", raw => {
     expect(() => parseFurniturePercentages(raw, 3, "shelves")).toThrow();
+  });
+});
+
+describe("stående platsalternativ", () => {
+  const site: FurnitureInstallation = { width_um: 4340000, height_um: 2540000, depth_um: 280000,
+    left_allowance_um: 20000, right_allowance_um: 20000, rear_allowance_um: 20000,
+    front_allowance_um: 0, top_allowance_um: 0, bottom_allowance_um: 0, width_includes_trim: true };
+  const preview = { workshop_handoff: { dimensions: { carcass_dimensions_um: installationCarcassDimensions(site),
+    standing_assembly: { minimum_height_from_base_um: 2558000,
+      walls: [{wall: "left", step_number: 12, required_reservation_um: 26000},
+        {wall: "right", step_number: 13, required_reservation_um: 26000},
+        {wall: "rear", step_number: null, required_reservation_um: 20000}] } } } } as FurniturePreview;
+  it("använder träets införingsbana och fyller inte i platsmätningar", () => {
+    const next = standingFitAlternative(site, preview)!;
+    expect([next.width_um, next.height_um, next.depth_um]).toEqual([4340000,2540000,280000]);
+    expect([next.left_allowance_um, next.right_allowance_um, next.top_allowance_um]).toEqual([30000,30000,40000]);
+    expect(installationCarcassDimensions(next)).toEqual({width_um:4280000,height_um:2500000,depth_um:260000});
+    expect(next.surveyed_fields).toEqual([]);
+    expect(standingFitAlternative(next, preview)).toBeNull();
+    expect(site.left_allowance_um).toBe(20000);
+  });
+  it("bevarar oberoende takhöjd och nollmätning tills väggens datum ändras", () => {
+    const measured = updateSurvey(updateSurvey(site, "ceiling_height", 2540000), "left_wall", 0);
+    const next = invalidateMovedDatums(measured, {...measured, left_allowance_um:30000});
+    expect(measured.measured_left_wall_um).toBe(0);
+    expect(next.surveyed_fields).toEqual(["ceiling_height"]);
+    expect(next.measured_left_wall_um).toBeNull();
+    expect(next.measured_ceiling_height_um).toBe(2540000);
   });
 });

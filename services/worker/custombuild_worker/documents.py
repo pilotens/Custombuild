@@ -682,6 +682,14 @@ def assembly_manual_pdf(
             y - 10,
             max_chars=88,
         )
+        if standing_site.envelope_top_margin_um is not None:
+            y = _draw_wrapped_text(
+                canvas,
+                f"Marginal inom kundens angivna höjdmått: "
+                f"{um_to_mm(standing_site.envelope_top_margin_um)} mm. "
+                "Värdet är beräknat från monteringsrörelsen.",
+                MARGIN, y - 4, max_chars=88,
+            )
         for label, value in (
             ("Minsta takhöjd från golv enligt geometrin", standing_site.minimum_ceiling_height_um),
             ("Uppmätt takhöjd", standing_site.measured_ceiling_height_um),

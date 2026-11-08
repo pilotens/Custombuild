@@ -421,6 +421,20 @@ function OpenTemplatePicker({
     }
   };
 
+  const openCabinetReference = () => {
+    const template = furnitureTemplate("wall-library");
+    const next = updateBrief({ startMode: "template", selectedTemplateId: template.id,
+      width_mm: 4280, height_mm: 2500, depth_mm: 260, dimensionsConfirmed: false });
+    try {
+      const reference = { ...template, patch: { ...template.patch, base_cabinet_height_mm: 700,
+        base_cabinet_count: 6, divider_count: 5, shelf_count: 5, plinth: false } };
+      onSelect(templateWithPlanningBrief(reference, next), next);
+      setPlanningError(undefined);
+    } catch (error) {
+      setPlanningError(error instanceof Error ? error.message : "Underskåpsstommen kunde inte öppnas.");
+    }
+  };
+
   const startFromImage = () => {
     const next = updateBrief({ startMode: "reference" });
     onUploadImage(next);
@@ -520,6 +534,8 @@ function OpenTemplatePicker({
               <a href="/furniture?family=dining_table">Matbord</a><a href="/furniture?family=chair">Matstol</a>
               <a href="/furniture?family=chest_of_drawers">Byrå</a>
             </nav>
+            <button type="button" onClick={openCabinetReference}>Öppna referens med 700 mm underskåpsstomme</button>
+            <p>Måttstudie 4 280 × 2 500 × 260 mm. Luckor, gångjärn och verkstadsritningar ingår inte i underskåpskonceptet.</p>
           </div>
           <div className={styles.heroVisual}>
             <InspirationVisual template={furnitureTemplate("wall-library")} src="/assets/inspiration/explore-hero.jpg" priority />

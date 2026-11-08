@@ -9,7 +9,7 @@ from .furniture import FurnitureDesign, ShelvingIntent
 from .furniture_engine import build_furniture
 from .models import DesignResult
 
-DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.4.0"
+DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.5.0"
 
 
 def review_furniture_dimensions(

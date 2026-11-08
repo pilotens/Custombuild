@@ -3071,6 +3071,11 @@ export interface components {
             remaining_walls_unmeasured?: boolean | null;
             /** Right Allowance Um */
             right_allowance_um?: number | null;
+            /**
+             * Surveyed Fields
+             * @default []
+             */
+            surveyed_fields: ("ceiling_height" | "front_space" | "left_wall" | "right_wall" | "rear_wall")[];
             /** Top Allowance Um */
             top_allowance_um?: number | null;
             trim_profile?: components["schemas"]["TrimProfile"] | null;
@@ -4764,6 +4769,8 @@ export interface components {
         };
         /** StandingSiteReview */
         StandingSiteReview: {
+            /** Envelope Top Margin Um */
+            envelope_top_margin_um?: number | null;
             /** Issues */
             issues: {
                 [key: string]: string;

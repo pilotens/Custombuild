@@ -45,6 +45,7 @@ def measured_order():
         bottom_allowance_um=0,
         front_allowance_um=0,
         additional_bounded_walls=["left", "right", "rear"],
+        surveyed_fields=("ceiling_height", "front_space", "left_wall", "right_wall", "rear_wall"),
         measured_ceiling_height_um=1_100_000,
         measured_front_space_um=600_000,
         qualified_site_ref="test-fixture",
@@ -160,6 +161,22 @@ def test_incomplete_api_order_never_inherits_a_qualified_default(
         )
         assert saved.status_code == 422 and message in saved.json()["detail"]
         assert client.get(path + "/draft", headers=HEADERS).json()["revision"] == 1
+
+
+def test_legacy_sample_measurements_cannot_release_a_workshop_order(tmp_path, monkeypatch):
+    reference = measured_order()
+    _install_test_profile(tmp_path, monkeypatch, reference)
+    payload = reference.model_dump(mode="json")
+    payload["design"]["installation"].pop("surveyed_fields")
+    unverified = FurnitureWorkspace.model_validate(payload)
+    with TestClient(app) as client:
+        path, bound = create(client, unverified)
+        response = client.post(
+            path + "/exports", headers=HEADERS, json={**bound, "purpose": "workshop_drawings"}
+        )
+        assert response.status_code == 409
+        assert "takhöjd" in response.json()["detail"].lower()
+        assert client.post(path + "/exports", headers=HEADERS, json=bound).status_code == 202
 
 
 def test_explicit_zero_per_metre_survives_reopen_and_resave():

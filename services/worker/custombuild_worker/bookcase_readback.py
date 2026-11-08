@@ -144,6 +144,14 @@ def _documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
             != (pos.x_um, pos.y_um, pos.z_um)
         ):
             raise ValueError(f"Kaplista eller monteringslista avviker från ordern: {pid}")
+        world_grain = p.grain_direction.value.upper()
+        grain_text = (
+            f"Fiber längs U (stomaxel {world_grain})"
+            if world_grain == "XYZ"[a]
+            else f"Fiber längs V (stomaxel {world_grain})"
+            if world_grain == "XYZ"[b]
+            else "Ingen angiven fiberriktning"
+        )
         for side in ("A", "B"):
             content = "\n".join(pages[pid, side])
             face = (p.a_side if side == "A" else p.b_side).value.upper()
@@ -153,6 +161,10 @@ def _documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
                 or f"{p.material_id}@{p.material_version}" not in content
             ):
                 raise ValueError(f"Fel delmått eller fysisk sida i PDF: {pid}/{side}")
+            if any(grain_text not in sheet for sheet in pages[pid, side]):
+                raise ValueError(
+                    f"Fiberriktningen i delritningen avviker från modellen: {pid}/{side}"
+                )
             notes: dict[str, str] = {}
             for sheet in pages[pid, side]:
                 body = sheet.split("Numren identifierar", 1)[-1].split("DXF: parts/", 1)[0]

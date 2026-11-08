@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from typing import Literal
 
 from .bookcase_motion import Bounds, assembly_strokes
-from .furniture import InstallationSpace, Wall
+from .furniture import InstallationSpace, SurveyField, Wall
 from .models import DesignResult, FrozenModel
 from .units import to_mm
 
@@ -12,6 +12,13 @@ WALL_NAMES: Mapping[Wall, str] = {
     "left": "vänster vägg",
     "right": "höger vägg",
     "rear": "bakväggen",
+}
+
+
+WALL_SURVEY_FIELDS: dict[Wall, SurveyField] = {
+    "left": "left_wall",
+    "right": "right_wall",
+    "rear": "rear_wall",
 }
 
 
@@ -26,6 +33,7 @@ class WallTravel(FrozenModel):
 
 
 class StandingSiteReview(FrozenModel):
+    envelope_top_margin_um: int | None = None
     minimum_height_from_base_um: int
     minimum_ceiling_height_um: int | None
     measured_ceiling_height_um: int | None
@@ -53,7 +61,9 @@ def review_standing_site(
     trim = site.trim_profile if site else None
     trimmed = trim.walls if trim and trim.use == "existing_room_trim" else ()
     bare = site.additional_bounded_walls if site else None
-    measured = {wall: getattr(site, f"measured_{wall}_wall_um", None) for wall in WALL_NAMES}
+    measured = {
+        wall: site.observed(field) if site else None for wall, field in WALL_SURVEY_FIELDS.items()
+    }
     observed_walls = (wall for wall in WALL_NAMES if measured[wall] is not None)
     walls = tuple(dict.fromkeys((*trimmed, *(bare or ()), *observed_walls)))
     floor = site.bottom_allowance_um if site else None
@@ -189,7 +199,7 @@ def review_standing_site(
                     "och räkna om stommen.",
                 }
             )
-    ceiling = site.measured_ceiling_height_um
+    ceiling = site.observed("ceiling_height")
     required_height = None if floor is None else floor + peak
     if ceiling is None or required_height is None:
         issues.append(
@@ -210,7 +220,7 @@ def review_standing_site(
                 "stommen och kontrollera även arbetsutrymmet.",
             }
         )
-    measured_front = site.measured_front_space_um
+    measured_front = site.observed("front_space")
     if front > 0 and measured_front is None:
         issues.append(
             {
@@ -244,6 +254,9 @@ def review_standing_site(
     expected = site.carcass_dimensions()
     incomplete |= expected != {k: getattr(params, k) for k in ("width_um", "height_um", "depth_um")}
     return StandingSiteReview(
+        envelope_top_margin_um=None
+        if required_height is None
+        else site.height_um - required_height,
         minimum_front_space_um=front,
         measured_front_space_um=measured_front,
         minimum_height_from_base_um=peak,

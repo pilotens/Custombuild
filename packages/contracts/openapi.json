@@ -5616,6 +5616,22 @@
             ],
             "title": "Right Allowance Um"
           },
+          "surveyed_fields": {
+            "default": [],
+            "items": {
+              "enum": [
+                "ceiling_height",
+                "front_space",
+                "left_wall",
+                "right_wall",
+                "rear_wall"
+              ],
+              "type": "string"
+            },
+            "maxItems": 5,
+            "title": "Surveyed Fields",
+            "type": "array"
+          },
           "top_allowance_um": {
             "anyOf": [
               {
@@ -10022,6 +10038,17 @@
       "StandingSiteReview": {
         "additionalProperties": false,
         "properties": {
+          "envelope_top_margin_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Envelope Top Margin Um"
+          },
           "issues": {
             "items": {
               "additionalProperties": {

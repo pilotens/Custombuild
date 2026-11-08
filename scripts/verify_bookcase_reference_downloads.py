@@ -172,7 +172,7 @@ def inspect_files(path, revision):
         manifest = document("manifest.json")
         design_hash = manifest["design_hash"]
         assert order["revision"] == manifest["revision"] == revision
-        assert manifest["schema_version"] == "custombuild.shelving-workshop-review.v15"
+        assert manifest["schema_version"] == "custombuild.shelving-workshop-review.v16"
         assert manifest["production_qualified"] is False
         intent = order["intent"]
         assert (
@@ -193,17 +193,18 @@ def inspect_files(path, revision):
         )
         margins = [-6000, -6000, 0] if revision == 1 else [4000, 4000, 0]
         assert [w["margin_um"] for w in site["walls"]] == margins
-        assert [w["measured_margin_um"] for w in site["walls"]] == (
-            [None] * 3 if revision == 1 else margins
-        )
-        assert [w["measured_distance_um"] for w in site["walls"]] == (
-            [None] * 3 if revision == 1 else [30000, 30000, 20000]
-        )
-        assert site["state"] == ("blocked" if revision == 1 else "nominal_clear")
+        assert [w["measured_margin_um"] for w in site["walls"]] == [None] * 3
+        assert [w["measured_distance_um"] for w in site["walls"]] == [None] * 3
+        assert site["state"] == ("blocked" if revision == 1 else "requires_measurement")
+        for field in ("left_wall", "right_wall", "rear_wall", "front_space", "ceiling_height"):
+            assert installation.get(f"measured_{field}_um") is None
+        manual = PdfReader(BytesIO(archive.read("documents/assembly.pdf")))
+        place = manual.pages[1].extract_text()
         assert (
-            installation.get("measured_ceiling_height_um"),
-            installation.get("measured_front_space_um"),
-        ) == ((None, None) if revision == 1 else (2540000, 600000))
+            f"Marginal inom kundens angivna höjdmått: {(-18 if revision == 1 else 22)} mm" in place
+        )
+        assert "Uppmätt takhöjd: uppgift saknas" in place
+        assert "Uppmätt fritt utrymme framför stommen: uppgift saknas" in place
         physical = document("inspection/kvalificeringsprov.json")
         assert physical["type_test_results"] is None and physical["design_hash"] == design_hash
         limits = physical["order_requirements"]
@@ -295,7 +296,18 @@ def inspect_files(path, revision):
         assert len(steps) == 56
         for name in ("assembly", "part-drawings"):
             pdf = PdfReader(BytesIO(archive.read(f"documents/{name}.pdf")))
-            text = "\n".join(p.extract_text() for p in pdf.pages)
+            sheets = [p.extract_text() for p in pdf.pages]
+            text = "\n".join(sheets)
+            if name == "part-drawings":
+                for key, panel in panels.items():
+                    upright = key.endswith("-side") or key.startswith(("divider-", "back-"))
+                    label = (
+                        "Fiber längs V (stomaxel Z)" if upright else "Fiber längs U (stomaxel X)"
+                    )
+                    drawings = [
+                        sheet for sheet in sheets if f"DXF: parts/{panel['part_id']}/" in sheet
+                    ]
+                    assert drawings and all(label in sheet for sheet in drawings), key
             assert all(part in text for part in ids) and design_hash in text
             if name == "assembly":
                 assert all(s["step_id"] in text for s in steps)

@@ -151,21 +151,15 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByRole("button", { name: "Spara revision" })).toBeDisabled();
     await width.fill("4300");
     await width.blur();
-    await page.getByLabel("Uppmätt fri takhöjd från golv (mm)").fill("2540");
-    await page.getByLabel("Fri plats framför stommens front (mm)").fill("600");
-    await page.getByLabel("Vänster · reserverat (mm)").fill("30");
-    await page.getByLabel("Höger · reserverat (mm)").fill("30");
-    await page.getByLabel("Ovanför · reserverat (mm)").fill("40");
-    await page.getByRole("button", {name: "Räkna om stommen från kundmåtten"}).click();
+    await page.getByRole("button", {name: "Använd platsalternativ"}).click();
     await expect(width).toHaveValue("4280");
     await expect(page.getByLabel("Höjd (mm)", {exact: true})).toHaveValue("2500");
     const leftMeasurement = page.getByLabel("Vänster vägg · uppmätt avstånd (mm)");
     await leftMeasurement.fill("25");
     await expect(page.getByText(/Uppmätt avstånd från stommens slutläge till vänster vägg är 25 mm/).first()).toBeVisible();
     await expect(width).toHaveValue("4280");
-    await leftMeasurement.fill("30");
-    await page.getByLabel("Höger vägg · uppmätt avstånd (mm)").fill("30");
-    await page.getByLabel("Bakre vägg · uppmätt avstånd (mm)").fill("20");
+    // Remove the negative probe. The customer supplied no wall survey for this order.
+    await leftMeasurement.fill("");
     await expect(page.getByLabel("Hyllrader", { exact: true })).toHaveValue("7");
     await page.getByRole("button", { name: "Spara revision" }).click();
     await expect(page.getByText("Revision 2 är sparad.")).toBeVisible();
@@ -182,11 +176,11 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       "with zipfile.ZipFile(sys.argv[1]) as before, zipfile.ZipFile(sys.argv[2]) as after:",
       " old,new=[json.loads(z.read('design/resolved.json')) for z in (before,after)]",
       " site=json.loads(after.read('assembly/required-space.json'))['standing_site']",
-      " assert site['state']=='nominal_clear' and site['minimum_ceiling_height_um']==2518000",
-      " assert site['measured_ceiling_height_um']==2540000 and not site['issues']",
+      " assert site['state']=='requires_measurement' and site['minimum_ceiling_height_um']==2518000",
+      " assert site['measured_ceiling_height_um'] is None and site['measured_front_space_um'] is None",
       " assert [w['margin_um'] for w in site['walls']]==[4000,4000,0]",
-      " assert [w['measured_distance_um'] for w in site['walls']]==[30000,30000,20000]",
-      " assert [w['measured_margin_um'] for w in site['walls']]==[4000,4000,0]",
+      " assert [w['measured_distance_um'] for w in site['walls']]==[None,None,None]",
+      " assert [w['measured_margin_um'] for w in site['walls']]==[None,None,None]",
       " assert new['spec']['revision']==2 and new['design_hash']!=old['design_hash']",
       " readback=json.loads(after.read('inspection/geometry-readback.json'))",
       " assert readback['design_hash']==new['design_hash'] and readback['revision']==2",
@@ -202,7 +196,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       headers, data: {...secondIdentity, purpose: "workshop_drawings"},
     });
     expect(denied.status()).toBe(409);
-    expect((await denied.json()).detail).toMatch(/provad|batch/i);
+    expect((await denied.json()).detail).toMatch(/takhöjd|framför/i);
     // Removing a trim profile preserves the three walls where it was measured.
     await page.getByRole("checkbox", {name: "Ange listprofil"}).uncheck();
     await page.getByRole("checkbox", {name: "Längden inkluderar list"}).uncheck();
@@ -211,8 +205,6 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Vänster · vägg utan list")).toBeChecked();
     await expect(page.getByText(/vid vänster vägg behöver 6 mm nominellt/).first()).toBeVisible();
     await page.getByLabel("Övriga sidor är kontrollerade på plats").uncheck();
-    await expect(page.getByText(/Kontrollera väggläget vid/)).toHaveCount(0);
-    await leftMeasurement.fill("");
     await expect(page.getByText(/Kontrollera väggläget vid vänster vägg/).first()).toBeVisible();
     await page.getByLabel("Ange separata kundmått").uncheck();
     await expect(page.getByText(/Monteringsplatsen är inte angiven/).first()).toBeVisible();

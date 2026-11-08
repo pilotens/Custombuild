@@ -38,7 +38,7 @@ def shelving_trial_protocol(
     floor_diagonal = isqrt(diagonal_squared)
     tilt_clearance_mm = (floor_diagonal + (floor_diagonal**2 != diagonal_squared) + 999) // 1000
     ceiling = (
-        result.spec.installation.measured_ceiling_height_um if result.spec.installation else None
+        result.spec.installation.observed("ceiling_height") if result.spec.installation else None
     )
     lines.append(
         f"Om färdig stomme reses från ryggläge behövs minst {tilt_clearance_mm} mm fri "
