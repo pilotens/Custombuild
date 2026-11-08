@@ -534,6 +534,7 @@ def assembly_manual_pdf(
     package_design_hash: str | None = None,
     assembly_space: AssemblySpace | None = None,
     standing_site: StandingSiteReview | None = None,
+    workshop_profile: str | None = None,
 ) -> bytes:
     buffer, canvas = _canvas()
     identity = f"Designhash {design.design_hash}"
@@ -545,18 +546,27 @@ def assembly_manual_pdf(
     travel = {s.step_number: s.travel_um for s in assembly_space.steps} if assembly_space else {}
     y = _header(
         canvas,
-        "START HÄR – monteringsgranskning",
+        "Monteringsanvisning" if workshop_profile else "START HÄR – monteringsgranskning",
         identity,
     )
     canvas.setFillColor(BLOCK)
     canvas.setFont("Helvetica-Bold", 10)
-    canvas.drawString(MARGIN, y, "EJ FRISLÄPPT SOM KUNDMANUAL ELLER FÖR FYSISK MONTERING")
+    canvas.drawString(
+        MARGIN,
+        y,
+        f"Monteringsprofil: {workshop_profile}"
+        if workshop_profile
+        else "EJ FRISLÄPPT SOM KUNDMANUAL ELLER FÖR FYSISK MONTERING",
+    )
     y -= 20
     canvas.setFillColor(INK)
     canvas.setFont("Helvetica", 8)
     y = _draw_wrapped_text(
         canvas,
-        "Dokumentet är ett designgranskningsunderlag. Ansvarig montör ska fastställa "
+        "Läs documents/installation.pdf före steg 1. Den anger vägginfästning, "
+        "uppställning, lyfthjälp, fuktområde och verktyg för denna plats."
+        if workshop_profile
+        else "Dokumentet är ett designgranskningsunderlag. Ansvarig montör ska fastställa "
         "lyftplan, arbetsberedning, fixturer, infästningar och lokala säkerhetsåtgärder "
         "innan arbetet påbörjas.",
         MARGIN,
@@ -619,7 +629,13 @@ def assembly_manual_pdf(
         if manual_plan.unresolved_tool_ids
         else "Inga i den frysta verktygslistan"
     )
-    canvas.drawString(MARGIN, y, "Ej specificerade hjälpmedel: " + unresolved)
+    canvas.drawString(
+        MARGIN,
+        y,
+        "Hjälpmedlens specifikation: documents/installation.pdf"
+        if workshop_profile
+        else "Ej specificerade hjälpmedel: " + unresolved,
+    )
     y -= 18
     canvas.setFont("Helvetica-Bold", 9)
     canvas.drawString(MARGIN, y, "Verktyg och hjälpmedel från AssemblyGraph")
@@ -627,12 +643,21 @@ def assembly_manual_pdf(
     canvas.setFont("Helvetica", 8)
     for tool_id in manual_plan.tool_ids:
         label, specified = ASSEMBLY_TOOL_CATALOG.get(tool_id, (tool_id, False))
-        status = "identifierat" if specified else "SPECIFIKATION KRÄVS"
+        status = (
+            "se installationsanvisningen"
+            if workshop_profile
+            else ("identifierat" if specified else "SPECIFIKATION KRÄVS")
+        )
         canvas.drawString(MARGIN, y, f"{tool_id}: {label} – {status}")
         y -= 12
     if not manual_plan.tool_ids:
         canvas.drawString(MARGIN, y, "Inga verktygs-ID:n finns i AssemblyGraph.")
-    _footer(canvas, "Designgranskning – fysisk montering kräver separat arbetsberedning")
+    _footer(
+        canvas,
+        f"Monteringsprofil {workshop_profile}"
+        if workshop_profile
+        else "Designgranskning – fysisk montering kräver separat arbetsberedning",
+    )
 
     if standing_site:
         canvas.showPage()
@@ -833,7 +858,12 @@ def assembly_manual_pdf(
                     "monteras inne i facket mot de två markerade ytorna. Rikta vinkelns hål "
                     "mot pilothålen. Montera två DIN 96 A4 5 x 16 mm, en i varje skänkel. "
                     "Dra först båda löst, kontrollera fullt instick och anliggning innan "
-                    "åtdragning. Slutmoment, pilotdiameter och utdragskapacitet kräver prov."
+                    "åtdragning. "
+                    + (
+                        "Använd föreskrivet moment i documents/installation.pdf."
+                        if workshop_profile
+                        else "Slutmoment, pilotdiameter och utdragskapacitet kräver prov."
+                    )
                 ),
                 MARGIN,
                 y,
@@ -852,7 +882,12 @@ def assembly_manual_pdf(
                 canvas.drawString(MARGIN, y - 12, f"Stående del: {a.upright_hole}")
                 canvas.drawString(MARGIN, y - 23, f"Liggande del: {a.horizontal_hole}")
                 y -= 25
-            _footer(canvas, "Provmontage · kontrollera åtkomst innan låsning och belastning")
+            _footer(
+                canvas,
+                "Montering enligt documents/installation.pdf"
+                if workshop_profile
+                else "Provmontage · kontrollera åtkomst innan låsning och belastning",
+            )
     return _finish(buffer, canvas)
 
 

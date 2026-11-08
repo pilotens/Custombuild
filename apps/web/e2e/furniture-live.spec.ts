@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { expect, test, type Page, type TestInfo } from "@playwright/test";
@@ -39,7 +39,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
   });
 
   test("kundmått 4340 × 2540 × 280: arbetsfil, återöppning och spårbart CAD-underlag", async ({ page, request }, info) => {
-    test.setTimeout(300_000);
+    test.setTimeout(900_000);
     const provisioned = await provisionLiveProject(request, info, "customer-bookcase");
     await selectProjectBeforeNavigation(page, provisioned);
     await page.goto("/");
@@ -53,6 +53,18 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByLabel("Djup (mm)", { exact: true })).toHaveValue("260");
     await page.getByText("Fack, hyllhöjder och rygg", { exact: true }).click();
     await page.getByRole("checkbox", { name: /Prova mekanisk låsning/ }).check();
+    const viewer = page.getByTestId("furniture-viewer");
+    await expect(viewer).toHaveAttribute("data-renderer", "webgl");
+    const canvas = viewer.locator("canvas");
+    await expect(canvas).toHaveAttribute("data-custombuild-model-root", /.+/);
+    const originalView = await canvas.screenshot();
+    await page.getByLabel("Avdelare", {exact: true}).fill("5");
+    await page.getByLabel("Hyllrader", {exact: true}).fill("7");
+    await page.getByLabel("Hur anges hyllasten?").selectOption("per_metre");
+    await page.getByLabel("Last per meter hyllrad (kg/m)").fill("30");
+    await page.getByLabel("Last per meter hyllrad (kg/m)").blur();
+    await expect(page.getByLabel("Granska en del").locator("option")).toHaveCount(58);
+    await expect.poll(async () => !(await canvas.screenshot()).equals(originalView)).toBe(true);
     await page.getByLabel("Projektnamn", { exact: true }).fill(`${provisioned.project.name}-import`);
     const created = page.waitForResponse(r => r.request().method() === "POST" && new URL(r.url()).pathname === "/v1/furniture/projects");
     await page.getByRole("button", { name: "Spara revision" }).click();
@@ -76,11 +88,12 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByRole("table")).toHaveCount(2);
     await page.getByRole("button", { name: "Skapa granskningspaket" }).click();
     const link = page.getByRole("link", { name: /Hämta STEP, GLB, DXF/ });
-    await expect(link).toBeVisible({ timeout: 200_000 });
+    await expect(link).toBeVisible({ timeout: 360_000 });
     const downloadEvent = page.waitForEvent("download");
     await link.click();
     const download = await downloadEvent;
     expect(await download.failure()).toBeNull();
+    await download.saveAs(info.outputPath("Custombuild-Bokhylla-Valnot-Konstruktionsprov.zip"));
     const exported = JSON.parse(execFileSync("python3", ["-c", [
       "import csv,hashlib,io,json,sys,zipfile",
       "with zipfile.ZipFile(sys.argv[1]) as z:",
@@ -95,10 +108,13 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " assert manifest['design_hash']==model['design_hash']==graph['design_hash']==ops['document_identity']['design_hash']",
       " assert json.loads(z.read('design/workspace.json'))['manufacturing'] is None",
       " assert all(p['material_id']=='solid-walnut' for p in model['parts'] if p['role']!='back')",
-      " assert len(graph['graph']['steps'])>1",
+      " readback=json.loads(z.read('inspection/geometry-readback.json'))",
+      " assert readback['design_hash']==manifest['design_hash'] and readback['revision']==1",
+      " assert [readback[k] for k in ('timber_solids','pilot_holes','dxf_faces','grooves','stopped_grooves','assembly_steps')]==[57,196,114,122,94,56]",
+      " assert len(graph['graph']['steps'])==56",
       " fittings=json.loads(z.read('assembly/trial-angles.json'))",
-      " assert len(fittings['angles'])==22 and fittings['revision']==manifest['revision']",
-      " assert len(fittings['straight_access_um_by_pilot'])==44",
+      " assert len(fittings['angles'])==98 and fittings['revision']==manifest['revision']",
+      " assert len(fittings['straight_access_um_by_pilot'])==196",
       " assert z.read('design/with-mounted-angles.step').startswith(b'ISO-10303-21;')",
       " rows=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
       " assert rows and all(not r['measured'] and not r['result'] for r in rows)",
@@ -115,6 +131,11 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     expect(exported.dimensions.standing_assembly.minimum_height_from_base_um).toBe(2_558_000);
     expect(exported.dimensions.standing_assembly.walls.map((wall: {margin_um: number}) => wall.margin_um))
       .toEqual([-6_000, -6_000, 0]);
+    const originalDenied = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/exports"));
+    await page.getByRole("button", {name: "Beställ verkstadsritningar"}).click();
+    const blocked = await originalDenied;
+    expect(blocked.status()).toBe(409);
+    expect((await blocked.json()).detail).toMatch(/26 mm/);
     await attachView(page, info, "customer-bookcase-dimensions");
     const width = page.getByLabel("Bredd (mm)", { exact: true });
     await width.fill("6000.001");
@@ -131,16 +152,17 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.getByRole("button", {name: "Räkna om stommen från kundmåtten"}).click();
     await expect(width).toHaveValue("4280");
     await expect(page.getByLabel("Höjd (mm)", {exact: true})).toHaveValue("2500");
-    await page.getByLabel("Hyllrader", { exact: true }).fill("2");
+    await expect(page.getByLabel("Hyllrader", { exact: true })).toHaveValue("7");
     await page.getByRole("button", { name: "Spara revision" }).click();
     await expect(page.getByText("Revision 2 är sparad.")).toBeVisible();
     await page.getByRole("button", { name: "Skapa granskningspaket" }).click();
     const second = page.getByRole("link", { name: /Hämta STEP.*revision 2/ });
-    await expect(second).toBeVisible({ timeout: 200_000 });
+    await expect(second).toBeVisible({ timeout: 360_000 });
     const secondEvent = page.waitForEvent("download");
     await second.click();
     const regenerated = await secondEvent;
     expect(await regenerated.failure()).toBeNull();
+    await regenerated.saveAs(info.outputPath("Custombuild-Bokhylla-Valnot-Platsalternativ.zip"));
     execFileSync("python3", ["-c", [
       "import json,sys,zipfile",
       "with zipfile.ZipFile(sys.argv[1]) as before, zipfile.ZipFile(sys.argv[2]) as after:",
@@ -150,13 +172,21 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       " assert site['measured_ceiling_height_um']==2540000 and not site['issues']",
       " assert [w['margin_um'] for w in site['walls']]==[4000,4000,0]",
       " assert new['spec']['revision']==2 and new['design_hash']!=old['design_hash']",
-      " removed={p['part_id'] for p in old['parts']}-{p['part_id'] for p in new['parts']}",
-      " assert len(removed)==4",
-      " for name in after.namelist():",
-      "  assert all(p not in name for p in removed)",
-      "  if name.endswith(('.json','.csv','.dxf','.svg','.step')):",
-      "   data=after.read(name); assert all(p.encode() not in data for p in removed)",
+      " readback=json.loads(after.read('inspection/geometry-readback.json'))",
+      " assert readback['design_hash']==new['design_hash'] and readback['revision']==2",
+      " assert len(new['parts'])==readback['timber_solids']==57 and readback['pilot_holes']==196",
+      " assert old['spec']['intent']['width_um']==4300000 and new['spec']['intent']['width_um']==4280000",
     ].join("\n"), (await download.path())!, (await regenerated.path())!]);
+    const orderUrl = `${process.env.PLAYWRIGHT_API_URL}/v1/furniture/projects/${project.id}`;
+    const headers = {Authorization: `Bearer ${process.env.PLAYWRIGHT_DEMO_TOKEN || "demo-nordic-owner"}`};
+    const secondDraft = await (await request.get(orderUrl+"/draft", {headers})).json();
+    expect(secondDraft.revision).toBe(2);
+    const secondIdentity = {expected_revision: 2, expected_design_hash: secondDraft.preview.design.design_hash};
+    const denied = await request.post(orderUrl+"/exports", {
+      headers, data: {...secondIdentity, purpose: "workshop_drawings"},
+    });
+    expect(denied.status()).toBe(409);
+    expect((await denied.json()).detail).toMatch(/provad|batch/i);
     // Removing a trim profile preserves the three walls where it was measured.
     await page.getByRole("checkbox", {name: "Ange listprofil"}).uncheck();
     await page.getByRole("checkbox", {name: "Längden inkluderar list"}).uncheck();
@@ -172,6 +202,52 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await attachView(page, info, "customer-bookcase-mobile");
+
+    const exportOrder = async (revision: number, hash: string) => {
+      const response = await request.post(orderUrl+"/exports", {
+        headers, data: {expected_revision:revision, expected_design_hash:hash},
+      });
+      expect(response.status()).toBe(202);
+      return (await response.json()).job_id as string;
+    };
+    const saveRows = async (revision: number, count: number) => {
+      const source = structuredClone(secondDraft.workspace);
+      source.design.intent.shelf_count = count;
+      const response = await request.put(orderUrl+"/draft", {headers,
+        data:{expected_revision:revision, workspace:source}});
+      expect(response.status()).toBe(200);
+      return (await response.json()).preview.design.design_hash as string;
+    };
+    const repeat = await exportOrder(2, secondIdentity.expected_design_hash);
+    const repeated = await request.get(`${orderUrl}/exports/${repeat}/download`, {headers});
+    expect(repeated.status()).toBe(200);
+    expect((await repeated.body()).equals(await readFile((await regenerated.path())!))).toBe(true);
+    const staleHash = await saveRows(2, 5);
+    const interrupted = await exportOrder(3, staleHash);
+    const fourthHash = await saveRows(3, 2);
+    const stopped = await request.get(`${orderUrl}/exports/${interrupted}`, {headers});
+    expect((await stopped.json()).state).toBe("cancelled");
+    expect((await request.get(`${orderUrl}/exports/${interrupted}/download`,{headers})).status()).toBe(404);
+    const oldOrder = await request.post(orderUrl+"/exports", {headers,
+      data:{expected_revision:3, expected_design_hash:staleHash}});
+    expect(oldOrder.status()).toBe(409);
+    const fourthJob = await exportOrder(4, fourthHash);
+    expect(await exportOrder(4, fourthHash)).toBe(fourthJob);
+    const fourthUrl = `${orderUrl}/exports/${fourthJob}`;
+    await expect.poll(async () => (await (await request.get(fourthUrl,{headers})).json()).state,
+      {timeout: 300_000, intervals:[2_000]}).toBe("succeeded");
+    const final = await request.get(fourthUrl+"/download",{headers});
+    expect(final.status()).toBe(200);
+    const finalPath = info.outputPath("revision-after-cancellation.zip");
+    await writeFile(finalPath, await final.body());
+    execFileSync("python3", ["-c", [
+      "import json,sys,zipfile",
+      "with zipfile.ZipFile(sys.argv[1]) as z:",
+      " m=json.loads(z.read('manifest.json')); r=json.loads(z.read('inspection/geometry-readback.json'))",
+      " assert m['revision']==r['revision']==4 and r['design_hash']==sys.argv[2]",
+      " assert r['timber_solids']==27 and r['dxf_faces']==54",
+    ].join("\n"), finalPath, fourthHash]);
+
   });
   test("stommoduler: granska kundplan, hämta exakta arbetsfiler och bevara källrevision", async ({ page, request }, info) => {
     test.setTimeout(120_000);

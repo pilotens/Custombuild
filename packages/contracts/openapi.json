@@ -2909,6 +2909,15 @@
             "minimum": 1.0,
             "title": "Expected Revision",
             "type": "integer"
+          },
+          "purpose": {
+            "default": "review",
+            "enum": [
+              "review",
+              "workshop_drawings"
+            ],
+            "title": "Purpose",
+            "type": "string"
           }
         },
         "required": [
@@ -5517,6 +5526,18 @@
               }
             ],
             "title": "Measured Front Space Um"
+          },
+          "qualified_site_ref": {
+            "anyOf": [
+              {
+                "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Qualified Site Ref"
           },
           "rear_allowance_um": {
             "anyOf": [

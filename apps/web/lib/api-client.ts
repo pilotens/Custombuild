@@ -1888,9 +1888,10 @@ export class CustombuildApiClient {
     return result;
   }
 
-  async requestFurnitureExport(projectId: string, revision: number, designHash: string): Promise<FurnitureExportAccepted> {
+  async requestFurnitureExport(projectId: string, revision: number, designHash: string,
+    purpose: "review" | "workshop_drawings" = "review"): Promise<FurnitureExportAccepted> {
     const result = await this.request<FurnitureExportAccepted>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports`, {
-      method: "POST", body: JSON.stringify({ expected_revision: revision, expected_design_hash: designHash }),
+      method: "POST", body: JSON.stringify({ expected_revision: revision, expected_design_hash: designHash, ...(purpose === "workshop_drawings" ? { purpose } : {}) }),
     });
     if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(result?.job_id)
       || !["queued", "running", "succeeded"].includes(result.state)) {

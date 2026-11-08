@@ -37,7 +37,9 @@ PART_DRAWING_CONTRACT_VERSION = "custombuild.part-drawing.v2"
 PART_DRAWING_COORDINATE_SYSTEM = "LOCAL_UV_MM_V_UP_NOT_MIRRORED"
 
 
-def dxf_for_part(part: PartSpec, side: Side) -> bytes:
+def dxf_for_part(
+    part: PartSpec, side: Side, *, order_identity: dict[str, object] | None = None
+) -> bytes:
     """Create a UTF-8 DXF with only the requested machining side's features."""
 
     if side not in (Side.A, Side.B):
@@ -235,6 +237,8 @@ def dxf_for_part(part: PartSpec, side: Side) -> bytes:
             _part_drawing_metadata(part, side),
         )
     )
+    if order_identity is not None:
+        tokens.extend(_dxf_json_comments("CUSTOMBUILD_ORDER_JSON", order_identity))
     tokens.extend(entities)
     tokens.extend(("0", "ENDSEC", "0", "EOF"))
     return ("\n".join(tokens) + "\n").encode("utf-8")

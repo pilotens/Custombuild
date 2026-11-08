@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v12"
+        return "custombuild.shelving-workshop-review.v13"
     return "custombuild.furniture-review.v1"
 
 
@@ -81,6 +81,7 @@ class InstallationSpace(FrozenModel):
     width_um: Length
     height_um: Length
     depth_um: Length
+    qualified_site_ref: StableKey | None = Field(default=None, exclude_if=lambda v: v is None)
     additional_bounded_walls: tuple[Wall, ...] | None = Field(
         default=None,
         max_length=3,

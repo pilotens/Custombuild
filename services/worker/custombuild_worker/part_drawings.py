@@ -247,13 +247,19 @@ def _geometry(
         _text(canvas, MARGIN, label_y - 3, f"F{note.number:02d}", size=9)
 
 
-def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> bytes:
+def part_drawings_pdf(
+    design: Any, *, qualification_note: str | None = None, workshop: bool = False
+) -> bytes:
     """Draw every part and face, retaining the exact SVG geometry and feature data."""
 
     adapted = adapt_design_result(design)
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=A4, invariant=1, pageCompression=1)
-    canvas.setTitle("Custombuild - delritningar för verkstadsgranskning")
+    canvas.setTitle(
+        "Custombuild - verkstadsritningar"
+        if workshop
+        else "Custombuild - delritningar för verkstadsgranskning"
+    )
     canvas.setAuthor("Custombuild deterministic document engine")
     page_number = 0
     sources = {p.part_id: p for p in design.parts} if isinstance(design, FurnitureResult) else {}
@@ -367,7 +373,9 @@ def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> 
                     canvas,
                     MARGIN,
                     40,
-                    "Verkstadsgranskning. Material, förband, toleranser och CAM "
+                    "Verkstadsritning i millimeter. Verkstaden väljer maskin och bereder CAM."
+                    if workshop
+                    else "Verkstadsgranskning. Material, förband, toleranser och CAM "
                     "måste accepteras inför tillverkning.",
                     size=7,
                 )

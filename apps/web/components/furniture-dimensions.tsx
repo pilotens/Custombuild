@@ -50,6 +50,8 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
             value={installation.measured_front_space_um == null ? "" : installation.measured_front_space_um / 1_000}
             onChange={e => e.target.value.trim() ? changeMm("measured_front_space_um", e.target.value)
               : apply({ ...installation, measured_front_space_um: null }, "installation.measured_front_space_um")} /></label>
+        <label>Plats-ID för provad montering<input value={installation.qualified_site_ref ?? ""} maxLength={128}
+          onChange={e => apply({ ...installation, qualified_site_ref: e.target.value || undefined }, "installation.qualified_site_ref")} /></label>
         <StandingWalls installation={installation} onChange={apply} />
       </> : null}
       <label><input type="checkbox" checked={installation.width_includes_trim}

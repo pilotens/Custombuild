@@ -618,6 +618,14 @@ jobs:
           path: apps/web/test-results/chromium-live/furniture-live-*/attachments/*.png
           if-no-files-found: error
           retention-days: 14
+      - name: Preserve bookcase packages downloaded from the live stack
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bookcase-workshop-trial-packages
+          path: apps/web/test-results/chromium-live/furniture-live-*/Custombuild-Bokhylla-*.zip
+          if-no-files-found: error
+          retention-days: 30
       - name: Collect Compose diagnostics
         if: failure()
         run: |

@@ -14,6 +14,7 @@ from custombuild_domain.furniture import (
 )
 from custombuild_domain.furniture_catalog import furniture_catalog
 from custombuild_domain.identity import content_hash
+from custombuild_manufacturing.bookcase_qualification import qualified_bookcase, workshop_filename
 from custombuild_manufacturing.furniture_module_planning import (
     FurnitureModuleGrid,
     plan_furniture_modules,
@@ -104,6 +105,7 @@ class CreatedFurnitureProject(BaseModel):
 
 class FurnitureExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    purpose: Literal["review", "workshop_drawings"] = "review"
     expected_revision: int = Field(ge=1)
     expected_design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
 
@@ -470,6 +472,12 @@ def request_export(
         "furniture_engine_version": FURNITURE_ENGINE_VERSION,
         "review_schema_version": furniture_review_schema(workspace.design.intent.family),
     }
+    if payload.purpose == "workshop_drawings":
+        try:
+            profile = qualified_bookcase(workspace, project.organization_id)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        engine_context["workshop_qualification"] = profile.fingerprint
     # The project row lock serializes duplicate requests across API replicas.
     reusable_jobs = session.scalars(
         select(GenerationJob)
@@ -512,6 +520,8 @@ def request_export(
         "engine_version": FURNITURE_ENGINE_VERSION,
         "requested_by": principal.user_id,
     }
+    if "workshop_qualification" in engine_context:
+        request_document["workshop_qualification"] = engine_context["workshop_qualification"]
     job = GenerationJob(
         id=job_id,
         organization_id=principal.organization_id,
@@ -581,10 +591,38 @@ def _furniture_export_artifact(
         or result.get("design_hash") != request.get("design_hash")
         or result.get("workspace_sha256") != request.get("workspace_sha256")
         or result.get("revision") != request.get("revision")
-        or result.get("file_name") != f"custombuild-design-review-{request['revision']}.zip"
+        or result.get("file_name")
+        != workshop_filename(request["revision"], request.get("workshop_qualification"))
         or result.get("physical_cutting_authorized") is not False
     ):
         raise HTTPException(409, detail="Exportens identitet stämmer inte med beställningen.")
+    if "workshop_qualification" in request:
+        project = session.scalar(
+            select(Project)
+            .where(Project.id == job.project_id, Project.organization_id == job.organization_id)
+            .with_for_update()
+        )
+        if (
+            project is None
+            or project.draft_revision != request["revision"]
+            or project.draft_design_hash != request.get("design_hash")
+        ):
+            raise HTTPException(409, detail="Verkstadsritningarna avser en tidigare revision.")
+        workspace = _workspace(project)
+        if workspace is None or content_hash(workspace) != request["workspace_sha256"]:
+            raise HTTPException(409, detail="Arbetsfilen avviker från jobbets revision.")
+        try:
+            profile = qualified_bookcase(workspace, job.organization_id)
+        except (OSError, ValueError) as exc:
+            raise HTTPException(409, detail=str(exc)) from exc
+        binding = profile.fingerprint
+        if (
+            binding != request["workshop_qualification"]
+            or job.production_engine_context_json.get("workshop_qualification") != binding
+        ):
+            raise HTTPException(
+                409, detail="Provprofilen har ändrats. Skapa nya verkstadsritningar."
+            )
     artifact = session.scalar(
         select(Artifact).where(
             Artifact.organization_id == job.organization_id,

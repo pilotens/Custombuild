@@ -2070,6 +2070,12 @@ export interface components {
             expected_design_hash: string;
             /** Expected Revision */
             expected_revision: number;
+            /**
+             * Purpose
+             * @default review
+             * @enum {string}
+             */
+            purpose: "review" | "workshop_drawings";
         };
         /** FurnitureExportSucceeded */
         FurnitureExportSucceeded: {
@@ -3048,6 +3054,8 @@ export interface components {
             measured_ceiling_height_um?: number | null;
             /** Measured Front Space Um */
             measured_front_space_um?: number | null;
+            /** Qualified Site Ref */
+            qualified_site_ref?: string | null;
             /** Rear Allowance Um */
             rear_allowance_um?: number | null;
             /**

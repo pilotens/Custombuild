@@ -8,7 +8,9 @@ from typing import Any
 from custombuild_domain.bookcase_angles import ANGLE_SOURCE, SCREW_SOURCE
 from custombuild_domain.bookcase_motion import AssemblySpace
 from custombuild_domain.enums import JointType, MaterialType
+from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import FurnitureResult
+from custombuild_manufacturing.bookcase_qualification import bookcase_scope
 from custombuild_manufacturing.model import um_to_mm
 
 
@@ -163,6 +165,45 @@ def shelving_trial_protocol(
                 "Skruvar finns i BOM och borrbild. Gänga och brukskapacitet är ej verifierade.",
                 f"Vinkelritning: {ANGLE_SOURCE}",
                 f"Skruvdata: {SCREW_SOURCE}",
+            ]
+        )
+    if design.trial_angles:
+        rules = {r["rule_id"]: r for r in preview["rules"]["evaluations"]}
+        deflection = rules["CB-DEFLECTION-001"]["values"]
+        lines.extend(
+            [
+                "",
+                "Provgräns för denna konstruktion",
+                f"Omfattnings-ID {bookcase_scope(FurnitureWorkspace(design=result.spec))}.",
+                "Registrera verklig stom- och ryggbatch, fuktkvot, temperatur, fiberriktning, "
+                "vägguppbyggnad, infästning, golv, jiggar, lyftmetod och uppmätta "
+                "platsmått i första "
+                "provordern. Byt exempelvärden mot mätningar och generera om innan ett "
+                "intyg binds.",
+                f"Belastningsfall: {p.shelf_load_n} N jämnt fördelat över varje hel "
+                "rad, plus egenvikt. "
+                f"Mät nedböjning mitt i det längsta fria spannet från olastat läge. "
+                f"Regelgräns {um_to_mm(deflection['allowed'])} mm. Uppmätt värde "
+                "inklusive mätosäkerhet "
+                "ska ligga inom gränsen vid avtalad konditionering och belastningstid. "
+                "Prova i säkrad provfixtur enligt provledarens fastställda metod.",
+                f"Förband: dimensionerande brukskapacitet i skjuvning minst "
+                f"{design.minimum_retention_shear_load_n} N per bärande fog enligt aktuell regel. "
+                "Använd verifierad brukskapacitet efter säkerhetsfaktorer. För utdrag "
+                "ska provledaren "
+                "härleda kravet från belastningens riktning och excentricitet och "
+                "dokumentera marginal. "
+                "En enstaka brottlast eller en katalogritning ger inget kapacitetsintyg.",
+                "Stabilitet och montering: prova den avsedda golv- och vägginfästningen "
+                "med avtalade "
+                "statiska och horisontella lastfall. Dokumentera uppmätt rörelse, "
+                "skada, tippmarginal, "
+                "hand- och fixturutrymme i varje steg, samt slutlig åtdragning. Ett godkänt utfall "
+                "kräver uppfyllda gränser från provledarens förhandsfastställda provplan.",
+                "Kvalificering avser exakt provad geometri, batcher, last, plats och regelversion. "
+                "Ett annat kund-ID eller revisionsnummer kan återanvända samma prov. Ändrade mått, "
+                "batcher, lastsättning, vägg, eller regelsystem behöver ny täckning. "
+                "Genomfört passningsprov ensamt kvalificerar ingen order för bruk.",
             ]
         )
     for rule in preview["rules"]["evaluations"]:

@@ -98,8 +98,8 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   const [exploded, setExploded] = useState(false);
   const [history, setHistory] = useState<FurnitureHistory>({ items: [], next_offset: null });
   const [pendingNavigation, setPendingNavigation] = useState<(() => void) | null>(null);
-  const [exportJob, setExportJob] = useState<{ id: string; project: string; revision: number; hash: string }>();
-  const [download, setDownload] = useState<{ url: string; name: string; revision: number }>();
+  const [exportJob, setExportJob] = useState<{ id: string; project: string; revision: number; hash: string; workshop: boolean }>();
+  const [download, setDownload] = useState<{ url: string; name: string; revision: number; workshop: boolean }>();
   const [exportMessage, setExportMessage] = useState<string>();
   const mutationEpoch = useRef(0);
   const invalidInput = Object.keys(inputErrors).length > 0;
@@ -179,8 +179,8 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
           );
           if (!active) return;
           setDownload({ url: URL.createObjectURL(blob),
-            name: result.file_name, revision: exportJob.revision });
-          setExportMessage("Granskningspaketet är klart.");
+            name: result.file_name, revision: exportJob.revision, workshop: exportJob.workshop });
+          setExportMessage(exportJob.workshop ? "Verkstadsritningarna är frisläppta för denna revision." : "Granskningspaketet är klart.");
         } else if (result.state === "failed" || result.state === "cancelled") {
           setExportMessage(result.message ?? "Exporten kunde inte slutföras.");
         } else {
@@ -269,14 +269,16 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
     } catch (reason) { setError(errorText(reason)); }
     finally { setBusy(false); }
   };
-  const exportReview = async () => {
+  const exportDrawings = async (workshop = false) => {
     if (!projectId || !preview || dirty || exceedsExportLimit || mode === "without") return;
     setBusy(true); setDownload(undefined); setExportMessage(undefined);
     const epoch = mutationEpoch.current;
     try {
-      const result = await api.requestFurnitureExport(projectId, revision, preview.design.design_hash);
+      const result = workshop
+        ? await api.requestFurnitureExport(projectId, revision, preview.design.design_hash, "workshop_drawings")
+        : await api.requestFurnitureExport(projectId, revision, preview.design.design_hash);
       if (epoch !== mutationEpoch.current) return;
-      setExportJob({ id: result.job_id, project: projectId, revision, hash: preview.design.design_hash });
+      setExportJob({ id: result.job_id, project: projectId, revision, hash: preview.design.design_hash, workshop });
     } catch (reason) { setExportMessage(errorText(reason)); }
     finally { setBusy(false); }
   };
@@ -460,7 +462,10 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       </div> : null}
       {exceedsExportLimit ? <p role="status">Granskningspaketet stöder högst 128 delar. Dela upp designen före export.</p> : null}
       <button className={styles.primary} disabled={mode === "without" || !mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
-        onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
+        onClick={() => { void exportDrawings(); }}>Skapa granskningspaket</button>
+      {intent.family === "shelving" && intent.trial_angle ? <button
+        disabled={mode === "without" || !mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
+        onClick={() => { void exportDrawings(true); }}>Beställ verkstadsritningar</button> : null}
       {exportMessage ? <p role="status">{exportMessage}</p> : null}
       {preview?.workshop_handoff?.dimensions.standing_assembly ? <div>
         <h3>Stående montering på plats</h3>
@@ -468,7 +473,7 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
         {preview.workshop_handoff.dimensions.standing_assembly.issues.map(issue =>
           <p key={issue.code}>{issue.message}</p>)}
       </div> : null}
-      {download && !dirty && preview && mode !== "without" ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
+      {download && !dirty && preview && mode !== "without" ? <a href={download.url} download={download.name}>{download.workshop ? "Hämta frisläppta verkstadsritningar" : "Hämta STEP, GLB, DXF, delritningar och kaplista"} · revision {download.revision}</a> : null}
       {intent.family === "shelving" && preview ? <FurnitureShelfSuggestionPanel
         key={`${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}
         designHash={preview.design.design_hash} disabled={busy || invalidInput || profileDirty || !mayEdit}

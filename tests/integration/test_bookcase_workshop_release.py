@@ -1,0 +1,280 @@
+"""Normal customer job and direct download boundaries; certificates here exist only in tmp_path."""
+
+import hashlib
+import io
+import json
+import re
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
+from zipfile import ZipFile
+
+import custombuild_manufacturing.bookcase_qualification as qualifications
+import custombuild_worker.furniture_review as exporter
+import pytest
+from app.main import app
+from custombuild_cad import CadQueryAdapter
+from custombuild_domain.furniture import FurnitureWorkspace
+from custombuild_manufacturing.model import um_to_mm
+from custombuild_worker import tasks
+from fastapi.testclient import TestClient
+from reportlab.pdfgen.canvas import Canvas
+
+from tests.furniture_review_storage import install_review_storage
+from tests.integration.test_furniture_workspace import HEADERS, OTHER, TENANT
+from tests.unit.test_bookcase_angles import trial
+
+
+def measured_order():
+    w = trial(shelf_count=1, divider_count=0, height_um=900_000, depth_um=500_000, shelf_load_n=50)
+    source = w.model_dump(mode="json")
+    design = source["design"]
+    design["installation"] = dict(
+        width_um=1_000_000,
+        height_um=1_100_000,
+        depth_um=520_000,
+        left_allowance_um=50_000,
+        right_allowance_um=50_000,
+        top_allowance_um=200_000,
+        rear_allowance_um=20_000,
+        bottom_allowance_um=0,
+        front_allowance_um=0,
+        additional_bounded_walls=["left", "right", "rear"],
+        measured_ceiling_height_um=1_100_000,
+        measured_front_space_um=600_000,
+        qualified_site_ref="test-fixture",
+    )
+    design["material"]["batch_id"] = "test-stock"
+    design["back_material"]["batch_id"] = "test-back"
+    return FurnitureWorkspace.model_validate(source)
+
+
+def _install_test_profile(tmp_path, monkeypatch, workspace):
+    monkeypatch.setattr(qualifications, "REGISTRY", tmp_path)
+    slug = "synthetic-test-only"
+    folder = tmp_path / slug
+    folder.mkdir()
+    docs = []
+    for category in sorted(qualifications.REQUIRED_REPORTS):
+        file = category + ".pdf"
+        canvas = Canvas(str(folder / file))
+        canvas.drawString(30, 780, "SYNTHETIC FIXTURE ONLY - " + category)
+        canvas.save()
+        docs.append(
+            {
+                "category": category,
+                "file": file,
+                "sha256": hashlib.sha256((folder / file).read_bytes()).hexdigest(),
+            }
+        )
+    now = datetime.now(UTC)
+    profile = dict(
+        profile_id=slug,
+        organization_id=TENANT,
+        scope_sha256=qualifications.bookcase_scope(workspace),
+        evidence=docs,
+        valid_from=(now - timedelta(days=1)).isoformat(),
+        valid_until=(now + timedelta(days=1)).isoformat(),
+    )
+    (tmp_path / "profiles.json").write_text(json.dumps([profile]))
+    return profile
+
+
+def create(client, order):
+    response = client.post(
+        "/v1/furniture/projects",
+        headers=HEADERS,
+        json={"name": f"Verkstadsprov-{uuid4()}", "workspace": order.model_dump(mode="json")},
+    )
+    assert response.status_code == 201, response.text
+    created = response.json()
+    draft = created["draft"]
+    return (
+        f"/v1/furniture/projects/{created['project']['id']}",
+        {
+            "expected_revision": draft["revision"],
+            "expected_design_hash": draft["preview"]["design"]["design_hash"],
+        },
+    )
+
+
+@pytest.mark.cad
+@pytest.mark.parametrize("fault", ["shifted-pilot", "open-groove", "stale-drawing", "step-pilot"])
+def test_normal_workshop_job_stops_bad_geometry_before_storage(tmp_path, monkeypatch, fault):
+    w = measured_order()
+    _install_test_profile(tmp_path, monkeypatch, w)
+    storage = install_review_storage(monkeypatch)
+    changed = []
+    original = exporter.dxf_for_part
+    previous_drawings = {}
+
+    def damaged(part, side, *, order_identity):
+        if fault == "stale-drawing" and previous_drawings and not changed:
+            changed.append(part.part_id)
+            return previous_drawings[f"parts/{part.part_id}/{side.value}.dxf"]
+        data = original(part, side, order_identity=order_identity)
+        if fault == "shifted-pilot" and not changed:
+            pattern = rb"(8\nDRILL\n100\nAcDbCircle\n10\n)([0-9.]+)\n"
+
+            def move(match):
+                changed.append(part.part_id)
+                return match[1] + str(float(match[2]) + 1).encode() + b"\n"
+
+            return re.sub(pattern, move, data, count=1)
+        if fault == "open-groove" and not changed:
+            for f in part.features:
+                if (
+                    f.side != side
+                    or not f.metadata.get("front_stop_clearance_um")
+                    or not f.width_um
+                ):
+                    continue
+                end = f.x_um + f.width_um
+                if end >= part.width_um:
+                    continue
+                marker = f"999\nFEATURE:{f.feature_id}\n".encode()
+                before, sep, body = data.partition(marker)
+                needle = f"\n10\n{um_to_mm(end)}\n".encode()
+                if sep and needle in body:
+                    changed.append(part.part_id)
+                    return (
+                        before
+                        + sep
+                        + body.replace(needle, f"\n10\n{um_to_mm(part.width_um)}\n".encode(), 2)
+                    )
+        return data
+
+    monkeypatch.setattr(exporter, "dxf_for_part", damaged)
+    if fault == "step-pilot":
+        make_panel = CadQueryAdapter._part_shape
+
+        def misplaced(self, cq, part, design=None):
+            original_features = part.features
+            if part.semantic_key == "left-side":
+                edits = []
+                for f in original_features:
+                    if f.kind.value == "drill":
+                        f = f.model_copy(
+                            update={
+                                "origin": f.origin.model_copy(update={"y_um": f.origin.y_um + 1000})
+                            }
+                        )
+                        changed.append(part.part_id)
+                    edits.append(f)
+                part = part.model_copy(update={"features": tuple(edits)})
+            return make_panel(self, cq, part, design)
+
+        monkeypatch.setattr(CadQueryAdapter, "_part_shape", misplaced)
+    with TestClient(app) as client:
+        if fault == "stale-drawing":
+            first = w.model_copy(
+                update={
+                    "design": w.design.model_copy(
+                        update={"intent": w.design.intent.model_copy(update={"shelf_load_n": 49})}
+                    )
+                }
+            )
+            path, body = create(client, first)
+            old = client.post(path + "/exports", headers=HEADERS, json=body).json()["job_id"]
+            assert tasks.generate_furniture_review.run(old, TENANT)["state"] == "succeeded"
+            raw = client.get(f"{path}/exports/{old}/download", headers=HEADERS)
+            with ZipFile(io.BytesIO(raw.content)) as z:
+                previous_drawings.update({n: z.read(n) for n in z.namelist() if n.endswith(".dxf")})
+            saved = client.put(
+                path + "/draft",
+                headers=HEADERS,
+                json={"expected_revision": 1, "workspace": w.model_dump(mode="json")},
+            )
+            assert saved.status_code == 200, saved.text
+            body = {
+                "expected_revision": 2,
+                "expected_design_hash": saved.json()["preview"]["design"]["design_hash"],
+            }
+        else:
+            path, body = create(client, w)
+        previous_uploads = len(storage.put_calls)
+        response = client.post(
+            path + "/exports", headers=HEADERS, json={**body, "purpose": "workshop_drawings"}
+        )
+        assert response.status_code == 202, response.text
+        job = response.json()["job_id"]
+        reason = {
+            "shifted-pilot": "DXF-geometrin",
+            "open-groove": "DXF-geometrin",
+            "stale-drawing": "fel order eller revision",
+            "step-pilot": "STEP avviker",
+        }
+        with pytest.raises(ValueError, match=reason[fault]):
+            tasks.generate_furniture_review.run(job, TENANT)
+        assert client.get(f"{path}/exports/{job}", headers=HEADERS).json()["state"] == "failed"
+        assert changed and len(storage.put_calls) == previous_uploads
+        assert client.get(f"{path}/exports/{job}/download", headers=HEADERS).status_code == 404
+
+
+@pytest.mark.cad
+def test_exact_profile_releases_current_revision_and_revocation_closes_direct_api(
+    tmp_path, monkeypatch
+):
+    w = measured_order()
+    install_review_storage(monkeypatch)
+    with TestClient(app) as client:
+        path, body = create(client, w)
+        request = {**body, "purpose": "workshop_drawings"}
+        assert client.post(path + "/exports", headers=HEADERS, json=request).status_code == 409
+        profile = _install_test_profile(tmp_path, monkeypatch, w)
+        r = client.post(path + "/exports", headers=HEADERS, json=request)
+        assert r.status_code == 202, r.text
+        job = r.json()["job_id"]
+        assert client.post(path + "/exports", headers=HEADERS, json=request).json()["job_id"] == job
+        assert client.post(path + "/exports", headers=HEADERS, json=body).json()["job_id"] != job
+        assert tasks.generate_furniture_review.run(job, TENANT)["state"] == "succeeded"
+        assert client.post(path + "/exports", headers=HEADERS, json=request).json()["job_id"] == job
+        download = f"{path}/exports/{job}/download"
+        assert client.get(download, headers=OTHER).status_code == 404
+        response = client.get(download, headers=HEADERS)
+        assert response.status_code == 200, (
+            response.text[:200] if response.status_code != 200 else ""
+        )
+        with ZipFile(io.BytesIO(response.content)) as z:
+            m = json.loads(z.read("manifest.json"))
+            report = json.loads(z.read("inspection/geometry-readback.json"))
+            assert m["production_qualified"] and not m["physical_cutting_authorized"]
+            assert (
+                m["qualification"] == profile["profile_id"]
+                and report["design_hash"] == body["expected_design_hash"]
+            )
+            assert (
+                json.loads(z.read("inspection/qualification.json"))["scope_sha256"]
+                == profile["scope_sha256"]
+            )
+            assert (
+                z.read("documents/installation.pdf")
+                == (tmp_path / profile["profile_id"] / "installation.pdf").read_bytes()
+            )
+        registry = tmp_path / "profiles.json"
+        registry.write_text("[]")
+        assert client.get(download, headers=HEADERS).status_code == 409
+        expired = {
+            **profile,
+            "valid_from": (datetime.now(UTC) - timedelta(days=3)).isoformat(),
+            "valid_until": (datetime.now(UTC) - timedelta(days=2)).isoformat(),
+        }
+        registry.write_text(json.dumps([expired]))
+        assert client.get(download, headers=HEADERS).status_code == 409
+        registry.write_text(json.dumps([profile]))
+        evidence = tmp_path / profile["profile_id"] / "connection.pdf"
+        original = evidence.read_bytes()
+        evidence.write_bytes(original + b"changed")
+        assert client.get(download, headers=HEADERS).status_code == 409
+        evidence.write_bytes(original)
+        changed = w.model_dump(mode="json")
+        changed["design"]["intent"]["shelf_load_n"] += 1
+        assert (
+            client.put(
+                path + "/draft",
+                headers=HEADERS,
+                json={"expected_revision": 1, "workspace": changed},
+            ).status_code
+            == 200
+        )
+        assert client.get(download, headers=HEADERS).status_code == 409
+        assert client.post(path + "/exports", headers=HEADERS, json=request).status_code == 409

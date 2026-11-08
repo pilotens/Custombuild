@@ -1481,6 +1481,11 @@ def _validated_furniture_review_snapshot(
             intent.get("family") if isinstance(intent, dict) else None
         ),
     }
+    if isinstance(request, dict) and "workshop_qualification" in request:
+        if not isinstance(intent, dict) or intent.get("family") != "shelving":
+            raise ProductionBlockedError("only fixed shelving can release workshop drawings")
+        expected_keys.add("workshop_qualification")
+        expected_engine_context["workshop_qualification"] = request["workshop_qualification"]
     if (
         _job_type(job) is not GenerationJobType.furniture_review
         or job.design_version_id is not None
@@ -1565,6 +1570,8 @@ def _validated_furniture_review_snapshot(
     design = build_furniture(workspace.design)
     if design.design_hash != design_hash:
         raise ProductionBlockedError("furniture review design changed; save a new revision")
+    if "workshop_qualification" in request:
+        _workshop_profile(workspace, job)
     return workspace, design_hash, workspace_sha256, revision, requested_by
 
 
@@ -1616,12 +1623,26 @@ def _furniture_review_storage_claim(
     )
 
 
+def _workshop_profile(workspace: Any, job: GenerationJob) -> Any:
+    from custombuild_manufacturing.bookcase_qualification import qualified_bookcase
+
+    try:
+        profile = qualified_bookcase(workspace, job.organization_id)
+    except (OSError, ValueError) as exc:
+        raise ProductionBlockedError(str(exc)) from exc
+    if profile.fingerprint != job.request_json["workshop_qualification"]:
+        raise ProductionBlockedError("workshop qualification changed since the order was queued")
+    return profile
+
+
 def _generate_furniture_review(
     job: GenerationJob,
     *,
     lease_token: str,
     lease_guard: _GenerationLeaseGuard,
 ) -> dict[str, Any]:
+    from custombuild_manufacturing.bookcase_qualification import workshop_filename
+
     from .furniture_review import build_furniture_review
 
     if lease_guard.organization_id != job.organization_id or lease_guard.lease_token != lease_token:
@@ -1641,6 +1662,10 @@ def _generate_furniture_review(
         from .trestle_review import build_trestle_review
 
         payload = build_trestle_review(workspace)
+    elif "workshop_qualification" in job.request_json:
+        payload = build_furniture_review(
+            workspace, workshop_profile=_workshop_profile(workspace, job)
+        )
     else:
         payload = build_furniture_review(workspace)
     lease_guard.check()
@@ -1659,7 +1684,7 @@ def _generate_furniture_review(
         "sha256": hashlib.sha256(payload).hexdigest(),
         "size_bytes": len(payload),
         "content_type": FURNITURE_REVIEW_CONTENT_TYPE,
-        "file_name": f"custombuild-design-review-{revision}.zip",
+        "file_name": workshop_filename(revision, job.request_json.get("workshop_qualification")),
         "design_hash": design_hash,
         "workspace_sha256": workspace_sha256,
         "revision": revision,
@@ -1705,6 +1730,8 @@ def _complete_furniture_review(
     lease_token: str,
     result: dict[str, Any],
 ) -> bool:
+    from custombuild_manufacturing.bookcase_qualification import workshop_filename
+
     with _tenant_transaction(organization_id) as session:
         job = session.scalar(
             select(GenerationJob)
@@ -1735,7 +1762,8 @@ def _complete_furniture_review(
             result.get("design_hash") != design_hash
             or result.get("workspace_sha256") != workspace_sha256
             or result.get("revision") != revision
-            or result.get("file_name") != f"custombuild-design-review-{revision}.zip"
+            or result.get("file_name")
+            != workshop_filename(revision, job.request_json.get("workshop_qualification"))
             or result.get("physical_cutting_authorized") is not False
         ):
             raise ProductionBlockedError("furniture review result is detached from its snapshot")

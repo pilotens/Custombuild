@@ -17,6 +17,7 @@ from custombuild_domain.bookcase_site import StandingSiteReview
 from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
+from custombuild_manufacturing.bookcase_qualification import BookcaseProfile
 from custombuild_manufacturing.exporters import bom_csv, cut_list_csv, dxf_for_part, svg_for_part
 from custombuild_manufacturing.furniture_faces import drawing_faces
 from custombuild_manufacturing.furniture_handoff import furniture_first_article_checks
@@ -42,7 +43,9 @@ def _json(value: Any) -> bytes:
     ).encode()
 
 
-def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
+def build_furniture_review(
+    workspace: FurnitureWorkspace, *, workshop_profile: BookcaseProfile | None = None
+) -> bytes:
     result = build_furniture(workspace.design)
     if len(result.parts) > MAX_FURNITURE_REVIEW_PARTS:
         raise ValueError("furniture review export is limited to 128 parts")
@@ -61,8 +64,11 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "inspection/first-article-checks.csv": furniture_first_article_checks(result),
         "documents/part-drawings.pdf": part_drawings_pdf(
             result,
+            workshop=workshop_profile is not None,
             qualification_note=(
-                "PRELIMINÄRT: Kundmått/list/montage återstår. Inga listdelar ingår."
+                f"Verkstadsritning | Profil {workshop_profile.profile_id}"
+                if workshop_profile
+                else "PRELIMINÄRT: Kundmått/list/montage återstår. Inga listdelar ingår."
                 if preview["workshop_handoff"]["dimensions"]["issues"]
                 else "KONCEPT: Beslag, hålbilder och infästningar är inte verifierade."
                 if result.hardware_profile is not None
@@ -105,6 +111,7 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
             package_design_hash=result.design_hash,
             assembly_space=space,
             standing_site=site,
+            workshop_profile=workshop_profile.profile_id if workshop_profile else None,
         )
         files["assembly/graph.json"] = _json(
             {
@@ -150,12 +157,17 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
                     "qualification": "geometry_trial_only",
                 }
             )
+    identity = None
+    if result.trial_angles:
+        from .bookcase_readback import order_identity, verify_bookcase_delivery
+
+        identity = order_identity(result)
     sources = {p.part_id: p for p in result.parts}
     for original in adapted.parts:
         for view in drawing_faces(sources[original.part_id], original):
             part, side = view.part, view.side
             root = f"parts/{part.part_id}/{view.name}"
-            files[f"{root}.dxf"] = dxf_for_part(part, side)
+            files[f"{root}.dxf"] = dxf_for_part(part, side, order_identity=identity)
             files[f"{root}.svg"] = svg_for_part(part, side)
     files["README.txt"] = (
         "CUSTOMBUILD – DESIGNUNDERLAG FÖR GRANSKNING\n\n"
@@ -185,13 +197,40 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
             "manufacturing/manufacturing-intent.json anger bearbetningar med sida, datum, "
             "speldimension och tolerans. Maskinval krävs inte för detta underlag.\n"
         ).encode()
+    if identity:
+        files["inspection/geometry-readback.json"] = _json(verify_bookcase_delivery(result, files))
+    if workshop_profile:
+        if not identity:
+            raise ValueError("Verkstadsritningar kräver fullständig geometrikontroll av bokhyllan.")
+        # Supply the actual qualified site method together with revision-specific steps.
+        documents = workshop_profile.reports()
+        files["documents/installation.pdf"] = documents["installation"]
+        files["inspection/qualification.json"] = _json(workshop_profile.model_dump(mode="json"))
+        files["README.txt"] = (
+            f"Verkstadsritningar · revision {workspace.design.revision} · {result.design_hash}\n"
+            f"Provprofil {workshop_profile.profile_id}. Läs documents/installation.pdf och "
+            "documents/assembly.pdf. STEP och delarnas A/B-DXF använder mm. "
+            "Verkstaden väljer maskin och bereder CAM. Hämta kaplista och beslag i bom/.\n"
+        ).encode()
+        for name in (
+            "documents/assembly-overview.pdf",
+            "inspection/provprotokoll.txt",
+            "validation/review.json",
+            "manufacturing/workshop-handoff.json",
+        ):
+            del files[name]
     manifest = {
         "schema_version": furniture_review_schema(workspace.design.intent.family),
         "engine_version": result.engine_version,
         "design_hash": result.design_hash,
         "revision": workspace.design.revision,
         "dependencies": preview["dependencies"],
-        "production_qualified": False,
+        "production_qualified": workshop_profile is not None,
+        **(
+            {"purpose": "workshop_drawings", "qualification": workshop_profile.profile_id}
+            if workshop_profile
+            else {}
+        ),
         "physical_cutting_authorized": False,
         "files": [
             {"path": name, "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
