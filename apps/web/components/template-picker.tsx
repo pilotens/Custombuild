@@ -535,7 +535,7 @@ function OpenTemplatePicker({
               <a href="/furniture?family=chest_of_drawers">Byrå</a>
             </nav>
             <button type="button" onClick={openCabinetReference}>Öppna referens med 700 mm underskåpsstomme</button>
-            <p>Måttstudie 4 280 × 2 500 × 260 mm. Luckor, gångjärn och verkstadsritningar ingår inte i underskåpskonceptet.</p>
+            <p>Måttstudie 4 280 × 2 500 × 260 mm med sex skåpsfronter. Gångjärnsborrning och verkstadsritningar för luckorna saknas.</p>
           </div>
           <div className={styles.heroVisual}>
             <InspirationVisual template={furnitureTemplate("wall-library")} src="/assets/inspiration/explore-hero.jpg" priority />

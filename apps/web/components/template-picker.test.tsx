@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TemplatePicker } from "./template-picker";
+import { resolveDesign } from "@/lib/design-engine";
+import { DEFAULT_DESIGN_SPEC } from "@/lib/design-types";
 
 function renderPicker(overrides: Partial<React.ComponentProps<typeof TemplatePicker>> = {}) {
   const props: React.ComponentProps<typeof TemplatePicker> = {
@@ -266,6 +268,10 @@ describe("TemplatePicker Explore entry", () => {
         width_mm:4280, height_mm:2500, depth_mm:260, base_cabinet_height_mm:700, base_cabinet_count:6,
       }),
     }), expect.objectContaining({dimensionsConfirmed:false}));
+    const [template] = onSelect.mock.calls[0]!;
+    const model = resolveDesign({...DEFAULT_DESIGN_SPEC, ...template.patch});
+    expect(model.parts.filter(p => p.kind === "cabinet_front")).toHaveLength(6);
+    expect(model.parts.filter(p => p.kind === "base_bottom")).toHaveLength(6);
   });
 
   it("opens an empty frame immediately from Börja tomt", () => {
