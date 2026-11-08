@@ -199,7 +199,8 @@ def test_compose_sets_resource_limits_and_passes_release_identity() -> None:
     assert compose.count("mem_limit:") == 13
     assert compose.count("cpus:") == 13
     assert compose.count("*python-release-build-args") == 8
-    assert compose.count("*release-build-args") == 3
+    assert compose.count("*release-build-args") == 4
+    assert "POSTGRES_RECIPE_SHA256:-unknown" in compose
     assert "REDIS_RECIPE_SHA256:-unknown" in compose
 
 
@@ -279,7 +280,7 @@ def test_all_external_container_images_are_digest_pinned() -> None:
 
 
 def test_external_runtime_pins_match_scans_backups_and_release_descriptors() -> None:
-    from scripts.compose_backup import POSTGRES_IMAGE, VOLUME_INIT_IMAGE
+    from scripts.compose_backup import VOLUME_INIT_IMAGE
     from scripts.deploy_descriptor import (
         PINNED_RUNTIME_IMAGES,
         PINNED_RUNTIME_SCAN_REFERENCES,
@@ -294,7 +295,7 @@ def test_external_runtime_pins_match_scans_backups_and_release_descriptors() -> 
     scan_images = {entry["component"]: entry["image"] for entry in scan_matrix}
 
     assert scan_images == PINNED_RUNTIME_SCAN_REFERENCES == EXTERNAL_IMAGE_REFERENCES
-    assert scan_images["postgres"] == POSTGRES_IMAGE
+    assert compose["services"]["postgres"]["build"]["dockerfile"] == "infra/postgres/Dockerfile"
     assert scan_images["volume-init"] == VOLUME_INIT_IMAGE
     for component, scan_reference in scan_images.items():
         service = "object-storage-init" if component == "volume-init" else component

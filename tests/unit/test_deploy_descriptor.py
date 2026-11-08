@@ -33,6 +33,7 @@ APPLICATION_DIGESTS = {
     "web": f"sha256:{'3' * 64}",
     "seaweedfs": f"sha256:{'4' * 64}",
     "redis": f"sha256:{'9' * 64}",
+    "postgres": f"sha256:{'a' * 64}",
 }
 APPLICATION_CONFIG_DIGESTS = {
     "api": f"sha256:{'5' * 64}",
@@ -40,6 +41,7 @@ APPLICATION_CONFIG_DIGESTS = {
     "web": f"sha256:{'7' * 64}",
     "seaweedfs": f"sha256:{'8' * 64}",
     "redis": f"sha256:{'a' * 64}",
+    "postgres": f"sha256:{'e' * 64}",
 }
 APPLICATION_ARCHIVE_DIGESTS = {
     "api": "9" * 64,
@@ -47,6 +49,7 @@ APPLICATION_ARCHIVE_DIGESTS = {
     "web": "c" * 64,
     "seaweedfs": "d" * 64,
     "redis": "f" * 64,
+    "postgres": "0" * 64,
 }
 LOCAL_APPLICATION_MANIFEST_DIGESTS = {
     "api": f"sha256:{'a' * 64}",
@@ -54,13 +57,12 @@ LOCAL_APPLICATION_MANIFEST_DIGESTS = {
     "web": f"sha256:{'c' * 64}",
     "seaweedfs": f"sha256:{'d' * 64}",
     "redis": f"sha256:{'f' * 64}",
+    "postgres": f"sha256:{'e' * 64}",
 }
 PINNED_PLATFORM_MANIFEST_DIGESTS = {
-    "postgres": f"sha256:{'e' * 64}",
     "volume-init": f"sha256:{'0' * 64}",
 }
 PINNED_CONFIG_DIGESTS = {
-    "postgres": f"sha256:{'b' * 64}",
     "volume-init": f"sha256:{'d' * 64}",
 }
 
@@ -342,6 +344,7 @@ def test_compose_environment_contains_only_verified_application_references() -> 
         f"CUSTOMBUILD_DEPLOY_WEB_IMAGE={application_images()['web']}\n"
         f"CUSTOMBUILD_DEPLOY_SEAWEEDFS_IMAGE={application_images()['seaweedfs']}\n"
         f"CUSTOMBUILD_DEPLOY_REDIS_IMAGE={application_images()['redis']}\n"
+        f"CUSTOMBUILD_DEPLOY_POSTGRES_IMAGE={application_images()['postgres']}\n"
     ).encode("ascii")
 
 
@@ -545,7 +548,7 @@ def test_descriptor_rejects_oversized_input() -> None:
         (("static_report", "repository_content_root_sha256"), "c" * 64),
         (("static_report", "external_semantic_approval_required"), False),
         (("static_report", "static_controls_ready"), False),
-        (("runtime_deployment_reference_digests", "postgres"), f"sha256:{'9' * 64}"),
+        (("runtime_deployment_reference_digests", "volume-init"), f"sha256:{'9' * 64}"),
         (("runtime_image_config_digests", "api"), f"sha256:{'9' * 64}"),
         (
             ("runtime_registry_resolutions", "volume-init", "runtime_platform_manifest_digest"),
@@ -593,7 +596,7 @@ def test_render_requires_complete_repository_content_root_evidence(
     ("mapping", "component"),
     (
         ("runtime_platform_manifest_digests", "api"),
-        ("runtime_deployment_reference_digests", "postgres"),
+        ("runtime_deployment_reference_digests", "volume-init"),
         ("runtime_image_config_digests", "api"),
         ("runtime_image_config_digests", "redis"),
         ("runtime_scan_inputs", "api"),
@@ -786,7 +789,7 @@ def test_checked_in_registry_overlay_is_exact() -> None:
     ("original", "replacement"),
     (
         ("required-up-flag: --no-build", "required-up-flag: --build"),
-        (PINNED_RUNTIME_IMAGES["postgres"], "cgr.dev/chainguard/postgres@sha256:" + "0" * 64),
+        (PINNED_RUNTIME_IMAGES["volume-init"], "docker.io/library/busybox@sha256:" + "0" * 64),
         ("CUSTOMBUILD_DEPLOY_API_IMAGE", "CUSTOMBUILD_DEPLOY_WEB_IMAGE"),
         ("services:\n", "services:\n  unexpected:\n    build: .\n"),
     ),

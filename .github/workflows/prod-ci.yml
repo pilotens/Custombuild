@@ -12,20 +12,6 @@ permissions:
 jobs:
   prod-quality:
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
-        env:
-          POSTGRES_DB: custombuild
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d custombuild"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     env:
       MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
       RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
@@ -38,6 +24,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Verify immutable repository content root
         run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
+      - name: Start the repository PostgreSQL fixture
+        run: bash scripts/start_ci_postgres.sh
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.0"
@@ -205,6 +193,7 @@ jobs:
             echo "DEPENDENCY_LOCK_SHA256=$(sha256sum uv.lock | awk '{print $1}')"
             echo "FRONTEND_LOCK_SHA256=$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
             echo "REDIS_RECIPE_SHA256=$(sha256sum infra/redis/Dockerfile | awk '{print $1}')"
+            echo "POSTGRES_RECIPE_SHA256=$(sha256sum infra/postgres/Dockerfile | awk '{print $1}')"
           } >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
@@ -357,7 +346,7 @@ jobs:
       - name: Generate exact PostgreSQL runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
+          image: custombuild-postgres:${{ github.sha }}
           format: spdx-json
           output-file: artifacts/release-evidence/sbom-postgres.spdx.json
           upload-artifact: false
@@ -410,6 +399,10 @@ jobs:
               python-3.13-base 3.13.18_git20261030-r0
             reject_package_prefix "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" python-3.14
           done
+          require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-redis.spdx.json" zlib 1.4-r0
+          require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-redis.spdx.json" setpriv 2.42.3-r1
+          require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" zlib 1.4-r0
+          require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" gosu 1.19-r6
           while read -r package version; do
             require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-worker.spdx.json" \
               "$package" "$version"
@@ -483,7 +476,7 @@ jobs:
       - name: Scan exact PostgreSQL runtime image
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
-          image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
+          image: custombuild-postgres:${{ github.sha }}
           grype-version: v0.110.0
           config: .grype.yaml
           fail-build: true
@@ -540,7 +533,7 @@ jobs:
           worker_ref="custombuild-worker:${GITHUB_SHA}"
           web_ref="custombuild-web:${GITHUB_SHA}"
           seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
-          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4'
+          postgres_ref="custombuild-postgres:${GITHUB_SHA}"
           redis_ref="custombuild-redis:${GITHUB_SHA}"
           volume_init_ref='busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478'
           api_id="$(image_id "$api_ref")"

@@ -138,7 +138,7 @@ def test_every_action_is_immutable_and_the_reviewed_actions_are_exact() -> None:
         for step in steps(job)
         if str(step.get("uses", "")).startswith("anchore/scan-action@")
     ]
-    assert len(scan_actions) == 3  # image matrix plus PostgreSQL and volume-init
+    assert len(scan_actions) == 2  # image matrix plus volume-init
     assert all(step["with"]["fail-build"] is True for step in scan_actions)
     assert all(step["with"]["grype-version"] == "v0.110.0" for step in scan_actions)
     assert "e1165082ffb1fe366ebaf02d8526e7c4989ea9d2" not in workflow_source()
@@ -169,6 +169,12 @@ def test_images_are_built_once_archived_tested_then_pushed_without_rebuild() -> 
             "dockerfile": "apps/web/Dockerfile",
             "lock_argument": "FRONTEND_LOCK_SHA256",
             "lock_file": "pnpm-lock.yaml",
+        },
+        {
+            "component": "postgres",
+            "dockerfile": "infra/postgres/Dockerfile",
+            "lock_argument": "DEPENDENCY_LOCK_SHA256",
+            "lock_file": "infra/postgres/Dockerfile",
         },
         {
             "component": "redis",
@@ -222,6 +228,8 @@ def test_images_are_built_once_archived_tested_then_pushed_without_rebuild() -> 
     assert source.count(
         "test \"$(jq -er '.local_scan_manifest_digest' \"$metadata\")\" ="
     ) == 2
+    assert 'postgres_ref="custombuild-postgres:${GITHUB_SHA}"' in source
+    assert 'test "$postgres_id" = "$(runtime_id postgres)"' in source
     assert 'redis_ref="custombuild-redis:${GITHUB_SHA}"' in source
     assert 'test "$redis_id" = "$(runtime_id redis)"' in source
     assert "resolve_registry_platform()" in source
@@ -253,7 +261,7 @@ def test_registry_scan_evidence_uses_grypes_exact_normalized_input() -> None:
     source = workflow_source()
 
     assert "Grype strips the source-selector prefix" in source
-    for component in ("postgres", "volume-init"):
+    for component in ("volume-init",):
         shell_name = component.replace("-", "_")
         assert (
             f'require_equal "{component} scan input" "${shell_name}_ref" '

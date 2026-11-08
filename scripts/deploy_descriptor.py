@@ -25,22 +25,14 @@ PROMOTION_WORKFLOW_PATH = ".github/workflows/cd.yml"
 PROMOTION_SOURCE_REF = "refs/heads/main"
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
-APPLICATION_COMPONENTS = ("api", "worker", "web", "seaweedfs", "redis")
+APPLICATION_COMPONENTS = ("api", "worker", "web", "seaweedfs", "redis", "postgres")
 PINNED_RUNTIME_IMAGES = {
-    "postgres": (
-        "cgr.dev/chainguard/postgres@"
-        "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
-    ),
     "volume-init": (
         "docker.io/library/busybox@"
         "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
     ),
 }
 PINNED_RUNTIME_SCAN_REFERENCES = {
-    "postgres": (
-        "cgr.dev/chainguard/postgres:latest@"
-        "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
-    ),
     "volume-init": (
         "busybox:1.37.0-musl@"
         "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
@@ -73,7 +65,7 @@ EXPECTED_REGISTRY_OVERLAY = (
     "\n"
     "services:\n"
     "  postgres:\n"
-    f"    image: {PINNED_RUNTIME_IMAGES['postgres']}\n"
+    "    image: ${CUSTOMBUILD_DEPLOY_POSTGRES_IMAGE:?Set from a verified deploy descriptor}\n"
     "  redis:\n"
     "    image: ${CUSTOMBUILD_DEPLOY_REDIS_IMAGE:?Set from a verified deploy descriptor}\n"
     "  object-storage-init:\n"

@@ -13,7 +13,13 @@ x-python-release-build-args: &python-release-build-args
 
 services:
   postgres:
-    image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
+    image: custombuild-postgres:${VCS_REF:-uncommitted}
+    build:
+      context: .
+      dockerfile: infra/postgres/Dockerfile
+      args:
+        <<: *release-build-args
+        DEPENDENCY_LOCK_SHA256: ${POSTGRES_RECIPE_SHA256:-unknown}
     environment:
       APP_ENV: ${APP_ENV:-development}
       POSTGRES_DB: ${POSTGRES_DB:-custombuild}
@@ -26,8 +32,12 @@ services:
       CAPACITY_ATTESTOR_DATABASE_USER: ${CAPACITY_ATTESTOR_DATABASE_USER:-custombuild_storage_attestor}
       CAPACITY_ATTESTOR_DATABASE_PASSWORD: ${CAPACITY_ATTESTOR_DATABASE_PASSWORD:-change-me-capacity-attestor}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./infra/postgres/init-roles.sh:/var/lib/postgres/initdb/10-init-roles.sh:ro
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql
+        volume:
+          nocopy: true
+      - ./infra/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro
       - ./infra/postgres/healthcheck.sh:/usr/local/bin/custombuild-postgres-healthcheck:ro
     healthcheck:
       test: ["CMD", "/bin/sh", "/usr/local/bin/custombuild-postgres-healthcheck"]

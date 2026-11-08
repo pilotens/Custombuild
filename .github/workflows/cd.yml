@@ -22,20 +22,6 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
-    services:
-      postgres:
-        image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
-        env:
-          POSTGRES_DB: custombuild
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d custombuild"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     env:
       MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
       RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
@@ -51,6 +37,8 @@ jobs:
           persist-credentials: false
       - name: Verify immutable repository content root
         run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
+      - name: Start the repository PostgreSQL fixture
+        run: bash scripts/start_ci_postgres.sh
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.0"
@@ -150,6 +138,10 @@ jobs:
             dockerfile: apps/web/Dockerfile
             lock_argument: FRONTEND_LOCK_SHA256
             lock_file: pnpm-lock.yaml
+          - component: postgres
+            dockerfile: infra/postgres/Dockerfile
+            lock_argument: DEPENDENCY_LOCK_SHA256
+            lock_file: infra/postgres/Dockerfile
           - component: redis
             dockerfile: infra/redis/Dockerfile
             lock_argument: DEPENDENCY_LOCK_SHA256
@@ -394,9 +386,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find artifacts/release-images -maxdepth 1 -type f | wc -l)" -eq 25
+          test "$(find artifacts/release-images -maxdepth 1 -type f | wc -l)" -eq 30
           source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
-          for component in api worker web seaweedfs redis; do
+          for component in api worker web seaweedfs redis postgres; do
             archive="artifacts/release-images/image-${component}.tar"
             metadata="artifacts/release-images/image-${component}.json"
             test -f "$archive"
@@ -661,14 +653,6 @@ jobs:
           uv run python scripts/restore_drill.py
           --backup "$RELEASE_EVIDENCE_DIR/backup"
           --output "$RELEASE_EVIDENCE_DIR/restore-evidence.json"
-      - name: Generate reviewed PostgreSQL runtime SPDX SBOM
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
-        with:
-          image: registry:cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
-          format: spdx-json
-          output-file: artifacts/release-images/sbom-postgres.spdx.json
-          upload-artifact: false
-          upload-release-assets: false
       - name: Generate reviewed volume-init runtime SPDX SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
@@ -677,16 +661,6 @@ jobs:
           output-file: artifacts/release-images/sbom-volume-init.spdx.json
           upload-artifact: false
           upload-release-assets: false
-      - name: Scan reviewed PostgreSQL runtime
-        uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
-        with:
-          image: registry:cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
-          grype-version: v0.110.0
-          config: .grype.yaml
-          fail-build: true
-          severity-cutoff: high
-          output-format: json
-          output-file: artifacts/release-images/scan-postgres.json
       - name: Scan reviewed volume-init runtime
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
@@ -725,7 +699,7 @@ jobs:
           worker_ref="custombuild-worker:${GITHUB_SHA}"
           web_ref="custombuild-web:${GITHUB_SHA}"
           seaweedfs_ref="custombuild-seaweedfs:${GITHUB_SHA}"
-          postgres_ref='cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4'
+          postgres_ref="custombuild-postgres:${GITHUB_SHA}"
           redis_ref="custombuild-redis:${GITHUB_SHA}"
           volume_init_ref='busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478'
           api_id="$(image_id "$api_ref")"
@@ -752,7 +726,7 @@ jobs:
             test -s "artifacts/release-images/sbom-${component}.spdx.json"
             test -s "artifacts/release-images/scan-${component}.json"
           done
-          for component in api worker web seaweedfs redis; do
+          for component in api worker web seaweedfs redis postgres; do
             test "$(scan_value "$component" '.source.target.imageID')" = "$(image_id "$(scan_value "$component" '.source.target.userInput')")"
           done
           test "$api_id" = "$(scan_value api '.source.target.imageID')"
@@ -790,9 +764,7 @@ jobs:
           }
           # Grype strips the source-selector prefix from source.target.userInput.
           # The digest-pinned reference itself must remain byte-exact.
-          require_equal "postgres scan input" "$postgres_ref" "$(scan_value postgres '.source.target.userInput')"
           require_equal "volume-init scan input" "$volume_init_ref" "$(scan_value volume-init '.source.target.userInput')"
-          resolve_registry_platform postgres "$postgres_ref" "$postgres_id"
           resolve_registry_platform volume-init "$volume_init_ref" "$volume_init_id"
           jq -n \
             --arg schema_version custombuild.runtime-release-evidence.v3 \
@@ -840,9 +812,8 @@ jobs:
             --arg postgres_scan "$(sha256sum artifacts/release-images/scan-postgres.json | awk '{print $1}')" \
             --arg redis_scan "$(sha256sum artifacts/release-images/scan-redis.json | awk '{print $1}')" \
             --arg volume_init_scan "$(sha256sum artifacts/release-images/scan-volume-init.json | awk '{print $1}')" \
-            --argjson postgres_resolution "$(cat artifacts/release-images/registry-resolution-postgres.json)" \
             --argjson volume_init_resolution "$(cat artifacts/release-images/registry-resolution-volume-init.json)" \
-            '{schema_version:$schema_version,git_revision:$git_revision,source_manifest_sha256:$source_manifest_sha256,status:"PASS",images:[{component:"api",image_id:$api_id,image_reference:$api_ref,scan_input:$api_scan_input,manifest_digest:$api_manifest,sbom_sha256:$api_sbom,scan_status:"PASS",scan_sha256:$api_scan},{component:"worker",image_id:$worker_id,image_reference:$worker_ref,scan_input:$worker_scan_input,manifest_digest:$worker_manifest,sbom_sha256:$worker_sbom,scan_status:"PASS",scan_sha256:$worker_scan},{component:"web",image_id:$web_id,image_reference:$web_ref,scan_input:$web_scan_input,manifest_digest:$web_manifest,sbom_sha256:$web_sbom,scan_status:"PASS",scan_sha256:$web_scan},{component:"seaweedfs",image_id:$seaweedfs_id,image_reference:$seaweedfs_ref,scan_input:$seaweedfs_scan_input,manifest_digest:$seaweedfs_manifest,sbom_sha256:$seaweedfs_sbom,scan_status:"PASS",scan_sha256:$seaweedfs_scan},{component:"postgres",image_id:$postgres_id,image_reference:$postgres_ref,scan_input:$postgres_scan_input,manifest_digest:$postgres_manifest,sbom_sha256:$postgres_sbom,scan_status:"PASS",scan_sha256:$postgres_scan,registry_resolution:$postgres_resolution},{component:"redis",image_id:$redis_id,image_reference:$redis_ref,scan_input:$redis_scan_input,manifest_digest:$redis_manifest,sbom_sha256:$redis_sbom,scan_status:"PASS",scan_sha256:$redis_scan},{component:"volume-init",image_id:$volume_init_id,image_reference:$volume_init_ref,scan_input:$volume_init_scan_input,manifest_digest:$volume_init_manifest,sbom_sha256:$volume_init_sbom,scan_status:"PASS",scan_sha256:$volume_init_scan,registry_resolution:$volume_init_resolution}]}' \
+            '{schema_version:$schema_version,git_revision:$git_revision,source_manifest_sha256:$source_manifest_sha256,status:"PASS",images:[{component:"api",image_id:$api_id,image_reference:$api_ref,scan_input:$api_scan_input,manifest_digest:$api_manifest,sbom_sha256:$api_sbom,scan_status:"PASS",scan_sha256:$api_scan},{component:"worker",image_id:$worker_id,image_reference:$worker_ref,scan_input:$worker_scan_input,manifest_digest:$worker_manifest,sbom_sha256:$worker_sbom,scan_status:"PASS",scan_sha256:$worker_scan},{component:"web",image_id:$web_id,image_reference:$web_ref,scan_input:$web_scan_input,manifest_digest:$web_manifest,sbom_sha256:$web_sbom,scan_status:"PASS",scan_sha256:$web_scan},{component:"seaweedfs",image_id:$seaweedfs_id,image_reference:$seaweedfs_ref,scan_input:$seaweedfs_scan_input,manifest_digest:$seaweedfs_manifest,sbom_sha256:$seaweedfs_sbom,scan_status:"PASS",scan_sha256:$seaweedfs_scan},{component:"postgres",image_id:$postgres_id,image_reference:$postgres_ref,scan_input:$postgres_scan_input,manifest_digest:$postgres_manifest,sbom_sha256:$postgres_sbom,scan_status:"PASS",scan_sha256:$postgres_scan},{component:"redis",image_id:$redis_id,image_reference:$redis_ref,scan_input:$redis_scan_input,manifest_digest:$redis_manifest,sbom_sha256:$redis_sbom,scan_status:"PASS",scan_sha256:$redis_scan},{component:"volume-init",image_id:$volume_init_id,image_reference:$volume_init_ref,scan_input:$volume_init_scan_input,manifest_digest:$volume_init_manifest,sbom_sha256:$volume_init_sbom,scan_status:"PASS",scan_sha256:$volume_init_scan,registry_resolution:$volume_init_resolution}]}' \
             > "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"
       - name: Produce final software release evidence
         run: >-
@@ -928,7 +899,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        component: [api, worker, web, seaweedfs, redis]
+        component: [api, worker, web, seaweedfs, redis, postgres]
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -1146,10 +1117,10 @@ jobs:
           mkdir -p artifacts/promotion
           evidence=artifacts/release-evidence/release-readiness.json
           test -f "$evidence"
-          test "$(find artifacts/published -maxdepth 1 -name 'image-*.json' -type f | wc -l)" -eq 5
+          test "$(find artifacts/published -maxdepth 1 -name 'image-*.json' -type f | wc -l)" -eq 6
           source_manifest_sha256="$(python3 scripts/source_manifest.py --repo .)"
           declare -a image_arguments=()
-          for component in api worker web seaweedfs redis; do
+          for component in api worker web seaweedfs redis postgres; do
             metadata="artifacts/published/image-${component}.json"
             (cd artifacts/published && sha256sum --check "image-${component}.sha256")
             reference="$(jq -er '.registry_image | select(test("^ghcr\\.io/[a-z0-9._/-]+@sha256:[a-f0-9]{64}$"))' "$metadata")"

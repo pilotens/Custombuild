@@ -36,10 +36,6 @@ VOLUME_INIT_IMAGE = (
     "busybox:1.37.0-musl@sha256:"
     "f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
 )
-POSTGRES_IMAGE = (
-    "cgr.dev/chainguard/postgres:latest@sha256:"
-    "f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
-)
 SEAWEEDFS_IMAGE = "custombuild-seaweedfs:uncommitted"
 SEAWEEDFS_IMAGE_PATTERN = re.compile(
     r"^custombuild-seaweedfs:(?:uncommitted|[a-f0-9]{40}|[a-f0-9]{64})$"

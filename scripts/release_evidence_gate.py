@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # Direct ``python scripts/release_evidence_gate.py`
     )
 
 STATIC_SCHEMA = "custombuild.release-readiness-static.v3"
-RESTORE_SCHEMA = "custombuild.restore-drill.v4"
+RESTORE_SCHEMA = "custombuild.restore-drill.v5"
 RUNTIME_SCHEMA = "custombuild.runtime-release-evidence.v3"
 FINAL_SCHEMA = "custombuild.release-readiness-evidence.v2"
 REQUIRED_IMAGES = frozenset(
@@ -97,6 +97,8 @@ REQUIRED_NATIVE_PACKAGES = {
             ("zlib", "1.3.2.1_rc20260921-r2"),
         }
     ),
+    "redis": frozenset({("zlib", "1.4-r0"), ("setpriv", "2.42.3-r1")}),
+    "postgres": frozenset({("zlib", "1.4-r0"), ("gosu", "1.19-r6")}),
     "web": frozenset({("nodejs-24", "24.22.2-r2")}),
 }
 BUILT_IMAGE_NAMES = {
@@ -105,12 +107,9 @@ BUILT_IMAGE_NAMES = {
     "web": "custombuild-web",
     "seaweedfs": "custombuild-seaweedfs",
     "redis": "custombuild-redis",
+    "postgres": "custombuild-postgres",
 }
 EXTERNAL_IMAGE_REFERENCES = {
-    "postgres": (
-        "cgr.dev/chainguard/postgres:latest@"
-        "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
-    ),
     "volume-init": (
         "busybox:1.37.0-musl@"
         "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
@@ -723,6 +722,9 @@ def build_final_report(
         pinned_registry_inputs=pinned_registry_inputs,
     )
     scan_sha256 = _verify_scans(sbom_directory, images, sbom_identities)
+    postgres = next(item for item in images if item.get("component") == "postgres")
+    if postgres.get("image_id") != restore.get("postgres_image_id"):
+        raise EvidenceError("scanned PostgreSQL image differs from the restore target")
     seaweed = next(item for item in images if item.get("component") == "seaweedfs")
     if seaweed.get("image_id") != object_store.get("image_id"):
         raise EvidenceError("scanned SeaweedFS image differs from backup and restore")

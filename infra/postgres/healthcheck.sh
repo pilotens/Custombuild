@@ -5,6 +5,9 @@ test "${POSTGRES_USER:-}" = "custombuild_bootstrap"
 test "${MIGRATOR_DATABASE_USER:-}" = "custombuild_migrator"
 test "${CAPACITY_ATTESTOR_DATABASE_USER:-}" = "custombuild_storage_attestor"
 
+export PGHOST=127.0.0.1
+export PGPASSWORD="${POSTGRES_PASSWORD:?Missing bootstrap password}"
+
 pg_isready \
   --quiet \
   --username "$POSTGRES_USER" \

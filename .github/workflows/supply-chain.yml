@@ -26,6 +26,8 @@ jobs:
             dockerfile: services/worker/Dockerfile
           - component: web
             dockerfile: apps/web/Dockerfile
+          - component: postgres
+            dockerfile: infra/postgres/Dockerfile
           - component: redis
             dockerfile: infra/redis/Dockerfile
     steps:
@@ -41,7 +43,7 @@ jobs:
           build_date="$(git show -s --format=%cI '${{ github.sha }}')"
           lock_name="DEPENDENCY_LOCK_SHA256"
           lock_file="uv.lock"
-          if [ "${{ matrix.component }}" = "redis" ]; then lock_file="infra/redis/Dockerfile"; fi
+          case "${{ matrix.component }}" in redis|postgres) lock_file="${{ matrix.dockerfile }}" ;; esac
           if [ "${{ matrix.component }}" = "web" ]; then
             lock_name="FRONTEND_LOCK_SHA256"
             lock_file="pnpm-lock.yaml"
@@ -61,6 +63,9 @@ jobs:
             --build-arg "${lock_name}=${lock_sha256}" \
             --tag "custombuild-${{ matrix.component }}:supply-chain-${{ github.sha }}" \
             .
+      - name: Verify PostgreSQL logical migration and old-volume refusal
+        if: matrix.component == 'postgres'
+        run: bash scripts/verify_postgres_upgrade.sh "custombuild-postgres:supply-chain-${{ github.sha }}"
       - name: Verify broker upgrade against persisted AOF
         if: matrix.component == 'redis'
         run: bash scripts/verify_redis_upgrade.sh "custombuild-redis:supply-chain-${{ github.sha }}"
@@ -77,7 +82,7 @@ jobs:
           lock_name="DEPENDENCY_LOCK_SHA256"
           lock_label="io.custombuild.dependency-lock.sha256"
           lock_file="uv.lock"
-          if [ "${{ matrix.component }}" = "redis" ]; then lock_file="infra/redis/Dockerfile"; fi
+          case "${{ matrix.component }}" in redis|postgres) lock_file="${{ matrix.dockerfile }}" ;; esac
           dependency_lock_sha256=""
           frontend_lock_sha256=""
           if [ "${{ matrix.component }}" = "web" ]; then
@@ -163,8 +168,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - component: postgres
-            image: cgr.dev/chainguard/postgres:latest@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4
           - component: volume-init
             image: busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478
     steps:

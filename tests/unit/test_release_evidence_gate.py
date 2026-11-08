@@ -24,18 +24,9 @@ SOURCE = "2" * 64
 CONTENT_ROOT = "3" * 64
 SEAWEED_ID = "sha256:" + "3" * 64
 EXTERNAL_SBOM_IDENTITIES = {
-    "postgres": (
-        "cgr.dev/chainguard/postgres",
-        "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4",
-        "latest",
-    ),
     "volume-init": ("busybox", "1.37.0-musl", "1.37.0-musl"),
 }
 EXTERNAL_RUNTIME_IDENTITIES = {
-    "postgres": (
-        "sha256:090173413bfc70ef815772bbaaafcc5dd14b24fa51a96d50e9de8199cc512786",
-        "sha256:4c182473bc16ff3c0d11b6c7cec116889c65f93162540f72a90ad0b1b957fba9",
-    ),
     "volume-init": (
         "sha256:93007eb2eb686f408f418ce3a2aa44a638392fd1e2b65a73082c6a81608f4e31",
         "sha256:1be7e1b6cadc639cd9652438beec21db56a402a2244f6fd1262f980530f54fb8",
@@ -109,7 +100,7 @@ def _evidence(
     _write(
         restore,
         {
-            "schema_version": "custombuild.restore-drill.v4",
+            "schema_version": "custombuild.restore-drill.v5",
             "status": "PASS",
             "git_revision": REVISION,
             "source_manifest_sha256": SOURCE,
@@ -141,6 +132,7 @@ def _evidence(
             "tenant_rls_verified": True,
             "object_store_image": SEAWEEDFS_IMAGE,
             "object_store_image_id": SEAWEED_ID,
+            "postgres_image_id": "sha256:" + "5" * 64,
             "object_store_bucket": "artifacts",
             "object_store_object_count": 0,
             "object_store_total_size_bytes": 0,
@@ -372,10 +364,7 @@ def test_final_gate_binds_all_release_evidence(
     assert report["backup_manifest_schema"] == MANIFEST_SCHEMA
     assert report["runtime_image_ids"]["seaweedfs"] == SEAWEED_ID
     assert report["runtime_image_references"]["api"] == f"custombuild-api:{REVISION}"
-    assert report["runtime_scan_inputs"]["postgres"] == (
-        "cgr.dev/chainguard/postgres:latest@"
-        "sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
-    )
+    assert report["runtime_scan_inputs"]["postgres"] == f"custombuild-postgres:{REVISION}"
     assert set(report["runtime_sbom_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_scan_sha256"]) == release_evidence_gate.REQUIRED_IMAGES
     assert set(report["runtime_manifest_digests"]) == release_evidence_gate.REQUIRED_IMAGES
@@ -460,8 +449,8 @@ def test_pinned_registry_resolution_mutations_fail_closed(
         pinned_registry_inputs=True,
     )
     payload = json.loads(runtime.read_text(encoding="utf-8"))
-    postgres = next(item for item in payload["images"] if item["component"] == "postgres")
-    postgres["registry_resolution"][field] = replacement
+    volume = next(item for item in payload["images"] if item["component"] == "volume-init")
+    volume["registry_resolution"][field] = replacement
     _write(runtime, payload)
     _stub_source_identity(monkeypatch)
 
@@ -483,16 +472,17 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
         frozenset({"api", "worker", "web", "seaweedfs", "postgres", "redis", "volume-init"})
         == release_evidence_gate.REQUIRED_IMAGES
     )
-    assert release_evidence_gate._expected_image_reference("postgres", REVISION).endswith(
-        "@sha256:f131db66371391e404c80cef7dd40f31b1b54eb264a6cb032925d9a3859f93f4"
+    assert (
+        release_evidence_gate._expected_image_reference("postgres", REVISION)
+        == f"custombuild-postgres:{REVISION}"
     )
-    assert release_evidence_gate._expected_scan_input(
-        "postgres", REVISION
-    ) == release_evidence_gate._expected_image_reference("postgres", REVISION)
-    assert release_evidence_gate._expected_scan_input(
-        "postgres", REVISION, pinned_registry_inputs=True
-    ) == release_evidence_gate._expected_image_reference("postgres", REVISION)
-    for component in ("postgres", "volume-init"):
+    assert (
+        release_evidence_gate._expected_scan_input(
+            "postgres", REVISION, pinned_registry_inputs=True
+        )
+        == f"custombuild-postgres:{REVISION}"
+    )
+    for component in ("volume-init",):
         assert "@sha256:" in release_evidence_gate._expected_scan_input(component, REVISION)
     assert (
         release_evidence_gate._expected_scan_input("redis", REVISION)
@@ -503,7 +493,7 @@ def test_runtime_evidence_v3_names_the_volume_init_image_by_its_role() -> None:
     assert ("libxcb", "1.17.0-r19") in release_evidence_gate.REQUIRED_NATIVE_PACKAGES["worker"]
 
 
-@pytest.mark.parametrize("component", ("postgres", "volume-init"))
+@pytest.mark.parametrize("component", ("volume-init",))
 def test_final_gate_rejects_tag_only_external_scan_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -530,7 +520,7 @@ def test_final_gate_rejects_tag_only_external_scan_input(
         )
 
 
-@pytest.mark.parametrize("component", ("postgres", "volume-init"))
+@pytest.mark.parametrize("component", ("volume-init",))
 def test_final_gate_rejects_registry_selector_as_persisted_scan_input(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -561,7 +551,7 @@ def test_final_gate_rejects_registry_selector_as_persisted_scan_input(
         )
 
 
-@pytest.mark.parametrize("component", ("postgres", "volume-init"))
+@pytest.mark.parametrize("component", ("volume-init",))
 def test_final_gate_rejects_tag_only_external_image_reference(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -637,24 +627,24 @@ def test_final_gate_rejects_mutated_external_image_identity(
 ) -> None:
     static, backup, restore, runtime, sboms = _evidence(tmp_path)
     runtime_payload = json.loads(runtime.read_text(encoding="utf-8"))
-    postgres = next(item for item in runtime_payload["images"] if item["component"] == "postgres")
-    scan_path = sboms / "scan-postgres.json"
+    volume = next(item for item in runtime_payload["images"] if item["component"] == "volume-init")
+    scan_path = sboms / "scan-volume-init.json"
     scan_payload = json.loads(scan_path.read_text(encoding="utf-8"))
-    sbom_path = sboms / "sbom-postgres.spdx.json"
+    sbom_path = sboms / "sbom-volume-init.spdx.json"
     sbom_payload = json.loads(sbom_path.read_text(encoding="utf-8"))
     root_id = sbom_payload["relationships"][0]["relatedSpdxElement"]
     root = next(item for item in sbom_payload["packages"] if item["SPDXID"] == root_id)
-    expected_input = release_evidence_gate.EXTERNAL_IMAGE_REFERENCES["postgres"]
+    expected_input = release_evidence_gate.EXTERNAL_IMAGE_REFERENCES["volume-init"]
     tag_only_input = expected_input.partition("@")[0]
     wrong_digest_input = tag_only_input + "@sha256:" + "f" * 64
 
     if case == "coordinated_unpinned_input":
-        postgres["scan_input"] = tag_only_input
+        volume["scan_input"] = tag_only_input
         scan_payload["source"]["target"]["userInput"] = tag_only_input
     elif case == "scan_unpinned_input":
         scan_payload["source"]["target"]["userInput"] = tag_only_input
     elif case == "coordinated_wrong_input_digest":
-        postgres["scan_input"] = wrong_digest_input
+        volume["scan_input"] = wrong_digest_input
         scan_payload["source"]["target"]["userInput"] = wrong_digest_input
     elif case == "root_basename":
         root["name"] = "postgres"
@@ -664,18 +654,16 @@ def test_final_gate_rejects_mutated_external_image_identity(
         root["externalRefs"][0]["referenceLocator"] = (
             "pkg:oci/postgres@sha256%3A"
             + root["checksums"][0]["checksumValue"]
-            + "?arch=amd64&tag=latest"
+            + "?arch=amd64&tag=1.37.0-musl"
         )
     elif case == "purl_manifest":
         root["externalRefs"][0]["referenceLocator"] = (
-            "pkg:oci/cgr.dev%2Fchainguard%2Fpostgres@sha256%3A"
-            + "f" * 64
-            + "?arch=amd64&tag=latest"
+            "pkg:oci/busybox@sha256%3A" + "f" * 64 + "?arch=amd64&tag=1.37.0-musl"
         )
     elif case == "purl_tag":
         root["externalRefs"][0]["referenceLocator"] = root["externalRefs"][0][
             "referenceLocator"
-        ].replace("tag=latest", "tag=stable")
+        ].replace("tag=1.37.0-musl", "tag=stable")
     elif case == "purl_arch":
         root["externalRefs"][0]["referenceLocator"] = root["externalRefs"][0][
             "referenceLocator"
@@ -689,10 +677,10 @@ def test_final_gate_rejects_mutated_external_image_identity(
 
     if scan_payload != json.loads(scan_path.read_text(encoding="utf-8")):
         _write(scan_path, scan_payload)
-        postgres["scan_sha256"] = hashlib.sha256(scan_path.read_bytes()).hexdigest()
+        volume["scan_sha256"] = hashlib.sha256(scan_path.read_bytes()).hexdigest()
     if sbom_payload != json.loads(sbom_path.read_text(encoding="utf-8")):
         _write(sbom_path, sbom_payload)
-        postgres["sbom_sha256"] = hashlib.sha256(sbom_path.read_bytes()).hexdigest()
+        volume["sbom_sha256"] = hashlib.sha256(sbom_path.read_bytes()).hexdigest()
     _write(runtime, runtime_payload)
     _stub_source_identity(monkeypatch)
 
@@ -1250,3 +1238,20 @@ def test_workflow_keeps_generated_evidence_outside_the_clean_source_tree() -> No
     assert '--runtime-evidence "$RELEASE_EVIDENCE_DIR/runtime-evidence.json"' in workflow
     assert '--sbom-directory "$RELEASE_EVIDENCE_DIR"' in workflow
     assert '--output "$RELEASE_EVIDENCE_DIR/release-readiness.json"' in workflow
+
+
+def test_final_gate_rejects_restore_from_another_postgres_image(tmp_path, monkeypatch):
+    static, backup, restore, runtime, sboms = _evidence(tmp_path)
+    payload = json.loads(restore.read_text())
+    payload["postgres_image_id"] = "sha256:" + "f" * 64
+    _write(restore, payload)
+    _stub_source_identity(monkeypatch)
+    with pytest.raises(EvidenceError, match="scanned PostgreSQL image differs"):
+        build_final_report(
+            tmp_path,
+            static_report_path=static,
+            backup_directory=backup,
+            restore_evidence_path=restore,
+            runtime_evidence_path=runtime,
+            sbom_directory=sboms,
+        )

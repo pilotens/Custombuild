@@ -16,7 +16,7 @@ to their own licences and the release gates documented below.
 
 | Component | Pinned image | Upstream licence | Engineering decision |
 | --- | --- | --- | --- |
-| PostgreSQL | Chainguard PostgreSQL 18.6, digest pinned | PostgreSQL License plus package-specific notices | Minimal non-root runtime; retain copyright and licence notices. |
+| PostgreSQL | Repo-built PostgreSQL 18.6 on Alpine 3.24 from the Docker Official Image with signed gosu and zlib | PostgreSQL License plus package-specific notices | The entrypoint drops privileges for the database process. Retain copyright and licence notices. |
 | Redis | Redis 7.2.17 from the digest-pinned Docker Official Image on Alpine 3.24, built by `infra/redis/Dockerfile` | BSD-3-Clause | Redis states that 7.2.x and earlier remain BSD-3-Clause. Do not upgrade this image across the 7.4 or 8.x licence boundaries without a new review. |
 | SeaweedFS | repository-built `4.45` from a checksum-pinned source archive | Apache-2.0 | Permissive, actively maintained S3-compatible runtime; retain the Apache-2.0 licence and notices. The minimal image is built with pinned Go 1.26.9 plus checksum-locked security overrides and scanned before release. |
 | Volume init | Docker Official Image `busybox:1.37.0-musl`, digest pinned | GPL-2.0-only plus package-specific notices | Minimal one-shot ownership initialization; run only with the explicit root UID and `CHOWN` capability, then exit. |
@@ -70,8 +70,8 @@ deployment must pin reviewed image digests.
 
 ## Automated evidence and release checklist
 
-`.github/workflows/supply-chain.yml` builds the three application images and the
-checksum-bound SeaweedFS image, and pulls PostgreSQL, Redis and the volume-init
+`.github/workflows/supply-chain.yml` builds the web, API, worker, broker, database and checksum-bound SeaweedFS images,
+and pulls the volume-init
 image by digest. It emits a uniquely named SPDX JSON SBOM for every image and
 blocks every High/Critical vulnerability without an `only-fixed` filter. Every external
 workflow action is pinned to an immutable commit, and release readiness rejects
@@ -86,7 +86,7 @@ Debian's archive keyring. Final application runtimes use pinned minimal Chaingua
 images, and the worker adds exact Wolfi packages into a scanner-visible chroot.
 Release readiness rejects a return to floating base images or APT indexes. Update
 any base digest, snapshot date or Wolfi package pin only in a reviewed change that
-rebuilds all three images and reruns their SBOM and vulnerability gates. This
+builds the repository images and runs their SBOM and vulnerability gates. This
 narrows rebuild drift; it does not make a source revision itself a deployable
 immutable artifact. Production must promote and record the exact built image
 digest and archive the associated SBOM and scan evidence.

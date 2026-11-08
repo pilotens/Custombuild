@@ -85,6 +85,19 @@ are rebuilt by the logical restore, then require the complete restore drill and
 tenant acceptance probes before traffic resumes. Keep the old volume read-only
 until the new recovery point has been independently accepted.
 
+The move from Chainguard PostgreSQL 18 to the Alpine PostgreSQL 18.6 image also
+requires **logical restore** on an existing installation. The locale and collation
+libraries change. Follow the coordinated backup and recovery procedure above
+into a fresh volume, keep the source volume and object archive, and compare the
+restored application data, roles, RLS and collation-sensitive queries before switching.
+A fresh installation initializes normally. The new image refuses a foreign or
+partially initialized volume before the server starts. Its initialized data lives
+at `/var/lib/postgresql/18/docker` inside the named `postgres-data` volume.
+Use `restore_drill.py --postgres-image-id sha256:<config-id>` on an offline host
+with the accepted image loaded, or use the verified deployment image environment.
+Version 5 coordinated backup files remain valid. The v5 restore report binds the
+actual target PostgreSQL image config ID to the release scan.
+
 1. Stop API, the singleton scheduler and every worker.
 2. Restore PostgreSQL into an isolated environment.
 3. Restore the matching object-store snapshot.
@@ -439,8 +452,8 @@ configuration approval.
 
 `scripts/deploy_descriptor.py` is the repository-owned boundary between completed
 release evidence and `.github/workflows/cd.yml`. It renders canonical
-JSON for five repository-built images (`api`, `worker`, `web`, `seaweedfs`, `redis`) plus
-the reviewed PostgreSQL and volume-initializer digests. The descriptor also
+JSON for six repository-built images (`api`, `worker`, `web`, `seaweedfs`, `redis`, `postgres`) and
+the reviewed volume-initializer digest. The descriptor also
 binds the full source commit, source-manifest digest, final release-evidence digest,
 workflow run/attempt, exact Compose service-to-image roles and the expected GitHub
 OIDC/Cosign and artifact-attestation identities. Tags, additional fields, duplicate
@@ -489,6 +502,7 @@ python3 scripts/deploy_descriptor.py render \
   --web-image "ghcr.io/pilotens/custombuild-web@sha256:<digest>" \
   --seaweedfs-image "ghcr.io/pilotens/custombuild-seaweedfs@sha256:<digest>" \
   --redis-image "ghcr.io/pilotens/custombuild-redis@sha256:<digest>" \
+  --postgres-image "ghcr.io/pilotens/custombuild-postgres@sha256:<digest>" \
   --output artifacts/deploy-descriptor.json \
   --sha256-output artifacts/deploy-descriptor.sha256
 
