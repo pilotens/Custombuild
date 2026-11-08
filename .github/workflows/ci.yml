@@ -615,12 +615,25 @@ jobs:
           path: apps/web/test-results/chromium-live/furniture-live-*/attachments/*.png
           if-no-files-found: error
           retention-days: 14
+      - name: Re-import both bookcase ZIPs downloaded through the customer app
+        run: |
+          set -euo pipefail
+          downloads="$RUNNER_TEMP/bookcase-downloads"
+          install -d -m 755 "$downloads"
+          for name in Custombuild-Bokhylla-Valnot-{Konstruktionsprov,Platsalternativ}.zip; do
+            install -m 644 apps/web/test-results/chromium-live/furniture-live-*/"$name" "$downloads/$name"
+          done
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=512m -e HOME=/tmp \
+            -v "$PWD/scripts/verify_bookcase_reference_downloads.py:/reference.py:ro" \
+            -v "$downloads:/downloads:ro" "custombuild-worker:$GITHUB_SHA" \
+            python /reference.py /downloads/Custombuild-Bokhylla-Valnot-{Konstruktionsprov,Platsalternativ}.zip \
+            | tee "$downloads/reference-readback.jsonl"
       - name: Preserve bookcase packages downloaded from the live stack
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bookcase-workshop-trial-packages
-          path: apps/web/test-results/chromium-live/furniture-live-*/Custombuild-Bokhylla-*.zip
+          path: ${{ runner.temp }}/bookcase-downloads/
           if-no-files-found: error
           retention-days: 30
       - name: Cross-browser production acceptance
