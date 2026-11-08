@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { INSTALLATION_ALLOWANCES, installationCarcassDimensions, parseFurniturePercentages } from "@/lib/furniture-dimensions";
+import { changeTrimProfile, INSTALLATION_ALLOWANCES, installationCarcassDimensions, parseFurniturePercentages } from "@/lib/furniture-dimensions";
 import type { FurnitureInstallation, FurniturePreview, FurnitureTrimProfile, FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { exactMillimetreTextToMicrometres } from "@/lib/workshop-production-context";
 
@@ -78,17 +78,19 @@ function StandingWalls({ installation, onChange }: {
   const walls = ([["left", "Vänster"], ["right", "Höger"], ["rear", "Bakom"]] as const)
     .filter(([wall]) => !trimmed.includes(wall));
   if (!walls.length) return null;
-  const surveyed = installation.additional_bounded_walls;
+  const bounded = installation.additional_bounded_walls ?? [];
+  const surveyed = installation.additional_bounded_walls != null && (!installation.remaining_walls_unmeasured
+    || walls.every(([wall]) => bounded.includes(wall)));
   const update = (value: FurnitureInstallation["additional_bounded_walls"]) =>
-    onChange({ ...installation, additional_bounded_walls: value }, "installation.walls");
+    onChange({ ...installation, additional_bounded_walls: value, remaining_walls_unmeasured: undefined }, "installation.walls");
   return <fieldset>
     <legend>Väggar vid stående montering</legend>
-    <label><input type="checkbox" checked={surveyed != null}
-      onChange={e => update(e.target.checked ? [] : null)} />Övriga sidor är kontrollerade på plats</label>
-    {surveyed != null ? <>
+    <label><input type="checkbox" checked={surveyed}
+      onChange={e => update(e.target.checked ? bounded : null)} />Övriga sidor är kontrollerade på plats</label>
+    {surveyed ? <>
       <p>Markera väggar som ligger vid kundens yttermått. Omarkerade sidor räknas som fria. Listväggar ingår automatiskt.</p>
-      {walls.map(([wall, label]) => <label key={wall}><input type="checkbox" checked={surveyed.includes(wall)}
-        onChange={e => update(e.target.checked ? [...surveyed, wall] : surveyed.filter(v => v !== wall))} />{label} · vägg utan list</label>)}
+      {walls.map(([wall, label]) => <label key={wall}><input type="checkbox" checked={bounded.includes(wall)}
+        onChange={e => update(e.target.checked ? [...bounded, wall] : bounded.filter(v => v !== wall))} />{label} · vägg utan list</label>)}
     </> : null}
   </fieldset>;
 }
@@ -100,7 +102,7 @@ function TrimProfileEditor({ installation, onChange, onError }: {
 }) {
   const profile = installation.trim_profile;
   const update = (trim_profile: FurnitureTrimProfile | null, field = "installation.trim") =>
-    onChange({ ...installation, trim_profile }, field);
+    onChange(changeTrimProfile(installation, trim_profile), field);
   return <>
     <label><input type="checkbox" checked={Boolean(profile)} onChange={e => update(e.target.checked
       ? { height_um: null, width_um: null, use: "unassigned", walls: [] } : null)} />Ange listprofil</label>

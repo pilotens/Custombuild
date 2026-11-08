@@ -5438,7 +5438,7 @@
                 "type": "null"
               }
             ],
-            "description": "Walls at the customer envelope, in addition to walls with known skirting. An empty list confirms that the remaining sides are open. Null means not surveyed.",
+            "description": "Walls at the customer envelope, in addition to walls with known skirting. Null means not surveyed. Unlisted sides are open unless remaining_walls_unmeasured is true.",
             "title": "Additional Bounded Walls"
           },
           "bottom_allowance_um": {
@@ -5530,6 +5530,18 @@
               }
             ],
             "title": "Rear Allowance Um"
+          },
+          "remaining_walls_unmeasured": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Unlisted sides have not been surveyed. Known walls still constrain assembly.",
+            "title": "Remaining Walls Unmeasured"
           },
           "right_allowance_um": {
             "anyOf": [

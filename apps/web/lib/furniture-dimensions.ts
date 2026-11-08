@@ -1,4 +1,4 @@
-import type { FurnitureInstallation } from "./furniture-workspace";
+import type { FurnitureInstallation, FurnitureTrimProfile } from "./furniture-workspace";
 
 export const INSTALLATION_ALLOWANCES = [
   ["left_allowance_um", "Vänster"], ["right_allowance_um", "Höger"],
@@ -17,6 +17,20 @@ export function installationCarcassDimensions(value: FurnitureInstallation) {
     throw new Error("Reserverat utrymme lämnar inget positivt stommått.");
   }
   return dimensions;
+}
+
+/** A removed skirting board leaves a wall. Preserve what was measured on the other sides. */
+export function changeTrimProfile(site: FurnitureInstallation, profile: FurnitureTrimProfile | null): FurnitureInstallation {
+  const previousWalls = site.trim_profile?.use === "existing_room_trim" ? site.trim_profile.walls : [];
+  const nextWalls = profile?.use === "existing_room_trim" ? profile.walls : [];
+  const removed = previousWalls.filter(wall => !nextWalls.includes(wall));
+  const updated = { ...site, trim_profile: profile };
+  if (!removed.length) return updated;
+
+  const bounded = [...new Set([...(site.additional_bounded_walls ?? []), ...removed])];
+  const unknown = (site.additional_bounded_walls == null || site.remaining_walls_unmeasured)
+    && new Set([...bounded, ...nextWalls]).size < 3;
+  return { ...updated, additional_bounded_walls: bounded, remaining_walls_unmeasured: unknown || undefined };
 }
 
 /** Percent text is exact to one ppm; no floating point normalization of the design. */

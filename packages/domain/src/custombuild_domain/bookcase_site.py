@@ -39,12 +39,14 @@ def _wall_excursion(wall: Wall, bounds: Bounds, width: int, depth: int) -> int:
     return max(0, -lo[0] if wall == "left" else hi[0] - width)
 
 
-def review_standing_site(design: DesignResult, site: InstallationSpace) -> StandingSiteReview:
-    trim = site.trim_profile
+def review_standing_site(
+    design: DesignResult, site: InstallationSpace | None
+) -> StandingSiteReview:
+    trim = site.trim_profile if site else None
     trimmed = trim.walls if trim and trim.use == "existing_room_trim" else ()
-    walls = tuple(dict.fromkeys((*trimmed, *(site.additional_bounded_walls or ()))))
-    unknown_walls = site.additional_bounded_walls is None and set(trimmed) != set(WALL_NAMES)
-    floor = site.bottom_allowance_um
+    bare = site.additional_bounded_walls if site else None
+    walls = tuple(dict.fromkeys((*trimmed, *(bare or ()))))
+    floor = site.bottom_allowance_um if site else None
     params = design.spec.parameters
     peak = 0
     front = 0
@@ -72,9 +74,28 @@ def review_standing_site(design: DesignResult, site: InstallationSpace) -> Stand
                 if needed > reservations[wall][0]:
                     reservations[wall] = (needed, stroke.travel.step_number)
 
+    if site is None:
+        return StandingSiteReview(
+            minimum_height_from_base_um=peak,
+            minimum_ceiling_height_um=None,
+            measured_ceiling_height_um=None,
+            minimum_front_space_um=front,
+            measured_front_space_um=None,
+            walls=(),
+            state="requires_measurement",
+            issues=(
+                {
+                    "code": "STANDING_SITE_UNMEASURED",
+                    "message": "Monteringsplatsen är inte angiven. Öppna Kundens yttermått och "
+                    "listutrymme och ange väggläge, golvavstånd, fri takhöjd och plats "
+                    "framför stommen.",
+                },
+            ),
+        )
+
     issues = []
-    if unknown_walls:
-        missing = ", ".join(WALL_NAMES[wall] for wall in WALL_NAMES if wall not in trimmed)
+    if (bare is None or site.remaining_walls_unmeasured) and set(walls) != set(WALL_NAMES):
+        missing = ", ".join(WALL_NAMES[wall] for wall in WALL_NAMES if wall not in walls)
         issues.append(
             {
                 "code": "STANDING_WALL_LAYOUT_UNMEASURED",

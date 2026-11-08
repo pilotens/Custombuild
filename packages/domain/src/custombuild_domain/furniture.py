@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v10"
+        return "custombuild.shelving-workshop-review.v11"
     return "custombuild.furniture-review.v1"
 
 
@@ -86,7 +86,14 @@ class InstallationSpace(FrozenModel):
         max_length=3,
         exclude_if=lambda v: v is None,
         description="Walls at the customer envelope, in addition to walls with known skirting. "
-        "An empty list confirms that the remaining sides are open. Null means not surveyed.",
+        "Null means not surveyed. Unlisted sides are open unless remaining_walls_unmeasured "
+        "is true.",
+    )
+    remaining_walls_unmeasured: bool | None = Field(
+        default=None,
+        strict=True,
+        exclude_if=lambda v: not v,
+        description="Unlisted sides have not been surveyed. Known walls still constrain assembly.",
     )
     measured_front_space_um: (
         Annotated[int, Field(strict=True, ge=0, le=MAX_EXACT_SITE_UM)] | None

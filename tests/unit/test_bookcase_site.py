@@ -161,3 +161,43 @@ def test_bare_wall_next_to_a_trimmed_wall_does_not_inherit_its_projection():
     ]
     with pytest.raises(ValueError):
         InstallationSpace.model_validate({**site, "additional_bounded_walls": ["right", "right"]})
+
+
+def test_removing_all_site_measurements_keeps_the_required_timber_travel():
+    from custombuild_domain.identity import content_hash
+
+    installed = installed_trial(27_000, 27_000, ceiling=1_400_000, front=600_000)
+    measured = review_furniture_dimensions(installed.design)["standing_assembly"]
+    removed = installed.design.model_copy(update={"installation": None})
+    geometry = build_furniture(removed)
+    review = review_furniture_dimensions(removed, geometry.shelving_result)
+    assert review["state"] == "requires_resolution" and review["installation"] is None
+    assert review["required_carcass_dimensions_um"] is None
+    site = review["standing_assembly"]
+    assert site["state"] == "requires_measurement" and site["walls"] == []
+    assert site["minimum_height_from_base_um"] == measured["minimum_height_from_base_um"]
+    assert site["minimum_front_space_um"] == measured["minimum_front_space_um"]
+    assert site["minimum_ceiling_height_um"] is None
+    assert site["issues"] == review["issues"]
+    assert [issue["code"] for issue in site["issues"]] == ["STANDING_SITE_UNMEASURED"]
+    assert content_hash(removed) != content_hash(installed.design)
+
+
+def test_known_bare_wall_is_checked_while_other_sides_are_unsurveyed():
+    w = installed_trial(5_000, 27_000, ceiling=1_400_000, front=600_000, walls=["right"])
+    site = InstallationSpace.model_validate(
+        {
+            **w.design.installation.model_dump(),
+            "additional_bounded_walls": ["left"],
+            "remaining_walls_unmeasured": True,
+        }
+    )
+    report = review_furniture_dimensions(w.design.model_copy(update={"installation": site}))
+    assembly = report["standing_assembly"]
+    assert assembly["state"] == "blocked"
+    assert {wall["wall"] for wall in assembly["walls"]} == {"left", "right"}
+    issues = {issue["code"]: issue["message"] for issue in assembly["issues"]}
+    assert set(issues) == {"STANDING_LEFT_CLEARANCE", "STANDING_WALL_LAYOUT_UNMEASURED"}
+    assert "bakväggen" in issues["STANDING_WALL_LAYOUT_UNMEASURED"]
+    assert "vänster vägg" not in issues["STANDING_WALL_LAYOUT_UNMEASURED"]
+    assert site == InstallationSpace.model_validate_json(site.model_dump_json())

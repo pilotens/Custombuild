@@ -36,6 +36,13 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
         space = json.loads(z.read("assembly/required-space.json"))
         assert space["design_hash"] == manifest["design_hash"]
         assert space["revision"] == manifest["revision"]
+        site = space["standing_site"]
+        assert site["state"] == "requires_measurement"
+        assert site["minimum_height_from_base_um"] == space["world_max_um"][2]
+        handoff = json.loads(z.read("manufacturing/workshop-handoff.json"))
+        assert site == handoff["dimensions"]["standing_assembly"]
+        assert site["issues"][0]["code"] == "STANDING_SITE_UNMEASURED"
+        assert site["issues"][0]["message"].encode() in z.read("inspection/provprotokoll.txt")
         assert [s["step_number"] for s in space["steps"]] == [
             s["step_number"] for s in graph["graph"]["steps"]
         ]

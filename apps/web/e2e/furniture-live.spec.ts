@@ -157,15 +157,17 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       "  if name.endswith(('.json','.csv','.dxf','.svg','.step')):",
       "   data=after.read(name); assert all(p.encode() not in data for p in removed)",
     ].join("\n"), (await download.path())!, (await regenerated.path())!]);
-    // An untrimmed side is unknown until the customer describes it as open or bounded.
+    // Removing a trim profile preserves the three walls where it was measured.
     await page.getByRole("checkbox", {name: "Ange listprofil"}).uncheck();
     await page.getByRole("checkbox", {name: "Längden inkluderar list"}).uncheck();
     await page.getByLabel("Vänster · reserverat (mm)").fill("0");
     await page.getByRole("button", {name: "Räkna om stommen från kundmåtten"}).click();
-    await expect(page.getByText(/Kontrollera väggläget vid/).first()).toBeVisible();
-    await page.getByLabel("Övriga sidor är kontrollerade på plats").check();
-    await page.getByLabel("Vänster · vägg utan list").check();
+    await expect(page.getByLabel("Vänster · vägg utan list")).toBeChecked();
     await expect(page.getByText(/vid vänster vägg behöver 6 mm nominellt/).first()).toBeVisible();
+    await page.getByLabel("Övriga sidor är kontrollerade på plats").uncheck();
+    await expect(page.getByText(/Kontrollera väggläget vid/).first()).toBeVisible();
+    await page.getByLabel("Ange separata kundmått").uncheck();
+    await expect(page.getByText(/Monteringsplatsen är inte angiven/).first()).toBeVisible();
     await expect(second).toHaveCount(0);
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

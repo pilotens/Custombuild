@@ -9,7 +9,7 @@ from .furniture import FurnitureDesign, ShelvingIntent
 from .furniture_engine import build_furniture
 from .models import DesignResult
 
-DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.2.0"
+DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.3.0"
 
 
 def review_furniture_dimensions(
@@ -100,7 +100,7 @@ def review_furniture_dimensions(
                 }
             )
     assembly = None
-    if installation and isinstance(design.intent, ShelvingIntent) and design.intent.trial_angle:
+    if isinstance(design.intent, ShelvingIntent) and design.intent.trial_angle:
         shelving = shelving or build_furniture(design).shelving_result
         assert shelving is not None
         assembly = review_standing_site(shelving, installation)

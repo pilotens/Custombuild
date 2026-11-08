@@ -3031,7 +3031,7 @@ export interface components {
         InstallationSpace: {
             /**
              * Additional Bounded Walls
-             * @description Walls at the customer envelope, in addition to walls with known skirting. An empty list confirms that the remaining sides are open. Null means not surveyed.
+             * @description Walls at the customer envelope, in addition to walls with known skirting. Null means not surveyed. Unlisted sides are open unless remaining_walls_unmeasured is true.
              */
             additional_bounded_walls?: ("left" | "right" | "rear")[] | null;
             /** Bottom Allowance Um */
@@ -3050,6 +3050,11 @@ export interface components {
             measured_front_space_um?: number | null;
             /** Rear Allowance Um */
             rear_allowance_um?: number | null;
+            /**
+             * Remaining Walls Unmeasured
+             * @description Unlisted sides have not been surveyed. Known walls still constrain assembly.
+             */
+            remaining_walls_unmeasured?: boolean | null;
             /** Right Allowance Um */
             right_allowance_um?: number | null;
             /** Top Allowance Um */
