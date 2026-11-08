@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID, uuid4, uuid5
 
 import boto3
-from app.db import set_tenant_context
+from app.db import create_sqlite_engine, set_tenant_context
 from app.design_service import (
     stock_configuration_for_design,
     two_sided_registration_for_design,
@@ -303,24 +303,21 @@ celery_app.conf.update(
     },
 )
 
-_engine_connect_args: dict[str, object]
 if DATABASE_URL.startswith("sqlite"):
-    _engine_connect_args = {"check_same_thread": False}
+    _engine = create_sqlite_engine(DATABASE_URL)
 else:
-    _engine_connect_args = {
-        "options": (
-            "-c statement_timeout="
-            f"{WORKER_SETTINGS.database_statement_timeout_seconds * 1000} "
-            "-c lock_timeout="
-            f"{WORKER_SETTINGS.database_lock_timeout_seconds * 1000}"
-        )
-    }
-
-_engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    connect_args=_engine_connect_args,
-)
+    _engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        connect_args={
+            "options": (
+                "-c statement_timeout="
+                f"{WORKER_SETTINGS.database_statement_timeout_seconds * 1000} "
+                "-c lock_timeout="
+                f"{WORKER_SETTINGS.database_lock_timeout_seconds * 1000}"
+            )
+        },
+    )
 SessionFactory = sessionmaker(bind=_engine, expire_on_commit=False)
 MAX_GENERATION_ATTEMPTS = 4
 DEFAULT_SCHEDULER_BATCH_LIMIT = 50

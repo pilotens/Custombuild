@@ -4864,6 +4864,31 @@ def _review_evidence_issues_owned(
                     verify_stored_object(expectation, stream_hash=stream_hash)
             except ArtifactIntegrityError:
                 invalid.append(kind)
+            # Once the verified status and inventory contradict one another,
+            # no later stock, plan or supplier object can make the package valid.
+            if (
+                kind == "design_review_package_status"
+                and package_status is not None
+                and package_status.cam_status is CAMStageStatus.VALIDATION_GENERATED
+                and "manifest" in verified_documents
+                and kind in verified_documents
+            ):
+                try:
+                    manifest = _strict_canonical_json_object(verified_documents["manifest"])
+                    stored_status = normalize_design_review_package_status(
+                        _strict_canonical_json_object(verified_documents[kind])
+                    )
+                    entries = validate_manifest_artifact_entries(manifest["artifacts"])
+                    validate_design_review_status_inventory_entries(stored_status, entries)
+                except (
+                    ArtifactError,
+                    ArtifactIntegrityError,
+                    KeyError,
+                    TypeError,
+                    ValueError,
+                    RecursionError,
+                ):
+                    return sorted(set(missing)), sorted({*invalid, "manifest"}), readiness_valid
         if verified_download is not None and not consumed_verified_download:
             invalid.append("verified_download")
         if retain_review_documents and version is not None:

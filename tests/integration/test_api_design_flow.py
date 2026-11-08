@@ -5354,12 +5354,13 @@ def _manifest_document_for_job(
     artifact_entries = list(entries_by_path.values())
     artifact_entries.sort(key=lambda item: str(item["path"]))
 
-    with get_session_factory()() as fixture_session:
-        version = fixture_session.get(DesignVersion, job.design_version_id)
-        assert version is not None
-        assert isinstance(version.result_json, dict)
-        capability = version.result_json["template_capability"]
-        design_spec = version.result_json["spec"]
+    fixture_session = Session.object_session(job)
+    assert fixture_session is not None
+    version = fixture_session.get(DesignVersion, job.design_version_id)
+    assert version is not None
+    assert isinstance(version.result_json, dict)
+    capability = version.result_json["template_capability"]
+    design_spec = version.result_json["spec"]
     engine_context = job.production_engine_context_json
     material_versions = sorted(
         {
@@ -6221,6 +6222,9 @@ def _convert_to_generated_status_with_missing_manifest_cam(
         assert generation_plan_payload is not None
         # Intentionally keep the manifest review-only while the authenticated
         # status/result claim generated CAM. The endpoint must reject this split.
+        manifest_evidence = [
+            item for item in result["evidence_artifacts"] if item not in added_records
+        ]
         manifest_payload = canonical_json_bytes(
             _manifest_document_for_job(
                 job,
@@ -6230,7 +6234,7 @@ def _convert_to_generated_status_with_missing_manifest_cam(
                 generation_plan_expectation,
                 status_expectation,
                 cam_blocked=True,
-                evidence_artifacts=result["evidence_artifacts"],
+                evidence_artifacts=manifest_evidence,
             )
         )
         manifest_sha = hashlib.sha256(manifest_payload).hexdigest()
@@ -10070,7 +10074,12 @@ def test_listing_rejects_generated_status_when_manifest_omits_claimed_cam(
     assert listing.status_code == 409
     # Fail as soon as the four documents needed to disprove the generated CAM
     # claim have been checked; no unrelated provider reads should follow.
-    assert len(calls) == 4
+    assert [key.rsplit("/", 1)[1] for key, _ in calls] == [
+        "manifest",
+        "dfm_report",
+        "workshop_readiness",
+        "design_review_package_status",
+    ]
 
 
 @pytest.mark.parametrize("endpoint", ("listing", "download"))
