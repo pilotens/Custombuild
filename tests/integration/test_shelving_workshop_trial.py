@@ -91,6 +91,13 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
         pairs = list(
             csv.DictReader(io.StringIO(z.read("inspection/fogprov.csv").decode("utf-8-sig")))
         )
+        type_test = json.loads(z.read("inspection/kvalificeringsprov.json"))
+        assert (
+            type_test["design_hash"] == manifest["design_hash"]
+            and type_test["type_test_results"] is None
+        )
+        assert type_test["order_requirements"]["assembly_steps"] == list(range(1, 6))
+        assert type_test["order_requirements"]["row_payload_n"] == w.design.intent.shelf_load_n
         assert len(pairs) == 12
         assert Counter(r["joint_id"] for r in pairs) == {
             a["joint_id"]: 2 for a in model["trial_angles"]

@@ -14,7 +14,10 @@ import pytest
 from app.main import app
 from custombuild_cad import CadQueryAdapter
 from custombuild_domain.furniture import FurnitureWorkspace
+from custombuild_domain.furniture_engine import build_furniture
+from custombuild_manufacturing.bookcase_test_results import bookcase_test_limits
 from custombuild_manufacturing.model import um_to_mm
+from custombuild_rules.furniture import evaluate_furniture
 from custombuild_worker import tasks
 from fastapi.testclient import TestClient
 from reportlab.pdfgen.canvas import Canvas
@@ -70,11 +73,28 @@ def _install_test_profile(tmp_path, monkeypatch, workspace):
             }
         )
     now = datetime.now(UTC)
+    model = build_furniture(workspace.design)
+    limits = bookcase_test_limits(model.shelving_result, evaluate_furniture(model)["evaluations"])
     profile = dict(
         profile_id=slug,
         organization_id=TENANT,
         scope_sha256=qualifications.bookcase_scope(workspace),
         evidence=docs,
+        physical_results=dict(
+            schema_version="custombuild.bookcase-physical-results.v1",
+            issuer="Test fixture only",
+            report_reference="Synthetic physical case A",
+            tested_on=(now - timedelta(days=3)).date().isoformat(),
+            joint_design_shear_capacity_n=limits.joint_shear_n,
+            joint_withdrawal_demand_n=100,
+            joint_design_withdrawal_capacity_n=100,
+            verified_row_payload_n=limits.row_payload_n,
+            measured_shelf_deflection_um=limits.maximum_shelf_deflection_um - 100,
+            deflection_uncertainty_um=100,
+            tested_horizontal_force_n=limits.horizontal_force_n,
+            verified_tip_factor_permille=limits.minimum_tip_factor_permille,
+            completed_assembly_steps=list(limits.assembly_steps),
+        ),
         valid_from=(now - timedelta(days=1)).isoformat(),
         valid_until=(now + timedelta(days=1)).isoformat(),
     )
@@ -254,6 +274,12 @@ def test_exact_profile_releases_current_revision_and_revocation_closes_direct_ap
         )
         with ZipFile(io.BytesIO(response.content)) as z:
             m = json.loads(z.read("manifest.json"))
+            physical = json.loads(z.read("inspection/kvalificeringsprov.json"))
+            assert physical["type_test_results"] == profile["physical_results"]
+            assert (
+                physical["order_requirements"]["joint_shear_n"]
+                == profile["physical_results"]["joint_design_shear_capacity_n"]
+            )
             report = json.loads(z.read("inspection/geometry-readback.json"))
             assert m["production_qualified"] and not m["physical_cutting_authorized"]
             assert (
@@ -296,3 +322,54 @@ def test_exact_profile_releases_current_revision_and_revocation_closes_direct_ap
         )
         assert client.get(download, headers=HEADERS).status_code == 409
         assert client.post(path + "/exports", headers=HEADERS, json=request).status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "reason"),
+    [
+        ("joint_design_shear_capacity_n", 1, "Fogskjuvning"),
+        ("joint_design_withdrawal_capacity_n", 99, "Fogutdrag"),
+        ("verified_row_payload_n", 49, "brukslast"),
+        ("deflection_uncertainty_um", 101, "Nedböjning"),
+        ("tested_horizontal_force_n", 49, "Horisontalkraft"),
+        ("verified_tip_factor_permille", 1499, "tippmarginal"),
+        ("completed_assembly_steps", [1, 2], "monteringssteg"),
+        ("missing", None, "mätresultat"),
+    ],
+)
+def test_failing_type_test_denies_a_normal_order_even_with_five_reports(
+    tmp_path, monkeypatch, key, value, reason
+):
+    w = measured_order()
+    profile = _install_test_profile(tmp_path, monkeypatch, w)
+    if key == "missing":
+        del profile["physical_results"]
+    else:
+        profile["physical_results"][key] = value
+    (tmp_path / "profiles.json").write_text(json.dumps([profile]))
+    with TestClient(app) as client:
+        path, body = create(client, w)
+        failed = client.post(
+            path + "/exports", headers=HEADERS, json={**body, "purpose": "workshop_drawings"}
+        )
+        assert failed.status_code == 409 and reason in failed.json()["detail"], failed.text
+        assert client.post(path + "/exports", headers=HEADERS, json=body).status_code == 202
+
+
+def test_scope_is_shared_between_customer_ids_but_changes_with_material_or_design():
+    w = measured_order()
+    reference = qualifications.bookcase_scope(w)
+    copy = w.model_copy(
+        update={
+            "design": w.design.model_copy(update={"design_id": "another-customer", "revision": 3})
+        }
+    )
+    assert qualifications.bookcase_scope(copy) == reference
+    changed = w.model_copy(
+        update={
+            "design": w.design.model_copy(
+                update={"intent": w.design.intent.model_copy(update={"shelf_count": 2})}
+            )
+        }
+    )
+    assert qualifications.bookcase_scope(changed) != reference

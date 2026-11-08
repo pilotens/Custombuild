@@ -17,7 +17,11 @@ from custombuild_domain.bookcase_site import StandingSiteReview
 from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
-from custombuild_manufacturing.bookcase_qualification import BookcaseProfile
+from custombuild_manufacturing.bookcase_qualification import BookcaseProfile, bookcase_scope
+from custombuild_manufacturing.bookcase_test_results import (
+    BookcaseTestResults,
+    bookcase_test_limits,
+)
 from custombuild_manufacturing.exporters import bom_csv, cut_list_csv, dxf_for_part, svg_for_part
 from custombuild_manufacturing.furniture_faces import drawing_faces
 from custombuild_manufacturing.furniture_handoff import furniture_first_article_checks
@@ -201,6 +205,20 @@ def build_furniture_review(
         report, joint_sheet = verify_bookcase_delivery(result, files)
         files["inspection/geometry-readback.json"] = _json(report)
         files["inspection/fogprov.csv"] = joint_sheet
+        assert shelving is not None
+        limits = bookcase_test_limits(shelving, preview["rules"]["evaluations"])
+        files["inspection/kvalificeringsprov.json"] = _json(
+            {
+                "revision": workspace.design.revision,
+                "design_hash": result.design_hash,
+                "scope_sha256": bookcase_scope(workspace),
+                "order_requirements": limits.model_dump(),
+                "result_schema": BookcaseTestResults.model_json_schema(),
+                "type_test_results": workshop_profile.physical_results.model_dump(mode="json")
+                if workshop_profile
+                else None,
+            }
+        )
     if workshop_profile:
         if not identity:
             raise ValueError("Verkstadsritningar kräver fullständig geometrikontroll av bokhyllan.")

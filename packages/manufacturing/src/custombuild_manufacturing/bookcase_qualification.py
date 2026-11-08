@@ -23,7 +23,17 @@ from custombuild_domain.furniture_engine import build_furniture
 from custombuild_domain.identity import content_hash
 from custombuild_rules.engine import RULES_VERSION
 from custombuild_rules.furniture import FURNITURE_RULES_VERSION, evaluate_furniture
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    model_validator,
+)
+
+from .bookcase_test_results import BookcaseTestResults, bookcase_test_limits
 
 REGISTRY = Path(__file__).with_name("bookcase_qualifications")
 READBACK_SCHEMA = "custombuild.fixed-bookcase-readback.v2"
@@ -46,11 +56,13 @@ class BookcaseProfile(BaseModel):
     valid_from: AwareDatetime
     valid_until: AwareDatetime
     evidence: tuple[EvidenceFile, ...]
+    physical_results: BookcaseTestResults
 
     @model_validator(mode="after")
     def complete(self) -> "BookcaseProfile":
         if (
             self.valid_until <= self.valid_from
+            or self.physical_results.tested_on > self.valid_from.date()
             or len(self.evidence) != len(REQUIRED_REPORTS)
             or {r.category for r in self.evidence} != REQUIRED_REPORTS
             or len({r.file for r in self.evidence}) != len(REQUIRED_REPORTS)
@@ -74,9 +86,24 @@ class BookcaseProfile(BaseModel):
 
 
 def bookcase_scope(workspace: FurnitureWorkspace) -> str:
+    # Fix only the customer identity. Measured stock, placements, both joint
+    # members and the complete assembly sequence remain part of the tested scope.
+    reference = build_furniture(
+        workspace.design.model_copy(
+            update={
+                "design_id": "bookcase-type-test",
+                "revision": 1,
+            }
+        )
+    )
+    if not reference.shelving_result:
+        raise ValueError("Typkvalificering gäller fast bokhylla.")
     return content_hash(
         {
             "design": workspace.design.model_dump(mode="json", exclude={"design_id", "revision"}),
+            "resolved_model": reference.design_hash,
+            "assembly_graph": reference.shelving_result.assembly_graph,
+            "physical_results": "custombuild.bookcase-physical-results.v1",
             "engine": FURNITURE_ENGINE_VERSION,
             "calculation_rules": RULES_VERSION,
             "family_rules": FURNITURE_RULES_VERSION,
@@ -101,9 +128,10 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
         "CB-JOINT-001": {"WARNING"},
         "CB-TIP-001": {"WARNING"},
     }
+    evaluations = evaluate_furniture(design)["evaluations"]
     problems = [
         r["detail"]
-        for r in evaluate_furniture(design)["evaluations"]
+        for r in evaluations
         if r["status"] != "PASS" and r["status"] not in permitted.get(r["rule_id"], set())
     ]
     if problems:
@@ -125,23 +153,36 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
     if not spec.material.batch_id or not spec.back_material.batch_id:
         raise ValueError("Ange provad materialbatch för både stomme och rygg.")
     now = datetime.now(UTC)
-    registry = TypeAdapter(list[BookcaseProfile]).validate_python(
-        json.loads((REGISTRY / "profiles.json").read_bytes())
-    )
-    matches = [
-        p
-        for p in registry
-        if p.organization_id == organization_id
-        and p.scope_sha256 == bookcase_scope(workspace)
-        and p.valid_from <= now < p.valid_until
+    records = json.loads((REGISTRY / "profiles.json").read_bytes())
+    if not isinstance(records, list):
+        raise ValueError("Förteckningen över typkvalificeringar har ogiltigt format.")
+    scope = bookcase_scope(workspace)
+    candidates = [
+        r
+        for r in records
+        if isinstance(r, dict)
+        and r.get("organization_id") == organization_id
+        and r.get("scope_sha256") == scope
     ]
+    try:
+        profiles = TypeAdapter(list[BookcaseProfile]).validate_python(candidates)
+    except ValidationError as exc:
+        raise ValueError(
+            "Typunderlaget för ordern behöver giltiga rapporter och mätresultat "
+            "för förband, brukslast, stabilitet och monteringssteg."
+        ) from exc
+    matches = [p for p in profiles if p.valid_from <= now < p.valid_until]
     if len(matches) != 1:
         raise ValueError(
             "Ingen entydigt kvalificerad profil för dessa mått, materialbatcher, "
             "beslag, brukslast och monteringsplats. Välj en provad kombination."
         )
-    matches[0].reports()
-    return matches[0]
+    profile = matches[0]
+    profile.reports()
+    profile.physical_results.require_capacity(
+        bookcase_test_limits(design.shelving_result, evaluations)
+    )
+    return profile
 
 
 def workshop_filename(revision: int, qualification: object) -> str:

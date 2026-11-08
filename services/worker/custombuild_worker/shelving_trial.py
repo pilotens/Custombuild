@@ -179,6 +179,10 @@ def shelving_trial_protocol(
             [
                 "",
                 "Provgräns för denna konstruktion",
+                "inspection/kvalificeringsprov.json anger orderns jämförelsevärden och vilka "
+                "provresultat som krävs. Kapaciteter avser dimensionerande brukskapacitet efter "
+                "säkerhetsfaktorer. Utdragskravet hämtas från förbandsprovets lastfall. "
+                "Vid ny order jämför appen typunderlagets resultat med orderns krav.",
                 f"Omfattnings-ID {bookcase_scope(FurnitureWorkspace(design=result.spec))}.",
                 "Registrera verklig stom- och ryggbatch, fuktkvot, temperatur, fiberriktning, "
                 "vägguppbyggnad, infästning, golv, jiggar, lyftmetod och uppmätta "
