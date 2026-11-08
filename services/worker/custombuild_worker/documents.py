@@ -12,11 +12,11 @@ from uuid import UUID
 
 from custombuild_domain.bookcase_motion import AssemblySpace
 from custombuild_domain.bookcase_site import WALL_NAMES, StandingSiteReview
-from custombuild_domain.units import um_to_mm
 from custombuild_manufacturing import (
     canonical_json_bytes,
     dado_retention_evidence_missing,
 )
+from custombuild_manufacturing.model import um_to_mm
 from reportlab.graphics import renderPDF
 from reportlab.graphics.barcode import qr
 from reportlab.graphics.shapes import Drawing

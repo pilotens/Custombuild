@@ -9,7 +9,7 @@ from custombuild_domain.bookcase_angles import ANGLE_SOURCE, SCREW_SOURCE
 from custombuild_domain.bookcase_motion import AssemblySpace
 from custombuild_domain.enums import JointType, MaterialType
 from custombuild_domain.furniture_engine import FurnitureResult
-from custombuild_domain.units import um_to_mm
+from custombuild_manufacturing.model import um_to_mm
 
 
 def shelving_trial_protocol(
