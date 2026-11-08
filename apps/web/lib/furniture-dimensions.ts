@@ -28,12 +28,10 @@ export function updateSurvey(site: FurnitureInstallation, field: SurveyField, va
 export function invalidateMovedDatums(before: FurnitureInstallation, after: FurnitureInstallation) {
   const changed = (key: keyof FurnitureInstallation) => before[key] !== after[key];
   const moved = new Set<SurveyField>();
-  if (changed("width_um") || changed("left_allowance_um") || changed("right_allowance_um")) {
-    moved.add("left_wall"); moved.add("right_wall");
-  }
-  if (changed("depth_um") || changed("front_allowance_um") || changed("rear_allowance_um")) {
-    moved.add("rear_wall"); moved.add("front_space");
-  }
+  if (changed("width_um") || changed("left_allowance_um")) moved.add("left_wall");
+  if (changed("width_um") || changed("right_allowance_um")) moved.add("right_wall");
+  if (changed("depth_um") || changed("rear_allowance_um")) moved.add("rear_wall");
+  if (changed("depth_um") || changed("front_allowance_um")) moved.add("front_space");
   let site = after;
   for (const field of moved) site = updateSurvey(site, field, null);
   return site;
@@ -47,17 +45,23 @@ export function standingFitAlternative(site: FurnitureInstallation, preview?: Fu
     review.walls.some(w => w.required_reservation_um == null) ||
     (Object.keys(current) as (keyof typeof current)[]).some(k =>
       current[k] !== preview?.workshop_handoff?.dimensions.carcass_dimensions_um[k])) return null;
+  if (review.measured_front_space_um != null &&
+      review.measured_front_space_um <= review.minimum_front_space_um) return null;
   const next = { ...site };
   for (const wall of review.walls) {
     const key = `${wall.wall}_allowance_um` as const;
-    const required = wall.required_reservation_um!;
+    // A smaller observed gap at the original datum adds to the reservation needed.
+    const shortfall = wall.measured_distance_um == null ? 0 : Math.max(0, site[key]! - wall.measured_distance_um);
+    const required = wall.required_reservation_um! + shortfall;
     // A moving side must clear the wall strictly. Round up to the next 10 mm.
     const planned = wall.step_number == null ? required : (Math.floor(required / 10_000) + 1) * 10_000;
     next[key] = Math.max(site[key]!, planned);
   }
   const rise = Math.max(0, review.minimum_height_from_base_um - current.height_um);
   // A planning allowance of 20 mm above the moving timber, within the customer's envelope.
-  next.top_allowance_um = Math.max(site.top_allowance_um, Math.ceil((rise + 20_000) / 10_000) * 10_000);
+  const ceilingDeficit = review.measured_ceiling_height_um == null ? 0 :
+    Math.max(0, site.height_um - review.measured_ceiling_height_um);
+  next.top_allowance_um = Math.max(site.top_allowance_um, Math.ceil((rise + ceilingDeficit + 20_000) / 10_000) * 10_000);
   if (INSTALLATION_ALLOWANCES.some(([key]) => next[key]! > 500_000) ||
       INSTALLATION_ALLOWANCES.every(([key]) => next[key] === site[key])) return null;
   const width = next.width_um - next.left_allowance_um! - next.right_allowance_um!;

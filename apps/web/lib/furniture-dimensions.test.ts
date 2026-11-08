@@ -61,11 +61,25 @@ describe("stående platsalternativ", () => {
     expect(standingFitAlternative(next, preview)).toBeNull();
     expect(site.left_allowance_um).toBe(20000);
   });
+  it("tar med känd låg takhöjd och ett mindre verkligt sidomått i förslaget", () => {
+    const check = structuredClone(preview);
+    const survey = check.workshop_handoff!.dimensions.standing_assembly!;
+    survey.measured_ceiling_height_um = 2500000;
+    survey.minimum_front_space_um = 248000;
+    survey.walls[0]!.measured_distance_um = 12000;
+    const next = standingFitAlternative(site,check)!;
+    expect(next.left_allowance_um).toBe(40000);
+    expect(next.top_allowance_um).toBe(80000);
+    survey.measured_front_space_um = 248000;
+    expect(standingFitAlternative(site,check)).toBeNull();
+  });
   it("bevarar oberoende takhöjd och nollmätning tills väggens datum ändras", () => {
     const measured = updateSurvey(updateSurvey(site, "ceiling_height", 2540000), "left_wall", 0);
-    const next = invalidateMovedDatums(measured, {...measured, left_allowance_um:30000});
+    const withRight = updateSurvey(measured, "right_wall", 27500);
+    const next = invalidateMovedDatums(withRight, {...withRight, left_allowance_um:30000});
     expect(measured.measured_left_wall_um).toBe(0);
-    expect(next.surveyed_fields).toEqual(["ceiling_height"]);
+    expect(next.surveyed_fields).toEqual(["ceiling_height","right_wall"]);
+    expect(next.measured_right_wall_um).toBe(27500);
     expect(next.measured_left_wall_um).toBeNull();
     expect(next.measured_ceiling_height_um).toBe(2540000);
   });
