@@ -11,10 +11,13 @@ from zipfile import ZipFile
 import custombuild_manufacturing.bookcase_qualification as qualifications
 import custombuild_worker.furniture_review as exporter
 import pytest
+from app.db import get_session_factory
 from app.main import app
+from app.models import GenerationJob, Project
 from custombuild_cad import CadQueryAdapter
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
+from custombuild_domain.identity import content_hash
 from custombuild_manufacturing.bookcase_test_results import bookcase_test_limits
 from custombuild_manufacturing.model import um_to_mm
 from custombuild_rules.furniture import evaluate_furniture
@@ -118,6 +121,139 @@ def create(client, order):
             "expected_design_hash": draft["preview"]["design"]["design_hash"],
         },
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("width_um", "bredd"),
+        ("height_um", "höjd"),
+        ("depth_um", "djup"),
+        ("divider_count", "avdelare"),
+        ("shelf_count", "hyllrader"),
+        ("shelf_load_n", "nyttolast per hyllrad"),
+        ("shelf_load_per_metre_n", "nyttolast per meter"),
+    ],
+)
+def test_incomplete_api_order_never_inherits_a_qualified_default(
+    tmp_path, monkeypatch, field, message
+):
+    order = measured_order()
+    _install_test_profile(tmp_path, monkeypatch, order)
+    partial = order.model_dump(mode="json")
+    intent = partial["design"]["intent"]
+    if field == "shelf_load_per_metre_n":
+        intent["shelf_load_basis"] = "per_metre"
+    intent.pop(field, None)
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/furniture/projects",
+            headers=HEADERS,
+            json={"name": "Ofullständig", "workspace": partial},
+        )
+        assert created.status_code == 422 and message in created.json()["detail"]
+        path, bound = create(client, order)
+        saved = client.put(
+            path + "/draft",
+            headers=HEADERS,
+            json={"expected_revision": bound["expected_revision"], "workspace": partial},
+        )
+        assert saved.status_code == 422 and message in saved.json()["detail"]
+        assert client.get(path + "/draft", headers=HEADERS).json()["revision"] == 1
+
+
+def test_explicit_zero_per_metre_survives_reopen_and_resave():
+    workspace = measured_order().model_dump(mode="json")
+    workspace["design"]["intent"].update(shelf_load_basis="per_metre", shelf_load_per_metre_n=0)
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/furniture/projects",
+            headers=HEADERS,
+            json={"name": "Nollast", "workspace": workspace},
+        )
+        assert created.status_code == 201, created.text
+        path = f"/v1/furniture/projects/{created.json()['project']['id']}/draft"
+        current = client.get(path, headers=HEADERS).json()
+        assert current["workspace"]["design"]["intent"]["shelf_load_per_metre_n"] == 0
+        saved = client.put(
+            path,
+            headers=HEADERS,
+            json={
+                "expected_revision": 1,
+                "workspace": current["workspace"],
+            },
+        )
+        assert saved.status_code == 200 and saved.json()["revision"] == 1
+
+
+@pytest.mark.cad
+def test_historic_order_requires_an_explicit_resave_before_production(tmp_path, monkeypatch):
+    order = measured_order()
+    _install_test_profile(tmp_path, monkeypatch, order)
+    storage = install_review_storage(monkeypatch)
+    with TestClient(app) as client:
+        path, bound = create(client, order)
+        exports = path + "/exports"
+        request = {**bound, "purpose": "workshop_drawings"}
+        job = client.post(exports, headers=HEADERS, json=request).json()["job_id"]
+        assert tasks.generate_furniture_review.run(job, TENANT)["state"] == "succeeded"
+        old_download = f"{exports}/{job}/download"
+        assert client.get(old_download, headers=HEADERS).status_code == 200
+        with get_session_factory().begin() as session:
+            project = session.get(Project, path.rsplit("/", 1)[1])
+            project.draft_workspace_json = {"manufacturing": None}
+        assert client.get(old_download, headers=HEADERS).status_code == 409
+        refused = client.post(exports, headers=HEADERS, json=request)
+        assert refused.status_code == 409 and "spara en ny revision" in refused.json()["detail"]
+        assert client.post(exports, headers=HEADERS, json=bound).status_code == 202
+        current = client.get(path + "/draft", headers=HEADERS).json()
+        resaved = client.put(
+            path + "/draft",
+            headers=HEADERS,
+            json={
+                "expected_revision": 1,
+                "workspace": current["workspace"],
+            },
+        )
+        assert resaved.status_code == 200 and resaved.json()["revision"] == 2
+        request.update(
+            expected_revision=2,
+            expected_design_hash=resaved.json()["preview"]["design"]["design_hash"],
+        )
+        new = client.post(exports, headers=HEADERS, json=request)
+        assert new.status_code == 202
+        current_job = new.json()["job_id"]
+        assert tasks.generate_furniture_review.run(current_job, TENANT)["state"] == "succeeded"
+        assert len(storage.put_calls) == 2
+        assert client.get(f"{exports}/{current_job}/download", headers=HEADERS).status_code == 200
+        assert client.get(old_download, headers=HEADERS).status_code == 409
+
+
+def test_worker_cannot_publish_a_preexisting_job_without_an_input_receipt(tmp_path, monkeypatch):
+    order = measured_order()
+    _install_test_profile(tmp_path, monkeypatch, order)
+    storage = install_review_storage(monkeypatch)
+    with TestClient(app) as client:
+        path, bound = create(client, order)
+        exports = path + "/exports"
+        job = client.post(
+            exports, headers=HEADERS, json={**bound, "purpose": "workshop_drawings"}
+        ).json()["job_id"]
+        with get_session_factory().begin() as session:
+            row = session.get(GenerationJob, job)
+            row.request_json = {
+                k: v for k, v in row.request_json.items() if k != "bookcase_order_sha256"
+            }
+            row.production_engine_context_json = {
+                k: v
+                for k, v in row.production_engine_context_json.items()
+                if k != "bookcase_order_sha256"
+            }
+            row.production_context_hash = content_hash(row.request_json)
+        with pytest.raises(tasks.ProductionBlockedError, match="explicitly saved order inputs"):
+            tasks.generate_furniture_review.run(job, TENANT)
+        assert not storage.put_calls
+        assert client.get(f"{exports}/{job}/download", headers=HEADERS).status_code == 404
 
 
 @pytest.mark.cad

@@ -38,6 +38,7 @@ from .api import (
     create_project,
 )
 from .auth import Capability, Principal, get_principal, require_capability
+from .furniture_production import check_bookcase_order_inputs, require_bookcase_input_receipt
 from .furniture_schemas import (
     FurnitureCatalogRead,
     FurnitureDraftRead,
@@ -262,6 +263,7 @@ def save_draft(
         raise HTTPException(
             409, detail="Utkastet har ändrats. Hämta aktuell revision före nästa sparning."
         )
+    fixed_bookcase = check_bookcase_order_inputs(payload.workspace)
     document = payload.workspace.model_dump(mode="json")
     if current is not None:
         # Project identity and revision belong to the server, including when a
@@ -275,6 +277,11 @@ def save_draft(
             if (
                 current_preview["design"]["design_hash"] == project.draft_design_hash
                 and current_preview == project.draft_result_json
+                and (
+                    not fixed_bookcase
+                    or (project.draft_workspace_json or {}).get("bookcase_order_sha256")
+                    == content_hash(current)
+                )
             ):
                 return {
                     "project_id": project.id,
@@ -292,6 +299,8 @@ def save_draft(
     project.draft_design_hash = preview_result["design"]["design_hash"]
     project.draft_spec_json = workspace.design.model_dump(mode="json")
     project.draft_workspace_json = {"manufacturing": document["manufacturing"]}
+    if fixed_bookcase:
+        project.draft_workspace_json["bookcase_order_sha256"] = content_hash(workspace)
     project.draft_result_json = preview_result
     project.draft_updated_by = principal.user_id
     # A saved furniture/profile change immediately invalidates derived production
@@ -477,7 +486,9 @@ def request_export(
             profile = qualified_bookcase(workspace, project.organization_id)
         except (OSError, ValueError) as exc:
             raise HTTPException(409, detail=str(exc)) from exc
+        require_bookcase_input_receipt(project, workspace_sha256)
         engine_context["workshop_qualification"] = profile.fingerprint
+        engine_context["bookcase_order_sha256"] = workspace_sha256
     # The project row lock serializes duplicate requests across API replicas.
     reusable_jobs = session.scalars(
         select(GenerationJob)
@@ -522,6 +533,7 @@ def request_export(
     }
     if "workshop_qualification" in engine_context:
         request_document["workshop_qualification"] = engine_context["workshop_qualification"]
+        request_document["bookcase_order_sha256"] = workspace_sha256
     job = GenerationJob(
         id=job_id,
         organization_id=principal.organization_id,
@@ -611,6 +623,9 @@ def _furniture_export_artifact(
         workspace = _workspace(project)
         if workspace is None or content_hash(workspace) != request["workspace_sha256"]:
             raise HTTPException(409, detail="Arbetsfilen avviker från jobbets revision.")
+        require_bookcase_input_receipt(project, request["workspace_sha256"])
+        if request.get("bookcase_order_sha256") != request["workspace_sha256"]:
+            raise HTTPException(409, detail="Skapa ett nytt exportjobb från den sparade ordern.")
         try:
             profile = qualified_bookcase(workspace, job.organization_id)
         except (OSError, ValueError) as exc:

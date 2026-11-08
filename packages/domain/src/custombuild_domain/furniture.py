@@ -167,8 +167,8 @@ class ShelvingIntent(FrozenModel):
     shelf_load_basis: Literal["per_row", "per_metre"] = Field(
         default="per_row", exclude_if=lambda value: value == "per_row"
     )
-    shelf_load_per_metre_n: Annotated[int, Field(strict=True, ge=0, le=5_000)] = Field(
-        default=0, exclude_if=lambda value: value == 0
+    shelf_load_per_metre_n: Load | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     shelf_height_ratios_ppm: tuple[
         Annotated[int, Field(strict=True, ge=50_000, le=950_000)], ...
@@ -200,7 +200,7 @@ class ShelvingIntent(FrozenModel):
         if self.shelf_load_basis == "per_metre":
             # Include the full carcass width rather than subtracting dividers:
             # this does not understate a uniformly loaded row. Round upwards.
-            return (self.width_um * self.shelf_load_per_metre_n + 999_999) // 1_000_000
+            return (self.width_um * (self.shelf_load_per_metre_n or 0) + 999_999) // 1_000_000
         return self.shelf_load_n
 
 

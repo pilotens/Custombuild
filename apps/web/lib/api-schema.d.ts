@@ -4550,11 +4550,8 @@ export interface components {
              * @default 200
              */
             shelf_load_n: number;
-            /**
-             * Shelf Load Per Metre N
-             * @default 0
-             */
-            shelf_load_per_metre_n: number;
+            /** Shelf Load Per Metre N */
+            shelf_load_per_metre_n?: number | null;
             /** @default fixed */
             shelf_mount: components["schemas"]["ShelfMount"];
             /** Trial Angle */

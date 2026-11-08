@@ -9502,11 +9502,17 @@
             "type": "integer"
           },
           "shelf_load_per_metre_n": {
-            "default": 0,
-            "maximum": 5000.0,
-            "minimum": 0.0,
-            "title": "Shelf Load Per Metre N",
-            "type": "integer"
+            "anyOf": [
+              {
+                "maximum": 5000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shelf Load Per Metre N"
           },
           "shelf_mount": {
             "$ref": "#/components/schemas/ShelfMount",

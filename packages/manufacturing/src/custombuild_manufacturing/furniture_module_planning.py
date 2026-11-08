@@ -289,7 +289,8 @@ def plan_furniture_modules(
     net_width = sum(widths)
     source_load = intent.resolved_shelf_load_n
     if intent.shelf_load_basis == "per_metre":
-        loads = [(width * intent.shelf_load_per_metre_n + 999_999) // 1_000_000 for width in widths]
+        linear_load = intent.shelf_load_per_metre_n or 0
+        loads = [(width * linear_load + 999_999) // 1_000_000 for width in widths]
     else:
         loads = [(source_load * width + net_width - 1) // net_width for width in widths]
     if sum(loads) < source_load:

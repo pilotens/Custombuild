@@ -1481,8 +1481,12 @@ def _validated_furniture_review_snapshot(
     if isinstance(request, dict) and "workshop_qualification" in request:
         if not isinstance(intent, dict) or intent.get("family") != "shelving":
             raise ProductionBlockedError("only fixed shelving can release workshop drawings")
-        expected_keys.add("workshop_qualification")
+        order_sha256 = request.get("bookcase_order_sha256")
+        if not isinstance(order_sha256, str) or order_sha256 != request.get("workspace_sha256"):
+            raise ProductionBlockedError("workshop export needs explicitly saved order inputs")
+        expected_keys.update({"workshop_qualification", "bookcase_order_sha256"})
         expected_engine_context["workshop_qualification"] = request["workshop_qualification"]
+        expected_engine_context["bookcase_order_sha256"] = order_sha256
     if (
         _job_type(job) is not GenerationJobType.furniture_review
         or job.design_version_id is not None
