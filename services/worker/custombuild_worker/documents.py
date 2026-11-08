@@ -12,6 +12,7 @@ from uuid import UUID
 
 from custombuild_domain.bookcase_motion import AssemblySpace
 from custombuild_domain.bookcase_site import WALL_NAMES, StandingSiteReview
+from custombuild_domain.units import um_to_mm
 from custombuild_manufacturing import (
     canonical_json_bytes,
     dado_retention_evidence_missing,
@@ -595,7 +596,7 @@ def assembly_manual_pdf(
             y,
             "Tyngsta rörliga grupp: "
             f"{heaviest.weight_g / 1000:.2f} kg · "
-            f"maxmått {heaviest.max_dimension_um / 1000:g} mm",
+            f"maxmått {um_to_mm(heaviest.max_dimension_um)} mm",
         )
         y -= 12
     if assembly_space:
@@ -646,6 +647,23 @@ def assembly_manual_pdf(
         y = _draw_wrapped_text(canvas, state_text[standing_site.state], MARGIN, y, max_chars=78)
         canvas.setFillColor(INK)
         canvas.setFont("Helvetica", 10)
+        y = _draw_wrapped_text(
+            canvas,
+            f"Trädelarnas högsta läge över stommens botten är "
+            f"{um_to_mm(standing_site.minimum_height_from_base_um)} mm. "
+            f"Framför stommen behövs {um_to_mm(standing_site.minimum_front_space_um)} mm "
+            "för införingen. Arbetsutrymme tillkommer.",
+            MARGIN,
+            y - 10,
+            max_chars=88,
+        )
+        for label, value in (
+            ("Minsta takhöjd från golv enligt geometrin", standing_site.minimum_ceiling_height_um),
+            ("Uppmätt takhöjd", standing_site.measured_ceiling_height_um),
+            ("Uppmätt fritt utrymme framför stommen", standing_site.measured_front_space_um),
+        ):
+            measurement = f"{um_to_mm(value)} mm" if value is not None else "uppgift saknas"
+            y = _draw_wrapped_text(canvas, f"{label}: {measurement}.", MARGIN, y - 4, max_chars=88)
         for issue in standing_site.issues:
             y = _draw_wrapped_text(canvas, issue["message"], MARGIN, y - 10, max_chars=88)
         for wall in standing_site.walls:
@@ -653,7 +671,7 @@ def assembly_manual_pdf(
                 y = _draw_wrapped_text(
                     canvas,
                     f"{WALL_NAMES[wall.wall].capitalize()}: "
-                    f"minsta nominella reservation {wall.required_reservation_um / 1000:g} mm.",
+                    f"minsta nominella reservation {um_to_mm(wall.required_reservation_um)} mm.",
                     MARGIN,
                     y - 8,
                     max_chars=88,
@@ -699,7 +717,7 @@ def assembly_manual_pdf(
                 "Monteringsbana: "
                 + " -> ".join(segment.value for segment in step.motion_path)
                 + " (högerhänt X/Y/Z-system)"
-                + (f" · Slaglängd {travel[step.step_number] / 1000:g} mm" if travel else ""),
+                + (f" · Slaglängd {um_to_mm(travel[step.step_number])} mm" if travel else ""),
             )
             y -= 18
             canvas.setFont("Helvetica", 8)
@@ -728,7 +746,7 @@ def assembly_manual_pdf(
                 y,
                 "Rörlig grupp: "
                 f"{group_plan.weight_g / 1000:.2f} kg · "
-                f"maxmått {group_plan.max_dimension_um / 1000:g} mm",
+                f"maxmått {um_to_mm(group_plan.max_dimension_um)} mm",
             )
             y -= 12
             people_text = (

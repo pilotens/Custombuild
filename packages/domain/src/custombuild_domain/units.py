@@ -33,3 +33,13 @@ def to_mm(value_um: int) -> Decimal:
 
 def metres(value_um: int) -> Decimal:
     return Decimal(value_um) / UM_PER_M
+
+
+def um_to_mm(value: int) -> str:
+    """Format integer micrometres as a non-exponential millimetre string."""
+
+    negative = value < 0
+    absolute = abs(value)
+    whole, remainder = divmod(absolute, UM_PER_MM)
+    rendered = f"{whole}.{remainder:03d}".rstrip("0") if remainder else str(whole)
+    return f"-{rendered}" if negative else rendered

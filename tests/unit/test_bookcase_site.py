@@ -201,3 +201,12 @@ def test_known_bare_wall_is_checked_while_other_sides_are_unsurveyed():
     assert "bakväggen" in issues["STANDING_WALL_LAYOUT_UNMEASURED"]
     assert "vänster vägg" not in issues["STANDING_WALL_LAYOUT_UNMEASURED"]
     assert site == InstallationSpace.model_validate_json(site.model_dump_json())
+
+
+def test_site_message_preserves_one_micrometre_of_insufficient_ceiling_height():
+    # 1200 mm carcass + 18 mm top insertion + 1 µm offset from the floor.
+    w = installed_trial(27_000, 27_000, floor=1, ceiling=1_218_000, front=600_000)
+    site = review_furniture_dimensions(w.design)["standing_assembly"]
+    assert site["state"] == "blocked"
+    ceiling = next(i for i in site["issues"] if i["code"] == "STANDING_CEILING_CLEARANCE")
+    assert "1218.001 mm" in ceiling["message"] and "Uppmätt 1218 mm" in ceiling["message"]

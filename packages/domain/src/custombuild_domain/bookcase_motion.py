@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from itertools import product
 
 from .models import DesignResult, PartInstance
+from .units import um_to_mm
 
 Bounds = tuple[tuple[int, ...], tuple[int, ...]]
 
@@ -29,9 +30,9 @@ class AssemblySpace:
     def description(self) -> str:
         lo, hi = self.world_min_um, self.world_max_um
         return (
-            f"Delarnas svepta utrymme med fast stomdatum: X {lo[0] / 1000:g} till "
-            f"{hi[0] / 1000:g}, Y {lo[1] / 1000:g} till {hi[1] / 1000:g}, "
-            f"Z {lo[2] / 1000:g} till {hi[2] / 1000:g} mm. Vid stående montering är Z "
+            f"Delarnas svepta utrymme med fast stomdatum: X {um_to_mm(lo[0])} till "
+            f"{um_to_mm(hi[0])}, Y {um_to_mm(lo[1])} till {um_to_mm(hi[1])}, "
+            f"Z {um_to_mm(lo[2])} till {um_to_mm(hi[2])} mm. Vid stående montering är Z "
             "höjden. Lägg till utrymme för händer, lyfthjälp och fixturer. Vid "
             "liggande montering måste Z-sträckan rymmas på golvet."
         )

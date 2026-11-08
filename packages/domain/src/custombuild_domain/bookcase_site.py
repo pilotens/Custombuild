@@ -5,6 +5,7 @@ from typing import Literal
 from .bookcase_motion import Bounds, assembly_strokes
 from .furniture import InstallationSpace, Wall
 from .models import DesignResult, FrozenModel
+from .units import um_to_mm
 
 WALL_NAMES = {"left": "vänster vägg", "right": "höger vägg", "rear": "bakväggen"}
 
@@ -139,7 +140,7 @@ def review_standing_site(
                 {
                     "code": f"STANDING_{wall.upper()}_CLEARANCE",
                     "message": f"Stommen går in i listen vid {WALL_NAMES[wall]}. "
-                    f"Reservera minst {required / 1000:g} mm och räkna om stommen.",
+                    f"Reservera minst {um_to_mm(required)} mm och räkna om stommen.",
                 }
             )
         if step is not None and margin is not None and margin <= 0:
@@ -148,8 +149,8 @@ def review_standing_site(
                 {
                     "code": f"STANDING_{wall.upper()}_CLEARANCE",
                     "message": f"Monteringssteg {step} vid {WALL_NAMES[wall]} behöver "
-                    f"{required / 1000:g} mm nominellt från väggen. Reserverat "
-                    f"{reserved / 1000:g} mm. Reservera mer än {required / 1000:g} mm inklusive "
+                    f"{um_to_mm(required)} mm nominellt från väggen. Reserverat "
+                    f"{um_to_mm(reserved)} mm. Reservera mer än {um_to_mm(required)} mm inklusive "
                     "montagespel och räkna om stommen från kundmåtten.",
                 }
             )
@@ -167,7 +168,7 @@ def review_standing_site(
         issues.append(
             {
                 "code": "STANDING_HEIGHT_UNMEASURED",
-                "message": f"Stående montering behöver {peak / 1000:g} mm över stommens "
+                "message": f"Stående montering behöver {um_to_mm(peak)} mm över stommens "
                 "botten. Ange uppmätt fri takhöjd och avstånd från golv till stomme. "
                 "Lägg till plats för händer och lyfthjälp.",
             }
@@ -177,8 +178,8 @@ def review_standing_site(
         issues.append(
             {
                 "code": "STANDING_CEILING_CLEARANCE",
-                "message": f"Trädelarna behöver {required_height / 1000:g} mm fri takhöjd. "
-                f"Uppmätt {ceiling / 1000:g} mm. Öka reservationen ovanför stommen, räkna om "
+                "message": f"Trädelarna behöver {um_to_mm(required_height)} mm fri takhöjd. "
+                f"Uppmätt {um_to_mm(ceiling)} mm. Öka reservationen ovanför stommen, räkna om "
                 "stommen och kontrollera även arbetsutrymmet.",
             }
         )
@@ -188,7 +189,7 @@ def review_standing_site(
             {
                 "code": "STANDING_FRONT_UNMEASURED",
                 "message": f"Mät fri plats framför stommens front. Trädelarnas införing behöver "
-                f"{front / 1000:g} mm. Lägg till arbetsutrymme för händer och fixturer.",
+                f"{um_to_mm(front)} mm. Lägg till arbetsutrymme för händer och fixturer.",
             }
         )
     elif front > 0 and measured_front is not None and measured_front <= front:
@@ -196,8 +197,8 @@ def review_standing_site(
         issues.append(
             {
                 "code": "STANDING_FRONT_CLEARANCE",
-                "message": f"Fri plats framför stommen är {measured_front / 1000:g} mm. "
-                f"Införingen behöver mer än {front / 1000:g} mm inklusive montagespel. "
+                "message": f"Fri plats framför stommen är {um_to_mm(measured_front)} mm. "
+                f"Införingen behöver mer än {um_to_mm(front)} mm inklusive montagespel. "
                 "Frigör utrymme framför möbeln eller minska djupet och kontrollera revisionen.",
             }
         )

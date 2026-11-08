@@ -9,6 +9,7 @@ from custombuild_domain.bookcase_angles import ANGLE_SOURCE, SCREW_SOURCE
 from custombuild_domain.bookcase_motion import AssemblySpace
 from custombuild_domain.enums import JointType, MaterialType
 from custombuild_domain.furniture_engine import FurnitureResult
+from custombuild_domain.units import um_to_mm
 
 
 def shelving_trial_protocol(
@@ -24,8 +25,8 @@ def shelving_trial_protocol(
         f"Design {result.design_hash}",
         "",
         "Avsett bruk i beräkningen",
-        f"Stomvolym B × H × D: {p.width_um / 1000:g} × {p.height_um / 1000:g} × "
-        f"{p.depth_um / 1000:g} mm. {p.shelf_count} rader, {p.vertical_divider_count + 1} fack.",
+        f"Stomvolym B × H × D: {um_to_mm(p.width_um)} × {um_to_mm(p.height_um)} × "
+        f"{um_to_mm(p.depth_um)} mm. {p.shelf_count} rader, {p.vertical_divider_count + 1} fack.",
         f"Jämnt fördelad nyttolast per hel hyllrad: {p.shelf_load_n} N. Egenvikt tillkommer.",
         "",
         "Före provbeställning",
@@ -42,7 +43,7 @@ def shelving_trial_protocol(
         "takhöjd, beräknat på höjd–djup-diagonalen. Kontrollera arbetsutrymme för "
         "gavlar och topp vid stående montering. "
         + (
-            f"Angiven fri takhöjd: {ceiling / 1000:g} mm."
+            f"Angiven fri takhöjd: {um_to_mm(ceiling)} mm."
             if ceiling is not None
             else "Rummets verkliga takhöjd är inte uppmätt här."
         )
@@ -68,8 +69,8 @@ def shelving_trial_protocol(
         trim = result.spec.installation.trim_profile
         wall_names = {"left": "vänster vägg", "right": "höger vägg", "rear": "bakvägg"}
         walls = ", ".join(wall_names[w] for w in trim.walls) or "ej angivet"
-        height = f"{trim.height_um / 1000:g} mm" if trim.height_um is not None else "ej angiven"
-        projection = f"{trim.width_um / 1000:g} mm" if trim.width_um is not None else "ej angivet"
+        height = f"{um_to_mm(trim.height_um)} mm" if trim.height_um is not None else "ej angiven"
+        projection = f"{um_to_mm(trim.width_um)} mm" if trim.width_um is not None else "ej angivet"
         lines.append(f"Listens höjd {height}, utstick {projection}. Placering: {walls}.")
         lines.append(
             "Kontrollera reserverade mått och verklig uppresnings-/monteringshöjd på plats."
@@ -77,7 +78,7 @@ def shelving_trial_protocol(
     for group in handoff["stock_requirements"]:
         lines.append(
             f"Bekräfta råformat och batch för {group['material_id']}, "
-            f"modelltjocklek {group['measured_thickness_um'] / 1000:g} mm. "
+            f"modelltjocklek {um_to_mm(group['measured_thickness_um'])} mm. "
             "Kontrollera varje ämne mot manufacturing/workshop-handoff.json."
         )
     if design.spec.material.material_type == MaterialType.SOLID_WOOD:
@@ -85,7 +86,7 @@ def shelving_trial_protocol(
         # The projection is per percentage point, not an invented site moisture range.
         movement_mm = p.depth_um / 1000 * 0.00274
         lines.append(
-            f"Stommens nominella djup {p.depth_um / 1000:g} mm tvärs fibrerna: "
+            f"Stommens nominella djup {um_to_mm(p.depth_um)} mm tvärs fibrerna: "
             f"{movement_mm:.3f} mm fri tangentiell rörelse per procentenhet ändrad "
             "träfuktkvot (artmedel, giltigt inom 6–14 %). Detta är fri rörelse; "
             "differensen mellan spår, fast punkt och rygg måste kontrolleras separat."
@@ -115,7 +116,7 @@ def shelving_trial_protocol(
     if dado:
         lines.append(
             f"Exempel ur revisionen: {dado.joint_id}. Nominellt totalt passningsspel "
-            f"{dado.tolerance_um / 1000:g} mm. Ett passande prov styrker inte permanent låsning."
+            f"{um_to_mm(dado.tolerance_um)} mm. Ett passande prov styrker inte permanent låsning."
         )
     lines.extend(
         [

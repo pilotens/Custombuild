@@ -16,9 +16,10 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from enum import StrEnum
 from typing import Any, cast
 
+from custombuild_domain.units import UM_PER_MM as UM_PER_MM
+from custombuild_domain.units import um_to_mm as um_to_mm
 from pydantic import BaseModel
 
-UM_PER_MM = 1_000
 _CATALOG_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 
 
@@ -701,13 +702,3 @@ def canonical_json_bytes(value: Any) -> bytes:
 
 def sha256_hex(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
-
-
-def um_to_mm(value: int) -> str:
-    """Format integer micrometres as a non-exponential millimetre string."""
-
-    negative = value < 0
-    absolute = abs(value)
-    whole, remainder = divmod(absolute, UM_PER_MM)
-    rendered = f"{whole}.{remainder:03d}".rstrip("0") if remainder else str(whole)
-    return f"-{rendered}" if negative else rendered

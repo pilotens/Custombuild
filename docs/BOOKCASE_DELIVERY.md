@@ -1,6 +1,6 @@
 # Slutleveranslogg · bokhylla
 
-**Fortsättningspunkt.** [PR #27](https://github.com/pilotens/Custombuild/pull/27) bygger på #26. Använd PR-huvudet och dess exakta Actions-körningar. Stommens monteringsrörelser och CAD-prov delar nu samma steg. Bokhyllans exportformat är `custombuild.shelving-workshop-review.v11`, så en ny begäran kan inte återanvända ett äldre granskningsjobb för samma design. Äldre nedladdningar behåller sin identitet.
+**Fortsättningspunkt.** [PR #27](https://github.com/pilotens/Custombuild/pull/27) bygger på #26. Använd PR-huvudet och dess exakta Actions-körningar. Stommens monteringsrörelser och CAD-prov delar nu samma steg. Bokhyllans exportformat är `custombuild.shelving-workshop-review.v12`, så en ny begäran kan inte återanvända ett äldre granskningsjobb för samma design. Äldre nedladdningar behåller sin identitet.
 
 **Stödområde för konstruktionsprov.** På startsidan, välj **Bokhylla med verkstadsunderlag** och öppna kundbokhyllan. Rektangulär stomme, fasta hyllor, raka avdelare, valbara fackbredder/hyllhöjder och spårmonterad rygg. Provbeslag GN 970-ALM-30-30-30-B med två DIN 96 A4 5×16 per bärande spårfog. Sockel, underskåp, luckor, flyttbara hyllor och annan rygg ingår inte i denna provkonstruktion. Tidigare familjer finns kvar.
 
@@ -17,7 +17,7 @@ Detta är beräkningsgränser. Varje kombination måste dessutom klara fria öpp
 
 **Vägg utan list.** Listprofilen visar vilka väggar som redan är kända. För övriga sidor kan kunden markera en begränsande vägg vid kundmåttet eller bekräfta fritt utrymme. Oangiven väggplacering ger `requires_measurement`. Mellan bara väggar kräver gavlarna 6 mm införing även utan list. Att bara ange en önskad möbelbredd säger inget om var rummet slutar. Tak- och frontmätning kan också överstiga möbelns 6000 mm indatagräns.
 
-**Ändrad monteringsplats.** När en befintlig list tas bort i formuläret finns den observerade väggen kvar som bar vägg. En delvis uppmätt plats kan ha både kända väggar och okända sidor. Om kunden tar bort alla platsmått för GN 970-profilen visar förhandsgranskningen, platsrapporten, PDF-manualen och provprotokollet att platsen behöver mätas. Trädelarnas erforderliga höjd och frontutrymme räknas fortfarande från revisionens geometri. Provpaketet kan hämtas i alla dessa lägen.
+**Ändrad monteringsplats.** När en befintlig list tas bort i formuläret finns den observerade väggen kvar som bar vägg. En delvis uppmätt plats kan ha både kända väggar och okända sidor. Om kunden tar bort alla platsmått för GN 970-profilen visar förhandsgranskningen, platsrapporten, PDF-manualen och provprotokollet att platsen behöver mätas. Manualens platssida visar träets högsta läge, erforderligt frontutrymme och tillgängliga mätvärden. Mått redovisas i millimeter med bibehållen mikrometerupplösning. Provpaketet kan hämtas i alla dessa lägen.
 
 **Separat måttalternativ för prov.** Behåll yttermåtten men välj 30 mm reservation per sida och 40 mm ovanför. Räkna om stommen till 4280 × 2500 × 260 mm. Provdata 2540 mm fri takhöjd och 600 mm framför ger 4 mm nominell sidomån per sida, 22 mm ovanför högsta rörelsen och 352 mm framför införingsbanan. Dessa är demonstrationsmått. Mät plats, fixturer och handutrymme före prov. Ingen ändring görs automatiskt i kundens original.
 
