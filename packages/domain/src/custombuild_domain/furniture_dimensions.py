@@ -105,6 +105,13 @@ def review_furniture_dimensions(
         assert shelving is not None
         assembly = review_standing_site(shelving, installation)
         issues.extend(assembly.issues)
+    # The frozen customer workspace retains its original input. Only sourced observations
+    # may be described as measured in the workshop-facing installation record.
+    site_record = installation.model_dump(mode="json") if installation else None
+    if site_record is not None and installation is not None:
+        for field in ("ceiling_height", "front_space", "left_wall", "right_wall", "rear_wall"):
+            if field not in installation.surveyed_fields:
+                site_record.pop(f"measured_{field}_um", None)
     return {
         "standing_assembly": assembly.model_dump(mode="json") if assembly else None,
         "version": DIMENSION_REVIEW_VERSION,
@@ -116,7 +123,7 @@ def review_furniture_dimensions(
         "carcass_dimensions_um": actual,
         "required_carcass_dimensions_um": expected,
         "room_trim_clearances": clearances,
-        "installation": installation.model_dump(mode="json") if installation else None,
+        "installation": site_record,
         "issues": issues,
         "production_qualified": False,
     }

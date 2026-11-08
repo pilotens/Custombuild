@@ -271,6 +271,10 @@ def test_legacy_example_values_are_not_observations():
         design = workspace.design.model_copy(update={"installation": installation})
         return review_furniture_dimensions(design)["standing_assembly"]
 
+    frozen = workspace.design.model_copy(update={"installation": site})
+    emitted = review_furniture_dimensions(frozen)["installation"]
+    assert not any(key.startswith("measured_") for key in emitted)
+    assert frozen.installation.measured_front_space_um == 600_000
     legacy = review(site)
     assert legacy["state"] == "requires_measurement"
     assert legacy["measured_ceiling_height_um"] is legacy["measured_front_space_um"] is None
