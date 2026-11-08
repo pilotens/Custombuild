@@ -1,6 +1,13 @@
 # Slutleveranslogg · bokhylla
 
-**Fortsättningspunkt.** [PR #27](https://github.com/pilotens/Custombuild/pull/27) bygger på #26. Använd PR-huvudet och dess exakta Actions-körningar. Stommens monteringsrörelser och CAD-prov delar nu samma steg. Bokhyllans exportformat är `custombuild.shelving-workshop-review.v12`, så en ny begäran kan inte återanvända ett äldre granskningsjobb för samma design. Äldre nedladdningar behåller sin identitet.
+**Fortsättningspunkt 8 november.** Senast publicerat i [PR #27](https://github.com/pilotens/Custombuild/pull/27) är `aa4d5a8`. De lokala ändringarna `aff7029` och `97d6567` ligger på samma gren, `fix/bookcase-workshop-handoff`. Första steget nästa pass är att publicera dessa commits och loggen på PR-grenen efter uttryckligt godkännande. Kontrollera där ordinarie CI, produktionskandidat och image-skanningar innan merge. PR #27 bygger på #26.
+
+**Verifierat med programkoden i `97d6567`.** Från startsidan laddade Chromium ned tre v12-revisioner för valnötsfallet. Originalet gav blockerad montering, måttalternativet nominell frigång, och en tredje revision utan platsuppgifter begärde mätning även i PDF-manualen. Dessa tre referenspaket kom från FastAPI, CAD-worker, SQLite och testobjektlager. Repots ordinarie Chromium-test för kundmåtten kördes också mot FastAPI med SQLite, Redis, separata Celery-processer för utkorg och generering samt ett versionshanterat S3-lager (VersityGW). Testet öppnade den sparade möbeln igen, hämtade två ZIP-revisioner och kontrollerade ändrade platsmått. PostgreSQL och SeaweedFS i Compose behöver verifieras på GitHub för den nya kodversionen. I varje av de två första ZIP-filerna kontrollerades 57 trädelar, 98 vinklar, 114 DXF, samtliga 196 pilothål, 122 spårbottnar och 94 ändstopp mot återimporterad geometri. Tre andra nedladdade konstruktioner omfattade 6, 13 och 88 trädelar i plywood eller MDF. När hyllrader ändrades från två till sex i en egen körning följde WebGL-vyn servermodellen från 11 till 19 delar. De 52 riktade testerna för mått, monteringsplats och provpaket passerade. Paketversionen `custombuild.shelving-workshop-review.v12` hindrar nya begäranden från att återanvända äldre exportjobb.
+
+| Levererat paket | SHA-256 |
+| --- | --- |
+| Kundmått med ursprungliga reservationer | `62e5150f895a957c12611a95d1be40d4e049bdac1f4519b7463dfacbff7597e5` |
+| Frivilligt måttalternativ med provdata | `7df079a35fffaee58fc395762bdf82e54bd1365ec323d8338f78515fa2c0ae73` |
 
 **Stödområde för konstruktionsprov.** På startsidan, välj **Bokhylla med verkstadsunderlag** och öppna kundbokhyllan. Rektangulär stomme, fasta hyllor, raka avdelare, valbara fackbredder/hyllhöjder och spårmonterad rygg. Provbeslag GN 970-ALM-30-30-30-B med två DIN 96 A4 5×16 per bärande spårfog. Sockel, underskåp, luckor, flyttbara hyllor och annan rygg ingår inte i denna provkonstruktion. Tidigare familjer finns kvar.
 
