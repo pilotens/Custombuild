@@ -10,7 +10,8 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from custombuild_cad.bookcase_motion import AssemblySpace
+from custombuild_domain.bookcase_motion import AssemblySpace
+from custombuild_domain.bookcase_site import WALL_NAMES, StandingSiteReview
 from custombuild_manufacturing import (
     canonical_json_bytes,
     dado_retention_evidence_missing,
@@ -531,6 +532,7 @@ def assembly_manual_pdf(
     *,
     package_design_hash: str | None = None,
     assembly_space: AssemblySpace | None = None,
+    standing_site: StandingSiteReview | None = None,
 ) -> bytes:
     buffer, canvas = _canvas()
     identity = f"Designhash {design.design_hash}"
@@ -630,6 +632,41 @@ def assembly_manual_pdf(
     if not manual_plan.tool_ids:
         canvas.drawString(MARGIN, y, "Inga verktygs-ID:n finns i AssemblyGraph.")
     _footer(canvas, "Designgranskning – fysisk montering kräver separat arbetsberedning")
+
+    if standing_site:
+        canvas.showPage()
+        y = _header(canvas, "Monteringsplats före steg 1", identity)
+        canvas.setFillColor(BLOCK if standing_site.state != "nominal_clear" else INK)
+        canvas.setFont("Helvetica-Bold", 11)
+        state_text = {
+            "blocked": "Stående montering på angiven plats är blockerad.",
+            "requires_measurement": "Mät monteringsplatsen före provmontage.",
+            "nominal_clear": "Trädelarnas nominella rörelser ryms i de kontrollerade måtten.",
+        }
+        y = _draw_wrapped_text(canvas, state_text[standing_site.state], MARGIN, y, max_chars=78)
+        canvas.setFillColor(INK)
+        canvas.setFont("Helvetica", 10)
+        for issue in standing_site.issues:
+            y = _draw_wrapped_text(canvas, issue["message"], MARGIN, y - 10, max_chars=88)
+        for wall in standing_site.walls:
+            if wall.required_reservation_um is not None:
+                y = _draw_wrapped_text(
+                    canvas,
+                    f"{WALL_NAMES[wall.wall].capitalize()}: "
+                    f"minsta nominella reservation {wall.required_reservation_um / 1000:g} mm.",
+                    MARGIN,
+                    y - 8,
+                    max_chars=88,
+                )
+        _draw_wrapped_text(
+            canvas,
+            "Mät även fri plats framför möbeln för den angivna "
+            "införingen samt utrymme för fixturer, händer och lyfthjälp.",
+            MARGIN,
+            y - 14,
+            max_chars=88,
+        )
+        _footer(canvas, "Monteringsläge: stående på plats vid slutligt stomdatum")
 
     if not steps:
         return _finish(buffer, canvas)

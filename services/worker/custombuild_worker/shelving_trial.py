@@ -5,8 +5,8 @@ from __future__ import annotations
 from math import isqrt
 from typing import Any
 
-from custombuild_cad.bookcase_motion import AssemblySpace
 from custombuild_domain.bookcase_angles import ANGLE_SOURCE, SCREW_SOURCE
+from custombuild_domain.bookcase_motion import AssemblySpace
 from custombuild_domain.enums import JointType, MaterialType
 from custombuild_domain.furniture_engine import FurnitureResult
 
@@ -34,10 +34,18 @@ def shelving_trial_protocol(
     diagonal_squared = p.height_um**2 + p.depth_um**2
     floor_diagonal = isqrt(diagonal_squared)
     tilt_clearance_mm = (floor_diagonal + (floor_diagonal**2 != diagonal_squared) + 999) // 1000
+    ceiling = (
+        result.spec.installation.measured_ceiling_height_um if result.spec.installation else None
+    )
     lines.append(
         f"Om färdig stomme reses från ryggläge behövs minst {tilt_clearance_mm} mm fri "
         "takhöjd, beräknat på höjd–djup-diagonalen. Kontrollera arbetsutrymme för "
-        "gavlar och topp vid stående montering. Rummets verkliga takhöjd är inte uppmätt här."
+        "gavlar och topp vid stående montering. "
+        + (
+            f"Angiven fri takhöjd: {ceiling / 1000:g} mm."
+            if ceiling is not None
+            else "Rummets verkliga takhöjd är inte uppmätt här."
+        )
     )
     if space:
         lines.append(

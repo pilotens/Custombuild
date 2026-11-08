@@ -33,7 +33,7 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 def furniture_review_schema(family: str | None) -> str:
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v8"
+        return "custombuild.shelving-workshop-review.v9"
     return "custombuild.furniture-review.v1"
 
 
@@ -76,6 +76,10 @@ class InstallationSpace(FrozenModel):
     width_um: Length
     height_um: Length
     depth_um: Length
+    measured_front_space_um: Annotated[int, Field(strict=True, ge=0, le=6_000_000)] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    measured_ceiling_height_um: Length | None = Field(default=None, exclude_if=lambda v: v is None)
     width_includes_trim: bool = False
     trim_profile: TrimProfile | None = Field(default=None, exclude_if=lambda value: value is None)
     left_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None

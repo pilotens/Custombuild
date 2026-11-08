@@ -2719,6 +2719,16 @@
             "title": "Room Trim Clearances",
             "type": "array"
           },
+          "standing_assembly": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StandingSiteReview"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "state": {
             "enum": [
               "requires_resolution",
@@ -5460,6 +5470,32 @@
               }
             ],
             "title": "Left Allowance Um"
+          },
+          "measured_ceiling_height_um": {
+            "anyOf": [
+              {
+                "maximum": 6000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Ceiling Height Um"
+          },
+          "measured_front_space_um": {
+            "anyOf": [
+              {
+                "maximum": 6000000.0,
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Front Space Um"
           },
           "rear_allowance_um": {
             "anyOf": [
@@ -9884,6 +9920,90 @@
         "title": "SideboardReviewInputs",
         "type": "object"
       },
+      "StandingSiteReview": {
+        "additionalProperties": false,
+        "properties": {
+          "issues": {
+            "items": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "measured_ceiling_height_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Ceiling Height Um"
+          },
+          "measured_front_space_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Measured Front Space Um"
+          },
+          "minimum_ceiling_height_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Minimum Ceiling Height Um"
+          },
+          "minimum_front_space_um": {
+            "title": "Minimum Front Space Um",
+            "type": "integer"
+          },
+          "minimum_height_from_base_um": {
+            "title": "Minimum Height From Base Um",
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "blocked",
+              "requires_measurement",
+              "nominal_clear"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "walls": {
+            "items": {
+              "$ref": "#/components/schemas/WallTravel"
+            },
+            "title": "Walls",
+            "type": "array"
+          }
+        },
+        "required": [
+          "minimum_height_from_base_um",
+          "minimum_ceiling_height_um",
+          "measured_ceiling_height_um",
+          "minimum_front_space_um",
+          "measured_front_space_um",
+          "walls",
+          "state",
+          "issues"
+        ],
+        "title": "StandingSiteReview",
+        "type": "object"
+      },
       "StockCheck": {
         "additionalProperties": false,
         "properties": {
@@ -10540,6 +10660,73 @@
           }
         },
         "title": "WallAnchorSpec",
+        "type": "object"
+      },
+      "WallTravel": {
+        "additionalProperties": false,
+        "properties": {
+          "margin_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Margin Um"
+          },
+          "required_reservation_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Reservation Um"
+          },
+          "reserved_um": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved Um"
+          },
+          "step_number": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Number"
+          },
+          "wall": {
+            "enum": [
+              "left",
+              "right",
+              "rear"
+            ],
+            "title": "Wall",
+            "type": "string"
+          }
+        },
+        "required": [
+          "wall",
+          "step_number",
+          "required_reservation_um",
+          "reserved_um",
+          "margin_um"
+        ],
+        "title": "WallTravel",
         "type": "object"
       },
       "WarningOverrideCreate": {

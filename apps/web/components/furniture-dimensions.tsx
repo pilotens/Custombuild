@@ -19,7 +19,7 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
     if (!installation) return;
     try {
       const value = nullable && !raw.trim() ? null : exactMillimetreTextToMicrometres(raw,
-        { minimumUm: nullable ? 0 : 1, maximumUm: nullable ? 500_000 : 6_000_000 });
+        { minimumUm: nullable || key === "measured_front_space_um" ? 0 : 1, maximumUm: nullable ? 500_000 : 6_000_000 });
       apply({ ...installation, [key]: value }, `installation.${key}`);
     } catch (reason) { onError(reason instanceof Error ? reason.message : "Kontrollera måttet.", `installation.${key}`); }
   };
@@ -38,6 +38,18 @@ export function InstallationEditor({ workspace, onChange, onError }: EditorProps
       {([['width_um', 'Kundlängd inklusive reserverat utrymme'], ['height_um', 'Kundhöjd'], ['depth_um', 'Kunddjup']] as const).map(([key, label]) =>
         <label key={key}>{label} (mm)<input type="number" min="1" max="6000" step="0.001"
           value={installation[key]/1_000} onChange={e => changeMm(key, e.target.value)} /></label>)}
+        {workspace.design.intent.family === "shelving" && workspace.design.intent.trial_angle ? <>
+        <label>Uppmätt fri takhöjd från golv (mm)
+        <input type="number" min="0.001" max="6000" step="0.001" placeholder="Ej uppmätt"
+          value={installation.measured_ceiling_height_um == null ? "" : installation.measured_ceiling_height_um / 1_000}
+          onChange={e => e.target.value.trim() ? changeMm("measured_ceiling_height_um", e.target.value)
+            : apply({ ...installation, measured_ceiling_height_um: null }, "installation.measured_ceiling_height_um")} /></label>
+        <label>Fri plats framför stommens front (mm)
+          <input type="number" min="0" max="6000" step="0.001" placeholder="Ej uppmätt"
+            value={installation.measured_front_space_um == null ? "" : installation.measured_front_space_um / 1_000}
+            onChange={e => e.target.value.trim() ? changeMm("measured_front_space_um", e.target.value)
+              : apply({ ...installation, measured_front_space_um: null }, "installation.measured_front_space_um")} /></label>
+      </> : null}
       <label><input type="checkbox" checked={installation.width_includes_trim}
         onChange={e => apply({ ...installation, width_includes_trim: e.target.checked })} />Längden inkluderar list</label>
       <TrimProfileEditor installation={installation} onChange={apply} onError={onError} />

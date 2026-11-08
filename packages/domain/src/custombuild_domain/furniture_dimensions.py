@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
-from .furniture import FurnitureDesign
+from .bookcase_site import review_standing_site
+from .furniture import FurnitureDesign, ShelvingIntent
+from .furniture_engine import build_furniture
+from .models import DesignResult
 
-DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.1.0"
+DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.2.0"
 
 
-def review_furniture_dimensions(design: FurnitureDesign) -> dict[str, Any]:
+def review_furniture_dimensions(
+    design: FurnitureDesign, shelving: DesignResult | None = None
+) -> dict[str, Any]:
     actual = {key: getattr(design.intent, key) for key in ("width_um", "height_um", "depth_um")}
     installation = design.installation
     issues = []
@@ -94,7 +99,14 @@ def review_furniture_dimensions(design: FurnitureDesign) -> dict[str, Any]:
                     "inga listdelar i kaplistan.",
                 }
             )
+    assembly = None
+    if installation and isinstance(design.intent, ShelvingIntent) and design.intent.trial_angle:
+        shelving = shelving or build_furniture(design).shelving_result
+        assert shelving is not None
+        assembly = review_standing_site(shelving, installation)
+        issues.extend(assembly.issues)
     return {
+        "standing_assembly": assembly.model_dump(mode="json") if assembly else None,
         "version": DIMENSION_REVIEW_VERSION,
         "state": "requires_resolution"
         if issues

@@ -2008,6 +2008,7 @@ export interface components {
             } | null;
             /** Room Trim Clearances */
             room_trim_clearances: components["schemas"]["FurnitureTrimClearanceRead"][];
+            standing_assembly?: components["schemas"]["StandingSiteReview"] | null;
             /**
              * State
              * @enum {string}
@@ -3038,6 +3039,10 @@ export interface components {
             height_um: number;
             /** Left Allowance Um */
             left_allowance_um?: number | null;
+            /** Measured Ceiling Height Um */
+            measured_ceiling_height_um?: number | null;
+            /** Measured Front Space Um */
+            measured_front_space_um?: number | null;
             /** Rear Allowance Um */
             rear_allowance_um?: number | null;
             /** Right Allowance Um */
@@ -4736,6 +4741,30 @@ export interface components {
              */
             top_payload_kg: number;
         };
+        /** StandingSiteReview */
+        StandingSiteReview: {
+            /** Issues */
+            issues: {
+                [key: string]: string;
+            }[];
+            /** Measured Ceiling Height Um */
+            measured_ceiling_height_um: number | null;
+            /** Measured Front Space Um */
+            measured_front_space_um: number | null;
+            /** Minimum Ceiling Height Um */
+            minimum_ceiling_height_um: number | null;
+            /** Minimum Front Space Um */
+            minimum_front_space_um: number;
+            /** Minimum Height From Base Um */
+            minimum_height_from_base_um: number;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "blocked" | "requires_measurement" | "nominal_clear";
+            /** Walls */
+            walls: components["schemas"]["WallTravel"][];
+        };
         /** StockCheck */
         StockCheck: {
             /** Margin Lbt Um */
@@ -5050,6 +5079,22 @@ export interface components {
             verified: boolean;
             /** Wall Substrate */
             wall_substrate?: string | null;
+        };
+        /** WallTravel */
+        WallTravel: {
+            /** Margin Um */
+            margin_um: number | null;
+            /** Required Reservation Um */
+            required_reservation_um: number | null;
+            /** Reserved Um */
+            reserved_um: number | null;
+            /** Step Number */
+            step_number: number | null;
+            /**
+             * Wall
+             * @enum {string}
+             */
+            wall: "left" | "right" | "rear";
         };
         /** WarningOverrideCreate */
         WarningOverrideCreate: {

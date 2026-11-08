@@ -13,6 +13,7 @@ from custombuild_cad import CadQueryAdapter
 from custombuild_cad.bookcase_motion import verify_assembly_space
 from custombuild_domain.bookcase_angles import screw_access
 from custombuild_domain.bookcase_fit import trial_groove_fits
+from custombuild_domain.bookcase_site import StandingSiteReview
 from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
@@ -79,7 +80,14 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
     shelving = result.shelving_result
     if shelving is not None:
         space = verify_assembly_space(shelving, cad.step) if shelving.trial_angles else None
+        site_data = preview["workshop_handoff"]["dimensions"]["standing_assembly"]
+        site = StandingSiteReview.model_validate(site_data) if site_data else None
         if space:
+            if site and (
+                site.minimum_height_from_base_um != space.world_max_um[2]
+                or site.minimum_front_space_um != max(0, -space.world_min_um[1])
+            ):
+                raise ValueError("Platskontrollen och CAD använder olika monteringsutrymme.")
             files["assembly/required-space.json"] = _json(
                 {
                     "design_hash": result.design_hash,
@@ -87,12 +95,16 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
                     "units": "integer_micrometres",
                     "scope": "Rigid timber, straight translations, no fixtures or human clearance.",
                     **asdict(space),
+                    "standing_site": site_data,
                 }
             )
         files["inspection/provprotokoll.txt"] = shelving_trial_protocol(result, preview, space)
         files["documents/assembly-overview.pdf"] = files["documents/assembly.pdf"]
         files["documents/assembly.pdf"] = assembly_manual_pdf(
-            shelving, package_design_hash=result.design_hash, assembly_space=space
+            shelving,
+            package_design_hash=result.design_hash,
+            assembly_space=space,
+            standing_site=site,
         )
         files["assembly/graph.json"] = _json(
             {

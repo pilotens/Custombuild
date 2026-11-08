@@ -133,3 +133,35 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
         )
         # Only the occupied quadrant is available for installation from inside the bay.
         assert not steel.isInside((15, 20, 36)) and not steel.isInside((36, 20, 15))
+
+
+@pytest.mark.cad
+def test_swept_cheek_intersects_real_skirt_at_start_only_in_blocked_package(tmp_path):
+    from tests.unit.test_bookcase_site import installed_trial
+
+    cq = pytest.importorskip("cadquery")
+    for reservation, expected_state in ((20_000, "blocked"), (27_000, "nominal_clear")):
+        w = installed_trial(reservation, reservation, ceiling=1_400_000, front=600_000)
+        with ZipFile(io.BytesIO(build_furniture_review(w))) as z:
+            motion = json.loads(z.read("assembly/required-space.json"))
+            site = motion["standing_site"]
+            assert site["state"] == expected_state
+            handoff = json.loads(z.read("manufacturing/workshop-handoff.json"))
+            assert site == handoff["dimensions"]["standing_assembly"]
+            assert motion["revision"] == w.design.revision
+            checks = z.read("inspection/provprotokoll.txt").decode()
+            assert "Angiven fri takhöjd: 1400 mm." in checks
+            assert all(i["message"] in checks for i in site["issues"])
+            step_file = tmp_path / "wood.step"
+            step_file.write_bytes(z.read("design/model.step"))
+            tree = cq.Assembly.load(str(step_file))
+            parts = json.loads(z.read("design/resolved.json"))["parts"]
+            cheek_id = next(p["part_id"] for p in parts if p["semantic_key"] == "left-side")
+            cheek = tree.objects[cheek_id].toCompound()
+            # Independent oracle in mm: side wall at -reservation, rectangular
+            # 20 x 90 skirting, full 280 mm depth. At the start of the +X
+            # insertion the cheek is 6 mm left of its final position.
+            trim = cq.Solid.makeBox(20, 280, 90, cq.Vector(-reservation / 1000, 0, 0))
+            assert cheek.intersect(trim).Volume() < 1e-6
+            intersection = cheek.translate((-6, 0, 0)).intersect(trim).Volume()
+            assert (intersection > 100_000) if reservation == 20_000 else intersection < 1e-6

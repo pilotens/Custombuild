@@ -67,7 +67,7 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         "version": HANDOFF_VERSION,
         "design_hash": result.design_hash,
         "family": result.spec.intent.family,
-        "dimensions": review_furniture_dimensions(result.spec),
+        "dimensions": review_furniture_dimensions(result.spec, result.shelving_result),
         "stock_requirements": furniture_stock_requirements(result),
         "shelf_load": {
             "basis": intent.shelf_load_basis,

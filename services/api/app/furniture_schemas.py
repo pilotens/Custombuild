@@ -3,6 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Literal
 
+from custombuild_domain.bookcase_site import StandingSiteReview
 from custombuild_domain.furniture import (
     FurnitureWorkspace,
     InstallationSpace,
@@ -146,6 +147,7 @@ class FurnitureTrimClearanceRead(FurnitureResponse):
 
 
 class FurnitureDimensionsRead(FurnitureResponse):
+    standing_assembly: StandingSiteReview | None = None
     version: str
     state: Literal["requires_resolution", "reconciled", "not_specified"]
     carcass_dimensions_um: dict[str, int]

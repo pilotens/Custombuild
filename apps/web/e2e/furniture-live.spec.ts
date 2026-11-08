@@ -110,7 +110,11 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     expect(exported.dimensions.installation.trim_profile).toEqual({
       height_um: 90_000, width_um: 20_000, use: "existing_room_trim", walls: ["left", "right", "rear"],
     });
-    expect(exported.dimensions.state).toBe("reconciled");
+    expect(exported.dimensions.state).toBe("requires_resolution");
+    expect(exported.dimensions.standing_assembly.state).toBe("blocked");
+    expect(exported.dimensions.standing_assembly.minimum_height_from_base_um).toBe(2_558_000);
+    expect(exported.dimensions.standing_assembly.walls.map((wall: {margin_um: number}) => wall.margin_um))
+      .toEqual([-6_000, -6_000, 0]);
     await attachView(page, info, "customer-bookcase-dimensions");
     const width = page.getByLabel("Bredd (mm)", { exact: true });
     await width.fill("6000.001");
@@ -119,6 +123,14 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByRole("button", { name: "Spara revision" })).toBeDisabled();
     await width.fill("4300");
     await width.blur();
+    await page.getByLabel("Uppmätt fri takhöjd från golv (mm)").fill("2540");
+    await page.getByLabel("Fri plats framför stommens front (mm)").fill("600");
+    await page.getByLabel("Vänster · reserverat (mm)").fill("30");
+    await page.getByLabel("Höger · reserverat (mm)").fill("30");
+    await page.getByLabel("Ovanför · reserverat (mm)").fill("40");
+    await page.getByRole("button", {name: "Räkna om stommen från kundmåtten"}).click();
+    await expect(width).toHaveValue("4280");
+    await expect(page.getByLabel("Höjd (mm)", {exact: true})).toHaveValue("2500");
     await page.getByLabel("Hyllrader", { exact: true }).fill("2");
     await page.getByRole("button", { name: "Spara revision" }).click();
     await expect(page.getByText("Revision 2 är sparad.")).toBeVisible();
@@ -133,6 +145,10 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       "import json,sys,zipfile",
       "with zipfile.ZipFile(sys.argv[1]) as before, zipfile.ZipFile(sys.argv[2]) as after:",
       " old,new=[json.loads(z.read('design/resolved.json')) for z in (before,after)]",
+      " site=json.loads(after.read('assembly/required-space.json'))['standing_site']",
+      " assert site['state']=='nominal_clear' and site['minimum_ceiling_height_um']==2518000",
+      " assert site['measured_ceiling_height_um']==2540000 and not site['issues']",
+      " assert [w['margin_um'] for w in site['walls']]==[4000,4000,0]",
       " assert new['spec']['revision']==2 and new['design_hash']!=old['design_hash']",
       " removed={p['part_id'] for p in old['parts']}-{p['part_id'] for p in new['parts']}",
       " assert len(removed)==4",

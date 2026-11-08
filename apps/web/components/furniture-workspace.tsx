@@ -462,6 +462,12 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       <button className={styles.primary} disabled={mode === "without" || !mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
         onClick={() => { void exportReview(); }}>Skapa granskningspaket</button>
       {exportMessage ? <p role="status">{exportMessage}</p> : null}
+      {preview?.workshop_handoff?.dimensions.standing_assembly ? <div>
+        <h3>Stående montering på plats</h3>
+        <p>Trädelarna behöver {preview.workshop_handoff.dimensions.standing_assembly.minimum_height_from_base_um / 1_000} mm över stommens botten och {preview.workshop_handoff.dimensions.standing_assembly.minimum_front_space_um / 1_000} mm framför stommen. Arbetsutrymme tillkommer.</p>
+        {preview.workshop_handoff.dimensions.standing_assembly.issues.map(issue =>
+          <p key={issue.code}>{issue.message}</p>)}
+      </div> : null}
       {download && !dirty && preview && mode !== "without" ? <a href={download.url} download={download.name}>Hämta STEP, GLB, DXF, delritningar och kaplista · revision {download.revision}</a> : null}
       {intent.family === "shelving" && preview ? <FurnitureShelfSuggestionPanel
         key={`${fingerprint(workspace)}-${inputEpoch}`} api={api} workspace={workspace}

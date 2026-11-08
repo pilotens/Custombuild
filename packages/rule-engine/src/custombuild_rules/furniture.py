@@ -32,12 +32,14 @@ def _rule(code: str, title: str, status: str, detail: str, **values: Any) -> dic
 def evaluate_furniture(result: FurnitureResult) -> dict[str, Any]:
     p = result.spec.intent
     rules: list[dict[str, Any]] = []
-    dimensions = review_furniture_dimensions(result.spec)
+    dimensions = review_furniture_dimensions(result.spec, result.shelving_result)
     for issue in dimensions["issues"]:
         rules.append(
             _rule(
                 f"CB-{issue['code'].replace('_', '-')}",
-                "Kundmått och listutrymme",
+                "Plats för stående montering"
+                if issue["code"].startswith("STANDING_")
+                else "Kundmått och listutrymme",
                 "BLOCK",
                 issue["message"],
             )
