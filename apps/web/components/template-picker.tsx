@@ -534,8 +534,6 @@ function OpenTemplatePicker({
               <a href="/furniture?family=dining_table">Matbord</a><a href="/furniture?family=chair">Matstol</a>
               <a href="/furniture?family=chest_of_drawers">Byrå</a>
             </nav>
-            <button type="button" onClick={openCabinetReference}>Öppna referens med 700 mm underskåpsstomme</button>
-            <p>Måttstudie 4 280 × 2 500 × 260 mm med sex skåpsfronter. Gångjärnsborrning och verkstadsritningar för luckorna saknas.</p>
           </div>
           <div className={styles.heroVisual}>
             <InspirationVisual template={furnitureTemplate("wall-library")} src="/assets/inspiration/explore-hero.jpg" priority />
@@ -569,6 +567,12 @@ function OpenTemplatePicker({
               <TemplateCard key={template.id} template={template} selected={selectedTemplateId === template.id} onChoose={() => chooseDesign(template.id)} />
             ))}
           </div>
+          {selectedTemplateId === "wall-library" ? <section>
+            <button type="button" className={styles.backButton} onClick={openCabinetReference}>
+              Öppna referens med 700 mm underskåpsstomme
+            </button>
+            <p>Måttstudie 4 280 × 2 500 × 260 mm med sex skåpsfronter. Gångjärnsborrning och verkstadsritningar för luckorna saknas.</p>
+          </section> : null}
           <footer className={styles.pageFooter}>
             <p><Check aria-hidden="true" size={17} /> Inget produktionsunderlag skapas från inspirationsbilden. Studio använder alltid den verkliga modellen.</p>
             <button type="button" className={styles.primaryButton} disabled={Boolean(selectedTemplate.designUnavailableReason)} onClick={() => openInStudio()}>

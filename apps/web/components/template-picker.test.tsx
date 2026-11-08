@@ -262,6 +262,8 @@ describe("TemplatePicker Explore entry", () => {
   it("öppnar den separata 700 mm underskåpsstommen som en måttstudie", () => {
     const onSelect = vi.fn();
     renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", {name: /Välj en design/}));
+    fireEvent.click(screen.getByRole("button", {name: /Väggbibliotek/}));
     fireEvent.click(screen.getByRole("button", {name:"Öppna referens med 700 mm underskåpsstomme"}));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({
       id:"wall-library", productionLevel:"concept", patch:expect.objectContaining({
