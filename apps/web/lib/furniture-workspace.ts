@@ -16,6 +16,7 @@ export interface FurnitureIntent {
   shelf_height_ratios_ppm?: number[];
   bay_width_ratios_ppm?: number[];
   back_panel?: "none" | "surface_mounted" | "inset_groove";
+  base_doors?: "J95-C24/0T-NI" | null;
   trial_angle?: "GN-970-ALM-30-30-30-B" | null;
   shelf_mount?: "fixed" | "adjustable";
   plinth_height_um?: number;
@@ -305,8 +306,8 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
   if (drawersOpen) for (const group of preview.design.moving_groups) {
     for (const id of group.part_ids) movements.set(id, group.travel_um);
   }
-  const yz = new Set(["left_side", "right_side", "divider", "table_end", "drawer_side", "frame_leg", "frame_rail_y"]);
-  const xz = new Set(["back", "plinth", "table_stretcher", "drawer_front", "drawer_back", "frame_rail_x", "chair_back"]);
+  const yz = new Set(["left_side", "right_side", "base_side", "divider", "table_end", "drawer_side", "frame_leg", "frame_rail_y"]);
+  const xz = new Set(["back", "plinth", "cabinet_front", "table_stretcher", "drawer_front", "drawer_back", "frame_rail_x", "chair_back"]);
   const timber = preview.design.parts.map((part): ResolvedPart => {
     const size = part.finished_size;
     const angle = (part.placement.rotation_x_mdeg ?? 0)*Math.PI/180_000;

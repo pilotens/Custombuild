@@ -26,6 +26,10 @@ def _production_shelving(workspace: FurnitureWorkspace) -> FurnitureResult:
             "Tillverkningsberedning stöder ännu endast hyllsystem. "
             "Bord, stolar och byråer bereds via möbelns granskningspaket."
         )
+    if result.shelving_result.spec.parameters.door_hinge:
+        raise ValueError(
+            "Underskåpens gångjärnsinfästning och öppningsrörelse saknar typkvalificering."
+        )
     if result.shelving_result.spec.material.material_type == MaterialType.SOLID_WOOD:
         raise ValueError(
             "Massivträ kan exporteras för granskning. Tillverkningsberedning kräver "

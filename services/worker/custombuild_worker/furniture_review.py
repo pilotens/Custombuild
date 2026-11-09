@@ -162,7 +162,8 @@ def build_furniture_review(
                 }
             )
     identity = None
-    if result.trial_angles:
+    cabinet = shelving is not None and bool(shelving.spec.parameters.door_hinge)
+    if result.trial_angles or cabinet:
         from .bookcase_readback import order_identity, verify_bookcase_delivery
 
         identity = order_identity(result)
@@ -201,7 +202,23 @@ def build_furniture_review(
             "manufacturing/manufacturing-intent.json anger bearbetningar med sida, datum, "
             "speldimension och tolerans. Maskinval krävs inte för detta underlag.\n"
         ).encode()
-    if identity:
+    if cabinet:
+        from .cabinet_delivery import (
+            cabinet_trial_sheet,
+            installation_register,
+            verify_cabinet_delivery,
+        )
+
+        files["assembly/door-hardware.json"] = _json(installation_register(result))
+        files["inspection/gangjarnsprov.txt"] = cabinet_trial_sheet(result)
+        files["inspection/door-hardware.json"] = _json(verify_cabinet_delivery(result, files))
+        files["README.txt"] += (
+            "\nUNDERSKÅP – Se documents/assembly.pdf och assembly/door-hardware.json. "
+            "Varje lucka och dess gavel har en märkt DXF för respektive sida. "
+            "Ø3,5 × 15 mm är provmått för SPAX YELLOX 5x16 i 18 mm valnöt. "
+            "Beslagets fulla rörelse och infästning i virket återstår att prova.\n"
+        ).encode()
+    elif identity:
         report, joint_sheet = verify_bookcase_delivery(result, files)
         files["inspection/geometry-readback.json"] = _json(report)
         files["inspection/fogprov.csv"] = joint_sheet
@@ -220,7 +237,7 @@ def build_furniture_review(
             }
         )
     if workshop_profile:
-        if not identity:
+        if not result.trial_angles or not identity:
             raise ValueError("Verkstadsritningar kräver fullständig geometrikontroll av bokhyllan.")
         # Supply the actual qualified site method together with revision-specific steps.
         documents = workshop_profile.reports()

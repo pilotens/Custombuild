@@ -77,10 +77,15 @@ class BookcaseEngine:
     def build(self, spec: BookcaseDesignSpec) -> DesignResult:
         parts = self._build_parts(spec)
         parts, joints = self._build_joints(spec, parts)
+        if spec.parameters.door_hinge:
+            from .cabinet_doors import fit_doors
+
+            parts = fit_doors(parts, spec.parameters)
         angles: tuple[TrialAngle, ...] = ()
         if spec.parameters.trial_angle:
             parts, angles = fit_trial_angles(parts, joints)
-        graph = self._build_assembly_graph(parts, joints, front_entry=bool(angles))
+        graph = self._build_assembly_graph(parts, joints, front_entry=bool(angles),
+                                           hinged=bool(spec.parameters.door_hinge))
         total_weight = sum(part.weight_g for part in parts)
         hash_payload = {
             "spec": spec.model_dump(
@@ -1579,6 +1584,7 @@ class BookcaseEngine:
         joints: tuple[Joint, ...],
         *,
         front_entry: bool = False,
+        hinged: bool = False,
     ) -> AssemblyGraph:
         nodes = tuple(
             AssemblyNode(part_id=part.part_id, semantic_key=part.semantic_key) for part in parts
@@ -2031,6 +2037,29 @@ class BookcaseEngine:
             if part.part_id in covered_part_ids:
                 continue
             is_front = part.role == PartRole.CABINET_FRONT
+            if hinged and is_front:
+                index = part.instance_index
+                support = "left-side" if index == 0 else f"base-side-{index}"
+                steps_list.append(
+                    AssemblyStep(
+                        step_number=len(steps_list) + 1,
+                        step_id=stable_id("assembly-step", part.part_id, "clip-J95"),
+                        part_ids=(
+                            part.part_id,
+                            next(p.part_id for p in parts if p.semantic_key == support),
+                        ),
+                        moving_part_ids=(part.part_id,),
+                        joint_ids=(),
+                        direction=AssemblyDirection.POS_Y,
+                        motion_path=(AssemblyDirection.POS_Y,),
+                        tool_ids=("screwdriver",),
+                        checkpoint=f"{part.semantic_key}: fäst två J95-C24/0T-NI på baksidan "
+                        f"och två J95-P6T-NI på höger sida av {support}. Använd 2 respektive 4 "
+                        "SPAX YELLOX 5x16 per beslag. Håll luckan öppen, haka axeln i plattans "
+                        "framkant och tryck baktill tills båda låser. Justera till 2 mm spel.",
+                    )
+                )
+                continue
             steps_list.append(
                 AssemblyStep(
                     step_number=len(steps_list) + 1,

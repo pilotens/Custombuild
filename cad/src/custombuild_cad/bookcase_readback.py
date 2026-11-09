@@ -51,6 +51,16 @@ def panel_cut(part: PartInstance, feature: ManufacturingFeature) -> PanelCut:
     coords = (feature.origin.x_um, feature.origin.y_um, feature.origin.z_um)
     u, v = coords[a], coords[b]
     d = feature.dimensions
+    if feature.feature_id.startswith("J95-") and feature.kind == FeatureKind.DRILL:
+        allowed = {(40_000, 15_000, False), (3500, 15_000, False), (30_000, 18_000, True)}
+        if (
+            d.diameter_um,
+            d.depth_um,
+            feature.through,
+        ) not in allowed or feature.pattern_count != 1:
+            raise ValueError("Ogiltig borrdiameter eller borrdjup för underskåpsluckan.")
+        assert d.depth_um and d.diameter_um
+        return PanelCut(feature, u, v, 0, 0, d.depth_um, d.diameter_um // 2, ())
     if not d.depth_um or feature.through or feature.pattern_count != 1:
         raise ValueError(f"Bearbetning utanför den fasta provprofilen: {feature.feature_id}")
     if feature.kind == FeatureKind.DRILL and d.diameter_um == 3500 and d.depth_um == 12500:
@@ -164,6 +174,15 @@ def _same_solid(actual: cq.Shape, expected: cq.Shape, label: str) -> None:
         or expected.cut(actual).Volume() > DIGITAL_VOLUME_MM3
     ):
         raise ValueError(f"STEP avviker från orderns material, hål eller spår: {label}")
+
+
+def verify_cabinet_step(result: FurnitureResult, data: bytes) -> None:
+    with TemporaryDirectory(prefix="cabinet-readback-") as directory:
+        actual = _step_components(data, Path(directory) / "panels.step")
+        if set(actual) != {p.part_id for p in result.parts}:
+            raise ValueError("STEP saknar rätt trädelar för underskåpsordern.")
+        for part in result.parts:
+            _same_solid(actual[part.part_id], _panel(part), part.semantic_key)
 
 
 def verify_bookcase_steps(result: FurnitureResult, timber: bytes, mounted: bytes) -> None:

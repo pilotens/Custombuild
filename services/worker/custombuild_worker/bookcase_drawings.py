@@ -135,7 +135,7 @@ def verify_panel_dxf(
         )
         if (
             record["side"] != side
-            or record["through"] is not False
+            or record["through"] is not f.through
             or record["kind"] != f.kind.value.upper()
             or record["depth_mm"] != mm(cut.depth)
             or record["origin_mm"] != {"u": mm(cut.u), "v": mm(cut.v)}

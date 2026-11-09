@@ -170,6 +170,9 @@ class InstallationSpace(FrozenModel):
 
 
 class ShelvingIntent(FrozenModel):
+    base_doors: Literal["J95-C24/0T-NI"] | None = Field(
+        default=None, exclude_if=lambda v: v is None,
+    )
     family: Literal["shelving"] = "shelving"
     trial_angle: Literal["GN-970-ALM-30-30-30-B"] | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -207,6 +210,10 @@ class ShelvingIntent(FrozenModel):
     def canonical_bay_proportions(self) -> ShelvingIntent:
         if self.bay_width_ratios_ppm and sum(self.bay_width_ratios_ppm) != 1_000_000:
             raise ValueError("bay width proportions must sum to exactly 100 percent")
+        if self.base_doors and (self.trial_angle or self.back_panel != BackPanelType.INSET_GROOVE
+                                or self.shelf_mount != ShelfMount.FIXED or self.plinth_height_um):
+            raise ValueError("700 mm underskåp kräver fasta hyllor, infälld rygg och ingen sockel. "
+                             "GN 970 gäller endast den öppna bokhyllan.")
         if self.resolved_shelf_load_n > 5_000:
             raise ValueError("lasten per hel hyllrad överskrider modellens gräns på 5000 N")
         return self

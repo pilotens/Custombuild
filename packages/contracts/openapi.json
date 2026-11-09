@@ -778,6 +778,18 @@
             "title": "Depth Um",
             "type": "integer"
           },
+          "door_hinge": {
+            "anyOf": [
+              {
+                "const": "J95-C24/0T-NI",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Door Hinge"
+          },
           "edge_band_thickness_um": {
             "default": 0,
             "minimum": 0.0,
@@ -9437,6 +9449,18 @@
           "back_panel": {
             "$ref": "#/components/schemas/BackPanelType",
             "default": "inset_groove"
+          },
+          "base_doors": {
+            "anyOf": [
+              {
+                "const": "J95-C24/0T-NI",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Doors"
           },
           "bay_width_ratios_ppm": {
             "default": [],

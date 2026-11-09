@@ -247,6 +247,9 @@ class BookcaseParameters(FrozenModel):
     vertical_divider_count: BookcaseDividerCount = 0
     bay_width_ratios_ppm: tuple[RatioPpm, ...] = ()
     shelf_height_ratios_ppm: tuple[RatioPpm, ...] = ()
+    door_hinge: Literal["J95-C24/0T-NI"] | None = Field(
+        default=None, exclude_if=lambda v: v is None,
+    )
     base_cabinet_height_um: BaseCabinetHeightUm = 0
     base_cabinet_depth_um: BaseCabinetDepthUm = 0
     base_cabinet_count: BaseCabinetCount = 0
@@ -1067,6 +1070,15 @@ class DesignResult(FrozenModel):
             for f in p.features
         ):
             raise ValueError("Extra spårbottenmån kräver vinkelprovets toleransmodell.")
+        if self.spec.parameters.door_hinge:
+            from .cabinet_doors import door_mounts
+
+            expected = {f.feature_id: f for mount in door_mounts(self.parts, self.spec.parameters)
+                        for f in mount.holes}
+            actual = {f.feature_id: f for part in self.parts for f in part.features
+                      if f.feature_id.startswith("J95-")}
+            if actual != expected:
+                raise ValueError("En luckas hål eller monteringsplatta avviker från J95-profilen.")
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
                 if (

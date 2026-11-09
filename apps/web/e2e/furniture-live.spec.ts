@@ -38,6 +38,48 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await expect(page.getByRole("button",{name:"Spara revision"})).toBeEnabled();
   });
 
+  test("sex underskåpsluckor: ändrad fackindelning och återlästa beslag i två revisioner", async ({page, request}, info) => {
+    test.setTimeout(900_000);
+    const project = await provisionLiveProject(request, info, "cabinet-doors");
+    await selectProjectBeforeNavigation(page, project);
+    await page.goto("/furniture?family=shelving");
+    await page.getByRole("button", {name: "Öppna valnötsbokhylla med sex gångjärnsluckor"}).click();
+    await expect(page.getByText(/Arbetsfilen har kontrollerats/)).toBeVisible();
+    await page.getByLabel("Projektnamn", {exact: true}).fill(project.project.name + "-luckor");
+    const canvas = page.getByTestId("furniture-viewer").locator("canvas");
+    await expect(canvas).toHaveAttribute("data-custombuild-model-root", /.+/);
+    const firstView = await canvas.screenshot();
+    for (const [revision, bays] of [[1, 6], [2, 7]] as const) {
+      if (revision === 2) {
+        await page.getByLabel("Avdelare", {exact:true}).fill("6");
+        await expect(page.getByLabel("Granska en del").locator("option").filter({hasText:"cabinet-front-6"})).toHaveCount(1);
+        await expect.poll(async () => !(await canvas.screenshot()).equals(firstView)).toBe(true);
+        await expect(page.getByRole("link", {name:/Hämta STEP, GLB, DXF/})).toHaveCount(0);
+      }
+      await page.getByRole("button", {name:"Spara revision"}).click();
+      await expect(page.getByText(`Revision ${revision} är sparad.`)).toBeVisible();
+      await page.getByRole("button", {name:"Skapa granskningspaket"}).click();
+      const link = page.getByRole("link", {name:/Hämta STEP, GLB, DXF/});
+      await expect(link).toBeVisible({timeout:360_000});
+      const event = page.waitForEvent("download");
+      await link.click();
+      const download = await event;
+      const path = info.outputPath(`Custombuild-Valnot-Gangjarn-Rev${revision}.zip`);
+      await download.saveAs(path);
+      const report = JSON.parse(execFileSync("python3", ["-c", [
+        "import json,sys,zipfile",
+        "with zipfile.ZipFile(sys.argv[1]) as z:",
+        " m=json.loads(z.read('manifest.json'))",
+        " r=json.loads(z.read('inspection/door-hardware.json'))",
+        " assert r['design_hash']==m['design_hash'] and not m['production_qualified']",
+        " print(json.dumps(r))",
+      ].join("\n"), path], {encoding:"utf8"}));
+      expect(report).toMatchObject({revision, doors:bays, hinges:bays*2, plates:bays*2,
+        screws:bays*12, door_and_plate_bores:bays*15});
+    }
+    await attachView(page, info, "underskap-valnot-sju-luckor");
+  });
+
   test("kundmått 4340 × 2540 × 280: arbetsfil, återöppning och spårbart CAD-underlag", async ({ page, request }, info) => {
     test.setTimeout(900_000);
     const provisioned = await provisionLiveProject(request, info, "customer-bookcase");

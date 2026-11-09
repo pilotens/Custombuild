@@ -96,7 +96,7 @@ def _rows(files: dict[str, bytes], path: str, key: str) -> dict[str, dict[str, s
     return indexed
 
 
-def _documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
+def verify_panel_documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
     bom = _rows(files, "bom/parts.csv", "part_id")
     cut = _rows(files, "bom/cut-list.csv", "part_id")
     assembly = _rows(files, "assembly/parts.csv", "part_id")
@@ -179,7 +179,7 @@ def _documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
             actual = {
                 m.group(1): block
                 for block in notes.values()
-                if (m := re.search(r"\|  (fea_[0-9a-f]+)\n", block))
+                if (m := re.search(r"\|  (fea_[0-9a-f]+|J95-[A-Za-z0-9-]+)\n", block))
             }
             expected_ops = {
                 f.feature_id: f for f in p.features if physical_face(p, f) == face.lower()
@@ -224,6 +224,10 @@ def _documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
         or any(step.step_id not in manual for step in design.assembly_graph.steps)
     ):
         raise ValueError("Monteringsmanualen saknar rätt revision, del eller steg.")
+
+
+def _verify_angle_register(result: FurnitureResult, files: dict[str, bytes]) -> None:
+    parts = {p.part_id: p for p in result.parts}
     fittings = _rows(files, "bom/hardware.csv", "item")
     joints = _rows(files, "assembly/connections.csv", "joint_id")
     angles = {a.joint_id: a for a in result.trial_angles}
@@ -268,7 +272,8 @@ def verify_bookcase_delivery(
     for p in result.parts:
         for s in ("A", "B"):
             pilots.extend(verify_panel_dxf(files[f"parts/{p.part_id}/{s}.dxf"], p, s, identity))
-    _documents(result, files)
+    verify_panel_documents(result, files)
+    _verify_angle_register(result, files)
     verify_bookcase_steps(
         result, files["design/model.step"], files["design/with-mounted-angles.step"]
     )

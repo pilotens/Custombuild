@@ -1052,6 +1052,15 @@ def _assembly_step_hardware_text(
     retention_trust: VerifiedRetentionTrust | None = None,
 ) -> str:
     unresolved_fronts = set(_unresolved_front_hardware_part_ids(design)) & set(step.part_ids)
+    if unresolved_fronts and getattr(design.spec.parameters, "door_hinge", None):
+        from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, door_mounts
+
+        for mount in door_mounts(design.parts, design.spec.parameters):
+            if (
+                mount.door.part_id in step.moving_part_ids
+                and mount.support.part_id in step.part_ids
+            ):
+                return f"2 × {HINGE}, 2 × {PLATE}, 12 × {SCREW}. Infästningen är ett typprov."
     if unresolved_fronts:
         return "FRONT EJ MONTERINGSBAR: verifierat mekaniskt beslag och borrbild saknas"
     selected_joint_ids = set(step.joint_ids)

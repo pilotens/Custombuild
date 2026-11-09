@@ -157,6 +157,10 @@ def _carcass(design: FurnitureDesign, *, shelving: bool) -> DesignResult:
                 back_panel=shelf.back_panel if shelf else BackPanelType.INSET_GROOVE,
                 shelf_mount=shelf.shelf_mount if shelf else ShelfMount.FIXED,
                 trial_angle=shelf.trial_angle if shelf else None,
+                door_hinge=shelf.base_doors if shelf else None,
+                base_cabinet_height_um=700_000 if shelf and shelf.base_doors else 0,
+                base_cabinet_count=shelf.divider_count + 1 if shelf and shelf.base_doors else 0,
+                base_cabinet_depth_um=p.depth_um if shelf and shelf.base_doors else 0,
                 shelf_count=shelf.shelf_count if shelving and shelf else 0,
                 shelf_load_n=shelf.resolved_shelf_load_n if shelving and shelf else 0,
                 vertical_divider_count=shelf.divider_count
@@ -499,6 +503,14 @@ def build_furniture(design: FurnitureDesign) -> FurnitureResult:
                 **(
                     {"trial_angles": carcass.trial_angles}
                     if carcass and carcass.trial_angles
+                    else {}
+                ),
+                **(
+                    {
+                        "cabinet_rule": "J95-inset-walnut-v1",
+                        "cabinet_assembly": carcass.assembly_graph,
+                    }
+                    if carcass and carcass.spec.parameters.door_hinge
                     else {}
                 ),
                 "materials": used_materials,

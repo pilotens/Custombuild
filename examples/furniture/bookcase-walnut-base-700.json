@@ -1,0 +1,58 @@
+{
+  "schema_version": "custombuild.furniture-workspace.v1",
+  "design": {
+    "schema_version": "custombuild.furniture-design.v1",
+    "design_id": "bookcase-walnut-base-700",
+    "revision": 1,
+    "intent": {
+      "family": "shelving",
+      "width_um": 4280000,
+      "height_um": 2500000,
+      "depth_um": 260000,
+      "shelf_count": 5,
+      "divider_count": 5,
+      "shelf_load_n": 200,
+      "shelf_height_ratios_ppm": [],
+      "plinth_height_um": 0,
+      "base_doors": "J95-C24/0T-NI",
+      "shelf_load_basis": "per_metre",
+      "shelf_load_per_metre_n": 294
+    },
+    "installation": {
+      "width_um": 4340000,
+      "height_um": 2540000,
+      "depth_um": 280000,
+      "width_includes_trim": true,
+      "trim_profile": {
+        "height_um": 90000,
+        "width_um": 20000,
+        "use": "existing_room_trim",
+        "walls": [
+          "left",
+          "right",
+          "rear"
+        ]
+      },
+      "left_allowance_um": 30000,
+      "right_allowance_um": 30000,
+      "top_allowance_um": 40000,
+      "bottom_allowance_um": 0,
+      "front_allowance_um": 0,
+      "rear_allowance_um": 20000
+    },
+    "material": {
+      "material_id": "solid-walnut",
+      "version": "screening-2026.1",
+      "measured_thickness_um": 18000,
+      "batch_id": null
+    },
+    "back_material": {
+      "material_id": "birch-plywood-6",
+      "version": "screening-2026.1",
+      "measured_thickness_um": 6000,
+      "batch_id": null
+    },
+    "hardware": null
+  },
+  "manufacturing": null
+}

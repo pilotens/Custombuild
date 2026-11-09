@@ -117,6 +117,11 @@ def bookcase_scope(workspace: FurnitureWorkspace) -> str:
 
 def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> BookcaseProfile:
     spec = workspace.design
+    if isinstance(spec.intent, ShelvingIntent) and spec.intent.base_doors:
+        raise ValueError(
+            "Underskåpens J95-infästning i valnöt och luckornas öppningsrörelse "
+            "saknar typkvalificering. Granskningspaket med borrbilder är tillgängligt."
+        )
     if not isinstance(spec.intent, ShelvingIntent) or not spec.intent.trial_angle:
         raise ValueError("Välj fast bokhylla med GN 970-vinklar för verkstadsritningar.")
     design = build_furniture(spec)

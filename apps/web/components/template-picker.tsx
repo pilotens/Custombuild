@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import NextImage from "next/image";
 import {
   ArrowLeft,
@@ -571,7 +572,8 @@ function OpenTemplatePicker({
             <button type="button" className={styles.backButton} onClick={openCabinetReference}>
               Öppna referens med 700 mm underskåpsstomme
             </button>
-            <p>Måttstudie 4 280 × 2 500 × 260 mm med sex skåpsfronter. Gångjärnsborrning och verkstadsritningar för luckorna saknas.</p>
+            <p>Måttstudie 4 280 × 2 500 × 260 mm med sex skåpsfronter. För gångjärn och borrbilder, välj valnötsbokhyllan med sex gångjärnsluckor i möbelstudion.</p>
+            <Link href="/furniture?family=shelving">Öppna möbelstudion med luckbeslag</Link>
           </section> : null}
           <footer className={styles.pageFooter}>
             <p><Check aria-hidden="true" size={17} /> Inget produktionsunderlag skapas från inspirationsbilden. Studio använder alltid den verkliga modellen.</p>

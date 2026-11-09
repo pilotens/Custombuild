@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import customerBookcase from "../../../examples/furniture/bookcase-4340x2540x280.json";
+import cabinetExample from "../../../examples/furniture/bookcase-walnut-base-700.json";
 import walnutExample from "../../../examples/furniture/walnut-shelving-4340x2540x280.json";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { CustombuildApiClient, type CurrentPrincipal, type ProjectRead } from "@/lib/api-client";
@@ -337,6 +338,10 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
           onClick={() => navigate(() => { void importWorkspace(undefined, customerBookcase as FurnitureWorkspace); })}>
           Öppna kundbokhylla 4340 × 2540 × 280
         </button> : null}
+        {intent.family === "shelving" && <button disabled={busy || !mayEdit}
+          onClick={() => navigate(() => { void importWorkspace(undefined, cabinetExample as FurnitureWorkspace); })}>
+          Öppna valnötsbokhylla med sex gångjärnsluckor
+        </button>}
         <button disabled={busy || !mayEdit} onClick={() => navigate(() => { void importWorkspace(); })}>
           Öppna valnötsexempel
         </button>

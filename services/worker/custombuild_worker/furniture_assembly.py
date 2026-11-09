@@ -239,6 +239,13 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
         for angle in result.trial_angles:
             counts[angle.article] += 1
             counts[angle.screw] += 2
+    if result.shelving_result and result.shelving_result.spec.parameters.door_hinge:
+        from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, door_mounts
+
+        mounts = door_mounts(result.parts, result.shelving_result.spec.parameters)
+        counts[HINGE] += 2 * len(mounts)
+        counts[PLATE] += 2 * len(mounts)
+        counts[SCREW] += 12 * len(mounts)
     instructions = []
     if isinstance(intent, ChairIntent | DiningTableIntent):
         leg_wood = (

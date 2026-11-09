@@ -1163,6 +1163,8 @@ export interface components {
              * @default 320000
              */
             depth_um: number;
+            /** Door Hinge */
+            door_hinge?: "J95-C24/0T-NI" | null;
             /**
              * Edge Band Thickness Um
              * @default 0
@@ -4504,6 +4506,8 @@ export interface components {
         ShelvingIntent: {
             /** @default inset_groove */
             back_panel: components["schemas"]["BackPanelType"];
+            /** Base Doors */
+            base_doors?: "J95-C24/0T-NI" | null;
             /**
              * Bay Width Ratios Ppm
              * @default []
