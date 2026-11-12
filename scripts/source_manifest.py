@@ -38,6 +38,7 @@ APPLICATION_BUILD_INPUTS = (
     "compose.registry.yml",
     "compose.yml",
     "examples/furniture/bookcase-4340x2540x280.json",
+    "examples/furniture/bookcase-walnut-base-700.json",
     "examples/furniture/walnut-shelving-4340x2540x280.json",
     "infra",
     "package.json",

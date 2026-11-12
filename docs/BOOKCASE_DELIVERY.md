@@ -5,7 +5,8 @@ Fortsättningen utgår från `3a7b8fe` på PR #27 och behåller samma bokhyllefa
 kundmått. Den tidigare CI-körningen hade två konkreta regressionsfel: webbens
 containerbygge saknade den importerade arbetsfilen för de sex gångjärnsluckorna,
 och dokumenthjälparen läste `spec.parameters` även när specifikationen saknades.
-Bygget kopierar nu även `bookcase-walnut-base-700.json`. Dokumenthjälparen hanterar
+Bygget kopierar nu även `bookcase-walnut-base-700.json`, och samma fil ingår i
+det strikta källmanifestets byggkontrakt. Dokumenthjälparen hanterar
 saknad specifikation och godtar endast den exakta J95-artikeln för luckinstruktionen.
 Ett okänt eller versionslöst beslag får fortsatt inget monteringsbesked.
 
