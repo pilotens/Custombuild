@@ -12,6 +12,7 @@ from uuid import UUID
 
 from custombuild_domain.bookcase_motion import AssemblySpace
 from custombuild_domain.bookcase_site import WALL_NAMES, StandingSiteReview
+from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, DoorMount, door_mounts
 from custombuild_manufacturing import (
     canonical_json_bytes,
     dado_retention_evidence_missing,
@@ -782,13 +783,24 @@ def assembly_manual_pdf(
                 y,
             )
             canvas.setFont("Helvetica", 7)
-            canvas.drawString(
-                MARGIN,
-                y,
-                f"AssemblyGraph-förband i steget: {len(step.joint_ids)}; "
-                "varje förband validerat exakt en gång.",
-            )
-            y -= 12
+            mounts = _assembly_step_door_mounts(design, step)
+            if mounts:
+                for mount in mounts:
+                    canvas.drawString(
+                        MARGIN,
+                        y,
+                        "Luckinfästning: 2 gångjärn mellan "
+                        f"{mount.door.semantic_key} och {mount.support.semantic_key}.",
+                    )
+                    y -= 12
+            else:
+                canvas.drawString(
+                    MARGIN,
+                    y,
+                    f"AssemblyGraph-förband i steget: {len(step.joint_ids)}; "
+                    "varje förband validerat exakt en gång.",
+                )
+                y -= 12
             group_plan = group_by_step[step.step_id]
             canvas.drawString(
                 MARGIN,
@@ -1046,22 +1058,32 @@ def _assembly_step_hardware(design: Any, step: Any) -> tuple[tuple[str, int], ..
     return tuple(sorted(quantities.items()))
 
 
+def _assembly_step_door_mounts(design: Any, step: Any) -> tuple[DoorMount, ...]:
+    parameters = getattr(getattr(design, "spec", None), "parameters", None)
+    if parameters is None or getattr(parameters, "door_hinge", None) != HINGE:
+        return ()
+    return tuple(
+        mount
+        for mount in door_mounts(design.parts, parameters)
+        if mount.door.part_id in step.moving_part_ids
+        and mount.door.part_id in step.part_ids
+        and mount.support.part_id in step.part_ids
+    )
+
+
 def _assembly_step_hardware_text(
     design: Any,
     step: Any,
     retention_trust: VerifiedRetentionTrust | None = None,
 ) -> str:
     unresolved_fronts = set(_unresolved_front_hardware_part_ids(design)) & set(step.part_ids)
-    if unresolved_fronts and getattr(design.spec.parameters, "door_hinge", None):
-        from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, door_mounts
-
-        for mount in door_mounts(design.parts, design.spec.parameters):
-            if (
-                mount.door.part_id in step.moving_part_ids
-                and mount.support.part_id in step.part_ids
-            ):
-                return f"2 × {HINGE}, 2 × {PLATE}, 12 × {SCREW}. Infästningen är ett typprov."
     if unresolved_fronts:
+        count = len(_assembly_step_door_mounts(design, step))
+        if count:
+            return (
+                f"{2 * count} × {HINGE}, {2 * count} × {PLATE}, {12 * count} × {SCREW}. "
+                "Infästningen är ett typprov."
+            )
         return "FRONT EJ MONTERINGSBAR: verifierat mekaniskt beslag och borrbild saknas"
     selected_joint_ids = set(step.joint_ids)
     selected_joints = tuple(

@@ -89,17 +89,27 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
     register = json.loads(files["assembly/door-hardware.json"])
     if register != installation_register(result):
         raise ValueError("Luckornas beslagsregister avviker från beställningen.")
-    manual = "\n".join(
+    manual_pages = [
         p.extract_text() for p in PdfReader(io.BytesIO(files["documents/assembly.pdf"])).pages
-    )
+    ]
+    manual = "\n".join(manual_pages)
     x = 0
     for i, width in enumerate(widths):
         door = by_key[f"cabinet-front-{i}"]
         left = by_key["left-side" if i == 0 else f"base-side-{i}"]
         right = by_key["right-side" if i == n - 1 else f"base-side-{i + 1}"]
         _check_opening(door, left, right, x, width, t)
-        if door.semantic_key not in manual or left.semantic_key not in manual:
-            raise ValueError("Monteringsmanualen saknar luckans motdel.")
+        door_pages = [
+            " ".join(page.split()) for page in manual_pages
+            if f"IN {door.semantic_key} · {door.part_id}" in page
+        ]
+        if (
+            len(door_pages) != 1
+            or f"Luckinfästning: 2 gångjärn mellan {door.semantic_key} och {left.semantic_key}."
+            not in door_pages[0]
+            or "AssemblyGraph-förband i steget: 0" in door_pages[0]
+        ):
+            raise ValueError("Monteringsmanualen saknar rätt luckinfästning och motdel i steget.")
         leaf_width, leaf_height = width - 4000, 700_000 - 2 * t - 4000
         for z in (80_000, leaf_height - 80_000):
             expected.add((door.part_id, "back", 27_000, z, 40_000, 15_000))

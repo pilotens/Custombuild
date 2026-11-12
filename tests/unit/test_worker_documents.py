@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,9 @@ from custombuild_domain import (
     screening_mdf_6,
     screening_mdf_18,
 )
+from custombuild_domain.cabinet_doors import door_mounts
+from custombuild_domain.furniture import FurnitureWorkspace
+from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing import canonical_json_bytes
 from custombuild_rules import evaluate_design
 from custombuild_worker.documents import (
@@ -22,6 +26,7 @@ from custombuild_worker.documents import (
     _assembly_group_plan,
     _assembly_manual_plan,
     _assembly_part_chunks,
+    _assembly_step_door_mounts,
     _assembly_step_hardware,
     _assembly_step_hardware_text,
     _direction_vector,
@@ -38,6 +43,7 @@ from custombuild_worker.documents import (
     qa_protocol_pdf,
     validation_report_pdf,
 )
+from pypdf import PdfReader
 
 
 def design_fixture():
@@ -148,7 +154,10 @@ def test_hardware_list_marks_fronts_without_hardware_as_not_mountable() -> None:
 
 
 @pytest.mark.parametrize("sku", ("construction-adhesive", "hinge-unversioned"))
-def test_free_form_hardware_identifier_never_makes_a_front_mountable(sku: str) -> None:
+@pytest.mark.parametrize("spec_kind", ("missing", "without-parameters", "unversioned"))
+def test_free_form_hardware_identifier_never_makes_a_front_mountable(
+    sku: str, spec_kind: str
+) -> None:
     front_id = "cabinet-front-1"
     joint_id = "unverified-front-joint"
     design = SimpleNamespace(
@@ -165,6 +174,10 @@ def test_free_form_hardware_identifier_never_makes_a_front_mountable(sku: str) -
             ),
         ),
     )
+    if spec_kind == "without-parameters":
+        design.spec = SimpleNamespace()
+    elif spec_kind == "unversioned":
+        design.spec = SimpleNamespace(parameters=SimpleNamespace(door_hinge=sku))
     step = SimpleNamespace(joint_ids=(joint_id,), part_ids=(front_id, "side-1"))
 
     rows = tuple(csv.DictReader(io.StringIO(hardware_csv(design).decode("utf-8"))))
@@ -195,6 +208,39 @@ def test_manual_hardware_text_never_claims_unsecured_geometry_is_complete() -> N
     assert "inte verifierad som permanent låsning" in _assembly_step_hardware_text(
         design, dado_step
     )
+
+
+def test_each_door_manual_page_names_its_hinges_and_matching_support() -> None:
+    workspace = FurnitureWorkspace.model_validate_json(
+        Path("examples/furniture/bookcase-walnut-base-700.json").read_bytes()
+    )
+    design = build_furniture(workspace.design).shelving_result
+    assert design is not None
+    pages = [p.extract_text() for p in PdfReader(io.BytesIO(assembly_manual_pdf(design))).pages]
+    mounts = door_mounts(design.parts, design.spec.parameters)
+    assert len(mounts) == 6
+    for mount in mounts:
+        door_pages = [
+            page for page in pages if f"IN {mount.door.semantic_key} · {mount.door.part_id}" in page
+        ]
+        assert len(door_pages) == 1
+        page = door_pages[0]
+        assert (
+            f"Luckinfästning: 2 gångjärn mellan {mount.door.semantic_key} "
+            f"och {mount.support.semantic_key}."
+        ) in page
+        assert "AssemblyGraph-förband i steget: 0" not in page
+        assert "Beslag: 2 × J95-C24/0T-NI, 2 × J95-P6T-NI, 12 × SPAX" in page
+        step = next(
+            step for step in design.assembly_graph.steps
+            if mount.door.part_id in step.moving_part_ids
+        )
+        wrong_support = step.model_copy(update={"part_ids": (mount.door.part_id,)})
+        assert not _assembly_step_door_mounts(design, wrong_support)
+        assert _assembly_step_hardware_text(design, wrong_support).startswith(
+            "FRONT EJ MONTERINGSBAR"
+        )
+    assert any("AssemblyGraph-förband i steget:" in page for page in pages)
 
 
 def test_validation_report_threshold_labels_have_real_direction() -> None:

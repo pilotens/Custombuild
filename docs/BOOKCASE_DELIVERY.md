@@ -1,5 +1,41 @@
 # Slutleveranslogg · bokhylla
 
+**13 november 2026 · återupptaget bygge och luckornas monteringsblad, v18.**
+Fortsättningen utgår från `3a7b8fe` på PR #27 och behåller samma bokhyllefamilj och
+kundmått. Den tidigare CI-körningen hade två konkreta regressionsfel: webbens
+containerbygge saknade den importerade arbetsfilen för de sex gångjärnsluckorna,
+och dokumenthjälparen läste `spec.parameters` även när specifikationen saknades.
+Bygget kopierar nu även `bookcase-walnut-base-700.json`. Dokumenthjälparen hanterar
+saknad specifikation och godtar endast den exakta J95-artikeln för luckinstruktionen.
+Ett okänt eller versionslöst beslag får fortsatt inget monteringsbesked.
+
+**Lucka och motdel på samma monteringsblad.** Den visuella genomgången av det
+verkliga API-paketet hittade texten ”0 förband” på ett steg som samtidigt listade
+två gångjärn. Varje sådant blad anger nu två gångjärn mellan den aktuella luckan
+och dess namngivna gavel. Samma versionsbundna koppling styr beslagsraden.
+Exportkontrollen läser tillbaka rätt luckas egen PDF-sida och kräver rätt motdel
+och gångjärnsantal där. Den avvisar den äldre nollförbandstexten på lucksteget.
+Övriga monteringssteg behåller sina kontroller. Hela hyllpaketets exportversion
+är höjd till `custombuild.shelving-workshop-review.v17`, så tidigare exportjobb
+inte återanvänds för det nya underlaget.
+
+**Verifiering och fortsättningspunkt.** Dokumentregressionen omfattar saknad
+specifikation, saknade parametrar, okänd gångjärnsprofil och samtliga sex luckors
+monteringsblad. Kör `uv run --locked --group dev --group cad pytest
+tests/unit/test_worker_documents.py tests/unit/test_cabinet_doors.py
+tests/integration/test_cabinet_door_export.py -q`, sedan `make check`.
+Fulla Linux-byggen och de två nedladdade kundrevisionerna verifieras i
+[PR #27:s körningar](https://github.com/pilotens/Custombuild/pull/27/checks).
+Ett separat prov med validerad arbetsfil, 1054,001 mm stomme och 20/80-fack gav
+luckor på 196,000 respektive 796,001 mm samt 30 återlästa borrningar. Den publika
+indatakontrollen avvisar redan sockel, flyttbara hyllor och utanpåliggande rygg
+för denna gångjärnsprofil; dessa begränsningar har inte ändrats.
+
+Detta rättar programbygget och monteringsunderlaget. Underlaget för fysisk
+typkvalificering av luckrörelse, skruvfäste, stomme och belastning är fortfarande
+det som beskrivs i v17 nedan. Inget provresultat eller produktionstillstånd har
+lagts till genom denna kodändring.
+
 **9 november 2026 · underskåp med gångjärn, v17 på PR #27.** Utgångspunkt `173de247`. I möbelstudion under Hyllsystem finns **Öppna valnötsbokhylla med sex gångjärnsluckor**. Kundens rum är 4340 × 2540 × 280 mm, listen 90 × 20 mm. Stommen i detta uttryckliga måttalternativ är 4280 × 2500 × 260 mm. Varje fack har en separat infälld vänsterhängd lucka i en 700 mm hög underskåpsrad. Ryggen är infälld i den övre hyllsektionen. Underskåpsraden är öppen bakåt. Konstruktionsvalen är fast hylla, ingen sockel, 18 mm massiv valnöt, två självstängande Sugatsune J95-C24/0T-NI och två J95-P6T-NI med sammanlagt tolv SPAX YELLOX 5 × 16 per lucka samt ett genomgående fingergrepp. Appen avvisar annan lucktjocklek, okänt beslag och luckor bredare än 800 mm. En extra avdelare räknar om hela beslagsuppsättningen. Det äldre referensutkastet på startsidan länkar till möbelstudion.
 
 | Referens med sex fack | Digitalt kontrollerat i ordinarie export |

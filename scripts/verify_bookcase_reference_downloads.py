@@ -172,7 +172,7 @@ def inspect_files(path, revision):
         manifest = document("manifest.json")
         design_hash = manifest["design_hash"]
         assert order["revision"] == manifest["revision"] == revision
-        assert manifest["schema_version"] == "custombuild.shelving-workshop-review.v16"
+        assert manifest["schema_version"] == "custombuild.shelving-workshop-review.v17"
         assert manifest["production_qualified"] is False
         intent = order["intent"]
         assert (
