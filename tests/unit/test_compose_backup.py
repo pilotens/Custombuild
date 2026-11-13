@@ -12,7 +12,6 @@ from app.config_guards import validate_production_s3_bucket
 
 from scripts import compose_backup
 from scripts.compose_backup import (
-    POSTGRES_IMAGE,
     SEAWEEDFS_IMAGE,
     TOMBSTONE_HISTORY_SCHEMA,
     VOLUME_INIT_IMAGE,
@@ -43,9 +42,9 @@ def test_backup_runtime_images_match_the_compose_volume_contract() -> None:
     compose = yaml.safe_load(Path("compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
 
-    assert services["postgres"]["image"] == POSTGRES_IMAGE
+    assert services["postgres"]["image"] == "custombuild-postgres:${VCS_REF:-uncommitted}"
     assert (
-        "./infra/postgres/init-roles.sh:/var/lib/postgres/initdb/10-init-roles.sh:ro"
+        "./infra/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro"
         in services["postgres"]["volumes"]
     )
     assert services["object-storage-init"]["image"] == VOLUME_INIT_IMAGE

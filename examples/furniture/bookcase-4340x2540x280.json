@@ -6,9 +6,9 @@
     "revision": 1,
     "intent": {
       "family": "shelving",
-      "width_um": 4340000,
+      "width_um": 4300000,
       "height_um": 2540000,
-      "depth_um": 280000,
+      "depth_um": 260000,
       "shelf_count": 4,
       "divider_count": 1,
       "shelf_load_n": 200,
@@ -22,18 +22,22 @@
       "trim_profile": {
         "height_um": 90000,
         "width_um": 20000,
-        "use": "unassigned",
-        "walls": []
+        "use": "existing_room_trim",
+        "walls": [
+          "left",
+          "right",
+          "rear"
+        ]
       },
-      "left_allowance_um": null,
-      "right_allowance_um": null,
-      "top_allowance_um": null,
-      "bottom_allowance_um": null,
-      "front_allowance_um": null,
-      "rear_allowance_um": null
+      "left_allowance_um": 20000,
+      "right_allowance_um": 20000,
+      "top_allowance_um": 0,
+      "bottom_allowance_um": 0,
+      "front_allowance_um": 0,
+      "rear_allowance_um": 20000
     },
     "material": {
-      "material_id": "birch-plywood",
+      "material_id": "solid-walnut",
       "version": "screening-2026.1",
       "measured_thickness_um": 18000,
       "batch_id": null

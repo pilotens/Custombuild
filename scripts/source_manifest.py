@@ -37,6 +37,9 @@ APPLICATION_BUILD_INPUTS = (
     "compose.external-production.yml",
     "compose.registry.yml",
     "compose.yml",
+    "examples/furniture/bookcase-4340x2540x280.json",
+    "examples/furniture/bookcase-walnut-base-700.json",
+    "examples/furniture/walnut-shelving-4340x2540x280.json",
     "infra",
     "package.json",
     "packages",
@@ -52,6 +55,8 @@ APPLICATION_BUILD_INPUTS = (
 APPLICATION_DOCKERFILES = (
     "apps/web/Dockerfile",
     "infra/seaweedfs/Dockerfile",
+    "infra/postgres/Dockerfile",
+    "infra/redis/Dockerfile",
     "services/api/Dockerfile",
     "services/worker/Dockerfile",
 )
@@ -549,7 +554,14 @@ def _read_index_bound_regular_file(
     if git_mode not in {"100644", "100755"}:
         raise SourceManifestError(f"unsupported Git mode {git_mode} for {path_text}")
     path = repo.joinpath(*path_text.split("/"))
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    # Hash exact on-disk bytes: Windows text mode translates CRLF and treats
+    # Ctrl-Z as EOF. Never normalize content before checking its Git identity.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
     try:
         descriptor = os.open(path, flags)
     except FileNotFoundError as exc:

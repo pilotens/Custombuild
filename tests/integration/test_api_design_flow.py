@@ -2904,6 +2904,10 @@ def verified_reference_provenance(
     model_fingerprint: str,
 ) -> dict[str, object]:
     return {
+        "construction": {
+            "uprights": "panels", "back": "all_openings", "shelves": "per_bay",
+            "material": "mdf", "unresolved_detail": "",
+        },
         "source": "reference_image",
         "import_id": imported["import_id"],
         "image_sha256": imported["image_sha256"],
@@ -3278,6 +3282,28 @@ def test_project_workspace_draft_is_server_authoritative_and_restorable() -> Non
         assert restored.json()["draft_revision"] == 1
         assert restored.json()["design_hash"] == payload["design_hash"]
         assert restored.json()["workspace_spec_json"] == payload["workspace_spec_json"]
+
+
+def test_reopened_hanging_shelf_keeps_utc_on_both_saved_widths() -> None:
+    # Follow-up work order for the missing timezone on SQLite draft reload.
+    with TestClient(app, headers=HEADERS) as client:
+        project = client.post("/v1/projects", json={"name": f"UTC shelf-{uuid4()}"}).json()
+        path = f"/v1/projects/{project['id']}/draft"
+        for revision, width in enumerate((1_013, 1_027)):
+            order = {
+                "template_id": "hanging-shelf",
+                "spec": {**valid_spec(), "width_mm": width, "height_mm": 1_407, "plinth": False},
+                "workspace_spec": valid_workspace_intent(),
+                "expected_draft_revision": revision,
+            }
+            saved = client.put(path, json=order)
+            assert saved.status_code == 200, saved.text
+            reopened = client.get(path)
+            assert reopened.status_code == 200
+            assert reopened.json() == saved.json()
+            assert saved.json()["updated_at"].endswith("Z")
+            assert reopened.json()["draft_revision"] == revision + 1
+            assert reopened.json()["spec_json"]["width_mm"] == width
 
 
 def test_explicit_back_material_roundtrips_preview_draft_and_frozen_revision() -> None:
@@ -3737,6 +3763,25 @@ def test_verified_reference_provenance_is_frozen_on_its_own_revision() -> None:
         )
         assert verified.json()["source_provenance_json"]["image_sha256"] == imported["image_sha256"]
         assert verified.json()["source_import_id"] == imported["import_id"]
+
+
+@pytest.mark.parametrize("change", [
+    {"uprights":"separate_posts"}, {"unresolved_detail":"Uppstickande vänsterände"},
+    {"material":"solid-walnut"}, {"back":"unknown"},
+])
+def test_reference_revision_rejects_an_unresolved_construction_detail(change) -> None:
+    with TestClient(app, headers=HEADERS) as client:
+        project = client.post("/v1/projects", json={"name": f"Unresolved source-{uuid4()}"}).json()
+        imported = upload_reference(client, project["id"])
+        payload = version_payload(project["id"])
+        provenance = verified_reference_provenance(imported, str(payload["expected_design_hash"]))
+        provenance["construction"] = {**provenance["construction"], **change}
+        response = client.post(f"/v1/projects/{project['id']}/versions",
+                               json={**payload, "source_provenance": provenance})
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"]["code"] == "REFERENCE_CONSTRUCTION_UNRESOLVED"
+        assert response.json()["detail"]["issues"]
+        assert client.get(f"/v1/projects/{project['id']}/versions").json() == []
 
 
 def test_reference_provenance_fails_closed_when_any_confirmation_is_missing() -> None:
@@ -5309,12 +5354,13 @@ def _manifest_document_for_job(
     artifact_entries = list(entries_by_path.values())
     artifact_entries.sort(key=lambda item: str(item["path"]))
 
-    with get_session_factory()() as fixture_session:
-        version = fixture_session.get(DesignVersion, job.design_version_id)
-        assert version is not None
-        assert isinstance(version.result_json, dict)
-        capability = version.result_json["template_capability"]
-        design_spec = version.result_json["spec"]
+    fixture_session = Session.object_session(job)
+    assert fixture_session is not None
+    version = fixture_session.get(DesignVersion, job.design_version_id)
+    assert version is not None
+    assert isinstance(version.result_json, dict)
+    capability = version.result_json["template_capability"]
+    design_spec = version.result_json["spec"]
     engine_context = job.production_engine_context_json
     material_versions = sorted(
         {
@@ -6176,6 +6222,9 @@ def _convert_to_generated_status_with_missing_manifest_cam(
         assert generation_plan_payload is not None
         # Intentionally keep the manifest review-only while the authenticated
         # status/result claim generated CAM. The endpoint must reject this split.
+        manifest_evidence = [
+            item for item in result["evidence_artifacts"] if item not in added_records
+        ]
         manifest_payload = canonical_json_bytes(
             _manifest_document_for_job(
                 job,
@@ -6185,7 +6234,7 @@ def _convert_to_generated_status_with_missing_manifest_cam(
                 generation_plan_expectation,
                 status_expectation,
                 cam_blocked=True,
-                evidence_artifacts=result["evidence_artifacts"],
+                evidence_artifacts=manifest_evidence,
             )
         )
         manifest_sha = hashlib.sha256(manifest_payload).hexdigest()
@@ -10025,7 +10074,12 @@ def test_listing_rejects_generated_status_when_manifest_omits_claimed_cam(
     assert listing.status_code == 409
     # Fail as soon as the four documents needed to disprove the generated CAM
     # claim have been checked; no unrelated provider reads should follow.
-    assert len(calls) == 4
+    assert [key.rsplit("/", 1)[1] for key, _ in calls] == [
+        "manifest",
+        "dfm_report",
+        "workshop_readiness",
+        "design_review_package_status",
+    ]
 
 
 @pytest.mark.parametrize("endpoint", ("listing", "download"))

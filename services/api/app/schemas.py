@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from custombuild_domain.furniture_production import FurnitureProductionSource
+from custombuild_domain.rear_coverage import ReferenceConstruction
 from custombuild_manufacturing import (
     CLIENT_DECLARED_AUTHORITY,
     MAX_ARTIFACT_BYTES,
@@ -170,6 +171,7 @@ def _default_workspace_reference_confirmations() -> WorkspaceReferenceConfirmedI
 
 
 class WorkspaceReferenceImageImport(_StrictWorkspaceModel):
+    construction: ReferenceConstruction | None = None
     source: Literal["reference_image"]
     import_id: str = Field(
         pattern=r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -313,6 +315,9 @@ class BookcasePreviewInput(BaseModel):
         ),
     )
     shelf_count: int = Field(default=5, ge=0, le=40)
+    trial_angle: Literal["GN-970-ALM-30-30-30-B"] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     shelf_mount: Literal["fixed", "adjustable"] = "fixed"
     load_per_shelf_kg: float = Field(default=30, ge=0, le=500)
     back_panel: bool | Literal["none", "surface_mounted", "inset_groove"] = True
@@ -677,6 +682,7 @@ class ReferenceImageConfirmedInputs(BaseModel):
 
 
 class ReferenceImageSourceProvenance(BaseModel):
+    construction: ReferenceConstruction | None = None
     model_config = ConfigDict(extra="forbid")
 
     source: Literal["reference_image"]

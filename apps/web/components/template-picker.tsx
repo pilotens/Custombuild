@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import NextImage from "next/image";
 import {
   ArrowLeft,
@@ -294,6 +295,8 @@ function TemplateCard({
       type="button"
       className={classes(styles.templateCard, "template-card", selected && styles.templateCardSelected)}
       aria-pressed={selected}
+      disabled={Boolean(template.designUnavailableReason)}
+      title={template.designUnavailableReason}
       onClick={onChoose}
     >
       <InspirationVisual template={template} src={TEMPLATE_IMAGE_PATHS[template.id]} />
@@ -309,6 +312,7 @@ function TemplateCard({
           <span>{template.feature}</span>
         </span>
         {template.limitation ? <small className={styles.limitation}>{template.limitation}</small> : null}
+        {template.designUnavailableReason ? <small>{template.designUnavailableReason}</small> : null}
       </span>
     </button>
   );
@@ -331,10 +335,10 @@ function OpenTemplatePicker({
 }: TemplatePickerProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const initial = initialBrief ?? { ...DEFAULT_PLANNING_BRIEF, selectedTemplateId: selectedId };
-  const initialGalleryId = GALLERY_TEMPLATE_IDS.includes(selectedId) ? selectedId : recommendedTemplateId(initial);
+  const [showAllModels, setShowAllModels] = useState(!GALLERY_TEMPLATE_IDS.includes(selectedId));
   const [view, setView] = useState<ExploreView>("home");
   const [brief, setBrief] = useState<FurniturePlanningBrief>(initial);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<FurnitureTemplateId>(initialGalleryId);
+  const [selectedTemplateId, setSelectedTemplateId] = useState<FurnitureTemplateId>(selectedId);
   const [intent, setIntent] = useState("");
   const [suggestionsVisible, setSuggestionsVisible] = useState(false);
   const [planningError, setPlanningError] = useState<string>();
@@ -355,6 +359,9 @@ function OpenTemplatePicker({
   const dimensionsValid = !dimensionErrors.width_mm && !dimensionErrors.height_mm && !dimensionErrors.depth_mm;
   const selectedTemplate = furnitureTemplate(selectedTemplateId);
   const galleryTemplates = GALLERY_TEMPLATE_IDS.map(furnitureTemplate);
+  if (showAllModels) galleryTemplates.push(...FURNITURE_TEMPLATES.filter(
+    (template) => !GALLERY_TEMPLATE_IDS.includes(template.id),
+  ));
   const suggestedTemplates = useMemo(() => {
     const first = recommendedTemplateId(brief);
     return [furnitureTemplate(first), ...FURNITURE_TEMPLATES.filter((template) => template.id !== first)].slice(0, 3);
@@ -405,10 +412,27 @@ function OpenTemplatePicker({
     setBrief(next);
     onBriefChange?.(next);
     try {
+      if (furnitureTemplate(templateId).designUnavailableReason) {
+        throw new Error(furnitureTemplate(templateId).designUnavailableReason);
+      }
       onSelect(templateWithPlanningBrief(furnitureTemplate(templateId), next), next);
       setPlanningError(undefined);
     } catch (error) {
       setPlanningError(error instanceof Error ? error.message : "Startmodellen kan inte skapas med de valda måtten.");
+    }
+  };
+
+  const openCabinetReference = () => {
+    const template = furnitureTemplate("wall-library");
+    const next = updateBrief({ startMode: "template", selectedTemplateId: template.id,
+      width_mm: 4280, height_mm: 2500, depth_mm: 260, dimensionsConfirmed: false });
+    try {
+      const reference = { ...template, patch: { ...template.patch, base_cabinet_height_mm: 700,
+        base_cabinet_count: 6, divider_count: 5, shelf_count: 5, plinth: false } };
+      onSelect(templateWithPlanningBrief(reference, next), next);
+      setPlanningError(undefined);
+    } catch (error) {
+      setPlanningError(error instanceof Error ? error.message : "Underskåpsstommen kunde inte öppnas.");
     }
   };
 
@@ -419,7 +443,12 @@ function OpenTemplatePicker({
 
   const startFromScratch = () => {
     const next = updateBrief({ startMode: "scratch", selectedTemplateId: "shelving" });
-    onSelect(templateWithPlanningBrief(furnitureTemplate("shelving"), next), next);
+    try {
+      onSelect(templateWithPlanningBrief(furnitureTemplate("shelving"), next), next);
+      setPlanningError(undefined);
+    } catch (error) {
+      setPlanningError(error instanceof Error ? error.message : "Stommen kan inte skapas med de valda måtten.");
+    }
   };
 
   const showSuggestions = () => {
@@ -500,6 +529,12 @@ function OpenTemplatePicker({
                 <ArrowRight aria-hidden="true" size={20} />
               </button>
             </div>
+            <p>Öppna möbelstudion</p>
+            <nav aria-label="Designa andra möbler" className={styles.familyLinks}>
+              <a href="/furniture?family=shelving">Bokhylla med verkstadsunderlag</a>
+              <a href="/furniture?family=dining_table">Matbord</a><a href="/furniture?family=chair">Matstol</a>
+              <a href="/furniture?family=chest_of_drawers">Byrå</a>
+            </nav>
           </div>
           <div className={styles.heroVisual}>
             <InspirationVisual template={furnitureTemplate("wall-library")} src="/assets/inspiration/explore-hero.jpg" priority />
@@ -524,14 +559,25 @@ function OpenTemplatePicker({
             <span><Ruler aria-hidden="true" size={18} /><strong>{Number(selectedTemplate.patch.width_mm).toLocaleString("sv-SE")} × {Number(selectedTemplate.patch.height_mm).toLocaleString("sv-SE")} × {Number(selectedTemplate.patch.depth_mm).toLocaleString("sv-SE")} mm</strong><small>Bredd × höjd × djup</small></span>
             <span><Check aria-hidden="true" size={18} /><strong>{selectedTemplate.productionLevel === "screened" ? "Screenad grundstomme" : "Konceptmodell"}</strong><small>Full kontroll sker i Check</small></span>
           </div>
+          <button type="button" className={styles.backButton} aria-expanded={showAllModels}
+            onClick={() => setShowAllModels((value) => !value)}>
+            {showAllModels ? "Visa färre startmodeller" : "Fler startmodeller"}
+          </button>
           <div className={styles.templateGrid}>
             {galleryTemplates.map((template) => (
               <TemplateCard key={template.id} template={template} selected={selectedTemplateId === template.id} onChoose={() => chooseDesign(template.id)} />
             ))}
           </div>
+          {selectedTemplateId === "wall-library" ? <section>
+            <button type="button" className={styles.backButton} onClick={openCabinetReference}>
+              Öppna referens med 700 mm underskåpsstomme
+            </button>
+            <p>Måttstudie 4 280 × 2 500 × 260 mm med sex skåpsfronter. För gångjärn och borrbilder, välj valnötsbokhyllan med sex gångjärnsluckor i möbelstudion.</p>
+            <Link href="/furniture?family=shelving">Öppna möbelstudion med luckbeslag</Link>
+          </section> : null}
           <footer className={styles.pageFooter}>
             <p><Check aria-hidden="true" size={17} /> Inget produktionsunderlag skapas från inspirationsbilden. Studio använder alltid den verkliga modellen.</p>
-            <button type="button" className={styles.primaryButton} onClick={() => openInStudio()}>
+            <button type="button" className={styles.primaryButton} disabled={Boolean(selectedTemplate.designUnavailableReason)} onClick={() => openInStudio()}>
               Öppna {selectedTemplate.name} i Studio <ArrowRight aria-hidden="true" size={18} />
             </button>
           </footer>
@@ -632,15 +678,16 @@ function OpenTemplatePicker({
                         type="button"
                         className={classes(styles.suggestionCard, selectedTemplateId === template.id && styles.suggestionCardSelected)}
                         aria-pressed={selectedTemplateId === template.id}
+                        disabled={Boolean(template.designUnavailableReason)}
                         onClick={() => chooseDesign(template.id)}
                       >
                         <span className={styles.suggestionNumber}>{String(index + 1).padStart(2, "0")}</span>
-                        <span><strong>{template.name}</strong><small>{template.description}</small></span>
+                        <span><strong>{template.name}</strong><small>{template.designUnavailableReason ?? template.description}</small></span>
                         {selectedTemplateId === template.id ? <Check aria-label="Vald" size={17} /> : <ArrowRight aria-hidden="true" size={17} />}
                       </button>
                     ))}
                   </div>
-                  <button type="button" className={styles.primaryButton} onClick={() => openInStudio()}>
+                  <button type="button" className={styles.primaryButton} disabled={Boolean(selectedTemplate.designUnavailableReason)} onClick={() => openInStudio()}>
                     Öppna vald modell i Studio <ArrowRight aria-hidden="true" size={18} />
                   </button>
                   <p className={styles.truthNote}>Förslaget är en startpunkt. Den parametriska motorn och konstruktionskontrollen är fortsatt auktoritativa.</p>

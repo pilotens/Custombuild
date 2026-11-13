@@ -6,21 +6,11 @@ Kundens uppgift 2026-09-08 är **434 cm längd inklusive list, 254 cm höjd och
 28 cm djup**. Äldre mått 4350 × 2480 × 397 mm gäller inte detta arbetsunderlag.
 Samma produkt ska användas för andra kundmått, hyllor, bord och byråer.
 Verkstad och materialbatch är inte valda. Konstruktionen ska vara limfri.
-Listens uppmätta profil är **90 mm hög och 20 mm bred**. Det är ännu inte
-fastställt om det gäller en befintlig rumslist eller en tillverkad möbeldel,
-eller var den sitter. Profilens mått innebär inte 90 mm avdrag från höjden.
+Kundens förtydligande 2026-11-07 placerar den befintliga 90 × 20 mm-listen längs bakvägg, vänster och höger. Plywood är tillåten i ryggen. Stommen är massiv valnöt.
 
-[Arbetsfilen](../examples/furniture/bookcase-4340x2540x280.json) kan öppnas med
-**Läs arbetsfil (JSON)** på `/furniture` och sparas som ett nytt projekt. Kundens
-exakta uppgifter ligger i `design.installation`. Alla sex reserverade utrymmen
-är okända (`null`). `design.installation.trim_profile` sparar 90 × 20 mm med
-funktionen `unassigned`; inga placeringar eller montagespel har hittats på.
+[Referensfilen](../examples/furniture/bookcase-4340x2540x280.json) kan öppnas med **Öppna kundbokhylla** i möbelstudion. Sidornas och bakväggens reservation är 20 mm vardera. Utan ytterligare reservation vid golv, tak och framkant blir den nominella stommen **4300 × 2540 × 260 mm**. Värdena 0 är projektets nominella montagereservation. Verklig uppresningshöjd, golvplanhet och behov av arbetsutrymme återstår att mäta.
 
-Filens CAD-stomme är tills vidare en illustration av hela den uppmätta volymen.
-De fyra hyllraderna, en avdelare, 200 N nyttig last per **hel hyllrad** och plywoodprofilerna är
-**arbetsytans standardvärden, inte en godkänd kundkonstruktion eller materialorder**.
-Listen ingår inte som en tillverkad del. Den här filen är inte ett tillstånd
-att skära material eller beställa det dyra tillverkningsprovet.
+Fyra hyllrader, en avdelare och 200 N per rad är den redigerbara startlayouten. Bärighet kontrolleras när kunden ändrar indelning eller last. Modellval för provet är 18 mm amerikansk svartvalnöt i stommen och 6 mm björkplywood i ryggen, båda utan angiven batch. Listen produceras inte som möbeldel. En separat arbetsfil med valnöt och exempel på verkstadsprofil har andra standardvärden.
 
 ## Implementerad måttkedja
 
@@ -89,11 +79,11 @@ uppspänning och eventuella nya modulfogar behöver fortfarande fastställas.
 | Saknad uppgift eller funktion | Vad som behöver fastställas |
 | --- | --- |
 | Godkänd konstruktion | Skiss/ritning med fackindelning, hyllhöjder, eventuella underskåp och rygg. Dagens standardlayout är inte kundens beslut. |
-| List och montage | Profilen är 90 × 20 mm. Funktion, placering och montagemått återstår. Befintlig rumslist kan hanteras med explicit frigång. Tillverkad möbellist kräver listdelar och förband. |
-| Långa delar | Faktiska tillgängliga råformat och maskinområde eller en uttryckligen vald, dimensionerad modulkonstruktion. |
-| Material | Verkligt synligt/dolt material, batch, tjocklek och underbyggda egenskaper. Katalogens MDF/björkplywood är screeningprofiler; ek är inte implementerad som kvalificerad ersättning. |
+| List och montage | Befintlig 90 × 20 mm-list på vänster/höger/bakvägg är inlagd. Fastställ verkligt montagespel och åtkomst vid golv och tak. |
+| Långa delar | Faktiska tillgängliga råformat eller en uttryckligen vald, dimensionerad modulkonstruktion. |
+| Material | Verkligt synligt/dolt material, batch, tjocklek och underbyggda egenskaper. Valnötsprofilen använder indikativa artvärden. Mät tjocklek och fuktkvot, verifiera rörelsemån och styrk bruksvärden för tilltänkt virke. |
 | Last och förankring | Böckernas dimensioner/last, belastningsfördelning, vägg/golv och verifierade infästningar. |
-| Förband och CAM | Kvalificerad limfri retention, maskin, verktyg, uppspänning, tvåsidig registrering och verifierad postprocessor. |
+| Förband och CAM | Modellerad, verifierad limfri låsning. Verkstaden väljer verktyg, uppspänning och CAM efter att den fått den maskinoberoende geometrin. |
 | Fysiskt prov | Ett uppmätt fog-/beslagsprov och överenskomna acceptansmått före komplett tillverkningsprov. |
 
 Bord och byråer använder samma kundmått, profilhantering och CAD-/formatunderlag.

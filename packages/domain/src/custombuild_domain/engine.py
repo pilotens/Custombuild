@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from .bookcase_angles import fit_trial_angles
 from .enums import (
     AssemblyDirection,
     BackPanelType,
@@ -16,6 +17,10 @@ from .enums import (
 from .geometry import allocate_bay_widths_um, allocate_shelf_positions_um
 from .identity import content_hash, stable_id
 from .models import (
+    TRIAL_EDGE_TOLERANCE_UM,
+    TRIAL_FRONT_STOP_CLEARANCE_UM,
+    TRIAL_GROOVE_BOTTOM_CLEARANCE_UM,
+    TRIAL_STOCK_TOLERANCE_UM,
     AssemblyEdge,
     AssemblyGraph,
     AssemblyNode,
@@ -32,6 +37,7 @@ from .models import (
     PartInstance,
     Placement,
     Point3D,
+    TrialAngle,
 )
 from .units import mm
 
@@ -71,7 +77,15 @@ class BookcaseEngine:
     def build(self, spec: BookcaseDesignSpec) -> DesignResult:
         parts = self._build_parts(spec)
         parts, joints = self._build_joints(spec, parts)
-        graph = self._build_assembly_graph(parts, joints)
+        if spec.parameters.door_hinge:
+            from .cabinet_doors import fit_doors
+
+            parts = fit_doors(parts, spec.parameters)
+        angles: tuple[TrialAngle, ...] = ()
+        if spec.parameters.trial_angle:
+            parts, angles = fit_trial_angles(parts, joints)
+        graph = self._build_assembly_graph(parts, joints, front_entry=bool(angles),
+                                           hinged=bool(spec.parameters.door_hinge))
         total_weight = sum(part.weight_g for part in parts)
         hash_payload = {
             "spec": spec.model_dump(
@@ -82,6 +96,7 @@ class BookcaseEngine:
             "parts": tuple(part.model_dump(mode="python", exclude={"revision"}) for part in parts),
             "joints": joints,
             "assembly_graph": graph,
+            **({"trial_angles": angles} if angles else {}),
         }
         return DesignResult(
             design_hash=content_hash(hash_payload),
@@ -91,6 +106,7 @@ class BookcaseEngine:
             parts=parts,
             joints=joints,
             assembly_graph=graph,
+            trial_angles=angles,
             total_weight_g=total_weight,
         )
 
@@ -129,6 +145,9 @@ class BookcaseEngine:
                 else case_depth - DADO_REAR_RELIEF_CLEARANCE_UM
             )
         )
+        if p.trial_angle:
+            # Keep the cutter and rear relief clear of the original back groove.
+            shelf_depth -= TRIAL_FRONT_STOP_CLEARANCE_UM
         divider_depth = (
             p.depth_um - mm(12) if p.back_panel == BackPanelType.INSET_GROOVE else shelf_depth
         )
@@ -189,6 +208,8 @@ class BookcaseEngine:
                     material_id=part_material.material_id,
                     material_version=part_material.version,
                     actual_thickness_um=t if role != PartRole.BACK else p.back_thickness_um,
+                    profile_tolerance_um=TRIAL_EDGE_TOLERANCE_UM if p.trial_angle else 0,
+                    stock_tolerance_um=TRIAL_STOCK_TOLERANCE_UM if p.trial_angle else 0,
                     grain_direction=effective_grain,
                     a_side=a_side,
                     b_side=b_side,
@@ -343,7 +364,7 @@ class BookcaseEngine:
                     side_index,
                     Dimensions3D(
                         width_um=t,
-                        depth_um=p.base_cabinet_depth_um,
+                        depth_um=case_depth,
                         # The top edge enters a verified dado in the upper
                         # bottom.  That makes each internal side a direct
                         # vertical load path instead of a merely coincident
@@ -372,7 +393,7 @@ class BookcaseEngine:
                         # The lower bottom starts behind the front plane. Its
                         # requested depth therefore includes the inset-front
                         # thickness without creating a coincident solid.
-                        depth_um=p.base_cabinet_depth_um - t,
+                        depth_um=case_depth - t,
                         height_um=t,
                     ),
                     Placement(
@@ -432,9 +453,7 @@ class BookcaseEngine:
             ):
                 left_capture = dado_depth if bay_index == 0 else inset_back_divider_capture
                 right_capture = (
-                    dado_depth
-                    if bay_index == len(bay_widths) - 1
-                    else inset_back_divider_capture
+                    dado_depth if bay_index == len(bay_widths) - 1 else inset_back_divider_capture
                 )
                 add(
                     "back" if len(bay_widths) == 1 else f"back-b{bay_index}",
@@ -605,6 +624,11 @@ class BookcaseEngine:
                 mating,
                 first_feature_dimensions,
                 dado_depth_um,
+                bottom_clearance_um=(
+                    TRIAL_GROOVE_BOTTOM_CLEARANCE_UM
+                    if p.trial_angle and kind == JointType.DADO
+                    else 0
+                ),
             )
             feature_map[first.part_id].append(first_feature)
             if second_feature is not None:
@@ -1058,6 +1082,8 @@ class BookcaseEngine:
         mating: Point3D,
         first_dimensions_override: FeatureDimensions | None = None,
         dado_depth_override_um: int | None = None,
+        *,
+        bottom_clearance_um: int = 0,
     ) -> tuple[ManufacturingFeature, ManufacturingFeature | None]:
         depth = max(mm(1), min(mm(12), thickness_um // 3))
         if dado_depth_override_um is not None:
@@ -1083,6 +1109,7 @@ class BookcaseEngine:
                 owner_face=first_face,
                 depth_um=depth,
                 fit_clearance_um=DADO_FIT_CLEARANCE_UM,
+                bottom_clearance_um=bottom_clearance_um,
             )
             if kind == JointType.DADO
             else None
@@ -1163,6 +1190,12 @@ class BookcaseEngine:
                 corner_strategy="dogbone-v2" if kind == JointType.DADO else None,
                 requires_square_corners=kind == JointType.DADO,
                 open_end_reliefs=first_open_end_reliefs,
+                groove_bottom_clearance_um=bottom_clearance_um,
+                front_stop_clearance_um=(
+                    TRIAL_FRONT_STOP_CLEARANCE_UM
+                    if bottom_clearance_um and second.role in {PartRole.SHELF, PartRole.DIVIDER}
+                    else 0
+                ),
             ),
             ManufacturingFeature(
                 feature_id=second_id,
@@ -1253,6 +1286,7 @@ class BookcaseEngine:
         owner_face: FaceName,
         depth_um: int,
         fit_clearance_um: int,
+        bottom_clearance_um: int = 0,
     ) -> tuple[FeatureDimensions, Point3D]:
         """Derive a groove from the actual global intersection of both members."""
 
@@ -1316,6 +1350,20 @@ class BookcaseEngine:
                         f"dado members {owner.semantic_key}/{mate.semantic_key} "
                         f"do not overlap on {axis}"
                     )
+            if (
+                bottom_clearance_um
+                and axis == "y"
+                and mate.role in {PartRole.SHELF, PartRole.DIVIDER}
+            ):
+                end += TRIAL_FRONT_STOP_CLEARANCE_UM
+                if (
+                    start != owner_interval[0]
+                    or start != mate_interval[0]
+                    or end > owner_interval[1]
+                ):
+                    raise ValueError(
+                        "Den främre spåröppningen eller bakre stoppmånen ryms inte i värddelen."
+                    )
             global_starts[axis] = start
             global_lengths[axis] = end - start
 
@@ -1327,7 +1375,7 @@ class BookcaseEngine:
         return (
             FeatureDimensions(
                 width_um=global_lengths[panel_axes[0]],
-                depth_um=depth_um,
+                depth_um=depth_um + bottom_clearance_um,
                 length_um=global_lengths[panel_axes[1]],
                 radius_um=DADO_CORNER_RELIEF_RADIUS_UM,
             ),
@@ -1479,8 +1527,9 @@ class BookcaseEngine:
                 owner=by_id[cut_member.part_id],
                 mate=by_id[mate_member.part_id],
                 owner_face=feature.face,
-                depth_um=feature.dimensions.depth_um,
+                depth_um=feature.dimensions.depth_um - feature.groove_bottom_clearance_um,
                 fit_clearance_um=joint.tolerance_um,
+                bottom_clearance_um=feature.groove_bottom_clearance_um,
             )
             if feature.dimensions != expected_dimensions or feature.origin != expected_origin:
                 raise ValueError(f"dado feature geometry diverges for joint {joint.joint_id}")
@@ -1533,6 +1582,9 @@ class BookcaseEngine:
     def _build_assembly_graph(
         parts: tuple[PartInstance, ...],
         joints: tuple[Joint, ...],
+        *,
+        front_entry: bool = False,
+        hinged: bool = False,
     ) -> AssemblyGraph:
         nodes = tuple(
             AssemblyNode(part_id=part.part_id, semantic_key=part.semantic_key) for part in parts
@@ -1588,7 +1640,11 @@ class BookcaseEngine:
                 sorted(
                     {
                         *required_tools,
-                        *(tool for joint in current for tool in tool_for[joint.joint_type]),
+                        *(
+                            tool
+                            for joint in current
+                            for tool in tool_for[JointType(joint.joint_type)]
+                        ),
                     }
                 )
             )
@@ -1606,6 +1662,77 @@ class BookcaseEngine:
                 )
             )
             used.update(joint_ids)
+
+        if front_entry:
+            # The bottom is supported at its final datum. Each joint is made once,
+            # when the second of its members is inserted. No joined group is lifted.
+            present = {by_key["bottom"].part_id}
+            for role, direction, instruction in (
+                (
+                    PartRole.BACK,
+                    AssemblyDirection.NEG_Z,
+                    "Ställ botten i dess slutläge. Sänk ryggfältet i bottenspåret och fixera "
+                    "det lodrätt i tillfälligt sidostöd.",
+                ),
+                (
+                    PartRole.DIVIDER,
+                    AssemblyDirection.POS_Y,
+                    "Skjut in avdelaren framifrån i bottenspåret. Fånga ryggkanterna i "
+                    "sidospåren och fixera avdelaren lodrätt.",
+                ),
+                (
+                    PartRole.LEFT_SIDE,
+                    AssemblyDirection.POS_X,
+                    "För vänster gavel från vänster över botten- och ryggkanterna. Stöd gaveln "
+                    "mot tippning.",
+                ),
+                (
+                    PartRole.RIGHT_SIDE,
+                    AssemblyDirection.NEG_X,
+                    "För höger gavel från höger över botten- och ryggkanterna. Stöd gaveln mot "
+                    "tippning.",
+                ),
+                (
+                    PartRole.TOP,
+                    AssemblyDirection.NEG_Z,
+                    "Sänk toppen över de fixerade gavlarna, avdelarna om sådana finns och "
+                    "ryggfälten. Lasta inte plywoodryggen under lyftet.",
+                ),
+                (
+                    PartRole.SHELF,
+                    AssemblyDirection.POS_Y,
+                    "Skjut in endast denna hylla framifrån i båda spåren. Rikta framkanten mot "
+                    "frontdatum och kontrollera pilothålen före låsning.",
+                ),
+            ):
+                for part in sorted(
+                    (p for p in parts if p.role == role), key=lambda p: p.instance_index
+                ):
+                    selected = tuple(
+                        j
+                        for j in joints
+                        if part.part_id in {m.part_id for m in j.members}
+                        and all(
+                            m.part_id == part.part_id or m.part_id in present for m in j.members
+                        )
+                    )
+                    if not selected:
+                        raise ValueError(
+                            f"{part.semantic_key}: inget upplag i detta monteringssteg."
+                        )
+                    add_step(
+                        selected,
+                        direction,
+                        instruction,
+                        moving_parts=(part,),
+                        required_tools=("panel-positioning-jig",) if role != PartRole.SHELF else (),
+                    )
+                    present.add(part.part_id)
+            if len(present) != len(parts) or len(used) != len(joints):
+                raise ValueError(
+                    "Monteringsordningen täcker inte alla delar och förband i bokhylleprovet."
+                )
+            return AssemblyGraph(nodes=nodes, edges=edges, steps=tuple(steps_list))
 
         # Build the internal lower-cabinet bank from left to right while both
         # full-height outer sides remain open.  Each internal side captures the
@@ -1910,6 +2037,29 @@ class BookcaseEngine:
             if part.part_id in covered_part_ids:
                 continue
             is_front = part.role == PartRole.CABINET_FRONT
+            if hinged and is_front:
+                index = part.instance_index
+                support = "left-side" if index == 0 else f"base-side-{index}"
+                steps_list.append(
+                    AssemblyStep(
+                        step_number=len(steps_list) + 1,
+                        step_id=stable_id("assembly-step", part.part_id, "clip-J95"),
+                        part_ids=(
+                            part.part_id,
+                            next(p.part_id for p in parts if p.semantic_key == support),
+                        ),
+                        moving_part_ids=(part.part_id,),
+                        joint_ids=(),
+                        direction=AssemblyDirection.POS_Y,
+                        motion_path=(AssemblyDirection.POS_Y,),
+                        tool_ids=("screwdriver",),
+                        checkpoint=f"{part.semantic_key}: fäst två J95-C24/0T-NI på baksidan "
+                        f"och två J95-P6T-NI på höger sida av {support}. Använd 2 respektive 4 "
+                        "SPAX YELLOX 5x16 per beslag. Håll luckan öppen, haka axeln i plattans "
+                        "framkant och tryck baktill tills båda låser. Justera till 2 mm spel.",
+                    )
+                )
+                continue
             steps_list.append(
                 AssemblyStep(
                     step_number=len(steps_list) + 1,

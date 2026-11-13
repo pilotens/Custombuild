@@ -16,6 +16,11 @@ class PartRole(StrEnum):
     BASE_BOTTOM = "base_bottom"
     BASE_TOP = "base_top"
     CABINET_FRONT = "cabinet_front"
+    FRAME_LEG = "frame_leg"
+    FRAME_RAIL_X = "frame_rail_x"
+    FRAME_RAIL_Y = "frame_rail_y"
+    CHAIR_SEAT = "chair_seat"
+    CHAIR_BACK = "chair_back"
     TABLE_END = "table_end"
     TABLE_STRETCHER = "table_stretcher"
     DRAWER_SIDE = "drawer_side"
@@ -44,6 +49,10 @@ class OpenEndRelief(StrEnum):
     U_MAX = "u_max"
     V_MIN = "v_min"
     V_MAX = "v_max"
+
+
+class FurnitureJointType(StrEnum):
+    WOOD_SCREW = "wood_screw"
 
 
 class JointType(StrEnum):

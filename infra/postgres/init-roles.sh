@@ -26,6 +26,22 @@ assert_production_secret() {
   fi
 }
 
+assert_distinct_production_database_passwords() {
+  if [ "$POSTGRES_PASSWORD" = "$MIGRATOR_DATABASE_PASSWORD" ] \
+    || [ "$POSTGRES_PASSWORD" = "$API_DATABASE_PASSWORD" ] \
+    || [ "$POSTGRES_PASSWORD" = "$WORKER_DATABASE_PASSWORD" ] \
+    || [ "$POSTGRES_PASSWORD" = "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" ] \
+    || [ "$MIGRATOR_DATABASE_PASSWORD" = "$API_DATABASE_PASSWORD" ] \
+    || [ "$MIGRATOR_DATABASE_PASSWORD" = "$WORKER_DATABASE_PASSWORD" ] \
+    || [ "$MIGRATOR_DATABASE_PASSWORD" = "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" ] \
+    || [ "$API_DATABASE_PASSWORD" = "$WORKER_DATABASE_PASSWORD" ] \
+    || [ "$API_DATABASE_PASSWORD" = "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" ] \
+    || [ "$WORKER_DATABASE_PASSWORD" = "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" ]; then
+    printf '%s\n' "Production database role passwords must be pairwise distinct" >&2
+    exit 64
+  fi
+}
+
 # The official image supplies POSTGRES_USER/POSTGRES_PASSWORD. Keep local
 # development ergonomic while making the application migration role distinct
 # from the cluster-owning bootstrap role.
@@ -57,13 +73,7 @@ if [ "${APP_ENV:-development}" = "production" ]; then
   assert_production_secret API_DATABASE_PASSWORD "${API_DATABASE_PASSWORD:-}"
   assert_production_secret WORKER_DATABASE_PASSWORD "${WORKER_DATABASE_PASSWORD:-}"
   assert_production_secret CAPACITY_ATTESTOR_DATABASE_PASSWORD "${CAPACITY_ATTESTOR_DATABASE_PASSWORD:-}"
-  if [ "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" = "$POSTGRES_PASSWORD" ] \
-    || [ "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" = "$MIGRATOR_DATABASE_PASSWORD" ] \
-    || [ "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" = "$API_DATABASE_PASSWORD" ] \
-    || [ "$CAPACITY_ATTESTOR_DATABASE_PASSWORD" = "$WORKER_DATABASE_PASSWORD" ]; then
-    printf '%s\n' "CAPACITY_ATTESTOR_DATABASE_PASSWORD must be unique to the storage-attestor role" >&2
-    exit 64
-  fi
+  assert_distinct_production_database_passwords
 fi
 
 psql \

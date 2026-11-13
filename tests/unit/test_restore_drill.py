@@ -35,7 +35,7 @@ def test_broad_or_unsafe_restore_names_are_rejected(name: str) -> None:
 
 
 def test_restore_drill_resolves_current_repository_alembic_head() -> None:
-    assert current_alembic_heads(Path.cwd()) == ["0021_furniture_review_reads"]
+    assert current_alembic_heads(Path.cwd()) == ["0022_durable_furniture_review_exports"]
 
 
 def test_restore_prepares_schema_ownership_and_restores_as_migrator() -> None:
@@ -135,10 +135,10 @@ def test_restore_rejects_count_preserving_tombstone_identity_substitution() -> N
         restore_drill._verified_restored_tombstone_history(expected, restored)
 
 
-def test_restore_proves_exact_tombstone_acl_and_v4_evidence() -> None:
+def test_restore_proves_exact_tombstone_acl_and_v5_evidence() -> None:
     source = Path("scripts/restore_drill.py").read_text(encoding="utf-8")
 
-    assert 'RESTORE_SCHEMA = "custombuild.restore-drill.v4"' in source
+    assert 'RESTORE_SCHEMA = "custombuild.restore-drill.v5"' in source
     for role in ("custombuild_api", "custombuild_worker", "custombuild_storage_attestor"):
         for privilege in (
             "SELECT",
@@ -328,3 +328,23 @@ def test_cleanup_attempts_bounded_removal_after_each_inspection_hang(
         timeout == restore_drill.DOCKER_CLEANUP_TIMEOUT_SECONDS for _arguments, timeout in removals
     )
     assert len(errors) == len(resources) * 2
+
+
+def test_restore_pins_the_exact_postgres_image_before_running(monkeypatch):
+    target = "sha256:" + "8" * 64
+    calls = []
+    monkeypatch.delenv("CUSTOMBUILD_DEPLOY_POSTGRES_IMAGE", raising=False)
+    monkeypatch.setenv("VCS_REF", "a" * 40)
+    monkeypatch.setattr(
+        restore_drill, "docker", lambda *args, **kwargs: calls.append(args) or target
+    )
+    assert restore_drill.postgres_restore_image_id(None) == target
+    assert calls[0][-1] == "custombuild-postgres:" + "a" * 40
+    assert restore_drill.postgres_restore_image_id(target) == target and len(calls) == 1
+    monkeypatch.setenv(
+        "CUSTOMBUILD_DEPLOY_POSTGRES_IMAGE", "ghcr.io/pilotens/custombuild-postgres:latest"
+    )
+    with pytest.raises(BackupError, match="digest-bound"):
+        restore_drill.postgres_restore_image_id(None)
+    with pytest.raises(BackupError, match="immutable image config"):
+        restore_drill.postgres_restore_image_id("custombuild-postgres:latest")

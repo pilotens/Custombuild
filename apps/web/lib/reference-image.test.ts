@@ -97,8 +97,8 @@ describe("reference image analysis", () => {
       baseCabinetHeightMm: 900,
       baseCabinetDepthMm: 800,
       baseCabinetCount: 17,
-      bayWidthRatios: Array.from({ length: 17 }, () => 1 / 17),
-      shelfHeightRatios: Array.from({ length: 40 }, (_, index) => (index + 1) / 41),
+      bayWidthRatios: [],
+      shelfHeightRatios: [],
     }, "full-bookcase.jpg", REFERENCE_ASSET);
 
     expect(fullBookcase.patch).toMatchObject({
@@ -141,7 +141,7 @@ describe("reference image analysis", () => {
       .find(({ rule_id }) => rule_id === "GEO-001")?.status).toBe("PASS");
   });
 
-  it("repairs invalid custom ratios to a valid equal layout fallback", () => {
+  it("requires a deliberate correction before replacing invalid reference lines", () => {
     const analysis = analyzeReferencePixels(syntheticLibrary());
     const draft = {
       ...draftFromReferenceAnalysis(analysis),
@@ -150,7 +150,8 @@ describe("reference image analysis", () => {
       bayWidthRatios: [0.01, 0.49, 0.5],
       shelfHeightRatios: [0.8, 0.2],
     };
-    const result = referenceResult(analysis, draft, "ratios.jpg", REFERENCE_ASSET);
+    expect(() => referenceResult(analysis, draft, "ratios.jpg", REFERENCE_ASSET)).toThrow(/fackbredd/);
+    const result = referenceResult(analysis, { ...draft, bayWidthRatios: [], shelfHeightRatios: [] }, "ratios.jpg", REFERENCE_ASSET);
     expect(result.patch.bay_width_ratios).toEqual([1 / 3, 1 / 3, 1 / 3]);
     expect(result.patch.shelf_height_ratios).toEqual([1 / 3, 2 / 3]);
   });

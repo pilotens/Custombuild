@@ -69,6 +69,7 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
       apiMock.drafts.set(projectId, saved);
       return saved;
     }
+    inspectStudioPart() { return new Promise<never>(() => undefined); }
     previewDesign() { return new Promise<never>(() => undefined); }
     autofixDesign() { return new Promise<never>(() => undefined); }
   }

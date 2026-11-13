@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # Direct ``python scripts/release_evidence_gate.py`
     )
 
 STATIC_SCHEMA = "custombuild.release-readiness-static.v3"
-RESTORE_SCHEMA = "custombuild.restore-drill.v4"
+RESTORE_SCHEMA = "custombuild.restore-drill.v5"
 RUNTIME_SCHEMA = "custombuild.runtime-release-evidence.v3"
 FINAL_SCHEMA = "custombuild.release-readiness-evidence.v2"
 REQUIRED_IMAGES = frozenset(
@@ -36,83 +36,83 @@ REQUIRED_IMAGES = frozenset(
 REQUIRED_NATIVE_PACKAGES = {
     "api": frozenset(
         {
-            ("python-3.13", "3.13.15-r2"),
-            ("python-3.13-base", "3.13.15-r2"),
+            ("python-3.13", "3.13.18_git20261030-r0"),
+            ("python-3.13-base", "3.13.18_git20261030-r0"),
         }
     ),
     "worker": frozenset(
         {
-            ("ca-certificates-bundle", "20260611-r0"),
-            ("glibc-2.44-locale-posix", "2.44-r1"),
-            ("glibc-2.44", "2.44-r1"),
-            ("ld-linux-2.44", "2.44-r1"),
-            ("libgcc", "16.2.0-r0"),
-            ("libstdc++", "16.2.0-r0"),
-            ("wolfi-baselayout", "20230201-r29"),
-            ("py3-pip-wheel", "26.2.1-r0"),
-            ("libbz2-1", "1.0.8-r23"),
-            ("libcrypto3", "3.6.4-r0"),
-            ("libexpat1", "2.8.3-r0"),
-            ("libffi", "3.8.0-r0"),
-            ("gdbm", "1.26-r5"),
-            ("xz", "5.8.3-r2"),
-            ("mpdecimal", "4.0.1-r3"),
-            ("ncurses-terminfo-base", "6.6.20260822-r0"),
-            ("ncurses", "6.6.20260822-r0"),
-            ("readline", "8.3-r2"),
-            ("sqlite-libs", "3.53.4-r0"),
-            ("libssl3", "3.6.4-r0"),
-            ("libuuid", "2.42.2-r3"),
-            ("zlib", "1.3.2-r4"),
-            ("python-3.13", "3.13.15-r2"),
-            ("python-3.13-base", "3.13.15-r2"),
-            ("mesa-gl", "26.2.1-r0"),
-            ("libx11", "1.8.13-r5"),
-            ("libxau", "1.0.12-r7"),
-            ("libxdmcp", "1.1.5-r9"),
-            ("libbsd", "0.12.2-r7"),
-            ("libmd", "1.2.0-r2"),
-            ("libgomp", "16.2.0-r1"),
-            ("libxcb", "1.17.0-r15"),
-            ("libglvnd", "1.7.0-r10"),
-            ("libxml2", "2.15.0-r0"),
-            ("libLLVM-22", "22.1.8-r2"),
-            ("libpciaccess", "0.19-r2"),
+            ("ca-certificates-bundle", "20261020-r0"),
+            ("gdbm", "1.26-r9"),
+            ("glibc-2.44-locale-posix", "2.44-r14"),
+            ("glibc-2.44", "2.44-r14"),
+            ("ld-linux-2.44", "2.44-r14"),
+            ("libLLVM-23", "23.1.5-r0"),
+            ("libbrotlicommon1", "1.2.1-r3"),
+            ("libbrotlidec1", "1.2.1-r3"),
+            ("libbrotlienc1", "1.2.1-r3"),
+            ("libbsd", "0.12.2-r11"),
+            ("libbz2-1", "1.0.8-r30"),
             ("libdrm", "2.4.134-r0"),
-            ("libzstd1", "1.5.7-r8"),
-            ("libelf", "0.195-r2"),
-            ("libxshmfence", "1.3.3-r2"),
-            ("mesa-libgallium", "26.2.1-r0"),
-            ("mesa-gbm", "26.2.1-r0"),
-            ("libudev", "261.2-r1"),
-            ("wayland-libs-client", "1.26.0-r0"),
-            ("wayland-protocols", "1.49-r0"),
-            ("mesa", "26.2.1-r0"),
-            ("libxext", "1.3.7-r0"),
-            ("libxxf86vm", "1.1.7-r2"),
-            ("mesa-glx", "26.2.1-r0"),
+            ("libelf", "0.197-r0"),
+            ("libexpat1", "2.10.0-r1"),
+            ("libffi", "3.8.0-r2"),
+            ("libgcc", "16.2.0-r2"),
+            ("libglvnd", "1.7.0-r12"),
+            ("libgomp", "16.2.0-r2"),
+            ("libmd", "1.3.0-r2"),
+            ("libpciaccess", "0.19-r4"),
+            ("libstdc++", "16.2.0-r2"),
+            ("libudev", "262.2-r1"),
+            ("libuuid", "2.42.4-r2"),
+            ("libx11", "1.8.14-r3"),
+            ("libxau", "1.0.12-r11"),
+            ("libxcb", "1.17.0-r19"),
+            ("libxdmcp", "1.1.5-r14"),
+            ("libxext", "1.3.7-r4"),
+            ("libxml2", "2.15.0-r0"),
+            ("libxshmfence", "1.3.3-r7"),
+            ("libxxf86vm", "1.1.7-r5"),
+            ("libzstd1", "1.5.7-r13"),
+            ("mesa-gbm", "26.2.6-r0"),
+            ("mesa-gl", "26.2.6-r0"),
+            ("mesa-glx", "26.2.6-r0"),
+            ("mesa-libgallium", "26.2.6-r0"),
+            ("mesa", "26.2.6-r0"),
+            ("mpdecimal", "4.0.1-r6"),
+            ("ncurses-terminfo-base", "6.6.20261031-r0"),
+            ("ncurses", "6.6.20261031-r0"),
+            ("openssl-4.0-libcrypto", "4.0.3-r8"),
+            ("openssl-4.0-libssl", "4.0.3-r8"),
+            ("openssl-provider-legacy-allowed", "4.1.0-r0"),
+            ("py3-pip-wheel", "26.2.2-r2"),
+            ("python-3.13-base", "3.13.18_git20261030-r0"),
+            ("python-3.13", "3.13.18_git20261030-r0"),
+            ("readline", "8.3-r3"),
+            ("sqlite-libs", "3.54.1-r0"),
+            ("wayland-libs-client", "1.26.0-r3"),
+            ("wayland-protocols", "1.50-r0"),
+            ("wolfi-baselayout", "20230201-r31"),
+            ("xz", "5.8.4-r1"),
+            ("zlib", "1.3.2.1_rc20260921-r2"),
         }
     ),
-    "web": frozenset({("nodejs-24", "24.19.0-r0")}),
+    "redis": frozenset({("zlib", "1.4-r0"), ("setpriv", "2.42.3-r1")}),
+    "postgres": frozenset({("zlib", "1.4-r0"), ("gosu", "1.19-r6")}),
+    "web": frozenset({("nodejs-24", "24.22.2-r2")}),
 }
 BUILT_IMAGE_NAMES = {
     "api": "custombuild-api",
     "worker": "custombuild-worker",
     "web": "custombuild-web",
     "seaweedfs": "custombuild-seaweedfs",
+    "redis": "custombuild-redis",
+    "postgres": "custombuild-postgres",
 }
 EXTERNAL_IMAGE_REFERENCES = {
-    "postgres": (
-        "cgr.dev/chainguard/postgres:latest@"
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
-    ),
-    "redis": (
-        "redis:7.2.15-alpine@"
-        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
-    ),
     "volume-init": (
-        "cgr.dev/chainguard/busybox:latest@"
-        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+        "busybox:1.37.0-musl@"
+        "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
     ),
 }
 SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -722,6 +722,9 @@ def build_final_report(
         pinned_registry_inputs=pinned_registry_inputs,
     )
     scan_sha256 = _verify_scans(sbom_directory, images, sbom_identities)
+    postgres = next(item for item in images if item.get("component") == "postgres")
+    if postgres.get("image_id") != restore.get("postgres_image_id"):
+        raise EvidenceError("scanned PostgreSQL image differs from the restore target")
     seaweed = next(item for item in images if item.get("component") == "seaweedfs")
     if seaweed.get("image_id") != object_store.get("image_id"):
         raise EvidenceError("scanned SeaweedFS image differs from backup and restore")

@@ -21,7 +21,25 @@ export interface ReferenceImageConfirmedInputs {
   construction_assumptions_confirmed: boolean;
 }
 
+export interface ReferencePost {
+  key: string;
+  name: string;
+  shape: "rectangular" | "round";
+  x_um: number; y_um: number; z_um: number;
+  width_um: number; depth_um: number; height_um: number;
+}
+
+export interface ReferenceConstruction {
+  posts?: ReferencePost[];
+  uprights: "unknown" | "panels" | "separate_posts";
+  back: "unknown" | "all_openings" | "upper_only" | "open";
+  shelves: "unknown" | "per_bay" | "continuous";
+  material: "unknown" | "mdf" | "birch-plywood" | "solid-walnut";
+  unresolved_detail: string;
+}
+
 export interface ReferenceImageImport {
+  construction?: ReferenceConstruction;
   source: "reference_image";
   /** Server-issued identity of the immutable image bytes in this project. */
   import_id: string;
@@ -155,6 +173,10 @@ export interface ManufacturingFeature {
 }
 
 export interface ResolvedPart {
+  fitting_part_ids?: string[];
+  server_part_id?: string;
+  rotation_x_rad?: number;
+  circular_outline?: boolean;
   part_id: string;
   name: string;
   kind:

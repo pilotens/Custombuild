@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -17,7 +18,6 @@ from alembic.script import ScriptDirectory
 
 try:
     from scripts.compose_backup import (
-        POSTGRES_IMAGE,
         TOMBSTONE_HISTORY_SQL,
         VOLUME_INIT_IMAGE,
         BackupError,
@@ -27,7 +27,6 @@ try:
     from scripts.postgres_runtime_privileges import runtime_privileges_sql
 except ModuleNotFoundError:
     from compose_backup import (  # type: ignore[import-not-found,no-redef]  # noqa: I001
-        POSTGRES_IMAGE,
         TOMBSTONE_HISTORY_SQL,
         VOLUME_INIT_IMAGE,
         BackupError,
@@ -44,7 +43,7 @@ RESTORE_MIGRATOR_PASSWORD = "restore-drill-only-migrator-secret"  # noqa: S105
 RESTORE_API_PASSWORD = "restore-drill-only-api-secret"  # noqa: S105
 RESTORE_WORKER_PASSWORD = "restore-drill-only-worker-secret"  # noqa: S105
 RESTORE_ATTESTOR_PASSWORD = "restore-drill-only-capacity-attestor-secret"  # noqa: S105
-RESTORE_SCHEMA = "custombuild.restore-drill.v4"
+RESTORE_SCHEMA = "custombuild.restore-drill.v5"
 POSTGRES_INIT_COMPLETE_MARKER = "PostgreSQL init process complete"
 DOCKER_COMMAND_TIMEOUT_SECONDS = 120
 DOCKER_PAYLOAD_TIMEOUT_SECONDS = 2 * 60 * 60
@@ -167,6 +166,8 @@ def wait_for_postgres(container: str, timeout_seconds: int = 60) -> None:
                     "exec",
                     container,
                     "pg_isready",
+                    "-h",
+                    "127.0.0.1",
                     "-U",
                     "postgres",
                     "-d",
@@ -640,7 +641,26 @@ def _cleanup_resource(kind: str, name: str, errors: list[str]) -> None:
         errors.append(f"{kind} {name} removal: {exc}")
 
 
-def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, object]:
+def postgres_restore_image_id(explicit: str | None) -> str:
+    if explicit is None:
+        reference = os.getenv("CUSTOMBUILD_DEPLOY_POSTGRES_IMAGE")
+        if reference:
+            if not re.fullmatch(r"ghcr\.io/[a-z0-9._/-]+-postgres@sha256:[a-f0-9]{64}", reference):
+                raise BackupError("PostgreSQL restore requires a digest-bound registry image")
+        else:
+            revision = os.getenv("VCS_REF") or "uncommitted"
+            if not re.fullmatch(r"uncommitted|[a-f0-9]{40}|[a-f0-9]{64}", revision):
+                raise BackupError("Invalid VCS_REF for the PostgreSQL restore image")
+            reference = f"custombuild-postgres:{revision}"
+        explicit = docker("image", "inspect", "--format", "{{.Id}}", reference, capture=True)
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", explicit):
+        raise BackupError("PostgreSQL restore image must have an immutable image config ID")
+    return explicit
+
+
+def run_restore_drill(
+    backup: Path, *, repo: Path | None = None, postgres_image_id: str | None = None
+) -> dict[str, object]:
     backup = backup.resolve()
     repo = (repo or Path.cwd()).resolve()
     manifest = verify_manifest(backup)
@@ -670,6 +690,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
     if not isinstance(database_snapshot.get("tombstone_history"), dict):
         raise BackupError("Backup manifest has no exact tombstone history")
     repository_heads = current_alembic_heads(repo)
+    target_postgres_id = postgres_restore_image_id(postgres_image_id)
 
     cleanup_errors: list[str] = []
     operation_error: BaseException | None = None
@@ -684,7 +705,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             "POSTGRES_PASSWORD=restore-drill-only",
             "--env",
             "POSTGRES_DB=custombuild",
-            POSTGRES_IMAGE,
+            target_postgres_id,
         )
         wait_for_postgres(postgres_container)
         docker(
@@ -829,6 +850,7 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
             "database_runtime_roles": runtime_role_evidence,
             "object_store_image": object_image,
             "object_store_image_id": expected_object_image_id,
+            "postgres_image_id": target_postgres_id,
             "object_store_bucket": bucket,
             "object_store_object_count": len(restored_inventory),
             "object_store_total_size_bytes": sum(
@@ -863,10 +885,11 @@ def run_restore_drill(backup: Path, *, repo: Path | None = None) -> dict[str, ob
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--postgres-image-id", help="Exact PostgreSQL target image config SHA-256")
     parser.add_argument("--backup", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    result = run_restore_drill(args.backup)
+    result = run_restore_drill(args.backup, postgres_image_id=args.postgres_image_id)
     payload = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.write_text(payload, encoding="utf-8")

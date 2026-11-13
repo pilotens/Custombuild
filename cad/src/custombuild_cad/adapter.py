@@ -340,7 +340,27 @@ class CadQueryAdapter:
         height = _mm(size.height_um)
         if min(width, depth, height) <= 0:
             raise CADExportError(f"part {part.part_id} has invalid dimensions")
-        shape = cq.Workplane("XY").box(width, depth, height, centered=(False, False, False)).val()
+        if getattr(part, "circular_outline", False):
+            if width != depth:
+                raise CADExportError("round tops require equal diameters")
+            # Four analytic arcs retain the cardinal points in the GLB tessellation.
+            r = width / 2
+            q = r / math.sqrt(2)
+            shape = (
+                cq.Workplane("XY")
+                .moveTo(2 * r, r)
+                .threePointArc((r + q, r + q), (r, 2 * r))
+                .threePointArc((r - q, r + q), (0, r))
+                .threePointArc((r - q, r - q), (r, 0))
+                .threePointArc((r + q, r - q), (2 * r, r))
+                .close()
+                .extrude(height, clean=False)
+                .val()
+            )
+        else:
+            shape = (
+                cq.Workplane("XY").box(width, depth, height, centered=(False, False, False)).val()
+            )
         _validate_solid(shape, f"blank part {part.part_id}")
         return shape
 
@@ -357,9 +377,7 @@ class CadQueryAdapter:
             if not shapes:
                 continue
             if len(shapes) != 1 or name in actual:
-                raise CADExportError(
-                    f"STEP round-trip has ambiguous topology for part {name}"
-                )
+                raise CADExportError(f"STEP round-trip has ambiguous topology for part {name}")
             actual[name] = shapes[0]
         if set(actual) != set(expected):
             raise CADExportError(
@@ -607,9 +625,7 @@ def _assembly_collision_report(
                 if intersection.isNull():
                     continue
                 if not intersection.isValid():
-                    raise CADExportError(
-                        f"assembly intersection {first_id}/{second_id} is invalid"
-                    )
+                    raise CADExportError(f"assembly intersection {first_id}/{second_id} is invalid")
                 overlap_volume = float(intersection.Volume())
             except CADExportError:
                 raise
@@ -714,9 +730,7 @@ def _aabbs_have_positive_overlap(
     second: tuple[float, float, float, float, float, float],
 ) -> bool:
     return all(
-        min(first[axis + 3], second[axis + 3])
-        > max(first[axis], second[axis])
-        for axis in range(3)
+        min(first[axis + 3], second[axis + 3]) > max(first[axis], second[axis]) for axis in range(3)
     )
 
 
@@ -1047,9 +1061,7 @@ def _canonical_surface_back_rabbet_joint_ids(design: Any) -> frozenset[str]:
     ):
         return frozenset()
     back_part_ids = {
-        str(part.part_id)
-        for part in canonical.parts
-        if _value(getattr(part, "role", "")) == "BACK"
+        str(part.part_id) for part in canonical.parts if _value(getattr(part, "role", "")) == "BACK"
     }
     return frozenset(
         str(joint.joint_id)
@@ -1485,9 +1497,7 @@ def _mesh_geometry(
         index_accessor = primitive.get("indices")
         if type(index_accessor) is not int:
             raise CADExportError(f"GLB part {name} has no index accessor")
-        raw_indices = _read_accessor(
-            document, binary, index_accessor, "SCALAR", {5121, 5123, 5125}
-        )
+        raw_indices = _read_accessor(document, binary, index_accessor, "SCALAR", {5121, 5123, 5125})
         indices = [int(value[0]) for value in raw_indices]
         if not indices or len(indices) % 3:
             raise CADExportError(f"GLB part {name} has an invalid triangle index count")

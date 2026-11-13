@@ -1,8 +1,10 @@
 # Architecture
 
-Custombuild is a modular monolith with an isolated CAD/CAM worker. The canonical
-boundary is a frozen, versioned `DesignSpec`; visual meshes and generated files
-are derived artifacts and never become editable source data.
+Custombuild is a modular monolith with an isolated CAD/CAM worker. The production
+boundary is a frozen, versioned `DesignSpec`; the multi-family `/furniture` review
+workspace uses a separate versioned `FurnitureWorkspace`. Its explicit shelving
+bridge must preserve geometry and prerequisites before entering production.
+Visual meshes and generated files are derived artifacts, never editable source data.
 
 ## Deterministic flow
 
@@ -128,6 +130,21 @@ API request sends an explicit bearer token. Development demo tokens remain
 available only when the API is running in development authentication mode.
 
 ## Background jobs
+
+Furniture review exports use the same durable `GenerationJob`, transactional
+outbox, renewable leases, bounded retries and immutable `Artifact` storage as
+production jobs. The database owner check permits exactly one of two shapes:
+production jobs reference a design version; furniture-review jobs reference a
+tenant project and freeze the saved workspace, revision, hashes and dependencies
+in their request. A composite foreign key prevents cross-tenant project ownership.
+Review ZIPs remain subject to storage quotas and never occupy Redis result payloads.
+
+Furniture status returns small, typed metadata. The authenticated project-bound
+download endpoint rechecks the current saved revision and verifies the committed
+storage identity before streaming binary ZIP bytes. The browser verifies size,
+content type, digest and SHA-256 through the same verifier used for production
+artifacts. Generic production job/artifact routes cannot serve furniture-review
+artifacts. A CAD review export does not grant production qualification.
 
 Generation uses a transactional outbox. API-created work and every retry are committed
 with a durable outbox event; `available_at` provides database-owned not-before

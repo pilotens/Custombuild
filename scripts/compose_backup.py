@@ -33,12 +33,8 @@ except ModuleNotFoundError:  # Direct script execution.
     from source_manifest import build_source_manifest  # type: ignore[import-not-found,no-redef]
 
 VOLUME_INIT_IMAGE = (
-    "cgr.dev/chainguard/busybox:latest@sha256:"
-    "928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
-)
-POSTGRES_IMAGE = (
-    "cgr.dev/chainguard/postgres:latest@sha256:"
-    "3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
+    "busybox:1.37.0-musl@sha256:"
+    "f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
 )
 SEAWEEDFS_IMAGE = "custombuild-seaweedfs:uncommitted"
 SEAWEEDFS_IMAGE_PATTERN = re.compile(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
@@ -11,6 +11,7 @@ from .enums import (
     DesignStatus,
     FaceName,
     FeatureKind,
+    FurnitureJointType,
     GrainDirection,
     JointRetentionLoadMode,
     JointRetentionMachiningScope,
@@ -246,6 +247,9 @@ class BookcaseParameters(FrozenModel):
     vertical_divider_count: BookcaseDividerCount = 0
     bay_width_ratios_ppm: tuple[RatioPpm, ...] = ()
     shelf_height_ratios_ppm: tuple[RatioPpm, ...] = ()
+    door_hinge: Literal["J95-C24/0T-NI"] | None = Field(
+        default=None, exclude_if=lambda v: v is None,
+    )
     base_cabinet_height_um: BaseCabinetHeightUm = 0
     base_cabinet_depth_um: BaseCabinetDepthUm = 0
     base_cabinet_count: BaseCabinetCount = 0
@@ -254,6 +258,9 @@ class BookcaseParameters(FrozenModel):
     plinth_height_um: NonNegativeUm = mm(80)
     shelf_side_clearance_um: NonNegativeUm = mm(1)
     edge_band_thickness_um: NonNegativeUm = 0
+    trial_angle: Literal["GN-970-ALM-30-30-30-B"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     joint_system: JointType = JointType.DADO
     reinforcement_mode: ReinforcementMode = ReinforcementMode.MANUAL
     max_deflection_um: PositiveUm = mm(3)
@@ -268,6 +275,16 @@ class BookcaseParameters(FrozenModel):
         # Pydantic schema module during package initialisation.
         from .support import SUPPORTED_BOOKCASE_PRIMARY_JOINTS
 
+        if self.trial_angle and (
+            self.shelf_mount != ShelfMount.FIXED
+            or self.back_panel != BackPanelType.INSET_GROOVE
+            or self.plinth_height_um
+            or self.base_cabinet_count
+        ):
+            raise ValueError(
+                "Vinkelprov kräver fasta hyllor, spårmonterad rygg och stomme utan sockel "
+                "eller underskåp. Ändra dessa val eller avmarkera vinkelprovet."
+            )
         if self.joint_system not in SUPPORTED_BOOKCASE_PRIMARY_JOINTS:
             supported = ", ".join(
                 sorted(joint.value for joint in SUPPORTED_BOOKCASE_PRIMARY_JOINTS)
@@ -453,6 +470,8 @@ class BookcaseDesignSpec(FrozenModel):
         if retention is None:
             return self
         parameters = self.parameters
+        if parameters.trial_angle:
+            raise ValueError("Provbeslaget saknar kvalificerad koppling till retentionsintyget.")
         if retention.joint_type != JointType.DADO:
             raise ValueError("the current bookcase retention contract applies only to DADO joints")
         if retention.application_class != JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO:
@@ -551,6 +570,17 @@ class FeatureDimensions(FrozenModel):
         return self
 
 
+# Trial assembly targets, all in micrometres. The edge and the supporting face
+# are independently gauged from their installed datums, not from a joint total.
+TRIAL_EDGE_TOLERANCE_UM = 100
+TRIAL_FACE_TOLERANCE_UM = 100
+TRIAL_STOCK_TOLERANCE_UM = 100
+TRIAL_GROOVE_BOTTOM_CLEARANCE_UM = 300
+# Along the front-entry stroke: ±0.05 position and length, ±0.10 front datum
+# and part length, leaving 0.05 mm behind the seated panel in the worst case.
+TRIAL_FRONT_STOP_CLEARANCE_UM = 350
+
+
 class ManufacturingFeature(FrozenModel):
     feature_id: str = Field(min_length=8, max_length=64)
     part_id: str = Field(min_length=8, max_length=64)
@@ -565,11 +595,18 @@ class ManufacturingFeature(FrozenModel):
     tolerance_um: NonNegativeUm = mm("0.15")
     fit_clearance_um: NonNegativeUm = 0
     corner_strategy: StableKey | None = None
+    front_stop_clearance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
+    groove_bottom_clearance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
     requires_square_corners: bool = False
     open_end_reliefs: tuple[OpenEndRelief, ...] = ()
 
     @model_validator(mode="after")
     def validate_pattern(self) -> ManufacturingFeature:
+        if self.groove_bottom_clearance_um and (
+            self.kind != FeatureKind.GROOVE
+            or (self.dimensions.depth_um or 0) <= self.groove_bottom_clearance_um
+        ):
+            raise ValueError("A groove bottom allowance requires positive retained engagement.")
         if self.pattern_count > 1 and self.pitch_um is None:
             raise ValueError("a feature pattern with multiple items needs a pitch")
         if len(set(self.open_end_reliefs)) != len(self.open_end_reliefs):
@@ -608,6 +645,9 @@ class PartInstance(FrozenModel):
     visible_faces: tuple[FaceName, ...] = ()
     edge_bands: tuple[EdgeBand, ...] = ()
     features: tuple[ManufacturingFeature, ...] = ()
+    profile_tolerance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
+    stock_tolerance_um: NonNegativeUm = Field(default=0, exclude_if=lambda v: v == 0)
+    circular_outline: bool = Field(default=False, exclude_if=lambda v: not v)
     weight_g: PositiveInt
 
     @model_validator(mode="after")
@@ -634,7 +674,7 @@ class Joint(FrozenModel):
     """
 
     joint_id: str = Field(min_length=8, max_length=64)
-    joint_type: JointType
+    joint_type: JointType | FurnitureJointType
     members: tuple[JointMember, ...] = Field(min_length=2, max_length=2)
     mating_origin: Point3D
     assembly_direction: AssemblyDirection
@@ -921,6 +961,71 @@ def captive_inset_back_topology_is_complete(
     return True
 
 
+def validate_part_connections(
+    parts: tuple[PartInstance, ...], joints: tuple[Joint, ...], graph: AssemblyGraph | None = None
+) -> None:
+    """Verify both directions of the part–joint–machining-feature relationship."""
+    part_ids = {part.part_id for part in parts}
+    joint_ids = {joint.joint_id for joint in joints}
+    if len(part_ids) != len(parts):
+        raise ValueError("design result has duplicate part IDs")
+    if len(joint_ids) != len(joints):
+        raise ValueError("design result has duplicate joint IDs")
+    if graph is not None:
+        if {node.part_id for node in graph.nodes} != part_ids:
+            raise ValueError("assembly graph and part collection differ")
+        if {edge.joint_id for edge in graph.edges} != joint_ids:
+            raise ValueError("assembly graph and joint collection differ")
+    features = tuple(feature for part in parts for feature in part.features)
+    feature_ids = {feature.feature_id for feature in features}
+    if len(feature_ids) != len(features):
+        raise ValueError("design result has duplicate manufacturing feature IDs")
+    feature_by_id = {feature.feature_id: feature for feature in features}
+    referenced_features: dict[str, str] = {}
+    for joint in joints:
+        for member in joint.members:
+            if member.part_id not in part_ids:
+                raise ValueError("joint references a missing part")
+            for feature_id in member.feature_ids:
+                feature = feature_by_id.get(feature_id)
+                if feature is None:
+                    raise ValueError("joint references a missing manufacturing feature")
+                if feature.part_id != member.part_id:
+                    raise ValueError("joint member references another part's feature")
+                if feature.joint_id != joint.joint_id:
+                    raise ValueError("joint member references a feature owned by another joint")
+                if feature_id in referenced_features:
+                    raise ValueError("manufacturing feature is referenced more than once")
+                referenced_features[feature_id] = joint.joint_id
+    for feature in features:
+        if feature.joint_id is None:
+            continue
+        if feature.joint_id not in joint_ids:
+            raise ValueError("manufacturing feature references a missing joint")
+        if referenced_features.get(feature.feature_id) != feature.joint_id:
+            raise ValueError("joint-owned manufacturing feature is absent from its joint")
+
+
+# Catalogue mass 18 g per aluminium bracket and 3.06 g per A4 screw.
+# Round the complete 24.12 g assembly up to a whole gram for load screening.
+TRIAL_ANGLE_SET_MASS_G = 25
+
+
+class TrialAngle(FrozenModel):
+    article: Literal["GN-970-ALM-30-30-30-B"] = "GN-970-ALM-30-30-30-B"
+    screw: Literal["DIN-96-A4-5x16"] = "DIN-96-A4-5x16"
+    leg_um: Literal[30000] = 30000
+    wall_um: Literal[4000] = 4000
+    joint_id: str
+    upright_id: str
+    horizontal_id: str
+    upright_hole: str
+    horizontal_hole: str
+    corner: Point3D
+    x_sign: Literal[-1, 1]
+    z_sign: Literal[-1, 1]
+
+
 class DesignResult(FrozenModel):
     design_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     engine_version: StableKey
@@ -931,6 +1036,8 @@ class DesignResult(FrozenModel):
     assembly_graph: AssemblyGraph
     total_weight_g: PositiveInt
 
+    trial_angles: tuple[TrialAngle, ...] = Field(default=(), exclude_if=lambda v: not v)
+
     @property
     def minimum_retention_shear_load_n(self) -> int:
         """Conservative gravity envelope for the shared carcass contract.
@@ -940,29 +1047,38 @@ class DesignResult(FrozenModel):
         payloads. Never infer equal sharing between joints or omit self weight.
         This bound is intentionally stricter than the local shelf support screen.
         """
-        own_weight_n = (self.total_weight_g * 981 + 99_999) // 100_000
+        mass_g = self.total_weight_g + len(self.trial_angles) * TRIAL_ANGLE_SET_MASS_G
+        own_weight_n = (mass_g * 981 + 99_999) // 100_000
         p = self.spec.parameters
         return own_weight_n + p.shelf_count * p.shelf_load_n
 
     @model_validator(mode="after")
     def validate_result_integrity(self) -> DesignResult:
         part_by_id = {part.part_id: part for part in self.parts}
-        part_ids = set(part_by_id)
-        if len(part_ids) != len(self.parts):
-            raise ValueError("design result has duplicate part IDs")
-        joint_ids = {joint.joint_id for joint in self.joints}
-        if len(joint_ids) != len(self.joints):
-            raise ValueError("design result has duplicate joint IDs")
-        if {node.part_id for node in self.assembly_graph.nodes} != part_ids:
-            raise ValueError("assembly graph and part collection differ")
-        if {edge.joint_id for edge in self.assembly_graph.edges} != joint_ids:
-            raise ValueError("assembly graph and joint collection differ")
-        features = tuple(feature for part in self.parts for feature in part.features)
-        feature_ids = {feature.feature_id for feature in features}
-        if len(feature_ids) != len(features):
-            raise ValueError("design result has duplicate manufacturing feature IDs")
-        feature_by_id = {feature.feature_id: feature for feature in features}
-        referenced_features: dict[str, str] = {}
+        from .bookcase_angles import check_trial_angles
+        from .bookcase_fit import trial_groove_fits
+
+        validate_part_connections(self.parts, self.joints, self.assembly_graph)
+        check_trial_angles(
+            self.spec.parameters.trial_angle, self.parts, self.joints, self.trial_angles
+        )
+        if self.spec.parameters.trial_angle:
+            trial_groove_fits(self.parts, self.joints)
+        elif any(
+            f.groove_bottom_clearance_um or f.front_stop_clearance_um
+            for p in self.parts
+            for f in p.features
+        ):
+            raise ValueError("Extra spårbottenmån kräver vinkelprovets toleransmodell.")
+        if self.spec.parameters.door_hinge:
+            from .cabinet_doors import door_mounts
+
+            expected = {f.feature_id: f for mount in door_mounts(self.parts, self.spec.parameters)
+                        for f in mount.holes}
+            actual = {f.feature_id: f for part in self.parts for f in part.features
+                      if f.feature_id.startswith("J95-")}
+            if actual != expected:
+                raise ValueError("En luckas hål eller monteringsplatta avviker från J95-profilen.")
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
                 if (
@@ -1006,27 +1122,6 @@ class DesignResult(FrozenModel):
                         raise ValueError(
                             "joint retention does not cover a joint member's material version"
                         )
-            for member in joint.members:
-                if member.part_id not in part_ids:
-                    raise ValueError("joint references a missing part")
-                for feature_id in member.feature_ids:
-                    feature = feature_by_id.get(feature_id)
-                    if feature is None:
-                        raise ValueError("joint references a missing manufacturing feature")
-                    if feature.part_id != member.part_id:
-                        raise ValueError("joint member references another part's feature")
-                    if feature.joint_id != joint.joint_id:
-                        raise ValueError("joint member references a feature owned by another joint")
-                    previous_joint = referenced_features.setdefault(feature_id, joint.joint_id)
-                    if previous_joint != joint.joint_id:
-                        raise ValueError("manufacturing feature is referenced by multiple joints")
-        for feature in features:
-            if feature.joint_id is None:
-                continue
-            if feature.joint_id not in joint_ids:
-                raise ValueError("manufacturing feature references a missing joint")
-            if referenced_features.get(feature.feature_id) != feature.joint_id:
-                raise ValueError("joint-owned manufacturing feature is absent from its joint")
         retention = self.spec.joint_retention
         if retention is not None and retention.joint_geometry_sha256 != (
             dado_joint_geometry_fingerprint(self.parts, self.joints)

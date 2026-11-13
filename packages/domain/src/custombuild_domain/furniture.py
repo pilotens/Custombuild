@@ -12,7 +12,14 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator, model_validator
 
 from .enums import BackPanelType, ShelfMount
-from .models import FrozenModel, RatioPpm, StableKey
+from .models import (
+    BookcaseDepthUm,
+    BookcaseHeightUm,
+    BookcaseWidthUm,
+    FrozenModel,
+    RatioPpm,
+    StableKey,
+)
 
 Length = Annotated[int, Field(strict=True, ge=1, le=6_000_000)]
 Thickness = Annotated[int, Field(strict=True, ge=1_000, le=100_000)]
@@ -21,7 +28,13 @@ Load = Annotated[int, Field(strict=True, ge=0, le=5_000)]
 FURNITURE_SCHEMA_VERSION: Literal["custombuild.furniture-design.v1"] = (
     "custombuild.furniture-design.v1"
 )
-FURNITURE_ENGINE_VERSION = "furniture-families-1.0.0"
+FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
+
+
+def furniture_review_schema(family: str | None) -> str:
+    if family == "shelving":
+        return "custombuild.shelving-workshop-review.v17"
+    return "custombuild.furniture-review.v1"
 
 
 class MaterialSelection(FrozenModel):
@@ -36,13 +49,20 @@ class HardwareSelection(FrozenModel):
     version: StableKey = "layout-1.0.0"
 
 
+Wall = Literal["left", "right", "rear"]
+SurveyField = Literal["ceiling_height", "front_space", "left_wall", "right_wall", "rear_wall"]
+# Site measurements cross the JSON/JavaScript boundary as exact integer µm.
+MAX_EXACT_SITE_UM = 2**53 - 1
+MeasuredWallUm = Annotated[int, Field(strict=True, ge=0, le=MAX_EXACT_SITE_UM)]
+
+
 class TrimProfile(FrozenModel):
     """Measured profile; use and placement are explicit customer decisions."""
 
     height_um: Annotated[int, Field(strict=True, ge=1, le=500_000)] | None = None
     width_um: Annotated[int, Field(strict=True, ge=1, le=100_000)] | None = None
     use: Literal["unassigned", "existing_room_trim", "furniture_trim"] = "unassigned"
-    walls: tuple[Literal["left", "right", "rear"], ...] = ()
+    walls: tuple[Wall, ...] = ()
 
     @model_validator(mode="after")
     def validate_placement(self) -> TrimProfile:
@@ -63,6 +83,42 @@ class InstallationSpace(FrozenModel):
     width_um: Length
     height_um: Length
     depth_um: Length
+    qualified_site_ref: StableKey | None = Field(default=None, exclude_if=lambda v: v is None)
+    # Older saved workspaces can contain simulated numbers in the measured fields.
+    surveyed_fields: tuple[SurveyField, ...] = Field(
+        default=(), max_length=5, exclude_if=lambda v: not v
+    )
+    # From the finished carcass plane to the wall face behind any trim.
+    measured_left_wall_um: MeasuredWallUm | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    measured_right_wall_um: MeasuredWallUm | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    measured_rear_wall_um: MeasuredWallUm | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+
+    additional_bounded_walls: tuple[Wall, ...] | None = Field(
+        default=None,
+        max_length=3,
+        exclude_if=lambda v: v is None,
+        description="Walls at the customer envelope, in addition to walls with known skirting. "
+        "Null means not surveyed. Unlisted sides are open unless remaining_walls_unmeasured "
+        "is true.",
+    )
+    remaining_walls_unmeasured: bool | None = Field(
+        default=None,
+        strict=True,
+        exclude_if=lambda v: not v,
+        description="Unlisted sides have not been surveyed. Known walls still constrain assembly.",
+    )
+    measured_front_space_um: (
+        Annotated[int, Field(strict=True, ge=0, le=MAX_EXACT_SITE_UM)] | None
+    ) = Field(default=None, exclude_if=lambda v: v is None)
+    measured_ceiling_height_um: (
+        Annotated[int, Field(strict=True, ge=1, le=MAX_EXACT_SITE_UM)] | None
+    ) = Field(default=None, exclude_if=lambda v: v is None)
     width_includes_trim: bool = False
     trim_profile: TrimProfile | None = Field(default=None, exclude_if=lambda value: value is None)
     left_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
@@ -71,6 +127,17 @@ class InstallationSpace(FrozenModel):
     bottom_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
     front_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
     rear_allowance_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] | None = None
+
+    @field_validator("surveyed_fields")
+    @classmethod
+    def canonical_survey_fields(cls, fields: tuple[SurveyField, ...]) -> tuple[SurveyField, ...]:
+        return tuple(sorted(set(fields)))
+
+    def observed(self, field: SurveyField) -> int | None:
+        if field not in self.surveyed_fields:
+            return None
+        value: int | None = getattr(self, f"measured_{field}_um")
+        return value
 
     def carcass_dimensions(self) -> dict[str, int] | None:
         dimensions: dict[str, int] = {}
@@ -88,6 +155,10 @@ class InstallationSpace(FrozenModel):
 
     @model_validator(mode="after")
     def positive_remaining_space(self) -> InstallationSpace:
+        if self.additional_bounded_walls and len(set(self.additional_bounded_walls)) != len(
+            self.additional_bounded_walls
+        ):
+            raise ValueError("Varje begränsande vägg får bara anges en gång.")
         for overall, a, b in (
             (self.width_um, self.left_allowance_um, self.right_allowance_um),
             (self.height_um, self.top_allowance_um, self.bottom_allowance_um),
@@ -99,18 +170,24 @@ class InstallationSpace(FrozenModel):
 
 
 class ShelvingIntent(FrozenModel):
+    base_doors: Literal["J95-C24/0T-NI"] | None = Field(
+        default=None, exclude_if=lambda v: v is None,
+    )
     family: Literal["shelving"] = "shelving"
-    width_um: Length = 900_000
-    height_um: Length = 1_800_000
-    depth_um: Length = 320_000
+    trial_angle: Literal["GN-970-ALM-30-30-30-B"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+    width_um: BookcaseWidthUm = 900_000
+    height_um: BookcaseHeightUm = 1_800_000
+    depth_um: BookcaseDepthUm = 320_000
     shelf_count: Annotated[int, Field(strict=True, ge=0, le=40)] = 4
     divider_count: Annotated[int, Field(strict=True, ge=0, le=16)] = 1
     shelf_load_n: Load = 200
     shelf_load_basis: Literal["per_row", "per_metre"] = Field(
         default="per_row", exclude_if=lambda value: value == "per_row"
     )
-    shelf_load_per_metre_n: Annotated[int, Field(strict=True, ge=0, le=5_000)] = Field(
-        default=0, exclude_if=lambda value: value == 0
+    shelf_load_per_metre_n: Load | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
     shelf_height_ratios_ppm: tuple[
         Annotated[int, Field(strict=True, ge=50_000, le=950_000)], ...
@@ -133,6 +210,10 @@ class ShelvingIntent(FrozenModel):
     def canonical_bay_proportions(self) -> ShelvingIntent:
         if self.bay_width_ratios_ppm and sum(self.bay_width_ratios_ppm) != 1_000_000:
             raise ValueError("bay width proportions must sum to exactly 100 percent")
+        if self.base_doors and (self.trial_angle or self.back_panel != BackPanelType.INSET_GROOVE
+                                or self.shelf_mount != ShelfMount.FIXED or self.plinth_height_um):
+            raise ValueError("700 mm underskåp kräver fasta hyllor, infälld rygg och ingen sockel. "
+                             "GN 970 gäller endast den öppna bokhyllan.")
         if self.resolved_shelf_load_n > 5_000:
             raise ValueError("lasten per hel hyllrad överskrider modellens gräns på 5000 N")
         return self
@@ -142,7 +223,7 @@ class ShelvingIntent(FrozenModel):
         if self.shelf_load_basis == "per_metre":
             # Include the full carcass width rather than subtracting dividers:
             # this does not understate a uniformly loaded row. Round upwards.
-            return (self.width_um * self.shelf_load_per_metre_n + 999_999) // 1_000_000
+            return (self.width_um * (self.shelf_load_per_metre_n or 0) + 999_999) // 1_000_000
         return self.shelf_load_n
 
 
@@ -158,18 +239,60 @@ class TableIntent(FrozenModel):
     top_load_n: Load = 300
 
 
+class DiningTableIntent(FrozenModel):
+    family: Literal["dining_table"] = "dining_table"
+    width_um: Length = 1_800_000
+    height_um: Length = 750_000
+    depth_um: Length = 900_000
+    top_shape: Literal["rectangle", "round"] = "rectangle"
+    leg_section_um: Annotated[int, Field(strict=True, ge=35_000, le=80_000)] = 55_000
+    end_inset_um: Annotated[int, Field(strict=True, ge=0, le=500_000)] = 90_000
+    stretcher_height_um: Annotated[int, Field(strict=True, ge=65_000, le=250_000)] = 95_000
+    top_load_n: Load = 300
+
+
+class ChairIntent(FrozenModel):
+    family: Literal["chair"] = "chair"
+    width_um: Length = 460_000
+    height_um: Length = 850_000
+    depth_um: Length = 500_000
+    leg_section_um: Annotated[int, Field(strict=True, ge=35_000, le=75_000)] = 50_000
+    seat_height_um: Annotated[int, Field(strict=True, ge=250_000, le=700_000)] = 450_000
+    seat_depth_um: Annotated[int, Field(strict=True, ge=200_000, le=700_000)] = 450_000
+    back_angle_mdeg: Annotated[int, Field(strict=True, ge=0, le=18_000)] = 10_000
+    seat_load_n: Load = 900
+
+
 class ChestIntent(FrozenModel):
     family: Literal["chest_of_drawers"] = "chest_of_drawers"
-    width_um: Length = 800_000
-    height_um: Length = 900_000
-    depth_um: Length = 500_000
+    width_um: BookcaseWidthUm = 800_000
+    height_um: BookcaseHeightUm = 900_000
+    depth_um: BookcaseDepthUm = 500_000
     drawer_count: Annotated[int, Field(strict=True, ge=1, le=8)] = 3
     drawer_load_n: Load = 100
     front_gap_um: Annotated[int, Field(strict=True, ge=1_000, le=10_000)] = 3_000
 
+    drawer_columns: Literal[1, 2] = Field(default=1, exclude_if=lambda v: v == 1)
+    # Bottom-up front heights; the last row takes the exact remaining space.
+    row_front_heights_um: tuple[Length, ...] = Field(
+        default=(), max_length=7, exclude_if=lambda v: not v
+    )
+    gap_basis: Literal["per_edge", "clear_reveal"] = Field(
+        default="per_edge", exclude_if=lambda v: v == "per_edge"
+    )
+
+    @model_validator(mode="after")
+    def complete_drawer_rows(self) -> ChestIntent:
+        if self.drawer_count % self.drawer_columns:
+            raise ValueError("Antalet lådor måste vara delbart med antalet kolumner.")
+        if len(self.row_front_heights_um) >= self.drawer_count // self.drawer_columns:
+            raise ValueError("Lämna minst en lådrad för återstående höjd.")
+        return self
+
 
 FurnitureIntent = Annotated[
-    ShelvingIntent | TableIntent | ChestIntent, Field(discriminator="family")
+    ShelvingIntent | TableIntent | ChestIntent | DiningTableIntent | ChairIntent,
+    Field(discriminator="family"),
 ]
 
 
@@ -199,7 +322,9 @@ class FurnitureDesign(FrozenModel):
     def require_family_components(self) -> FurnitureDesign:
         if self.intent.family == "shelving" and self.hardware is not None:
             raise ValueError("shelving retention is selected through the existing signed catalogue")
-        if self.intent.family != "shelving" and self.hardware is None:
+        if self.intent.family in {"dining_table", "chair"} and self.hardware is not None:
+            raise ValueError("Ramens skruvförband ingår i konstruktionsmodellen.")
+        if self.intent.family in {"table", "chest_of_drawers"} and self.hardware is None:
             raise ValueError("table and drawer families require an explicit hardware selection")
         return self
 

@@ -19,10 +19,11 @@ from .materials import (
     screening_birch_plywood_18,
     screening_mdf_6,
     screening_mdf_18,
+    screening_solid_walnut_18,
 )
 from .models import FrozenModel, MaterialVersion, StableKey
 
-CATALOG_VERSION = "furniture-catalog-1.0.0"
+CATALOG_VERSION = "furniture-catalog-1.2.0"
 MATERIAL_CATALOG = MappingProxyType(
     {
         item.material_id: item
@@ -31,9 +32,13 @@ MATERIAL_CATALOG = MappingProxyType(
             screening_birch_plywood_6(),
             screening_mdf_18(),
             screening_mdf_6(),
+            screening_solid_walnut_18(),
         )
     }
 )
+
+
+RUNNER_FIXING_SKU = "wood-screw-4x14-runner"
 
 
 class HardwareProfile(FrozenModel):
@@ -49,6 +54,9 @@ class HardwareProfile(FrozenModel):
     rear_clearance_um: int = Field(default=10_000, ge=0)
     minimum_thickness_um: int = 17_000
     maximum_thickness_um: int = 19_000
+    cabinet_holes_um: tuple[int, ...] = Field(default=(), exclude_if=lambda v: not v)
+    drawer_holes_um: tuple[int, ...] = Field(default=(), exclude_if=lambda v: not v)
+    rated_pair_load_kg: int | None = Field(default=None, exclude_if=lambda v: v is None)
     required_evidence: tuple[str, ...]
 
 
@@ -56,6 +64,35 @@ HARDWARE_CATALOG = MappingProxyType(
     {
         item.catalog_id: item
         for item in (
+            *(
+                HardwareProfile(
+                    catalog_id=f"hettich-ka4532-{sku}",
+                    name=f"Hettich KA 4532 Silent System {length} mm · {sku}",
+                    family="chest_of_drawers",
+                    source=(
+                        "https://web2.hettich.com/hbh/addon/montage/"
+                        "MS_10547_00_Montageanleitung_KA4532-SiSy.pdf"
+                    ),
+                    runner_length_um=length * 1000,
+                    side_clearance_um=12_700,
+                    travel_um=travel * 1000,
+                    rear_clearance_um=4_000,
+                    minimum_thickness_um=16_000,
+                    maximum_thickness_um=19_000,
+                    cabinet_holes_um=(37_000, 165_000, (165 + b1) * 1000),
+                    drawer_holes_um=drawer_holes,
+                    rated_pair_load_kg=35,
+                    required_evidence=(
+                        "verify_runner_sample_and_pilot_fit",
+                        "drawer_box_retention",
+                        "open_drawer_stability",
+                    ),
+                )
+                for sku, length, b1, drawer_holes, travel in (
+                    ("9114273", 350, 64, (37_000, 257_000), 355),
+                    ("9114275", 450, 96, (37_000, 165_000, 331_000), 460),
+                )
+            ),
             HardwareProfile(
                 catalog_id="panel-table-connectors-layout",
                 name="Demonterbart gavelbord – beslag återstår att välja",
@@ -129,6 +166,18 @@ def furniture_catalog() -> dict[str, object]:
     payload: dict[str, object] = {
         "version": CATALOG_VERSION,
         "families": [
+            {
+                "id": "dining_table",
+                "name": "Matbord med fyra ben",
+                "geometry_supported": True,
+                "qualification": "layout_only",
+            },
+            {
+                "id": "chair",
+                "name": "Matstol",
+                "geometry_supported": True,
+                "qualification": "layout_only",
+            },
             {
                 "id": "shelving",
                 "name": "Hyllsystem",

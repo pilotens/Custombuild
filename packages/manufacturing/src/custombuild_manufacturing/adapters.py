@@ -37,6 +37,11 @@ class AdaptedDesign:
 
 
 _ROLE_AXES: dict[str, PanelAxisMapping] = {
+    "FRAME_LEG": PanelAxisMapping("y", "z", "x"),
+    "FRAME_RAIL_X": PanelAxisMapping("x", "z", "y"),
+    "FRAME_RAIL_Y": PanelAxisMapping("y", "z", "x"),
+    "CHAIR_BACK": PanelAxisMapping("x", "z", "y"),
+    "CHAIR_SEAT": PanelAxisMapping("x", "y", "z"),
     "LEFT_SIDE": PanelAxisMapping("y", "z", "x"),
     "RIGHT_SIDE": PanelAxisMapping("y", "z", "x"),
     "SIDE_LEFT": PanelAxisMapping("y", "z", "x"),
@@ -197,6 +202,7 @@ def adapt_domain_part(part: Any) -> PartSpec:
         depth_um=thickness_um,
         width_um=width_um,
         length_um=height_um,
+        tolerance_um=int(getattr(part, "profile_tolerance_um", 0)),
         through=True,
         metadata={
             "derived": True,
@@ -239,6 +245,7 @@ def adapt_domain_part(part: Any) -> PartSpec:
         edge_bands=edge_bands,
         edge_band_details=edge_band_details,
         metadata={
+            **({"circular_outline": True} if getattr(part, "circular_outline", False) else {}),
             "domain_instance_index": int(getattr(part, "instance_index", 0)),
             "domain_a_side": a_side,
             "domain_b_side": b_side,
@@ -305,6 +312,16 @@ def adapt_domain_feature(
         fit_clearance_um=int(getattr(feature, "fit_clearance_um", 0)),
         metadata={
             "domain_face": face,
+            **(
+                {"front_stop_clearance_um": feature.front_stop_clearance_um}
+                if getattr(feature, "front_stop_clearance_um", 0)
+                else {}
+            ),
+            **(
+                {"groove_bottom_clearance_um": feature.groove_bottom_clearance_um}
+                if getattr(feature, "groove_bottom_clearance_um", 0)
+                else {}
+            ),
             "joint_id": getattr(feature, "joint_id", None),
             "requires_square_corners": bool(getattr(feature, "requires_square_corners", False)),
         },

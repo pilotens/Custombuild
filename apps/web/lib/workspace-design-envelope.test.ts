@@ -670,7 +670,8 @@ describe("local legacy parsing and reference provenance", () => {
       detected_dividers: 0,
       detected_base_cabinets: false,
       warnings: [],
-      verification_status: "parametric_confirmed" as const,
+      construction: {uprights: "panels" as const, back: "all_openings" as const, shelves: "per_bay" as const, material:"birch-plywood" as const, unresolved_detail:""},
+        verification_status: "parametric_confirmed" as const,
       confirmed_inputs: {
         dimensions_measured: true,
         layout_confirmed: true,

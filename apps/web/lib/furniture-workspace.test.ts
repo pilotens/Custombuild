@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { viewerPartTransform } from "../components/furniture-viewer";
 import { assertFurniturePreview, furnitureViewerParts, newFurnitureWorkspace,
-  verifiedFurnitureDownload, type FurniturePreview } from "./furniture-workspace";
+  type FurniturePreview } from "./furniture-workspace";
 
 function fixture(): FurniturePreview {
   return {
@@ -65,12 +65,5 @@ describe("servergeometri och verifierad nedladdning", () => {
     expect(() => assertFurniturePreview(missing)).toThrow("Lådrörelsen");
     const unsafe = { ...fixture(), production_qualified: true } as unknown as FurniturePreview;
     expect(() => assertFurniturePreview(unsafe)).toThrow("ogiltigt möbelunderlag");
-  });
-  it("avvisar ändrade exportbytes även när nedladdningen har lyckad status", async () => {
-    const content = new TextEncoder().encode("review-package");
-    const hash = Buffer.from(await crypto.subtle.digest("SHA-256", content)).toString("hex");
-    const result = { state: "succeeded" as const, content_base64: Buffer.from(content).toString("base64"), sha256: hash };
-    expect(await verifiedFurnitureDownload(result)).toEqual(content);
-    await expect(verifiedFurnitureDownload({ ...result, content_base64: btoa("changed") })).rejects.toThrow("kontrollsumma");
   });
 });

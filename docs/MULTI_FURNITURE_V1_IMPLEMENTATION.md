@@ -1,8 +1,30 @@
 # Möbeltyper och utbytbara profiler
 
 Arbetsytan `/furniture` har en gemensam versionshanterad modell för hyllsystem,
-gavelbord och byråer. Den nås från startsidan. Befintliga projekt fortsätter i sin
+gavelbord, matbord, matstolar och byråer. Den nås från startsidan. Befintliga projekt fortsätter i sin
 ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
+
+## Prova valnöt och kortare råämnen
+
+Välj **Öppna valnötsexempel** i möbelstudion. Samma arbetsfil finns i
+`examples/furniture/walnut-shelving-4340x2540x280.json`. Exemplet är en öppen hyllstomme i 18 mm amerikansk svartvalnöt med
+6 mm björkplywoodrygg. Rummet är 4 340 × 280 × 2 540 mm (bredd, djup, höjd).
+Provet reserverar 20 mm till vänster, höger och bak. De måtten ska ersättas med
+uppmätta förhållanden för en verklig beställning.
+
+Ange 0 mm mellan modulerna och välj **Fyll i rutnät från råämnets längd**.
+Välj sedan sockel endast på nedersta raden och beräkna modulplanen. Planeraren
+kontrollerar varje råämne med fiberriktning och kantmarginal, även ryggstyckena.
+Den gemensamma kaplistan anger modulrad, kolumn, del, material och lokala fiberaxlar.
+Rad, kolumn och delnamn kan användas för att matcha ritningar även efter att en modul
+sparats som ett eget projekt och fått nya ID:n. Rutnätets startvärden använder huvudmaterialet. De innebär inget antagande om
+antal inköpta ämnen, limfogar, staplingslast eller intermodulförband.
+
+Valnötsprofilen använder artmedel för torr, kvistfri svartvalnöt. Den valda
+batchen, fuktkvoten och rörelsemånen tvärs fibrerna behöver verifieras för
+verkstadsberedning. Underlag för granskning går att exportera.
+[Artdata från AHEC](https://www.americanhardwood.org/en/american-hardwood/american-walnut)
+och [USDA Wood Handbook, kapitel 5](https://www.fpl.fs.usda.gov/documnts/fplgtr/fplgtr282/chapter_05_fpl_gtr282.pdf).
 
 ## Vad som fungerar
 
@@ -12,9 +34,11 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 | Hyllsystem | Befintlig konstruktionsmotor, fogar och regelscreening återanvänds. Olikstora fack, individuella hyllhöjder, fasta/flyttbara hyllor, ryggval och sockel följer med till beredningen. |
 | Kundmått | Separata uppmätta yttermått och sex explicita reserverade utrymmen. Okänt är inte noll. Stommen räknas om efter användarens val. Ofullständig måttkedja eller omodellerad list blockerar beredningen även på servern och i paketläsaren. |
 | Bord | Skiva, två gavlar och två sargar. Separat beräkning av nedböjning och böjspänning. |
-| Byrå | Stomme samt sex trädelar per låda, frontspel, lådsidespel och sammanhängande utdragsgrupper. |
-| Material | Versionsbundna MDF-/björkplywoodprofiler, uppmätt tjocklek och valfri batchidentitet. Inget automatiskt ersättningsmaterial. |
-| Beslag | Utbytbara dimensionsprofiler. Tillverkarens beslag, kapacitet och hålbilder är fortfarande obligatoriska före tillverkning. |
+| Matbord | Fyra ben i hyvlad björk, fyra sargar och rund eller rektangulär skiva. Benmått, indrag och sarghöjd styr delarna och tillhörande skruvhål. |
+| Matstol | Fyra ben, fyra sargar, sits och lutande ryggstöd. Sitthöjd, sittdjup och rygglutning styr geometrin. |
+| Byrå | En eller två kolumner, upp till åtta lådor och valbara fronthöjder nedifrån. Hettich KA 4532 Silent System 350 eller 450 mm ger borrbild på både stomme och låda. |
+| Material | Versionsbundna profiler för MDF, björkplywood och 18 mm massiv amerikansk svartvalnöt, uppmätt tjocklek och valfri batchidentitet. Inget automatiskt ersättningsmaterial. |
+| Beslag | Dokumenterade skenprofiler visar artikelnummer, nominell längd, utdrag och kataloglast. Äldre layoutprofiler saknar borrbild. Pilotdiameter och infästning ska provas på verkligt material. |
 | Verkstad | Separat profil med råskivemått, kantmarginal och fiberriktning; kontroll av maskinområde och varje dels råmått. Materialgrupperat verkstadsunderlag anger nödvändiga råformat. Referensprofiler är uttryckligen okvalificerade. |
 | Arbetsfil | Export/import av versionsbunden JSON. Import kontrolleras av servern och blir ett nytt osparat projekt; en tidigare projektidentitet återanvänds inte. |
 | Profilbyte | Konsekvensjämförelse före tillämpning. Material/beslag räknar om geometrin. Maskinbyte behåller möbeldesignen och ogiltigförklarar berörd tillverkningsgranskning. |
@@ -24,10 +48,15 @@ ursprungliga arbetsyta; deras utkast skrivs inte över av den nya modellen.
 | Export | Beställning av exakt sparad revision via transaktionell kö. CAD-kärnan kontrollerar verkliga solider, kollisioner och formatåterläsning. |
 
 Granskningspaketet innehåller STEP, GLB, DXF/SVG för delarnas båda sidor,
-delritningar i PDF, BOM, kaplista, rörelsegrupper, modell, profiler och
+separata kantvyer för kantborrade delar, delritningar och monteringsöversikt i PDF,
+kopplingslista, beslagslista, BOM, kaplista, rörelsegrupper, modell, profiler och
 kontrollrapport. Ett manifest binder varje fil med SHA-256. Exportstatusen binds
-till organisation, projekt, revision, design och profilval. Paketet är tillgängligt
-i en timme; en sparad revision kan exporteras på nytt.
+till organisation, projekt, revision, design och profilval. Jobb och artefaktmetadata
+lagras beständigt i PostgreSQL, medan ZIP-filen lagras oföränderligt i objektlagringen
+med ordinarie kvotkontroll. Redis transporterar uppgifter men innehåller inte längre
+base64-kodade paket. Samma oförändrade revision återanvänder sitt jobb; sparade
+ändringar spärrar gamla nedladdningar. Lagringens återställning och retention följer
+den gemensamma artefaktkedjan, inte en Redis-TTL på en timme.
 
 `manufacturing/workshop-handoff.json` innehåller kundmått, skillnaden mot den
 genererade stommen och råmått för varje CAD-del, grupperat efter material/version
@@ -139,19 +168,25 @@ beslag, hålbilder och kompletta monteringsförband.
 
 ## Driftsättning och verifiering
 
-Kör ordinarie migrering till `0021_furniture_review_reads` före API/worker.
-Migreringen ger API:t SELECT på tenant-avgränsad historik och köbeställningar.
+Kör ordinarie migrering till `0022_durable_furniture_review_exports` före API/worker.
+Den föregående migreringen `0021_furniture_review_reads` ger API:t SELECT på tenant-avgränsad historik och köbeställningar.
 API:t får fortsatt inte ändra/radera auditposter eller ändra köleveransstatus.
 PostgreSQL FORCE RLS och de befintliga rollkontrollerna gäller även dessa läsvägar.
-Ingen ny extern tjänst behövs; exporten använder befintlig Redis, Celery och CAD-worker.
+Ingen ny extern tjänst behövs; exporten använder befintlig PostgreSQL, Redis,
+Celery, objektlagring och CAD-worker. Migrering `0022_durable_furniture_review_exports`
+krävs före driftsättning. Gamla Redis-exporter flyttas inte automatiskt: beställ
+en ny export av den sparade revisionen. Nedgradering blockeras när beständiga
+möbelexportjobb finns, så att deras ägar- och lagringsidentiteter inte förloras.
 
 Beredningskopplingen kräver ingen ytterligare databasmigrering. Deploya API och
 worker tillsammans: produktionspipeline `1.12.0` ändrar paketkontrollen och
 tidigare generationsjobb måste genereras om mot den aktuella implementationen.
 
 API-ytan är `/v1/furniture/catalog`, `/preview`, `/profile-change` samt
-`/projects/{id}/draft`, `/history`, `/exports` och `/exports/{job_id}` under samma
-prefix. OpenAPI beskriver inmatningens versionsbundna scheman.
+`/projects/{id}/draft`, `/history`, `/exports`, `/exports/{job_id}` och
+`/exports/{job_id}/download` under samma prefix. OpenAPI beskriver versionsbundna
+inmatnings- och svarsscheman. Exportstatus innehåller bara metadata; den separata
+autentiserade nedladdningen levererar ZIP-filen med verifierad storlek och SHA-256.
 
 `POST /v1/furniture/projects/{id}/production-preview` öppnar en exakt sparad
 möbelrevision. `POST /v1/projects/{id}/versions` kräver dess serverkontrollerade

@@ -16,9 +16,8 @@ from tests.unit.test_furniture_families import workspace
 
 
 def _customer_workspace() -> FurnitureWorkspace:
-    return FurnitureWorkspace.model_validate(
-        json.loads(Path("examples/furniture/bookcase-4340x2540x280.json").read_text())
-    )
+    document = json.loads(Path("tests/fixtures/furniture/bookcase-unresolved.json").read_text())
+    return FurnitureWorkspace.model_validate(document)
 
 
 def test_customer_proposal_has_canonical_previews_and_preserves_all_other_inputs():

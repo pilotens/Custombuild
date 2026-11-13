@@ -13,7 +13,13 @@ x-python-release-build-args: &python-release-build-args
 
 services:
   postgres:
-    image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
+    image: custombuild-postgres:${VCS_REF:-uncommitted}
+    build:
+      context: .
+      dockerfile: infra/postgres/Dockerfile
+      args:
+        <<: *release-build-args
+        DEPENDENCY_LOCK_SHA256: ${POSTGRES_RECIPE_SHA256:-unknown}
     environment:
       APP_ENV: ${APP_ENV:-development}
       POSTGRES_DB: ${POSTGRES_DB:-custombuild}
@@ -26,8 +32,12 @@ services:
       CAPACITY_ATTESTOR_DATABASE_USER: ${CAPACITY_ATTESTOR_DATABASE_USER:-custombuild_storage_attestor}
       CAPACITY_ATTESTOR_DATABASE_PASSWORD: ${CAPACITY_ATTESTOR_DATABASE_PASSWORD:-change-me-capacity-attestor}
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./infra/postgres/init-roles.sh:/var/lib/postgres/initdb/10-init-roles.sh:ro
+      - type: volume
+        source: postgres-data
+        target: /var/lib/postgresql
+        volume:
+          nocopy: true
+      - ./infra/postgres/init-roles.sh:/docker-entrypoint-initdb.d/10-init-roles.sh:ro
       - ./infra/postgres/healthcheck.sh:/usr/local/bin/custombuild-postgres-healthcheck:ro
     healthcheck:
       test: ["CMD", "/bin/sh", "/usr/local/bin/custombuild-postgres-healthcheck"]
@@ -45,13 +55,19 @@ services:
     networks: [backend]
 
   redis:
-    image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
+    image: custombuild-redis:${VCS_REF:-uncommitted}
+    build:
+      context: .
+      dockerfile: infra/redis/Dockerfile
+      args:
+        <<: *release-build-args
+        DEPENDENCY_LOCK_SHA256: ${REDIS_RECIPE_SHA256:-unknown}
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:-change-me-redis}
     command:
       - /bin/sh
       - -ec
-      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+      - exec docker-entrypoint.sh redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -67,7 +83,7 @@ services:
     networks: [backend]
 
   object-storage-init:
-    image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+    image: busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478
     user: "0:0"
     command: ["/bin/sh", "-ec", "chown -R 1000:1000 /data"]
     volumes:

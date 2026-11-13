@@ -324,7 +324,27 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   const pageErrors: string[] = [];
   const consoleErrors: string[] = [];
-  const failedRequests: string[] = [];
+  const failedRequests: Request[] = [];
+  const editorAborts = new Map<string, number>();
+  await page.exposeFunction("recordPreviewCancellation", (url: string, body: string) => {
+    const key = url+"\n"+body;
+    editorAborts.set(key, (editorAborts.get(key) ?? 0) + 1);
+  });
+  await page.addInitScript(() => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(input instanceof globalThis.Request ? input.url : String(input), location.href);
+      if (url.pathname === "/v1/designs/autofix" && init?.method === "POST"
+          && typeof init.body === "string" && init.signal) {
+        const body = init.body;
+        const record: (url: string, body: string) => Promise<void> = Reflect.get(window, "recordPreviewCancellation");
+        const report = () => { void record(url.href, body); };
+        if (init.signal.aborted) report();
+        else init.signal.addEventListener("abort", report, {once:true});
+      }
+      return fetch(input, init);
+    };
+  });
   const failedApiResponses: string[] = [];
   const versionCreates: Request[] = [];
   const validations: Request[] = [];
@@ -335,7 +355,7 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
     if (message.type() === "error") consoleErrors.push(message.text());
   });
   page.on("requestfailed", (request) => {
-    failedRequests.push(`${request.method()} ${request.url()}: ${request.failure()?.errorText}`);
+    failedRequests.push(request);
   });
   page.on("request", (request) => {
     if (isVersionCreate(request)) versionCreates.push(request);
@@ -429,12 +449,22 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   });
   await expect(validationPanel.locator(".validation-card.validation-block")).toHaveCount(0);
   const screenedStockPasses = validationPanel.locator(".validation-card.validation-pass");
+  const approvedChecks = validationPanel.locator("summary")
+    .filter({ hasText: /^Godkända kontroller \(\d+\)$/ });
+  await expect(approvedChecks).toHaveCount(1);
+  await expect(approvedChecks.locator("..")).not.toHaveAttribute("open", "");
+  await expect(screenedStockPasses.first()).not.toBeVisible();
+  await approvedChecks.click();
+  await expect(approvedChecks.locator("..")).toHaveAttribute("open", "");
   for (const screenedPath of SCREENED_STOCK_PASS_PATHS) {
     const card = screenedStockPasses.filter({
       hasText: `Regel ${screenedPath.ruleId} · version ${screenedPath.ruleVersion}`,
     });
     await expect(card).toHaveCount(1);
-    await expect(card.getByText(screenedPath.title, { exact: true })).toBeVisible();
+    await expect(card).toHaveAccessibleName(screenedPath.title);
+    const technicalDetails = card.locator("details.validation-technical");
+    await technicalDetails.getByText("Visa detaljer", { exact: true }).click();
+    await expect(technicalDetails.getByText(screenedPath.title, { exact: true })).toBeVisible();
   }
   const reviewWarnings = validationPanel.locator(".validation-card.validation-warning");
   await expect(reviewWarnings).toHaveCount(REVIEW_WARNING_PATHS.length);
@@ -443,7 +473,10 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
       hasText: `Regel ${warningPath.ruleId} · version ${warningPath.ruleVersion}`,
     });
     await expect(warning).toHaveCount(1);
-    await expect(warning.getByText(warningPath.title, { exact: true })).toBeVisible();
+    await expect(warning).toHaveAccessibleName(warningPath.title);
+    const technicalDetails = warning.locator("details.validation-technical");
+    await technicalDetails.getByText("Visa detaljer", { exact: true }).click();
+    await expect(technicalDetails.getByText(warningPath.title, { exact: true })).toBeVisible();
     if (warningPath.ruleId === "DFM-GRAIN-001") {
       await expect(warning.locator(".validation-actions").getByRole("button")).toHaveCount(0);
     }
@@ -763,18 +796,19 @@ test("det verkliga designgranskningsflödet kan skapa och hämta ett gransknings
   expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
   expect(failedApiResponses).toEqual([]);
-  const unexpectedFailedRequests = failedRequests.filter(
-    (failure) =>
-      !(
-        failure.startsWith("POST ")
-        // The editor intentionally cancels a superseded latest-wins preview request.
-        && failure.includes("/v1/designs/autofix")
-        && (
-          failure.endsWith(": net::ERR_ABORTED")
-          || failure.endsWith(": NS_BINDING_ABORTED")
-        )
-      ),
-  );
+  // An obsolete preview is cancelled by the editor on input changes. Match the
+  // exact cancelled request including its body, independently of the browser.
+  const cancellationReasons = new Set(["net::ERR_ABORTED", "NS_BINDING_ABORTED", "Load request cancelled"]);
+  const unexpectedFailedRequests = failedRequests.filter(request => {
+    const key = request.url()+"\n"+(request.postData() ?? "");
+    const count = editorAborts.get(key) ?? 0;
+    if (request.method() === "POST" && requestPath(request) === "/v1/designs/autofix"
+        && cancellationReasons.has(request.failure()?.errorText ?? "") && count > 0) {
+      editorAborts.set(key, count - 1);
+      return false;
+    }
+    return true;
+  }).map(request => `${request.method()} ${request.url()}: ${request.failure()?.errorText}`);
   expect(unexpectedFailedRequests).toEqual([]);
 });
 

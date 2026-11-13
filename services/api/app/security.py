@@ -383,7 +383,10 @@ class RateLimitMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if scope.get("path") in {"/health", "/ready"}:
+        # Liveness must remain available when Redis is down so the orchestrator
+        # can distinguish a live-but-unready process. Dependency-backed
+        # readiness is deliberately charged to the normal abuse-control bucket.
+        if scope.get("path") == "/health":
             await self.app(scope, receive, send)
             return
 

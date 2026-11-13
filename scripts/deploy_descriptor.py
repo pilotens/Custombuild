@@ -25,33 +25,17 @@ PROMOTION_WORKFLOW_PATH = ".github/workflows/cd.yml"
 PROMOTION_SOURCE_REF = "refs/heads/main"
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 
-APPLICATION_COMPONENTS = ("api", "worker", "web", "seaweedfs")
+APPLICATION_COMPONENTS = ("api", "worker", "web", "seaweedfs", "redis", "postgres")
 PINNED_RUNTIME_IMAGES = {
-    "postgres": (
-        "cgr.dev/chainguard/postgres@"
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
-    ),
-    "redis": (
-        "docker.io/library/redis@"
-        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
-    ),
     "volume-init": (
-        "cgr.dev/chainguard/busybox@"
-        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+        "docker.io/library/busybox@"
+        "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
     ),
 }
 PINNED_RUNTIME_SCAN_REFERENCES = {
-    "postgres": (
-        "cgr.dev/chainguard/postgres:latest@"
-        "sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060"
-    ),
-    "redis": (
-        "redis:7.2.15-alpine@"
-        "sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6"
-    ),
     "volume-init": (
-        "cgr.dev/chainguard/busybox:latest@"
-        "sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6"
+        "busybox:1.37.0-musl@"
+        "sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478"
     ),
 }
 ALL_COMPONENTS = (*APPLICATION_COMPONENTS, *PINNED_RUNTIME_IMAGES)
@@ -81,9 +65,9 @@ EXPECTED_REGISTRY_OVERLAY = (
     "\n"
     "services:\n"
     "  postgres:\n"
-    f"    image: {PINNED_RUNTIME_IMAGES['postgres']}\n"
+    "    image: ${CUSTOMBUILD_DEPLOY_POSTGRES_IMAGE:?Set from a verified deploy descriptor}\n"
     "  redis:\n"
-    f"    image: {PINNED_RUNTIME_IMAGES['redis']}\n"
+    "    image: ${CUSTOMBUILD_DEPLOY_REDIS_IMAGE:?Set from a verified deploy descriptor}\n"
     "  object-storage-init:\n"
     f"    image: {PINNED_RUNTIME_IMAGES['volume-init']}\n"
     "  object-storage:\n"

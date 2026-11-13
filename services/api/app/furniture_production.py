@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from custombuild_domain.furniture import FurnitureWorkspace
+from custombuild_domain.furniture import FurnitureWorkspace, ShelvingIntent
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_domain.furniture_production import (
     FurnitureProductionSource,
@@ -17,6 +17,38 @@ from fastapi import HTTPException
 from .design_service import normalize_preview
 from .models import Project
 from .schemas import BookcasePreviewInput
+
+
+def check_bookcase_order_inputs(workspace: FurnitureWorkspace) -> bool:
+    """Check the submitted fields before defaults enter the saved order."""
+    intent = workspace.design.intent
+    if not isinstance(intent, ShelvingIntent) or intent.trial_angle is None:
+        return False
+    required = {
+        "width_um": "bredd",
+        "height_um": "höjd",
+        "depth_um": "djup",
+        "divider_count": "antal avdelare",
+        "shelf_count": "antal hyllrader",
+    }
+    if intent.shelf_count:
+        if intent.shelf_load_basis == "per_row":
+            required["shelf_load_n"] = "nyttolast per hyllrad"
+        elif intent.shelf_load_per_metre_n is None:
+            raise HTTPException(422, detail="Ange nyttolast per meter innan bokhyllan sparas.")
+    missing = [label for key, label in required.items() if key not in intent.model_fields_set]
+    if missing:
+        raise HTTPException(422, detail=f"Ange {', '.join(missing)} innan bokhyllan sparas.")
+    return True
+
+
+def require_bookcase_input_receipt(project: Project, workspace_sha256: str) -> None:
+    if (project.draft_workspace_json or {}).get("bookcase_order_sha256") != workspace_sha256:
+        raise HTTPException(
+            409,
+            detail="Öppna bokhyllan, kontrollera mått, fackindelning och last och spara en "
+            "ny revision. Den äldre ordern saknar uppgift om vilka värden kunden angav.",
+        )
 
 
 def saved_furniture_workspace(project: Project) -> FurnitureWorkspace:
@@ -43,6 +75,7 @@ def furniture_production_input(workspace: FurnitureWorkspace) -> BookcasePreview
         measured_back_thickness_mm=p.back_thickness_um / 1_000,
         shelf_count=p.shelf_count,
         shelf_mount=p.shelf_mount.value,
+        trial_angle=p.trial_angle,
         divider_count=p.vertical_divider_count,
         bay_width_ratios=[v / 1_000_000 for v in p.bay_width_ratios_ppm],
         shelf_height_ratios=[v / 1_000_000 for v in p.shelf_height_ratios_ppm],

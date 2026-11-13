@@ -6,18 +6,36 @@ import hashlib
 import io
 import json
 import zipfile
+from dataclasses import asdict
 from typing import Any
 
 from custombuild_cad import CadQueryAdapter
-from custombuild_domain.furniture import FURNITURE_ENGINE_VERSION, FurnitureWorkspace
+from custombuild_cad.bookcase_motion import verify_assembly_space
+from custombuild_domain.bookcase_angles import screw_access
+from custombuild_domain.bookcase_fit import trial_groove_fits
+from custombuild_domain.bookcase_site import StandingSiteReview
+from custombuild_domain.furniture import FurnitureWorkspace, furniture_review_schema
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing.adapters import adapt_design_result
+from custombuild_manufacturing.bookcase_qualification import BookcaseProfile, bookcase_scope
+from custombuild_manufacturing.bookcase_test_results import (
+    BookcaseTestResults,
+    bookcase_test_limits,
+)
 from custombuild_manufacturing.exporters import bom_csv, cut_list_csv, dxf_for_part, svg_for_part
+from custombuild_manufacturing.furniture_faces import drawing_faces
 from custombuild_manufacturing.furniture_handoff import furniture_first_article_checks
 from custombuild_manufacturing.furniture_profiles import preview_furniture
-from custombuild_manufacturing.model import Side
+from custombuild_manufacturing.quality import (
+    MANUFACTURING_INTENT_PATH,
+    manufacturing_intent_json,
+    manufacturing_intent_json_schema,
+)
 
+from .documents import assembly_manual_pdf
+from .furniture_assembly import assembly_documents
 from .part_drawings import part_drawings_pdf
+from .shelving_trial import shelving_trial_protocol
 
 MAX_FURNITURE_REVIEW_PARTS = 128
 MAX_FURNITURE_REVIEW_BYTES = 16 * 1024 * 1024
@@ -29,7 +47,9 @@ def _json(value: Any) -> bytes:
     ).encode()
 
 
-def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
+def build_furniture_review(
+    workspace: FurnitureWorkspace, *, workshop_profile: BookcaseProfile | None = None
+) -> bytes:
     result = build_furniture(workspace.design)
     if len(result.parts) > MAX_FURNITURE_REVIEW_PARTS:
         raise ValueError("furniture review export is limited to 128 parts")
@@ -48,11 +68,15 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "inspection/first-article-checks.csv": furniture_first_article_checks(result),
         "documents/part-drawings.pdf": part_drawings_pdf(
             result,
+            workshop=workshop_profile is not None,
             qualification_note=(
-                "PRELIMINÄRT: Kundmått/list/montage återstår. Inga listdelar ingår."
+                f"Verkstadsritning | Profil {workshop_profile.profile_id}"
+                if workshop_profile
+                else "PRELIMINÄRT: Kundmått/list/montage återstår. Inga listdelar ingår."
                 if preview["workshop_handoff"]["dimensions"]["issues"]
                 else "KONCEPT: Beslag, hålbilder och infästningar är inte verifierade."
                 if result.hardware_profile is not None
+                and not result.hardware_profile.drawer_holes_um
                 else "Granskningsunderlag. Tillverkning kräver separat frisläppning."
             ),
         ),
@@ -62,10 +86,93 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
             [g.model_dump(mode="json") for g in result.moving_groups]
         ),
     }
-    for part in adapted.parts:
-        for side in (Side.A, Side.B):
-            root = f"parts/{part.part_id}/{side.value}"
-            files[f"{root}.dxf"] = dxf_for_part(part, side)
+    files.update(assembly_documents(result))
+    shelving = result.shelving_result
+    if shelving is not None:
+        space = verify_assembly_space(shelving, cad.step) if shelving.trial_angles else None
+        site_data = preview["workshop_handoff"]["dimensions"]["standing_assembly"]
+        site = StandingSiteReview.model_validate(site_data) if site_data else None
+        if space:
+            if site and (
+                site.minimum_height_from_base_um != space.world_max_um[2]
+                or site.minimum_front_space_um != max(0, -space.world_min_um[1])
+            ):
+                raise ValueError("Platskontrollen och CAD använder olika monteringsutrymme.")
+            files["assembly/required-space.json"] = _json(
+                {
+                    "design_hash": result.design_hash,
+                    "revision": workspace.design.revision,
+                    "units": "integer_micrometres",
+                    "scope": "Rigid timber, straight translations, no fixtures or human clearance.",
+                    **asdict(space),
+                    "standing_site": site_data,
+                }
+            )
+        files["inspection/provprotokoll.txt"] = shelving_trial_protocol(result, preview, space)
+        files["documents/assembly-overview.pdf"] = files["documents/assembly.pdf"]
+        files["documents/assembly.pdf"] = assembly_manual_pdf(
+            shelving,
+            package_design_hash=result.design_hash,
+            assembly_space=space,
+            standing_site=site,
+            workshop_profile=workshop_profile.profile_id if workshop_profile else None,
+        )
+        files["assembly/graph.json"] = _json(
+            {
+                "design_hash": result.design_hash,
+                "revision": workspace.design.revision,
+                "graph": shelving.assembly_graph.model_dump(mode="json"),
+            }
+        )
+        files[MANUFACTURING_INTENT_PATH] = manufacturing_intent_json(
+            parts=adapted.parts,
+            project_id=workspace.design.design_id,
+            revision=str(workspace.design.revision),
+            design_hash=result.design_hash,
+        )
+        files["schemas/manufacturing-intent.schema.json"] = manufacturing_intent_json_schema()
+        if shelving.trial_angles:
+            from custombuild_cad.bookcase_angles import mounted_trial_angles
+
+            files["design/with-mounted-angles.step"] = mounted_trial_angles(
+                cad.step, shelving.trial_angles
+            )
+            files["inspection/groove-fits.json"] = _json(
+                {
+                    "design_hash": result.design_hash,
+                    "revision": workspace.design.revision,
+                    "unit": "integer_micrometres",
+                    "qualification": "trial_targets_only",
+                    "joints": [asdict(f) for f in trial_groove_fits(result.parts, result.joints)],
+                }
+            )
+            files["assembly/trial-angles.json"] = _json(
+                {
+                    "design_hash": result.design_hash,
+                    "revision": workspace.design.revision,
+                    "units": "micrometres",
+                    "corners": "World X/Y/Z at outer bend, Y at bracket centreline.",
+                    "angles": [a.model_dump(mode="json") for a in shelving.trial_angles],
+                    "straight_access_um_by_pilot": screw_access(
+                        result.parts, shelving.trial_angles
+                    ),
+                    "access_scope": "10 mm square axial envelope from screw seat, in final "
+                    "assembly; null means open in this model. Verify actual handle and hands.",
+                    "qualification": "geometry_trial_only",
+                }
+            )
+    identity = None
+    cabinet = shelving is not None and bool(shelving.spec.parameters.door_hinge)
+    if result.trial_angles or cabinet:
+        from .bookcase_readback import order_identity, verify_bookcase_delivery
+
+        identity = order_identity(result)
+    sources = {p.part_id: p for p in result.parts}
+    for original in adapted.parts:
+        for view in drawing_faces(sources[original.part_id], original):
+            part, side = view.part, view.side
+            root = f"parts/{part.part_id}/{view.name}"
+            files[f"{root}.dxf"] = dxf_for_part(part, side, order_identity=identity)
             files[f"{root}.svg"] = svg_for_part(part, side)
     files["README.txt"] = (
         "CUSTOMBUILD – DESIGNUNDERLAG FÖR GRANSKNING\n\n"
@@ -74,8 +181,8 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "STEP, GLB, delritningar, DXF och kaplista beskriver samma genererade delar.\n"
         "DXF använder millimeter. Delritningarna visar varje dels lokala U/V-system.\n"
         "Detta paket innehåller INGEN skärande CAM eller körklar maskinkod.\n"
-        "Bordets/byråns layoutbeslag saknar tillverkarens hålbilder och verifierade\n"
-        "infästningar. Saknad bearbetning ska kompletteras i modellen före tillverkning.\n"
+        "Öppna documents/assembly.pdf, bom/hardware.csv och assembly/connections.csv.\n"
+        "Kantvyer har fysiska filnamn och referenskontur på lagret REFERENCE.\n"
         "Material, förband, stabilitet, lådbottnar, rörelse och montering behöver\n"
         "kvalificeras inom den valda möbelfamiljen. Se validation/review.json.\n"
         "En ny material-, beslags- eller maskinprofil kräver omräkning och ny granskning.\n"
@@ -89,13 +196,78 @@ def build_furniture_review(workspace: FurnitureWorkspace) -> bytes:
         "modellens featuretoleranser. Verkstaden fastställer avtalade toleranser och\n"
         "fyller i mätning och granskare. Tomma resultat är inte godkända mätningar.\n"
     ).encode()
+    if shelving is not None:
+        files["README.txt"] += (
+            "\nBOKHYLLA – börja med documents/assembly.pdf för numrerade steg och del-ID.\n"
+            "manufacturing/manufacturing-intent.json anger bearbetningar med sida, datum, "
+            "speldimension och tolerans. Maskinval krävs inte för detta underlag.\n"
+        ).encode()
+    if cabinet:
+        from .cabinet_delivery import (
+            cabinet_trial_sheet,
+            installation_register,
+            verify_cabinet_delivery,
+        )
+
+        files["assembly/door-hardware.json"] = _json(installation_register(result))
+        files["inspection/gangjarnsprov.txt"] = cabinet_trial_sheet(result)
+        files["inspection/door-hardware.json"] = _json(verify_cabinet_delivery(result, files))
+        files["README.txt"] += (
+            "\nUNDERSKÅP – Se documents/assembly.pdf och assembly/door-hardware.json. "
+            "Varje lucka och dess gavel har en märkt DXF för respektive sida. "
+            "Ø3,5 × 15 mm är provmått för SPAX YELLOX 5x16 i 18 mm valnöt. "
+            "Beslagets fulla rörelse och infästning i virket återstår att prova.\n"
+        ).encode()
+    elif identity:
+        report, joint_sheet = verify_bookcase_delivery(result, files)
+        files["inspection/geometry-readback.json"] = _json(report)
+        files["inspection/fogprov.csv"] = joint_sheet
+        assert shelving is not None
+        limits = bookcase_test_limits(shelving, preview["rules"]["evaluations"])
+        files["inspection/kvalificeringsprov.json"] = _json(
+            {
+                "revision": workspace.design.revision,
+                "design_hash": result.design_hash,
+                "scope_sha256": bookcase_scope(workspace),
+                "order_requirements": limits.model_dump(),
+                "result_schema": BookcaseTestResults.model_json_schema(),
+                "type_test_results": workshop_profile.physical_results.model_dump(mode="json")
+                if workshop_profile
+                else None,
+            }
+        )
+    if workshop_profile:
+        if not result.trial_angles or not identity:
+            raise ValueError("Verkstadsritningar kräver fullständig geometrikontroll av bokhyllan.")
+        # Supply the actual qualified site method together with revision-specific steps.
+        documents = workshop_profile.reports()
+        files["documents/installation.pdf"] = documents["installation"]
+        files["inspection/qualification.json"] = _json(workshop_profile.model_dump(mode="json"))
+        files["README.txt"] = (
+            f"Verkstadsritningar · revision {workspace.design.revision} · {result.design_hash}\n"
+            f"Provprofil {workshop_profile.profile_id}. Läs documents/installation.pdf och "
+            "documents/assembly.pdf. STEP och delarnas A/B-DXF använder mm. "
+            "Verkstaden väljer maskin och bereder CAM. Hämta kaplista och beslag i bom/.\n"
+        ).encode()
+        for name in (
+            "documents/assembly-overview.pdf",
+            "inspection/provprotokoll.txt",
+            "validation/review.json",
+            "manufacturing/workshop-handoff.json",
+        ):
+            del files[name]
     manifest = {
-        "schema_version": "custombuild.furniture-review.v1",
-        "engine_version": FURNITURE_ENGINE_VERSION,
+        "schema_version": furniture_review_schema(workspace.design.intent.family),
+        "engine_version": result.engine_version,
         "design_hash": result.design_hash,
         "revision": workspace.design.revision,
         "dependencies": preview["dependencies"],
-        "production_qualified": False,
+        "production_qualified": workshop_profile is not None,
+        **(
+            {"purpose": "workshop_drawings", "qualification": workshop_profile.profile_id}
+            if workshop_profile
+            else {}
+        ),
         "physical_cutting_authorized": False,
         "files": [
             {"path": name, "size_bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}

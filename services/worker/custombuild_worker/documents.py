@@ -10,10 +10,14 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from custombuild_domain.bookcase_motion import AssemblySpace
+from custombuild_domain.bookcase_site import WALL_NAMES, StandingSiteReview
+from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, DoorMount, door_mounts
 from custombuild_manufacturing import (
     canonical_json_bytes,
     dado_retention_evidence_missing,
 )
+from custombuild_manufacturing.model import um_to_mm
 from reportlab.graphics import renderPDF
 from reportlab.graphics.barcode import qr
 from reportlab.graphics.shapes import Drawing
@@ -398,15 +402,12 @@ def hardware_csv(
         joints = joints_by_sku[sku]
         contracts = tuple(getattr(joint, "retention", None) for joint in joints)
         contract = (
-            contracts[0]
-            if contracts and all(item == contracts[0] for item in contracts)
-            else None
+            contracts[0] if contracts and all(item == contracts[0] for item in contracts) else None
         )
         contract_is_bound = (
             contract is not None
             and all(
-                str(getattr(joint.joint_type, "value", joint.joint_type)).casefold()
-                == "dado"
+                str(getattr(joint.joint_type, "value", joint.joint_type)).casefold() == "dado"
                 for joint in joints
             )
             and not dado_retention_evidence_missing(design)
@@ -530,25 +531,43 @@ def _unresolved_front_hardware_part_ids(design: Any) -> tuple[str, ...]:
 def assembly_manual_pdf(
     design: Any,
     retention_trust: VerifiedRetentionTrust | None = None,
+    *,
+    package_design_hash: str | None = None,
+    assembly_space: AssemblySpace | None = None,
+    standing_site: StandingSiteReview | None = None,
+    workshop_profile: str | None = None,
 ) -> bytes:
     buffer, canvas = _canvas()
+    identity = f"Designhash {design.design_hash}"
+    if package_design_hash:
+        identity = f"Designhash {package_design_hash} · rev {design.spec.revision}"
     steps = design.assembly_graph.steps
     part_by_id = {part.part_id: part for part in design.parts}
     manual_plan = _assembly_manual_plan(design)
+    travel = {s.step_number: s.travel_um for s in assembly_space.steps} if assembly_space else {}
     y = _header(
         canvas,
-        "START HÄR – monteringsgranskning",
-        f"Designhash {design.design_hash}",
+        "Monteringsanvisning" if workshop_profile else "START HÄR – monteringsgranskning",
+        identity,
     )
     canvas.setFillColor(BLOCK)
     canvas.setFont("Helvetica-Bold", 10)
-    canvas.drawString(MARGIN, y, "EJ FRISLÄPPT SOM KUNDMANUAL ELLER FÖR FYSISK MONTERING")
+    canvas.drawString(
+        MARGIN,
+        y,
+        f"Monteringsprofil: {workshop_profile}"
+        if workshop_profile
+        else "EJ FRISLÄPPT SOM KUNDMANUAL ELLER FÖR FYSISK MONTERING",
+    )
     y -= 20
     canvas.setFillColor(INK)
     canvas.setFont("Helvetica", 8)
     y = _draw_wrapped_text(
         canvas,
-        "Dokumentet är ett designgranskningsunderlag. Ansvarig montör ska fastställa "
+        "Läs documents/installation.pdf före steg 1. Den anger vägginfästning, "
+        "uppställning, lyfthjälp, fuktområde och verktyg för denna plats."
+        if workshop_profile
+        else "Dokumentet är ett designgranskningsunderlag. Ansvarig montör ska fastställa "
         "lyftplan, arbetsberedning, fixturer, infästningar och lokala säkerhetsåtgärder "
         "innan arbetet påbörjas.",
         MARGIN,
@@ -588,15 +607,36 @@ def assembly_manual_pdf(
             y,
             "Tyngsta rörliga grupp: "
             f"{heaviest.weight_g / 1000:.2f} kg · "
-            f"maxmått {heaviest.max_dimension_um / 1000:g} mm",
+            f"maxmått {um_to_mm(heaviest.max_dimension_um)} mm",
         )
         y -= 12
+    if assembly_space:
+        y = _draw_wrapped_text(canvas, assembly_space.description(), MARGIN, y, max_chars=105)
+        y = (
+            _draw_wrapped_text(
+                canvas,
+                "Börja med botten på plan yta. "
+                "Säkra varje lös rygg, avdelare och gavel mot tippning. "
+                "Behåll stöden tills vinklarna är monterade och stommen är säkrad. "
+                "Håll hjälputrustningen utanför de redovisade införingsbanorna.",
+                MARGIN,
+                y,
+                max_chars=105,
+            )
+            - 6
+        )
     unresolved = (
         ", ".join(manual_plan.unresolved_tool_ids)
         if manual_plan.unresolved_tool_ids
         else "Inga i den frysta verktygslistan"
     )
-    canvas.drawString(MARGIN, y, "Ej specificerade hjälpmedel: " + unresolved)
+    canvas.drawString(
+        MARGIN,
+        y,
+        "Hjälpmedlens specifikation: documents/installation.pdf"
+        if workshop_profile
+        else "Ej specificerade hjälpmedel: " + unresolved,
+    )
     y -= 18
     canvas.setFont("Helvetica-Bold", 9)
     canvas.drawString(MARGIN, y, "Verktyg och hjälpmedel från AssemblyGraph")
@@ -604,12 +644,97 @@ def assembly_manual_pdf(
     canvas.setFont("Helvetica", 8)
     for tool_id in manual_plan.tool_ids:
         label, specified = ASSEMBLY_TOOL_CATALOG.get(tool_id, (tool_id, False))
-        status = "identifierat" if specified else "SPECIFIKATION KRÄVS"
+        status = (
+            "se installationsanvisningen"
+            if workshop_profile
+            else ("identifierat" if specified else "SPECIFIKATION KRÄVS")
+        )
         canvas.drawString(MARGIN, y, f"{tool_id}: {label} – {status}")
         y -= 12
     if not manual_plan.tool_ids:
         canvas.drawString(MARGIN, y, "Inga verktygs-ID:n finns i AssemblyGraph.")
-    _footer(canvas, "Designgranskning – fysisk montering kräver separat arbetsberedning")
+    _footer(
+        canvas,
+        f"Monteringsprofil {workshop_profile}"
+        if workshop_profile
+        else "Designgranskning – fysisk montering kräver separat arbetsberedning",
+    )
+
+    if standing_site:
+        canvas.showPage()
+        y = _header(canvas, "Monteringsplats före steg 1", identity)
+        canvas.setFillColor(BLOCK if standing_site.state != "nominal_clear" else INK)
+        canvas.setFont("Helvetica-Bold", 11)
+        state_text = {
+            "blocked": "Stående montering på angiven plats är blockerad.",
+            "requires_measurement": "Mät monteringsplatsen före provmontage.",
+            "nominal_clear": "Trädelarnas nominella rörelser ryms i de kontrollerade måtten.",
+        }
+        y = _draw_wrapped_text(canvas, state_text[standing_site.state], MARGIN, y, max_chars=78)
+        canvas.setFillColor(INK)
+        canvas.setFont("Helvetica", 10)
+        y = _draw_wrapped_text(
+            canvas,
+            f"Trädelarnas högsta läge över stommens botten är "
+            f"{um_to_mm(standing_site.minimum_height_from_base_um)} mm. "
+            f"Framför stommen behövs {um_to_mm(standing_site.minimum_front_space_um)} mm "
+            "för införingen. Arbetsutrymme tillkommer.",
+            MARGIN,
+            y - 10,
+            max_chars=88,
+        )
+        if standing_site.envelope_top_margin_um is not None:
+            y = _draw_wrapped_text(
+                canvas,
+                f"Marginal inom kundens angivna höjdmått: "
+                f"{um_to_mm(standing_site.envelope_top_margin_um)} mm. "
+                "Värdet är beräknat från monteringsrörelsen.",
+                MARGIN, y - 4, max_chars=88,
+            )
+        for label, value in (
+            ("Minsta takhöjd från golv enligt geometrin", standing_site.minimum_ceiling_height_um),
+            ("Uppmätt takhöjd", standing_site.measured_ceiling_height_um),
+            ("Uppmätt fritt utrymme framför stommen", standing_site.measured_front_space_um),
+        ):
+            measurement = f"{um_to_mm(value)} mm" if value is not None else "uppgift saknas"
+            y = _draw_wrapped_text(canvas, f"{label}: {measurement}.", MARGIN, y - 4, max_chars=88)
+        for issue in standing_site.issues:
+            y = _draw_wrapped_text(canvas, issue["message"], MARGIN, y - 10, max_chars=88)
+        for wall in standing_site.walls:
+            if wall.required_reservation_um is not None:
+                y = _draw_wrapped_text(
+                    canvas,
+                    f"{WALL_NAMES[wall.wall].capitalize()}: "
+                    f"minsta nominella reservation {um_to_mm(wall.required_reservation_um)} mm.",
+                    MARGIN,
+                    y - 8,
+                    max_chars=88,
+                )
+            observed = (
+                um_to_mm(wall.measured_distance_um) + " mm"
+                if wall.measured_distance_um is not None
+                else "ej uppmätt"
+            )
+            planned = (
+                um_to_mm(wall.reserved_um) + " mm" if wall.reserved_um is not None else "saknas"
+            )
+            y = _draw_wrapped_text(
+                canvas,
+                f"  Reservation: {planned}. Platsmätning till "
+                f"väggytan bakom eventuell list: {observed}.",
+                MARGIN,
+                y - 4,
+                max_chars=88,
+            )
+        _draw_wrapped_text(
+            canvas,
+            "Mät även fri plats framför möbeln för den angivna "
+            "införingen samt utrymme för fixturer, händer och lyfthjälp.",
+            MARGIN,
+            y - 14,
+            max_chars=88,
+        )
+        _footer(canvas, "Monteringsläge: stående på plats vid slutligt stomdatum")
 
     if not steps:
         return _finish(buffer, canvas)
@@ -626,7 +751,7 @@ def assembly_manual_pdf(
             y = _header(
                 canvas,
                 title + continuation,
-                f"Designhash {design.design_hash}",
+                identity,
             )
             if step is None:
                 canvas.drawString(MARGIN, y, "Inga separata förbandssteg krävs.")
@@ -641,7 +766,8 @@ def assembly_manual_pdf(
                 y,
                 "Monteringsbana: "
                 + " -> ".join(segment.value for segment in step.motion_path)
-                + " (högerhänt X/Y/Z-system)",
+                + " (högerhänt X/Y/Z-system)"
+                + (f" · Slaglängd {um_to_mm(travel[step.step_number])} mm" if travel else ""),
             )
             y -= 18
             canvas.setFont("Helvetica", 8)
@@ -657,20 +783,31 @@ def assembly_manual_pdf(
                 y,
             )
             canvas.setFont("Helvetica", 7)
-            canvas.drawString(
-                MARGIN,
-                y,
-                f"AssemblyGraph-förband i steget: {len(step.joint_ids)}; "
-                "varje förband validerat exakt en gång.",
-            )
-            y -= 12
+            mounts = _assembly_step_door_mounts(design, step)
+            if mounts:
+                for mount in mounts:
+                    canvas.drawString(
+                        MARGIN,
+                        y,
+                        "Luckinfästning: 2 gångjärn mellan "
+                        f"{mount.door.semantic_key} och {mount.support.semantic_key}.",
+                    )
+                    y -= 12
+            else:
+                canvas.drawString(
+                    MARGIN,
+                    y,
+                    f"AssemblyGraph-förband i steget: {len(step.joint_ids)}; "
+                    "varje förband validerat exakt en gång.",
+                )
+                y -= 12
             group_plan = group_by_step[step.step_id]
             canvas.drawString(
                 MARGIN,
                 y,
                 "Rörlig grupp: "
                 f"{group_plan.weight_g / 1000:.2f} kg · "
-                f"maxmått {group_plan.max_dimension_um / 1000:g} mm",
+                f"maxmått {um_to_mm(group_plan.max_dimension_um)} mm",
             )
             y -= 12
             people_text = (
@@ -744,6 +881,49 @@ def assembly_manual_pdf(
                     leading=10,
                 )
             _footer(canvas, "Följ alltid arbetsplatsens lyft-, kläm- och verktygsinstruktioner")
+    if getattr(design, "trial_angles", ()):
+        # Fit the angles after all captured panels are positioned; none obstruct panel entry.
+        for start in range(0, len(design.trial_angles), 8):
+            canvas.showPage()
+            y = _header(canvas, "Fäst låsvinklarna efter stommonteringen", identity)
+            canvas.setFont("Helvetica", 8)
+            y = _draw_wrapped_text(
+                canvas,
+                (
+                    "Stöd stommen i monteringsjiggen. Varje listad GN 970-ALM-30-30-30-B "
+                    "monteras inne i facket mot de två markerade ytorna. Rikta vinkelns hål "
+                    "mot pilothålen. Montera två DIN 96 A4 5 x 16 mm, en i varje skänkel. "
+                    "Dra först båda löst, kontrollera fullt instick och anliggning innan "
+                    "åtdragning. "
+                    + (
+                        "Använd föreskrivet moment i documents/installation.pdf."
+                        if workshop_profile
+                        else "Slutmoment, pilotdiameter och utdragskapacitet kräver prov."
+                    )
+                ),
+                MARGIN,
+                y,
+                max_chars=106,
+            )
+            for a in design.trial_angles[start : start + 8]:
+                y -= 20
+                canvas.setFont("Helvetica-Bold", 8)
+                canvas.drawString(
+                    MARGIN,
+                    y,
+                    f"{part_by_id[a.upright_id].semantic_key} + "
+                    f"{part_by_id[a.horizontal_id].semantic_key} · {a.joint_id}",
+                )
+                canvas.setFont("Helvetica", 7)
+                canvas.drawString(MARGIN, y - 12, f"Stående del: {a.upright_hole}")
+                canvas.drawString(MARGIN, y - 23, f"Liggande del: {a.horizontal_hole}")
+                y -= 25
+            _footer(
+                canvas,
+                "Montering enligt documents/installation.pdf"
+                if workshop_profile
+                else "Provmontage · kontrollera åtkomst innan låsning och belastning",
+            )
     return _finish(buffer, canvas)
 
 
@@ -878,6 +1058,19 @@ def _assembly_step_hardware(design: Any, step: Any) -> tuple[tuple[str, int], ..
     return tuple(sorted(quantities.items()))
 
 
+def _assembly_step_door_mounts(design: Any, step: Any) -> tuple[DoorMount, ...]:
+    parameters = getattr(getattr(design, "spec", None), "parameters", None)
+    if parameters is None or getattr(parameters, "door_hinge", None) != HINGE:
+        return ()
+    return tuple(
+        mount
+        for mount in door_mounts(design.parts, parameters)
+        if mount.door.part_id in step.moving_part_ids
+        and mount.door.part_id in step.part_ids
+        and mount.support.part_id in step.part_ids
+    )
+
+
 def _assembly_step_hardware_text(
     design: Any,
     step: Any,
@@ -885,6 +1078,12 @@ def _assembly_step_hardware_text(
 ) -> str:
     unresolved_fronts = set(_unresolved_front_hardware_part_ids(design)) & set(step.part_ids)
     if unresolved_fronts:
+        count = len(_assembly_step_door_mounts(design, step))
+        if count:
+            return (
+                f"{2 * count} × {HINGE}, {2 * count} × {PLATE}, {12 * count} × {SCREW}. "
+                "Infästningen är ett typprov."
+            )
         return "FRONT EJ MONTERINGSBAR: verifierat mekaniskt beslag och borrbild saknas"
     selected_joint_ids = set(step.joint_ids)
     selected_joints = tuple(
@@ -922,6 +1121,14 @@ def _assembly_step_hardware_text(
             f"VERSIONSBUNDET RETENTIONSSYSTEM: {identities}; följ endast den "
             "checksum-bundna installationsinstruktionen. Källautenticitet fastställs inte "
             "av nuvarande MVP och fysisk montering är inte frisläppt av detta designbevis"
+        )
+    trial_count = sum(
+        angle.joint_id in selected_joint_ids for angle in getattr(design, "trial_angles", ())
+    )
+    if trial_count:
+        return (
+            f"Passa in spåren i detta steg. Efter stängning: {trial_count} GN 970-vinklar "
+            f"och {2 * trial_count} skruvar på fogarna i steget. Se beslagssidorna sist."
         )
     hardware = _assembly_step_hardware(design, step)
     if hardware:

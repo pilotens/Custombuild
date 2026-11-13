@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CustombuildApiClient, type CurrentPrincipal } from "@/lib/api-client";
-import { newFurnitureWorkspace, type FurniturePreview, type FurnitureWorkspace } from "@/lib/furniture-workspace";
+import { newFurnitureWorkspace, type FurnitureExportReady, type FurniturePreview, type FurnitureWorkspace } from "@/lib/furniture-workspace";
 import { FurnitureStudio } from "./furniture-workspace";
 
 vi.mock("next/dynamic", () => ({ default: () => function Viewer() { return <div>Modell</div>; } }));
@@ -25,6 +25,12 @@ function preview(workspace: FurnitureWorkspace, parts = 5): FurniturePreview {
 function setup() {
   const api = new CustombuildApiClient("https://api.example.test");
   vi.spyOn(api, "listProjects").mockResolvedValue([]);
+  vi.spyOn(api,"createFurnitureProject").mockImplementation(async(name,workspace)=>{
+    // Model the single create response using the project's and draft's shared fixtures.
+    const project=await api.createProject(name);
+    const draft=await api.saveFurnitureDraft(project.id,0,workspace);
+    return {project:{...project,furniture_type:workspace.design.intent.family},draft};
+  });
   vi.spyOn(api, "furnitureCatalog").mockResolvedValue({ families: [], materials: [
     { material_id: "birch-plywood", name: "Björkplywood", version: "screening-2026.1",
       nominal_thickness_um: 18_000, min_supported_thickness_um: 17_000, max_supported_thickness_um: 19_000 },
@@ -35,6 +41,122 @@ function setup() {
   return api;
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+
+describe("durable furniture export downloads", () => {
+  const jobId = "d4fe7ac5-a886-4294-8fb0-c0c7fc36175c";
+  const ready: FurnitureExportReady = {
+    job_id: jobId, state: "succeeded", artifact_id: "392bc496-f75c-4474-abd9-453f40a17561",
+    file_name: "custombuild-review.zip", download_path: `/v1/furniture/projects/project/exports/${jobId}/download`,
+    design_hash: "a".repeat(64), revision: 1, sha256: "b".repeat(64),
+    size_bytes: 3, content_type: "application/zip", physical_cutting_authorized: false,
+  };
+  async function savedStudio(family: "table" | "shelving" = "table") {
+    const api = setup();
+    vi.spyOn(api, "createProject").mockResolvedValue({ id: "project", name: "Mitt bord", furniture_type: "table",
+      current_revision: 0, description: "", archived: false, created_at: "2026-09-07T12:00:00Z",
+      updated_at: "2026-09-07T12:00:00Z" });
+    vi.spyOn(api, "saveFurnitureDraft").mockImplementation(async (id, revision, workspace) => {
+      const saved = { ...workspace, design: { ...workspace.design, design_id: id, revision: revision + 1 } };
+      return { project_id: id, revision: revision + 1, workspace: saved, preview: preview(saved) };
+    });
+    vi.spyOn(api, "requestFurnitureExport").mockResolvedValue({ job_id: jobId, state: "queued" });
+    render(<FurnitureStudio api={api} principal={principal} initialFamily={family} />);
+    await screen.findByText("5 delar");
+    if (family === "shelving") {
+      fireEvent.click(screen.getByText("Fack, hyllhöjder och rygg"));
+      fireEvent.click(screen.getByRole("checkbox", {name:/Prova mekanisk låsning/}));
+      await screen.findByText("5 delar");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Spara revision" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeEnabled());
+    return api;
+  }
+
+  it("only links verified binary downloads and revokes them when the design changes", async () => {
+    const api = await savedStudio();
+    const blob = new Blob(["zip"], { type: "application/zip" });
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue(ready);
+    const download = vi.spyOn(api, "downloadFurnitureExport").mockResolvedValue(blob);
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:verified-review");
+    const revokeUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "Skapa granskningspaket" }));
+    const link = await screen.findByRole("link", { name: /Hämta STEP/ });
+    expect(link).toHaveAttribute("href", "blob:verified-review");
+    expect(link).toHaveAttribute("download", ready.file_name);
+    expect(download).toHaveBeenCalledWith("project", jobId, 1, ready.design_hash, ready, expect.any(AbortSignal));
+    expect(createUrl).toHaveBeenCalledWith(blob);
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1200" } });
+    expect(screen.queryByRole("link", { name: /Hämta STEP/ })).toBeNull();
+    expect(revokeUrl).toHaveBeenCalledWith("blob:verified-review");
+  });
+
+  it("checks the current workshop order on every download click", async () => {
+    const api = await savedStudio("shelving");
+    const artifact = {...ready, file_name:"custombuild-workshop-drawings-1.zip"};
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue(artifact);
+    const fetchFile = vi.spyOn(api, "downloadFurnitureExport")
+      .mockRejectedValueOnce(new Error("Verkstadsritningarna avser en tidigare revision."))
+      .mockResolvedValue(new Blob(["zip"]));
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:current-workshop");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    const saveFile = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", {name: "Beställ verkstadsritningar"}));
+    const download = await screen.findByRole("button", {name:/Hämta frisläppta verkstadsritningar/});
+    expect(fetchFile).not.toHaveBeenCalled();
+    fireEvent.click(download);
+    await screen.findByText(/avser en tidigare revision/);
+    expect(createUrl).not.toHaveBeenCalled();
+    expect(saveFile).not.toHaveBeenCalled();
+    fireEvent.click(download);
+    await waitFor(() => expect(saveFile).toHaveBeenCalledOnce());
+    expect(fetchFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("discards workshop bytes if the user edits the order while a download is in flight", async () => {
+    const api = await savedStudio("shelving");
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue({...ready, file_name:"custombuild-workshop-drawings-1.zip"});
+    let finish!: (blob: Blob) => void;
+    const get = vi.spyOn(api, "downloadFurnitureExport").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const saveFile = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", {name:"Beställ verkstadsritningar"}));
+    fireEvent.click(await screen.findByRole("button", {name:/Hämta frisläppta verkstadsritningar/}));
+    await waitFor(() => expect(get).toHaveBeenCalledOnce());
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), {target:{value:"1200"}});
+    expect(get.mock.calls[0]![5]?.aborted).toBe(true);
+    await act(async () => finish(new Blob(["old"])));
+    expect(saveFile).not.toHaveBeenCalled();
+  });
+
+  it("aborts a download and ignores late bytes after editing the design", async () => {
+    const api = await savedStudio();
+    vi.spyOn(api, "furnitureExportResult").mockResolvedValue(ready);
+    let finish!: (blob: Blob) => void;
+    const download = vi.spyOn(api, "downloadFurnitureExport").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:stale-review");
+    fireEvent.click(screen.getByRole("button", { name: "Skapa granskningspaket" }));
+    await waitFor(() => expect(download).toHaveBeenCalledOnce());
+    const signal = download.mock.calls[0]![5]!;
+    expect(signal.aborted).toBe(false);
+    fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1200" } });
+    expect(signal.aborted).toBe(true);
+    await act(async () => finish(new Blob(["zip"])));
+    expect(createUrl).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: /Hämta STEP/ })).toBeNull();
+  });
+
+  it("stops on cancelled exports without requesting a binary download", async () => {
+    const api = await savedStudio();
+    const status = vi.spyOn(api, "furnitureExportResult").mockResolvedValue({
+      job_id: jobId, state: "cancelled", message: "Revisionen har ändrats.",
+    });
+    const download = vi.spyOn(api, "downloadFurnitureExport");
+    fireEvent.click(screen.getByRole("button", { name: "Skapa granskningspaket" }));
+    await screen.findByText("Revisionen har ändrats.");
+    expect(status).toHaveBeenCalledOnce();
+    expect(download).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: /Hämta STEP/ })).toBeNull();
+  });
+});
 
 describe("möbelstudions revisions- och profilflöde", () => {
   it("behåller materialens råformat och ogiltiga måttfält vid maskinbyte tills profilen granskas", async () => {
@@ -165,6 +287,20 @@ describe("möbelstudions revisions- och profilflöde", () => {
     expect(screen.getByLabelText("Bredd (mm)")).toHaveValue(4340);
     expect(create).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Skapa granskningspaket" })).toBeDisabled();
+  });
+
+  it("visar felaktig bredd tills kunden skriver tillbaka det giltiga värdet", async () => {
+    const api = setup();
+    render(<FurnitureStudio api={api} principal={principal} initialFamily="shelving" />);
+    const width = screen.getByLabelText("Bredd (mm)") as HTMLInputElement;
+    const original = width.value;
+    fireEvent.change(width, { target: { value: "6000.001" } });
+    expect(width).toHaveValue(6000.001);
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(width, { target: { value: original } });
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent.width_um)
+      .toBe(Number(original)*1000));
   });
 
   it("ersätter även osparad indelningstext när en kontrollerad arbetsfil med samma grundmått öppnas", async () => {
@@ -415,5 +551,40 @@ describe("möbelstudions revisions- och profilflöde", () => {
     fireEvent.change(screen.getByLabelText("Bredd (mm)"), { target: { value: "1100.0001" } });
     expect(screen.getByRole("alert")).toHaveTextContent("högst tre decimaler");
     expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+  });
+});
+
+describe("familjespecifika konstruktionsmått", () => {
+  it("visar stommens gräns och spärrar en för låg byrå tills höjden har rättats", () => {
+    const api = setup();
+    render(<FurnitureStudio principal={principal} api={api} initialFamily="chest_of_drawers" />);
+    const height = screen.getByLabelText("Höjd (mm)");
+    expect(height).toHaveAttribute("min", "300");
+    expect(height).toHaveAttribute("max", "4000");
+    fireEvent.change(height, { target: { value: "299.999" } });
+    expect(screen.getByRole("alert")).toHaveTextContent("mellan 300 och 4000 mm");
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeDisabled();
+    fireEvent.change(height, { target: { value: "301" } });
+    expect(screen.queryByText("Ange ett mått mellan 300 och 4000 mm.")).toBeNull();
+    expect(screen.getByRole("button", { name: "Spara revision" })).toBeEnabled();
+  });
+
+  it("använder samma exakta diameter i båda riktningarna för en rund skiva", async () => {
+    const api = setup();
+    render(<FurnitureStudio principal={principal} api={api} initialFamily="dining_table" />);
+    fireEvent.change(screen.getByLabelText("Bordsskivans form"), { target: { value: "round" } });
+    fireEvent.change(screen.getByLabelText("Diameter (mm)"), { target: { value: "1150.125" } });
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent)
+      .toMatchObject({ top_shape: "round", width_um: 1_150_125, depth_um: 1_150_125 }));
+    expect(screen.queryByLabelText("Djup (mm)")).not.toBeInTheDocument();
+  });
+
+  it("håller antal lådor jämnt delbart när användaren väljer två kolumner", async () => {
+    const api = setup();
+    render(<FurnitureStudio principal={principal} api={api} initialFamily="chest_of_drawers" />);
+    fireEvent.change(screen.getByLabelText("Lådkolumner"), { target: { value: "2" } });
+    fireEvent.change(screen.getByLabelText("Fronthöjd rad 1 nedifrån (mm)"), { target: { value: "250" } });
+    await waitFor(() => expect(vi.mocked(api.previewFurniture).mock.lastCall?.[0].design.intent)
+      .toMatchObject({ drawer_count: 4, drawer_columns: 2, row_front_heights_um: [250_000] }));
   });
 });

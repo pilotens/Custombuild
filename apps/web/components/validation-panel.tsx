@@ -1,8 +1,16 @@
 "use client";
 
-import { useRef } from "react";
+import { useMemo, useRef } from "react";
 import { AlertTriangle, CheckCircle2, ChevronDown, CircleX, Crosshair, Sparkles } from "lucide-react";
-import type { DesignSpec, RuleEvaluation, ValidationStatus } from "@/lib/design-types";
+import type { DesignSpec, ResolvedDesign, ResolvedPart, RuleEvaluation, ValidationStatus } from "@/lib/design-types";
+import { designPlanning } from "@/lib/design-planning";
+import { estimateMaterialRequirements } from "@/lib/material-requirements";
+import {
+  validationPresentation,
+  validationPreviewFieldLabel,
+  validationPreviewValue,
+} from "@/lib/validation-presentation";
+import styles from "./validation-panel.module.css";
 import {
   automaticValidationFixPreview,
   permitsStocklessDesignReview,
@@ -22,6 +30,8 @@ interface ValidationPanelProps {
   evaluations: RuleEvaluation[];
   status: ValidationStatus;
   spec?: DesignSpec;
+  parts?: readonly ResolvedPart[];
+  source?: ResolvedDesign["source"];
   activePreview?: ActiveValidationFixPreview;
   onRequestPreview: (evaluation: RuleEvaluation) => void;
   onCancelPreview: () => void;
@@ -88,6 +98,8 @@ export function ValidationPanel({
   evaluations,
   status,
   spec,
+  parts,
+  source,
   activePreview,
   onRequestPreview,
   onCancelPreview,
@@ -101,58 +113,211 @@ export function ValidationPanel({
   const warnings = evaluations.filter((evaluation) => evaluation.status === "WARNING").length;
   const blocks = evaluations.filter((evaluation) => evaluation.status === "BLOCK").length;
   const stocklessReviewAllowed = permitsStocklessDesignReview(evaluations);
+  const materialRequirements = useMemo(() => (
+    spec && parts ? estimateMaterialRequirements(spec, parts) : undefined
+  ), [spec, parts]);
+  const planning = spec && source ? designPlanning(spec, evaluations, source) : undefined;
+  const unsupportedRuleIds = new Set<string>(planning?.unsupportedSystems.map((system) => (
+    system === "joint_retention" ? "CB-JOINT-001" : "CB-HARDWARE-001"
+  )));
 
-  return (
-    <section className="panel validation-panel" aria-labelledby="validation-heading">
-      <div className="panel-heading validation-heading-row">
-        <div>
-          <p className="eyebrow">Kontroll · Aktuell konstruktion</p>
-          <h2 id="validation-heading">Kontrollera konstruktionen</h2>
+  const pending = ordered.filter((evaluation) => evaluation.status !== "PASS");
+  const passed = ordered.filter((evaluation) => evaluation.status === "PASS");
+  const isDesignAction = (evaluation: RuleEvaluation) => (
+    validationPresentation(evaluation).category === "design"
+    || (spec !== undefined && automaticValidationFixPreview(evaluation, spec) !== undefined)
+  );
+  const designChecks = pending.filter(isDesignAction);
+  const workshopChecks = pending.filter((evaluation) => !isDesignAction(evaluation) && !unsupportedRuleIds.has(evaluation.rule_id));
+  const capabilityChecks = pending.filter((evaluation) => unsupportedRuleIds.has(evaluation.rule_id));
+
+  const renderCards = (items: RuleEvaluation[]) => items.map((evaluation, evaluationIndex) => {
+    const guidance = validationGuidance(evaluation, spec);
+    let presentation = validationPresentation(evaluation);
+    const materialPlan = evaluation.rule_id === "DFM-STOCK-001" ? materialRequirements : undefined;
+    if (materialPlan?.complete && materialPlan.rows.length > 0 && source === "local") {
+      const total = materialPlan.rows.reduce((sum, row) => sum + row.estimatedSheets, 0);
+      const additional = materialPlan.rows.reduce((sum, row) => sum + row.additionalSheets, 0);
+      const quantities = materialPlan.rows.map((row) => (
+        `${row.estimatedSheets} ${row.role === "carcass" ? "till stommen" : "till bakstycket"}`
+      )).join(" + ");
+      presentation = {
+        ...presentation,
+        title: `Beräknat behov: ${total} skivor`,
+        summary: `${quantities}. ${additional > 0 ? `${additional} fler än angivet antal behöver ordnas.` : "Beräknat för de valda skivformaten."} Tillgången är inte verifierad.`,
+      };
+    }
+    if (evaluation.rule_id === "STAB-TIP-002" && evaluation.status !== "PASS" && planning?.wallAnchoringRequired) {
+      presentation = {
+        ...presentation,
+        title: "Väggförankring behövs",
+        summary: "Appen har räknat med behovet av väggfästen. Infästningen måste passa den verkliga väggen.",
+      };
+    }
+    const automaticPreview = evaluation.status !== "PASS" && spec
+      ? automaticValidationFixPreview(evaluation, spec)
+      : undefined;
+    const isPreviewOpen = activePreview?.ruleId === evaluation.rule_id
+      && activePreview.ruleVersion === evaluation.rule_version
+      && automaticPreview !== undefined;
+    const targetStep = guidance.target.kind === "step" ? guidance.target.step : undefined;
+    const affectedPartIds = [...new Set(evaluation.affected_part_ids.filter(Boolean))];
+    const actualValue = evaluation.calculated_value !== undefined && Number.isFinite(evaluation.calculated_value)
+      ? formatMeasuredValue(evaluation.calculated_value, evaluation.unit)
+      : undefined;
+    const allowedValue = evaluation.allowed_value !== undefined && Number.isFinite(evaluation.allowed_value)
+      ? formatMeasuredValue(evaluation.allowed_value, evaluation.unit)
+      : undefined;
+    const diagnostics = numericDiagnostics(evaluation);
+    const cardId = `${evaluation.rule_id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${evaluationIndex}`;
+    const headingId = `validation-title-${cardId}`;
+    const fixPreviewId = `validation-fix-preview-${cardId}`;
+    return (
+      <article
+        className={`validation-card validation-${evaluation.status.toLowerCase()} ${styles.card}`}
+        key={evaluation.rule_id}
+        aria-label={evaluation.title}
+      >
+        <div className={styles.cardHeader}>
+          <span className={styles.titleWrap}>
+            <span>
+              <strong id={headingId}>{presentation.title}</strong>
+              <small>{presentation.summary}</small>
+            </span>
+          </span>
+          <ValidationState status={evaluation.status} />
         </div>
-        <ValidationState status={status} />
-      </div>
-      <div className="validation-summary" aria-label={`${blocks} måste lösas och ${warnings} behöver beslut`}>
-        <span><strong>{blocks}</strong> måste lösas</span>
-        <span><strong>{warnings}</strong> behöver beslut</span>
-        <span><strong>{evaluations.length - blocks - warnings}</strong> godkända</span>
-      </div>
-      <div className="validation-list">
-        {ordered.map((evaluation, evaluationIndex) => {
-          const guidance = validationGuidance(evaluation, spec);
-          const automaticPreview = evaluation.status !== "PASS" && spec
-            ? automaticValidationFixPreview(evaluation, spec)
-            : undefined;
-          const isPreviewOpen = activePreview?.ruleId === evaluation.rule_id
-            && activePreview.ruleVersion === evaluation.rule_version
-            && automaticPreview !== undefined;
-          const targetStep = guidance.target.kind === "step" ? guidance.target.step : undefined;
-          const affectedPartIds = [...new Set(evaluation.affected_part_ids.filter(Boolean))];
-          const actualValue = evaluation.calculated_value !== undefined && Number.isFinite(evaluation.calculated_value)
-            ? formatMeasuredValue(evaluation.calculated_value, evaluation.unit)
-            : undefined;
-          const allowedValue = evaluation.allowed_value !== undefined && Number.isFinite(evaluation.allowed_value)
-            ? formatMeasuredValue(evaluation.allowed_value, evaluation.unit)
-            : undefined;
-          const diagnostics = numericDiagnostics(evaluation);
-          const cardId = `${evaluation.rule_id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${evaluationIndex}`;
-          const headingId = `validation-title-${cardId}`;
-          const fixPreviewId = `validation-fix-preview-${cardId}`;
-          return (
-          <article
-            className={`validation-card validation-${evaluation.status.toLowerCase()}`}
-            key={evaluation.rule_id}
-            aria-labelledby={headingId}
-          >
-            <div className="validation-card-header">
-              <span className="validation-title-wrap">
-                <ValidationState status={evaluation.status} />
-                <span>
-                  <strong id={headingId}>{evaluation.title}</strong>
-                  <small>{evaluation.summary}</small>
-                </span>
-              </span>
-            </div>
-            <div className="validation-card-body">
+        <div className={styles.cardBody}>
+          {isPreviewOpen && automaticPreview && activePreview ? (
+            <section
+              className="validation-fix-preview"
+              id={fixPreviewId}
+              aria-labelledby={`${fixPreviewId}-heading`}
+              aria-live="polite"
+            >
+              <strong id={`${fixPreviewId}-heading`}>Kontrollera ändringen före tillämpning</strong>
+              <p>Den här förhandsvisningen är lokalt beräknad. Den är inte serververifierad eller tillämpad.</p>
+              <dl>
+                {activePreview.changes.map((change) => (
+                  <div key={change.field}>
+                    <dt>{validationPreviewFieldLabel(change.field)}</dt>
+                    <dd>
+                      <span>{validationPreviewValue(change.field, change.before)}</span>
+                      <span aria-hidden="true">→</span>
+                      <span>{validationPreviewValue(change.field, change.after)}</span>
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+              <details className={styles.exactChanges}>
+                <summary>Exakta ändringsvärden</summary>
+                <dl>
+                  {activePreview.changes.map((change) => (
+                    <div key={change.field}>
+                      <dt><code>{change.field}</code></dt>
+                      <dd>
+                        <span>Före <code>{formatPreviewValue(change.before)}</code></span>
+                        <span aria-hidden="true">→</span>
+                        <span>Efter <code>{formatPreviewValue(change.after)}</code></span>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
+              {activePreview.noGeometryChange ? (
+                <p><strong>Ingen geometriförändring:</strong> endast specifikations- eller regelunderlag ändras.</p>
+              ) : (
+                <p><strong>3D-jämförelse:</strong> nuvarande ändrade eller borttagna delar visas i ockra och föreslagen geometri i turkos.</p>
+              )}
+              <p><strong>Orsak:</strong> {activePreview.reason}</p>
+              <div className="validation-fix-preview-actions">
+                <button
+                  type="button"
+                  className="text-button"
+                  onClick={() => {
+                    onCancelPreview();
+                    previewTriggerRef.current?.focus();
+                  }}
+                >
+                  Avbryt
+                </button>
+                <button
+                  type="button"
+                  className="suggestion-button"
+                  onClick={onConfirmPreview}
+                >
+                  <Sparkles aria-hidden="true" size={14} />
+                  Bekräfta och tillämpa
+                </button>
+              </div>
+            </section>
+          ) : null}
+          <div className={`validation-actions ${styles.actions}`}>
+            {automaticPreview ? (
+              <button
+                type="button"
+                className="suggestion-button"
+                aria-label={`Visa förslag: ${automaticPreview.label}`}
+                aria-expanded={isPreviewOpen}
+                aria-controls={isPreviewOpen ? fixPreviewId : undefined}
+                onClick={(event) => {
+                  previewTriggerRef.current = event.currentTarget;
+                  onRequestPreview(evaluation);
+                }}
+              >
+                <Sparkles aria-hidden="true" size={14} />
+                Visa förslag
+              </button>
+            ) : evaluation.status !== "PASS" && targetStep !== undefined && onNavigateToStep ? (
+              <button
+                type="button"
+                className="suggestion-button"
+                aria-label={`Ändra i Studio: ${evaluation.title}`}
+                onClick={() => onNavigateToStep(targetStep)}
+              >
+                Ändra i Studio
+              </button>
+            ) : evaluation.status !== "PASS"
+              && spec?.furniture_type !== "wall_library"
+              && guidance.target.kind === "production"
+              && (guidance.target.gate !== "stockless_review" || stocklessReviewAllowed)
+              && onOpenProduction ? (
+              <button
+                type="button"
+                className="suggestion-button"
+                aria-label={`Öppna underlag för ${evaluation.title}`}
+                onClick={onOpenProduction}
+              >
+                Öppna underlag
+              </button>
+            ) : null}
+          </div>
+          <details className={`validation-technical ${styles.details}`}>
+            <summary>
+              <span>Visa detaljer</span>
+              <ChevronDown aria-hidden="true" size={15} className="summary-chevron" />
+            </summary>
+          <div className="validation-technical-body">
+            <strong>{evaluation.title}</strong>
+            {materialPlan ? (
+              <section className={styles.materialPlan} aria-label="Automatiskt beräknat materialbehov">
+                <strong>{materialPlan.complete ? "Preliminär materialplan" : "Ofullständig materialplan"}</strong>
+                <dl>
+                  {materialPlan.rows.map((row) => (
+                    <div key={row.role}>
+                      <dt>{row.role === "carcass" ? "Stomme" : "Bakstycke"} · {row.thicknessMm} mm</dt>
+                      <dd>{row.estimatedSheets} skivor à {row.widthMm} × {row.heightMm} mm. Angivet antal: {row.declaredSheets}.</dd>
+                    </div>
+                  ))}
+                </dl>
+                {!materialPlan.complete ? (
+                  <p>{materialPlan.oversizedPartIds.length > 0
+                    ? "Alla delar ryms inte i beräkningen. Fler skivor löser inte ett för litet skivformat."
+                    : "Materialplanen kunde inte beräknas för alla delar. Kontrollera skivformat, material och mått i underlaget."}</p>
+                ) : null}
+                <p>Geometrisk uppskattning, inte verifierat lager eller färdig kapplan. Verkstadens fiberriktning, marginaler och fixturer kan öka behovet. Inga lageruppgifter ändras.</p>
+              </section>
+            ) : null}
               <div className="validation-guidance">
                 <section>
                   <strong>{evaluation.status === "PASS" ? "Verifierat resultat" : "Orsak"}</strong>
@@ -213,140 +378,101 @@ export function ValidationPanel({
                   ))}
                 </div>
               ) : null}
-              {isPreviewOpen && automaticPreview && activePreview ? (
-                <section
-                  className="validation-fix-preview"
-                  id={fixPreviewId}
-                  aria-labelledby={`${fixPreviewId}-heading`}
-                  aria-live="polite"
-                >
-                  <strong id={`${fixPreviewId}-heading`}>Kontrollera ändringen före tillämpning</strong>
-                  <p>Den här förhandsvisningen är lokalt beräknad. Den är inte serververifierad eller tillämpad.</p>
-                  <dl>
-                    {activePreview.changes.map((change) => (
-                      <div key={change.field}>
-                        <dt><code>{change.field}</code></dt>
-                        <dd>
-                          <span>Före <code>{formatPreviewValue(change.before)}</code></span>
-                          <span aria-hidden="true">→</span>
-                          <span>Efter <code>{formatPreviewValue(change.after)}</code></span>
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                  {activePreview.noGeometryChange ? (
-                    <p><strong>Ingen geometriförändring:</strong> endast specifikations- eller regelunderlag ändras.</p>
-                  ) : (
-                    <p><strong>3D-jämförelse:</strong> nuvarande ändrade eller borttagna delar visas i ockra och föreslagen geometri i turkos.</p>
-                  )}
-                  <p><strong>Orsak:</strong> {activePreview.reason}</p>
-                  <div className="validation-fix-preview-actions">
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() => {
-                        onCancelPreview();
-                        previewTriggerRef.current?.focus();
-                      }}
-                    >
-                      Avbryt
-                    </button>
-                    <button
-                      type="button"
-                      className="suggestion-button"
-                      onClick={onConfirmPreview}
-                    >
-                      <Sparkles aria-hidden="true" size={14} />
-                      Bekräfta och tillämpa
-                    </button>
-                  </div>
-                </section>
+
+              <p><small>Regel {evaluation.rule_id} · version {evaluation.rule_version}</small></p>
+              {evaluation.diagnostics?.length ? (
+                <dl className="validation-diagnostics" aria-label="Kontrollens exakta diagnostik">
+                  {evaluation.diagnostics.map((item) => (
+                    <div key={`${item.label}-${item.value}-${item.unit ?? ""}`}>
+                      <dt>{item.label}</dt>
+                      <dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd>
+                    </div>
+                  ))}
+                </dl>
               ) : null}
-              <div className="validation-actions">
-                {automaticPreview ? (
-                  <button
-                    type="button"
-                    className="suggestion-button"
-                    aria-label={evaluation.status === "BLOCK"
-                      ? `Åtgärda problem för ${evaluation.title}: ${automaticPreview.label}`
-                      : `Förhandsgranska: ${automaticPreview.label}`}
-                    aria-expanded={isPreviewOpen}
-                    aria-controls={isPreviewOpen ? fixPreviewId : undefined}
-                    onClick={(event) => {
-                      previewTriggerRef.current = event.currentTarget;
-                      onRequestPreview(evaluation);
-                    }}
-                  >
-                    <Sparkles aria-hidden="true" size={14} />
-                    {evaluation.status === "BLOCK"
-                      ? "Åtgärda problem"
-                      : `Förhandsgranska: ${automaticPreview.label}`}
-                  </button>
-                ) : evaluation.status !== "PASS" && targetStep !== undefined && onNavigateToStep ? (
-                  <button
-                    type="button"
-                    className="suggestion-button"
-                    aria-label={evaluation.status === "BLOCK"
-                      ? `Åtgärda problem för ${evaluation.title} i ${guidance.target.control}`
-                      : `Gå till ${guidance.target.control}`}
-                    onClick={() => onNavigateToStep(targetStep)}
-                  >
-                    {evaluation.status === "BLOCK" ? "Åtgärda problem" : `Gå till ${guidance.target.control}`}
-                  </button>
-                ) : evaluation.status !== "PASS"
-                  && guidance.target.kind === "production"
-                  && (guidance.target.gate !== "stockless_review" || stocklessReviewAllowed)
-                  && onOpenProduction ? (
-                  <button
-                    type="button"
-                    className="suggestion-button"
-                    aria-label={evaluation.status === "BLOCK"
-                      ? `Åtgärda problem för ${evaluation.title}: öppna ${guidance.target.control}`
-                      : "Extern kontroll: öppna underlaget"}
-                    onClick={onOpenProduction}
-                  >
-                    {evaluation.status === "BLOCK" ? "Åtgärda problem" : "Extern kontroll: öppna underlaget"}
-                  </button>
-                ) : null}
-              </div>
-              <details className="validation-technical">
-                <summary>
-                  <span>Tekniska detaljer</span>
-                  <ChevronDown aria-hidden="true" size={15} className="summary-chevron" />
-                </summary>
-                <div className="validation-technical-body">
-                  <p><small>Regel {evaluation.rule_id} · version {evaluation.rule_version}</small></p>
-                  {evaluation.diagnostics?.length ? (
-                    <dl className="validation-diagnostics" aria-label="Kontrollens exakta diagnostik">
-                      {evaluation.diagnostics.map((item) => (
-                        <div key={`${item.label}-${item.value}-${item.unit ?? ""}`}>
-                          <dt>{item.label}</dt>
-                          <dd>{item.value}{item.unit ? ` ${item.unit}` : ""}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  ) : null}
-                  <div className="calculation-trace">
-                    <span>Beräkningsspår</span>
-                    <code>{evaluation.calculation}</code>
-                    {actualValue || allowedValue || evaluation.margin_percent !== undefined ? (
-                      <div className="calculation-values">
-                        {actualValue ? <span>Beräknat <strong>{actualValue}</strong></span> : null}
-                        {allowedValue ? <span>{thresholdLabel(evaluation)} <strong>{allowedValue}</strong></span> : null}
-                        {evaluation.margin_percent !== undefined ? (
-                          <span>Marginal <strong className={evaluation.margin_percent < 0 ? "negative" : ""}>{evaluation.margin_percent} %</strong></span>
-                        ) : null}
-                      </div>
+              <div className="calculation-trace">
+                <span>Beräkningsspår</span>
+                <code>{evaluation.calculation}</code>
+                {actualValue || allowedValue || evaluation.margin_percent !== undefined ? (
+                  <div className="calculation-values">
+                    {actualValue ? <span>Beräknat <strong>{actualValue}</strong></span> : null}
+                    {allowedValue ? <span>{thresholdLabel(evaluation)} <strong>{allowedValue}</strong></span> : null}
+                    {evaluation.margin_percent !== undefined ? (
+                      <span>Marginal <strong className={evaluation.margin_percent < 0 ? "negative" : ""}>{evaluation.margin_percent} %</strong></span>
                     ) : null}
                   </div>
-                </div>
-              </details>
+                ) : null}
+              </div>
             </div>
-          </article>
-          );
-        })}
+          </details>
+        </div>
+      </article>
+    );
+  });
+
+  return (
+    <section className={`panel validation-panel ${styles.panel}`} aria-labelledby="validation-heading">
+      <div className={`panel-heading validation-heading-row ${styles.heading}`}>
+        <div>
+          <p className="eyebrow">Kontroll · Aktuell konstruktion</p>
+          <h2 id="validation-heading">Kontrollera konstruktionen</h2>
+        </div>
       </div>
-      <p className="screening-disclaimer">Kontrollen använder den aktuella konstruktionen. Tekniska detaljer finns kvar för den som vill granska beräkningen.</p>
+      <div className={`validation-summary ${styles.summary}`} aria-label={blocks > 0
+        ? `${blocks} måste lösas och ${warnings} behöver beslut`
+        : `Inga blockerande designfel. ${warnings} tillverkningskrav återstår.`}>
+        {blocks > 0 ? <span><strong>{blocks}</strong> måste lösas</span> : <span>Inga blockerande designfel</span>}
+        <span><strong>{warnings}</strong> behöver beslut</span>
+        <span><strong>{passed.length}</strong> godkända</span>
+      </div>
+      <div className={styles.content}>
+        {designChecks.length > 0 ? (
+          <section aria-labelledby="validation-design-heading" className={styles.group}>
+            <h3 id="validation-design-heading">Justera möbeln</h3>
+            <p>Se förslaget i modellen innan du bestämmer dig.</p>
+            <div className="validation-list">{renderCards(designChecks)}</div>
+          </section>
+        ) : null}
+        {workshopChecks.length > 0 ? (
+          <section aria-labelledby="validation-workshop-heading" className={styles.group}>
+            <h3 id="validation-workshop-heading">Inför tillverkning</h3>
+            <p>Verkstaden behöver bekräfta detta innan möbeln kan tillverkas.</p>
+            <div className="validation-list">{renderCards(workshopChecks)}</div>
+          </section>
+        ) : null}
+        {capabilityChecks.length > 0 ? (
+          <section className={styles.capability} aria-labelledby="validation-capability-heading">
+            <h3 id="validation-capability-heading">Tillverkningsstödet är inte färdigt</h3>
+            <p>Appen saknar ännu en verifierad lösning för {planning?.unsupportedSystems.map((system) => (
+              system === "joint_retention" ? "foglåsning" : "gångjärn och borrhål"
+            )).join(" samt ")}. Det kräver utveckling av appen, inte fler inställningar från dig.</p>
+            <strong>Modellen är inte klar för tillverkning.</strong>
+            <details>
+              <summary>Visa {capabilityChecks.length} kvarstående krav</summary>
+              <div className="validation-list">{renderCards(capabilityChecks)}</div>
+            </details>
+          </section>
+        ) : null}
+        {pending.length === 0 ? (
+          <p className={styles.empty}>
+            <CheckCircle2 aria-hidden="true" size={18} />
+            {passed.length > 0 ? "Inga ändringar föreslås av kontrollerna." : "Inga kontroller att visa ännu."}
+          </p>
+        ) : null}
+        {passed.length > 0 ? (
+          <details className={styles.passed}>
+            <summary>
+              <CheckCircle2 aria-hidden="true" size={17} />
+              <span>Godkända kontroller ({passed.length})</span>
+              <ChevronDown aria-hidden="true" size={15} />
+            </summary>
+            <div className="validation-list">{renderCards(passed)}</div>
+          </details>
+        ) : null}
+        <p className={styles.disclaimer}>
+          {status === "BLOCK" ? "Tillverkning är spärrad tills kraven är lösta." : "Kontrollen är inte ett tillverkningstillstånd."}
+        </p>
+      </div>
     </section>
   );
 }

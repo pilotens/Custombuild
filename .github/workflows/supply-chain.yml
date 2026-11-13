@@ -26,6 +26,10 @@ jobs:
             dockerfile: services/worker/Dockerfile
           - component: web
             dockerfile: apps/web/Dockerfile
+          - component: postgres
+            dockerfile: infra/postgres/Dockerfile
+          - component: redis
+            dockerfile: infra/redis/Dockerfile
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -39,6 +43,7 @@ jobs:
           build_date="$(git show -s --format=%cI '${{ github.sha }}')"
           lock_name="DEPENDENCY_LOCK_SHA256"
           lock_file="uv.lock"
+          case "${{ matrix.component }}" in redis|postgres) lock_file="${{ matrix.dockerfile }}" ;; esac
           if [ "${{ matrix.component }}" = "web" ]; then
             lock_name="FRONTEND_LOCK_SHA256"
             lock_file="pnpm-lock.yaml"
@@ -58,6 +63,12 @@ jobs:
             --build-arg "${lock_name}=${lock_sha256}" \
             --tag "custombuild-${{ matrix.component }}:supply-chain-${{ github.sha }}" \
             .
+      - name: Verify PostgreSQL logical migration and old-volume refusal
+        if: matrix.component == 'postgres'
+        run: bash scripts/verify_postgres_upgrade.sh "custombuild-postgres:supply-chain-${{ github.sha }}"
+      - name: Verify broker upgrade against persisted AOF
+        if: matrix.component == 'redis'
+        run: bash scripts/verify_redis_upgrade.sh "custombuild-redis:supply-chain-${{ github.sha }}"
       - name: Verify and record candidate provenance
         shell: bash
         run: |
@@ -71,6 +82,7 @@ jobs:
           lock_name="DEPENDENCY_LOCK_SHA256"
           lock_label="io.custombuild.dependency-lock.sha256"
           lock_file="uv.lock"
+          case "${{ matrix.component }}" in redis|postgres) lock_file="${{ matrix.dockerfile }}" ;; esac
           dependency_lock_sha256=""
           frontend_lock_sha256=""
           if [ "${{ matrix.component }}" = "web" ]; then
@@ -129,6 +141,7 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all high and critical vulnerabilities
+        id: scan
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-${{ matrix.component }}:supply-chain-${{ github.sha }}
@@ -136,6 +149,16 @@ jobs:
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
+          output-format: json
+          output-file: ${{ runner.temp }}/custombuild-findings.json
+      - name: Preserve package findings from a rejected image
+        if: ${{ !cancelled() && steps.scan.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findings-app-${{ matrix.component }}-${{ github.sha }}
+          path: ${{ runner.temp }}/custombuild-findings.json
+          if-no-files-found: warn
+          retention-days: 14
 
   pinned-runtime-images:
     name: Runtime image / ${{ matrix.component }}
@@ -145,12 +168,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - component: postgres
-            image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
-          - component: redis
-            image: redis:7.2.15-alpine@sha256:05a97a479bc73de66f087dc05b569010772880f778cc8671fa6b8aadee32e5c6
           - component: volume-init
-            image: cgr.dev/chainguard/busybox:latest@sha256:928939fc7f20750dea03366627d83bfa497df565fcf6b55fdddb004ecd8426d6
+            image: busybox:1.37.0-musl@sha256:f6a95d611e0a8780fabdb2aec43e31275b2720dfefa3e41b16835bfc42454478
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -168,6 +187,7 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all high and critical vulnerabilities
+        id: scan
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: ${{ matrix.image }}
@@ -175,6 +195,16 @@ jobs:
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
+          output-format: json
+          output-file: ${{ runner.temp }}/custombuild-findings.json
+      - name: Preserve package findings from a rejected image
+        if: ${{ !cancelled() && steps.scan.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findings-runtime-${{ matrix.component }}-${{ github.sha }}
+          path: ${{ runner.temp }}/custombuild-findings.json
+          if-no-files-found: warn
+          retention-days: 14
 
   repository-seaweedfs-image:
     name: Repository SeaweedFS image
@@ -207,13 +237,13 @@ jobs:
           grpc_version="$(docker image inspect "$image" --format '{{ index .Config.Labels "io.custombuild.go-grpc.version" }}')"
           image_id="$(docker image inspect "$image" --format '{{.Id}}')"
           test "$source_sha256" = "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
-          test "$security_overrides_sha256" = "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f"
-          test "$go_version" = "1.26.6"
+          test "$security_overrides_sha256" = "b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1"
+          test "$go_version" = "1.26.9"
           test "$apache_thrift_version" = "0.24.0"
           test "$etcd_client_pkg_version" = "3.7.1"
-          test "$x_crypto_version" = "0.56.0"
+          test "$x_crypto_version" = "0.58.0"
           test "$x_image_version" = "0.45.0"
-          test "$x_text_version" = "0.41.0"
+          test "$x_text_version" = "0.43.0"
           test "$grpc_version" = "v1.85.0-dev.0.20260825072537-93e31b48545e"
           jq -n \
             --arg schema_version "custombuild.seaweedfs-release.v2" \
@@ -239,6 +269,7 @@ jobs:
           upload-artifact-retention: 30
           upload-release-assets: false
       - name: Block all SeaweedFS high and critical vulnerabilities
+        id: scan
         uses: anchore/scan-action@e49c028b8f5d4ac63b87309b024ea6faceb6bac3 # pinned Grype bootstrap fix
         with:
           image: custombuild-seaweedfs:${{ github.sha }}
@@ -246,6 +277,16 @@ jobs:
           config: .grype.yaml
           fail-build: true
           severity-cutoff: high
+          output-format: json
+          output-file: ${{ runner.temp }}/custombuild-findings.json
+      - name: Preserve package findings from a rejected image
+        if: ${{ !cancelled() && steps.scan.outcome == 'failure' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: findings-seaweedfs-${{ github.sha }}
+          path: ${{ runner.temp }}/custombuild-findings.json
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload immutable SeaweedFS manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { TemplatePicker } from "./template-picker";
+import { resolveDesign } from "@/lib/design-engine";
+import { DEFAULT_DESIGN_SPEC } from "@/lib/design-types";
 
 function renderPicker(overrides: Partial<React.ComponentProps<typeof TemplatePicker>> = {}) {
   const props: React.ComponentProps<typeof TemplatePicker> = {
@@ -15,6 +17,19 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof TemplatePic
 }
 
 describe("TemplatePicker Explore entry", () => {
+  it("opens the other catalogued templates and preserves their concept status", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", { name: /Välj en design/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Fler startmodeller" }));
+    for (const name of ["Skänk", "Hänghylla", "Förvaringsvägg"]) {
+      expect(screen.getByRole("button", { name: new RegExp(name + ".*Koncept") })).toBeEnabled();
+    }
+    fireEvent.click(screen.getByRole("button", { name: /Hänghylla.*Koncept/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Öppna Hänghylla i Studio" }));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ id: "hanging-shelf", productionLevel: "concept" }), expect.anything());
+  });
+
   it("starts with four direct routes instead of a required wizard", () => {
     renderPicker({ required: true });
 
@@ -54,7 +69,7 @@ describe("TemplatePicker Explore entry", () => {
         productionLevel: "concept",
         patch: expect.objectContaining({
           furniture_type: "wall_library",
-          width_mm: 4_200,
+          width_mm: 2_400,
           height_mm: 2_400,
           depth_mm: 320,
         }),
@@ -244,6 +259,23 @@ describe("TemplatePicker Explore entry", () => {
     expect(onSelect).not.toHaveBeenCalled();
   });
 
+  it("öppnar den separata 700 mm underskåpsstommen som en måttstudie", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", {name: /Välj en design/}));
+    fireEvent.click(screen.getByRole("button", {name: /Väggbibliotek/}));
+    fireEvent.click(screen.getByRole("button", {name:"Öppna referens med 700 mm underskåpsstomme"}));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({
+      id:"wall-library", productionLevel:"concept", patch:expect.objectContaining({
+        width_mm:4280, height_mm:2500, depth_mm:260, base_cabinet_height_mm:700, base_cabinet_count:6,
+      }),
+    }), expect.objectContaining({dimensionsConfirmed:false}));
+    const [template] = onSelect.mock.calls[0]!;
+    const model = resolveDesign({...DEFAULT_DESIGN_SPEC, ...template.patch});
+    expect(model.parts.filter(p => p.kind === "cabinet_front")).toHaveLength(6);
+    expect(model.parts.filter(p => p.kind === "base_bottom")).toHaveLength(6);
+  });
+
   it("opens an empty frame immediately from Börja tomt", () => {
     const onSelect = vi.fn();
     renderPicker({ onSelect });
@@ -263,6 +295,24 @@ describe("TemplatePicker Explore entry", () => {
       }),
       expect.objectContaining({ startMode: "scratch", selectedTemplateId: "shelving" }),
     );
+  });
+
+  it("does not offer an unbraced room divider as an editable start model", () => {
+    const onSelect = vi.fn();
+    renderPicker({ onSelect });
+    fireEvent.click(screen.getByRole("button", { name: /Välj en design/ }));
+    const divider = screen.getByRole("button", { name: /Rumsavdelare/ });
+    expect(divider).toBeDisabled();
+    expect(divider).toHaveTextContent(/när alternativ stagning stöds/);
+    fireEvent.click(divider);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("shows an admission error without crashing or closing the scratch entry", () => {
+    renderPicker({ onSelect: () => { throw new Error("Måtten ryms inte i skivformatet."); } });
+    fireEvent.click(screen.getByRole("button", { name: /Börja tomt/ }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Måtten ryms inte i skivformatet.");
+    expect(screen.getByRole("heading", { name: "Vad vill du skapa?" })).toBeVisible();
   });
 
   it("renders embedded Explore as a regular section without modal behavior", () => {

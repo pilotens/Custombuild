@@ -12,9 +12,11 @@ from dataclasses import dataclass
 from typing import Any
 from xml.etree import ElementTree
 
+from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_manufacturing import FeatureKind, ManufacturingFeature, PartSpec, Side
 from custombuild_manufacturing.adapters import adapt_design_result
 from custombuild_manufacturing.exporters import svg_for_part
+from custombuild_manufacturing.furniture_faces import DrawingFace, drawing_faces
 from custombuild_manufacturing.model import um_to_mm
 from reportlab.lib.colors import HexColor
 from reportlab.lib.pagesizes import A4
@@ -107,6 +109,15 @@ def feature_note_lines(feature: ManufacturingFeature) -> tuple[str, ...]:
         else "EJ ANGIVEN - ska fastställas"
     )
     lines.append(f"Tolerans: {tolerance} | Passningsspel: {um_to_mm(feature.fit_clearance_um)} mm")
+    front_stop = feature.metadata.get("front_stop_clearance_um")
+    if isinstance(front_stop, int) and front_stop:
+        lines.append(
+            f"Öppet till fronten. Stoppmån Y {um_to_mm(front_stop)} mm vid inriktad framkant."
+        )
+    bottom_gap = feature.metadata.get("groove_bottom_clearance_um")
+    if isinstance(bottom_gap, int) and bottom_gap:
+        engagement = feature.depth_um - bottom_gap
+        lines.append(f"Instick {um_to_mm(engagement)} mm | Spårbottenmån {um_to_mm(bottom_gap)} mm")
     if feature.corner_strategy:
         lines.append(
             f"Hörnstrategi: {feature.corner_strategy} | Avlastningsradie: "
@@ -236,17 +247,30 @@ def _geometry(
         _text(canvas, MARGIN, label_y - 3, f"F{note.number:02d}", size=9)
 
 
-def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> bytes:
+def part_drawings_pdf(
+    design: Any, *, qualification_note: str | None = None, workshop: bool = False
+) -> bytes:
     """Draw every part and face, retaining the exact SVG geometry and feature data."""
 
     adapted = adapt_design_result(design)
     buffer = io.BytesIO()
     canvas = Canvas(buffer, pagesize=A4, invariant=1, pageCompression=1)
-    canvas.setTitle("Custombuild - delritningar för verkstadsgranskning")
+    canvas.setTitle(
+        "Custombuild - verkstadsritningar"
+        if workshop
+        else "Custombuild - delritningar för verkstadsgranskning"
+    )
     canvas.setAuthor("Custombuild deterministic document engine")
     page_number = 0
-    for part in sorted(adapted.parts, key=lambda value: value.part_id):
-        for side in (Side.A, Side.B):
+    sources = {p.part_id: p for p in design.parts} if isinstance(design, FurnitureResult) else {}
+    for original in sorted(adapted.parts, key=lambda value: value.part_id):
+        views = (
+            drawing_faces(sources[original.part_id], original)
+            if isinstance(design, FurnitureResult)
+            else tuple(DrawingFace(side.value, original, side) for side in (Side.A, Side.B))
+        )
+        for view in views:
+            part, side = view.part, view.side
             # Only our own validated, escaped exporter output is parsed here.
             root = ElementTree.fromstring(svg_for_part(part, side))  # noqa: S314
             metadata_node = root.find(f"{SVG_NS}metadata")
@@ -264,7 +288,7 @@ def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> 
                 page_number += 1
                 canvas.setFillColor(INK)
                 canvas.setFont("Helvetica-Bold", 17)
-                canvas.drawString(MARGIN, 806, f"Delritning - sida {side.value}")
+                canvas.drawString(MARGIN, 806, f"Delritning - sida {view.name}")
                 canvas.setFont("Helvetica", 8)
                 canvas.drawRightString(PAGE_WIDTH - MARGIN, 808, f"Blad {sheet_index}/{len(pages)}")
                 _text(canvas, MARGIN, 788, f"{part.name} | {part.part_id}")
@@ -294,13 +318,22 @@ def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> 
                     f"Material: {part.material_id}@{part.material_version}",
                     size=7.5,
                 )
+                grain_axis = {
+                    "X": ("U", part.axis_mapping.u_axis),
+                    "Y": ("V", part.axis_mapping.v_axis),
+                }.get(part.grain_direction)
+                grain_text = (
+                    f"Fiber längs {grain_axis[0]} (stomaxel {grain_axis[1].upper()})"
+                    if grain_axis
+                    else "Ingen angiven fiberriktning"
+                )
                 _text(
                     canvas,
                     MARGIN,
                     726,
                     f"Fysisk yta: {metadata['physical_face']} | "
                     f"U={part.axis_mapping.u_axis.upper()}, "
-                    f"V={part.axis_mapping.v_axis.upper()} | Delfiber: {part.grain_direction}",
+                    f"V={part.axis_mapping.v_axis.upper()} | {grain_text}",
                 )
                 _text(
                     canvas,
@@ -344,12 +377,14 @@ def part_drawings_pdf(design: Any, *, qualification_note: str | None = None) -> 
                         y -= 10
                     y -= 10
                 canvas.setFillColor(MUTED)
-                _text(canvas, MARGIN, 52, f"DXF: parts/{part.part_id}/{side.value}.dxf", size=7)
+                _text(canvas, MARGIN, 52, f"DXF: parts/{part.part_id}/{view.name}.dxf", size=7)
                 _text(
                     canvas,
                     MARGIN,
                     40,
-                    "Verkstadsgranskning. Material, förband, toleranser och CAM "
+                    "Verkstadsritning i millimeter. Verkstaden väljer maskin och bereder CAM."
+                    if workshop
+                    else "Verkstadsgranskning. Material, förband, toleranser och CAM "
                     "måste accepteras inför tillverkning.",
                     size=7,
                 )

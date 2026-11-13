@@ -167,6 +167,7 @@ def normalize_preview(
         actual_thickness_um=actual_um,
         back_thickness_um=back_actual_um,
         shelf_count=int(payload.get("shelf_count", 5)),
+        trial_angle=payload.get("trial_angle"),
         shelf_mount=ShelfMount(str(payload.get("shelf_mount", "fixed"))),
         shelf_load_n=_load_newtons(payload.get("load_per_shelf_kg", 30)),
         vertical_divider_count=int(
@@ -766,6 +767,8 @@ def _present_part(part: Any) -> dict[str, Any]:
     return {
         "part_id": part.part_id,
         "name": part.semantic_key,
+        "a_side": part.a_side.value,
+        "b_side": part.b_side.value,
         "kind": kind,
         "width_mm": _mm_value(width_um),
         "depth_mm": _mm_value(depth_um),

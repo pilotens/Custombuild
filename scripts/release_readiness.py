@@ -2616,8 +2616,8 @@ def supply_chain_issues(repo: Path) -> list[str]:
         seaweed_source = seaweed_dockerfile.read_text(encoding="utf-8")
         required_seaweed_contract = (
             (
-                "golang:1.26.6-alpine3.24@sha256:"
-                "3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83"
+                "golang:1.26.9-alpine3.24@sha256:"
+                "3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade"
             ),
             "ENV GOTOOLCHAIN=local",
             (
@@ -2625,22 +2625,22 @@ def supply_chain_issues(repo: Path) -> list[str]:
                 "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
             ),
             "800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30",
-            "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f",
+            "b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1",
             "github.com/apache/thrift@v0.24.0",
             "go.etcd.io/etcd/client/pkg/v3@v3.7.1",
-            "golang.org/x/crypto@v0.56.0",
+            "golang.org/x/crypto@v0.58.0",
             "golang.org/x/image@v0.45.0",
-            "golang.org/x/text@v0.41.0",
+            "golang.org/x/text@v0.43.0",
             "google.golang.org/grpc@v1.85.0-dev.0.20260825072537-93e31b48545e",
             "-mod=readonly",
             "FROM scratch AS runtime",
             'io.custombuild.security-overrides.sha256="${SEAWEEDFS_SECURITY_OVERRIDES_SHA256}"',
-            'io.custombuild.go.version="1.26.6"',
+            'io.custombuild.go.version="1.26.9"',
             'io.custombuild.go-apache-thrift.version="0.24.0"',
             'io.custombuild.go-etcd-client-pkg.version="3.7.1"',
-            'io.custombuild.go-x-crypto.version="0.56.0"',
+            'io.custombuild.go-x-crypto.version="0.58.0"',
             'io.custombuild.go-x-image.version="0.45.0"',
-            'io.custombuild.go-x-text.version="0.41.0"',
+            'io.custombuild.go-x-text.version="0.43.0"',
             'io.custombuild.go-grpc.version="v1.85.0-dev.0.20260825072537-93e31b48545e"',
             "ENV TMPDIR=/tmp",
         )
@@ -2857,6 +2857,7 @@ def build_report(repo: Path, *, require_clean: bool) -> dict[str, Any]:
         "services/api/alembic/versions/0019_cam_approval_candidate_sha.py",
         "services/api/alembic/versions/0020_release_cam_approval_identity.py",
         "services/api/alembic/versions/0021_furniture_review_reads.py",
+        "services/api/alembic/versions/0022_durable_furniture_review_exports.py",
         "scripts/activate_joint_retention_registry.py",
         "scripts/bootstrap_production_identity.py",
         "services/api/app/oidc_identity.py",

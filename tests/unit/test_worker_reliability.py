@@ -206,7 +206,11 @@ def test_generate_package_threads_exact_verified_retention_snapshot(
         order.append("complete")
         return True
 
-    monkeypatch.setattr(worker_tasks, "_claim_job", lambda *_args: (job, version))
+    def claim(*_args: object, expected_job_type: object):
+        assert expected_job_type == worker_tasks.GenerationJobType.production
+        return job, version
+
+    monkeypatch.setattr(worker_tasks, "_claim_job", claim)
     monkeypatch.setattr(worker_tasks, "_maintain_generation_lease", maintain)
     monkeypatch.setattr(worker_tasks, "_validate_retention_before_generation", preflight)
     monkeypatch.setattr(worker_tasks, "_generate", generate)

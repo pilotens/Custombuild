@@ -2,6 +2,7 @@
 
 import { AlertTriangle, Check, Image as ImageIcon, LoaderCircle, Ruler, Sparkles, Upload, X } from "lucide-react";
 import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type DragEvent, type KeyboardEvent } from "react";
+import { DEFAULT_DESIGN_SPEC } from "@/lib/design-types";
 import { DESIGN_CONSTRAINTS } from "@/lib/design-constraints";
 import {
   analyzeReferencePixels,
@@ -10,18 +11,20 @@ import {
   REFERENCE_IMAGE_INFERENCE_LIMITS,
   referenceDraftValidationError,
   referenceResult,
+  referenceConstructionIssues, UNKNOWN_CONSTRUCTION,
   type ReferenceAssetInspection,
   type ReferenceImageAnalysis,
   type ReferenceImageDraft,
   type ReferenceImageResult,
 } from "@/lib/reference-image";
+import { draftGuidePositions, ReferenceConstructionFields, ReferenceGuideEditor } from "./reference-construction";
 import { useDialogFocus } from "@/lib/use-dialog-focus";
 
 interface ReferenceImageImporterProps {
   open: boolean;
   onClose: () => void;
   onInspect: (file: File) => Promise<ReferenceAssetInspection>;
-  onApply: (result: ReferenceImageResult) => void;
+  onApply: (result: ReferenceImageResult) => void | boolean;
 }
 
 const ACCEPTED_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
@@ -112,7 +115,7 @@ function NumberControl({ label, value, unit, minimum, maximum, onChange }: Numbe
 }
 
 function confidenceLabel(confidence: number): string {
-  if (confidence >= 0.78) return "Tydlig struktur";
+  if (confidence >= 0.78) return "Hög linjekontrast";
   if (confidence >= 0.55) return "Granska tolkningen";
   return "Osäker tolkning";
 }
@@ -268,7 +271,15 @@ export function ReferenceImageImporter({ open, onClose, onInspect, onApply }: Re
 
   const apply = () => {
     if (!analysis || !draft || !asset || !analysis.boundaryDetected) return;
-    onApply(referenceResult(analysis, draft, fileName, asset));
+    try {
+      if (onApply(referenceResult(analysis, draft, fileName, asset)) === false) {
+        setError("Kontrollera modellens mått och fackindelning. Din tolkning finns kvar.");
+        return;
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Modellen kunde inte öppnas.");
+      return;
+    }
     // Applying is not the same as cancelling. The parent closes the importer
     // and marks onboarding complete synchronously; invoking its close callback
     // afterwards can observe the previous `workspaceSelected=false` render and
@@ -338,7 +349,7 @@ export function ReferenceImageImporter({ open, onClose, onInspect, onApply }: Re
             <div className="reference-review-visual">
               <div className="reference-analysis-status">
                 <span className={`reference-confidence ${analysis.confidence < 0.55 ? "low" : ""}`}>
-                  <Sparkles aria-hidden="true" size={15} /> {Math.round(analysis.confidence * 100)} % · {confidenceLabel(analysis.confidence)}
+                  <Sparkles aria-hidden="true" size={15} /> {confidenceLabel(analysis.confidence)} · kontrollera varje linje
                 </span>
                 <button type="button" onClick={chooseFile} disabled={processing}>
                   {processing ? <LoaderCircle aria-hidden="true" className="spin" size={15} /> : <Upload aria-hidden="true" size={15} />}
@@ -359,17 +370,17 @@ export function ReferenceImageImporter({ open, onClose, onInspect, onApply }: Re
                   height={analysis.bounds.height}
                   className="reference-detected-boundary"
                 />
-                {analysis.verticalGuides.map((ratio, index) => (
+                {draftGuidePositions(draft, false).map((ratio, index) => (
                   <line
                     key={`v-${index}`}
                     x1={analysis.bounds.x + ratio * analysis.bounds.width}
                     x2={analysis.bounds.x + ratio * analysis.bounds.width}
                     y1={analysis.bounds.y}
-                    y2={analysis.bounds.y + (analysis.baseSplitRatio ?? 1) * analysis.bounds.height}
+                    y2={analysis.bounds.y + (draft.furnitureType === "wall_library" ? analysis.baseSplitRatio ?? 1 : 1) * analysis.bounds.height}
                     className="reference-detected-line"
                   />
                 ))}
-                {analysis.horizontalGuides.map((ratio, index) => (
+                {draftGuidePositions(draft, true).map(v => (1-v)*(draft.furnitureType === "wall_library" ? analysis.baseSplitRatio ?? 1 : 1)).map((ratio, index) => (
                   <line
                     key={`h-${index}`}
                     x1={analysis.bounds.x}
@@ -379,7 +390,7 @@ export function ReferenceImageImporter({ open, onClose, onInspect, onApply }: Re
                     className="reference-detected-line"
                   />
                 ))}
-                {analysis.baseSplitRatio === undefined ? null : (
+                {draft.furnitureType !== "wall_library" || analysis.baseSplitRatio === undefined ? null : (
                   <line
                     x1={analysis.bounds.x}
                     x2={analysis.bounds.x + analysis.bounds.width}
@@ -390,6 +401,22 @@ export function ReferenceImageImporter({ open, onClose, onInspect, onApply }: Re
                 )}
               </svg>
               <p><span /> Gröna linjer visar vad som blir hyllor och avdelare. Den orange linjen visar underskåpets överkant.</p>
+              <p>Bokryggar, ytterkanter och skuggor kan ge falska linjer. Jämför varje markering med bilden.</p>
+              <ReferenceGuideEditor horizontal={false} draft={draft} change={updateDraft} />
+              <ReferenceGuideEditor horizontal draft={draft} change={updateDraft} />
+              <ReferenceConstructionFields value={draft.construction ?? UNKNOWN_CONSTRUCTION}
+                change={construction => updateDraft({ construction })} />
+              {draft.furnitureType === "wall_library" && <label>Rygg att jämföra i modellen
+                <select value={draft.modeledBack ?? "inset_groove"} onChange={e =>
+                  updateDraft({ modeledBack: e.target.value as ReferenceImageDraft["modeledBack"] })}>
+                  <option value="inset_groove">Infällda fält bakom överdelen</option>
+                  <option value="surface_mounted">Hel utanpåliggande rygg bakom alla fack</option>
+                </select></label>}
+              {referenceConstructionIssues({material_id:DEFAULT_DESIGN_SPEC.material_id, back_panel:true,
+                back_panel_type:draft.furnitureType === "wall_library" ? (draft.modeledBack ?? "inset_groove") : "inset_groove",
+                shelf_count:draft.shelfCount, divider_count:draft.dividerCount,
+                base_cabinet_count:draft.furnitureType === "wall_library" ? draft.baseCabinetCount : 0},
+                draft.construction).map(issue => <p key={issue}>{issue}</p>)}
               <div className="reference-validation-pass" role="status">
                 <Check aria-hidden="true" size={15} /> Källbilden är sparad oföränderligt · SHA-256 {asset?.image_sha256.slice(0, 12)}…
               </div>
@@ -398,7 +425,7 @@ export function ReferenceImageImporter({ open, onClose, onInspect, onApply }: Re
                   {analysis.warnings.map((warning) => <li key={warning}><AlertTriangle aria-hidden="true" size={14} /> {warning}</li>)}
                 </ul>
               ) : (
-                <div className="reference-validation-pass"><Check aria-hidden="true" size={15} /> Bilden har tillräcklig upplösning och en läsbar möbelstruktur.</div>
+                <div className="reference-validation-pass"><Check aria-hidden="true" size={15} /> Linjer har hittats. Baksida, beslag och hål kräver separata uppgifter.</div>
               )}
               {!analysis.boundaryDetected ? (
                 <div className="reference-import-error" role="alert"><AlertTriangle aria-hidden="true" size={17} /> Bilden kan inte skapa en modell ännu. Byt till en tydligare bild med hela möbeln synlig.</div>
@@ -459,8 +486,8 @@ export function ReferenceImageImporter({ open, onClose, onInspect, onApply }: Re
               <div className="reference-control-section">
                 <h4>Synlig indelning</h4>
                 <div className="reference-control-grid">
-                  <NumberControl label="Hyllor" value={draft.shelfCount} minimum={DESIGN_CONSTRAINTS.shelfCount.minimum} maximum={DESIGN_CONSTRAINTS.shelfCount.maximum} onChange={(shelfCount) => updateDraft({ shelfCount })} />
-                  <NumberControl label="Avdelare" value={draft.dividerCount} minimum={DESIGN_CONSTRAINTS.dividerCount.minimum} maximum={DESIGN_CONSTRAINTS.dividerCount.maximum} onChange={(dividerCount) => updateDraft({ dividerCount })} />
+                  <NumberControl label="Hyllor" value={draft.shelfCount} minimum={DESIGN_CONSTRAINTS.shelfCount.minimum} maximum={DESIGN_CONSTRAINTS.shelfCount.maximum} onChange={(shelfCount) => updateDraft({ shelfCount, shelfHeightRatios: [] })} />
+                  <NumberControl label="Avdelare" value={draft.dividerCount} minimum={DESIGN_CONSTRAINTS.dividerCount.minimum} maximum={DESIGN_CONSTRAINTS.dividerCount.maximum} onChange={(dividerCount) => updateDraft({ dividerCount, bayWidthRatios: [] })} />
                 </div>
                 <small>Automatisk bildtolkning identifierar högst {REFERENCE_IMAGE_INFERENCE_LIMITS.shelfCount} hyllor och {REFERENCE_IMAGE_INFERENCE_LIMITS.dividerCount} avdelare. Bekräftade värden kan justeras till hela intervallet ovan.</small>
               </div>

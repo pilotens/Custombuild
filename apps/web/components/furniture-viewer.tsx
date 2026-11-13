@@ -23,6 +23,7 @@ import {
   PerspectiveCamera as ThreePerspectiveCamera,
   Vector3,
 } from "three";
+import type { DrillMarker } from "@/lib/part-inspection";
 import type {
   Group as ThreeGroup,
   InstancedMesh as ThreeInstancedMesh,
@@ -111,6 +112,7 @@ export interface FurnitureComparisonPreview {
 }
 
 interface FurnitureViewerProps {
+  drillMarkers?: DrillMarker[];
   parts: ResolvedPart[];
   designSize: { widthMm: number; heightMm: number; depthMm: number };
   selectedPartId?: string;
@@ -220,6 +222,8 @@ const RESIZE_AXIS_CONSTRAINTS = {
 const MATERIAL_VISUALS: Readonly<Record<string, ViewerMaterialVisual>> = {
   "birch-plywood": { color: "#c8b18a", roughness: 0.68, metalness: 0.01 },
   "birch-plywood-6": { color: "#c8b18a", roughness: 0.68, metalness: 0.01 },
+  "solid-walnut": { color: "#74503c", roughness: 0.68, metalness: 0 },
+  "walnut-square-stock": { color: "#74503c", roughness: 0.68, metalness: 0 },
   mdf: { color: "#aaa49b", roughness: 0.9, metalness: 0 },
   "mdf-6": { color: "#aaa49b", roughness: 0.9, metalness: 0 },
 };
@@ -874,6 +878,7 @@ export function DimensionDragOverlay(props: Pick<
             }}
           >
             <span className="dimension-handle-dot" aria-hidden="true" />
+            <span className="dimension-axis-label" aria-hidden="true">{{width:"X",height:"Z",depth:"Y"}[axis]}</span>
           </button>
           <output>{valueFor(axis).toLocaleString("sv-SE")} mm</output>
         </div>
@@ -1625,6 +1630,7 @@ function PartMesh({
   return (
     <mesh
       position={transform.position}
+      rotation={[part.rotation_x_rad ?? 0, 0, 0]}
       castShadow={appearance.castShadow}
       receiveShadow
       onClick={handleSelect}
@@ -1640,7 +1646,7 @@ function PartMesh({
       }}
       onPointerOut={() => setHovered(false)}
     >
-      <boxGeometry args={partSize(part)} />
+      {part.circular_outline ? <cylinderGeometry args={[part.width_mm/2000, part.width_mm/2000, part.thickness_mm/1000, 96]} /> : <boxGeometry args={partSize(part)} />}
       <meshStandardMaterial
         color={appearance.color}
         roughness={appearance.materialVisual.roughness}
@@ -2165,7 +2171,8 @@ function Scene(props: FurnitureViewerProps & {
       : partSupportsVerticalDrag(part, props.parts) && Boolean(props.onPartMove);
   };
   const orbitPerformanceProps = viewerOrbitControlsPerformanceProps(props.parts.length);
-  const partRenderMode = viewerPartRenderMode(props.parts.length, props.transparent);
+  const selectedPart = props.parts.find(part => part.part_id === props.selectedPartId);
+  const partRenderMode = props.parts.some(p => p.rotation_x_rad || p.circular_outline) ? "standard" : viewerPartRenderMode(props.parts.length, props.transparent);
 
   return (
     <>
@@ -2197,6 +2204,14 @@ function Scene(props: FurnitureViewerProps & {
       <RoomStage heightMm={props.designSize.heightMm} presentation={props.presentation} />
       <Bounds fit clip margin={1.35}>
         <group ref={modelRootRef}>
+          {Boolean(props.drillMarkers?.length) && selectedPart ? <group
+            position={viewerPartTransform(selectedPart, props.designSize, props.exploded).position}
+            rotation={[selectedPart.rotation_x_rad ?? 0,0,0]}>
+            {props.drillMarkers!.map(hole => <mesh key={hole.key} position={hole.center} rotation={hole.rotation}
+              raycast={() => undefined}>
+              <circleGeometry args={[hole.radius, 24]}/><meshBasicMaterial color="#12382c" />
+            </mesh>)}
+          </group> : null}
           {partRenderMode === "sortable-transparent" ? (
             <SortableTransparentParts
               parts={props.parts}

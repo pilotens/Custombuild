@@ -9,24 +9,31 @@ permissions:
   contents: read
 
 jobs:
+  product-acceptance:
+    name: Product acceptance (five levels)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - name: Verify immutable repository content root
+        run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          enable-cache: true
+      - run: make product-acceptance
+      - name: Publish per-product measurements
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: furniture-product-acceptance
+          path: test-results/product-acceptance.*
+          if-no-files-found: error
+
   python:
     needs: linuxcnc-interpreter-oracle
     if: ${{ always() }}
     runs-on: ubuntu-24.04
-    services:
-      postgres:
-        image: cgr.dev/chainguard/postgres:latest@sha256:3af67abef0353ec61f054acf649abb5eaaae9742a9c1c9125e073c7833736060
-        env:
-          POSTGRES_DB: custombuild
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d custombuild"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
     env:
       MIGRATION_DATABASE_URL: postgresql+psycopg://custombuild_migrator:strong-migrator-test-password@localhost:5432/custombuild
       RLS_DATABASE_URL: postgresql+psycopg://custombuild_api:strong-api-database-test-password@localhost:5432/custombuild
@@ -43,6 +50,8 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - name: Verify immutable repository content root
         run: python3 scripts/source_manifest.py --repo . --check-production-semantic-root
+      - name: Start the repository PostgreSQL fixture
+        run: bash scripts/start_ci_postgres.sh
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.12.0"
@@ -133,6 +142,8 @@ jobs:
       contents: read
     container:
       image: debian:trixie-slim@sha256:abc9cb88a5587630d7f915f47b23b0668fe250fbfc6457aa4d52b534c1bbf73f
+      volumes:
+        - /etc/ssl/certs/ca-certificates.crt:/run/custombuild-runner-ca.crt:ro
     env:
       DEBIAN_FRONTEND: noninteractive
       GIT_CONFIG_COUNT: "1"
@@ -143,20 +154,20 @@ jobs:
         run: |
           printf '%s\n' \
             'Types: deb' \
-            'URIs: http://snapshot.debian.org/archive/debian/20260824T000000Z' \
+            'URIs: https://snapshot.debian.org/archive/debian/20260824T000000Z' \
             'Suites: trixie trixie-updates' \
             'Components: main' \
             'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
             '' \
             'Types: deb' \
-            'URIs: http://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
+            'URIs: https://snapshot.debian.org/archive/debian-security/20260824T000000Z' \
             'Suites: trixie-security' \
             'Components: main' \
             'Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg' \
             > /etc/apt/sources.list.d/debian.sources
           printf 'Acquire::Check-Valid-Until "false";\n' \
             > /etc/apt/apt.conf.d/99snapshot
-          printf '%s\n' 'Acquire::Retries "5";' \
+          printf '%s\n' 'Acquire::https::CaInfo "/run/custombuild-runner-ca.crt";' 'Acquire::Retries "5";' \
             'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             'APT::Update::Error-Mode "any";' > /etc/apt/apt.conf.d/80custombuild-downloads
           apt-get update
@@ -192,6 +203,8 @@ jobs:
             echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
             echo "DEPENDENCY_LOCK_SHA256=$(sha256sum uv.lock | awk '{print $1}')"
             echo "FRONTEND_LOCK_SHA256=$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+            echo "REDIS_RECIPE_SHA256=$(sha256sum infra/redis/Dockerfile | awk '{print $1}')"
+            echo "POSTGRES_RECIPE_SHA256=$(sha256sum infra/postgres/Dockerfile | awk '{print $1}')"
           } >> "$GITHUB_ENV"
       - name: Verify source freeze before image build
         run: python3 scripts/source_manifest.py --repo . --expect-sha256 "$SOURCE_MANIFEST_SHA256"
@@ -200,7 +213,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Generated API client drift
@@ -337,13 +350,15 @@ jobs:
             echo "SOURCE_MANIFEST_SHA256=${source_manifest_sha256}"
             echo "DEPENDENCY_LOCK_SHA256=$(sha256sum uv.lock | awk '{print $1}')"
             echo "FRONTEND_LOCK_SHA256=$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+            echo "REDIS_RECIPE_SHA256=$(sha256sum infra/redis/Dockerfile | awk '{print $1}')"
+            echo "POSTGRES_RECIPE_SHA256=$(sha256sum infra/postgres/Dockerfile | awk '{print $1}')"
           } >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
         with:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.19.0
+          node-version: 24.22.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install live-browser matrix
@@ -406,6 +421,17 @@ jobs:
         run: >-
           docker compose --file compose.yml up --build --detach
           --wait --wait-timeout 900
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.12.0"
+          enable-cache: true
+      - name: Verify saved artifacts against the live object store
+        env:
+          SEAWEEDFS_S3_ENDPOINT: http://127.0.0.1:9000
+        run: >-
+          uv run --locked --group dev --no-group cad pytest -q
+          tests/integration/test_seaweedfs_storage_immutability.py
+          tests/unit/test_cad_adapter.py::test_cad_unavailability_is_explicit_and_never_creates_placeholder_files
       - name: Prove PostgreSQL replacement reruns the recovery barrier
         run: |
           set -euo pipefail
@@ -581,9 +607,6 @@ jobs:
         run: |
           pnpm --dir apps/web exec playwright test --project=chromium-desktop \
             --output=test-results/chromium-live
-          pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
-            --project=firefox-desktop --project=webkit-desktop \
-            --output=test-results/crossbrowser-live
       - name: Preserve furniture workspace visual evidence
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -592,6 +615,38 @@ jobs:
           path: apps/web/test-results/chromium-live/furniture-live-*/attachments/*.png
           if-no-files-found: error
           retention-days: 14
+      - name: Re-import both bookcase ZIPs downloaded through the customer app
+        run: |
+          set -euo pipefail
+          downloads="$RUNNER_TEMP/bookcase-downloads"
+          install -d -m 755 "$downloads"
+          for name in Custombuild-Bokhylla-Valnot-{Konstruktionsprov,Platsalternativ}.zip; do
+            install -m 644 apps/web/test-results/chromium-live/furniture-live-*/"$name" "$downloads/$name"
+          done
+          docker run --rm --network none --read-only --tmpfs /tmp:rw,size=512m -e HOME=/tmp \
+            -v "$PWD/scripts/verify_bookcase_reference_downloads.py:/reference.py:ro" \
+            -v "$downloads:/downloads:ro" "custombuild-worker:$GITHUB_SHA" \
+            python /reference.py /downloads/Custombuild-Bokhylla-Valnot-{Konstruktionsprov,Platsalternativ}.zip \
+            | tee "$downloads/reference-readback.jsonl"
+      - name: Preserve bookcase packages downloaded from the live stack
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bookcase-workshop-trial-packages
+          path: ${{ runner.temp }}/bookcase-downloads/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Cross-browser production acceptance
+        env:
+          PLAYWRIGHT_BASE_URL: http://localhost:3000
+          PLAYWRIGHT_API_URL: http://127.0.0.1:8000
+          PLAYWRIGHT_ENVIRONMENT: test
+          PLAYWRIGHT_REAL_API: "1"
+          PLAYWRIGHT_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          pnpm --dir apps/web exec playwright test e2e/production-live.spec.ts \
+            --project=firefox-desktop --project=webkit-desktop \
+            --output=test-results/crossbrowser-live
       - name: Collect Compose diagnostics
         if: failure()
         run: |

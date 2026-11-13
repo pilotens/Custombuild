@@ -15,6 +15,7 @@ from .db import Base, get_engine, session_scope
 from .design_service import assert_rule_engine_available
 from .furniture_api import router as furniture_router
 from .observability import RequestContextMiddleware, request_id_context
+from .part_inspection import router as part_inspection_router
 from .readiness import probe_dependencies
 from .security import (
     CORSResponseHeadersMiddleware,
@@ -23,7 +24,12 @@ from .security import (
     SecurityHeadersMiddleware,
 )
 from .seed import seed_development
+from .sideboard_construction import router as sideboard_construction_router
+from .sideboard_inspection import router as sideboard_inspection_router
 from .storage_quota import initialize_development_storage_quota
+from .trestle_construction import router as trestle_construction_router
+from .trestle_exports import router as trestle_exports_router
+from .trestle_inspection import router as trestle_inspection_router
 
 
 class JsonFormatter(logging.Formatter):
@@ -119,6 +125,12 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestContextMiddleware)
 app.include_router(router)
 app.include_router(furniture_router)
+app.include_router(part_inspection_router)
+app.include_router(trestle_construction_router)
+app.include_router(sideboard_construction_router)
+app.include_router(sideboard_inspection_router)
+app.include_router(trestle_exports_router)
+app.include_router(trestle_inspection_router)
 
 
 @app.get("/health", tags=["operations"])

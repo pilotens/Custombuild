@@ -8,7 +8,7 @@ exporting it cannot silently discard unresolved site/trim requirements.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from custombuild_domain.enums import BackPanelType
 from custombuild_domain.furniture import FurnitureWorkspace, ShelvingIntent
@@ -17,10 +17,11 @@ from custombuild_domain.identity import content_hash
 from custombuild_domain.models import FrozenModel
 from pydantic import Field, model_validator
 
+from .furniture_module_cut_list import module_cut_list_csv
 from .furniture_profiles import preview_furniture
 from .furniture_suggestions import _passes, _screening_checks
 
-MODULE_PLANNING_VERSION = "furniture-module-planning-1.0.0"
+MODULE_PLANNING_VERSION = "furniture-module-planning-1.1.0"
 MAX_MODULE_COUNT = 16
 MAX_MODULE_PARTS = 512
 
@@ -40,6 +41,10 @@ class FurnitureModuleGrid(FrozenModel):
         min_length=1, max_length=4
     )
     divider_count_per_module: Annotated[int, Field(strict=True, ge=0, le=16)] = 0
+
+    plinth_placement: Literal["floor_row_only"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def validate_grid(self) -> FurnitureModuleGrid:
@@ -226,11 +231,25 @@ def plan_furniture_modules(
             "Valda hyllhöjder kan inte omvandlas exakt till detta modulrutnät. "
             "De tas inte bort automatiskt; skapa och granska ett separat utkast först.",
         )
-    if grid.rows > 1 and intent.plinth_height_um:
+    stacked_plinth = grid.rows > 1 and bool(intent.plinth_height_um)
+    if grid.plinth_placement and not stacked_plinth:
+        return unavailable(
+            "PLINTH_PLACEMENT_NOT_APPLICABLE",
+            "Sockel på golvraden kräver en vald sockelhöjd och minst två modulrader.",
+        )
+    if stacked_plinth and not grid.plinth_placement:
         return unavailable(
             "PLINTH_TRANSFORMATION_UNSUPPORTED",
             "Sockelhöjd är vald. En staplad konstruktion behöver en explicit "
-            "sockellösning; sockeln dupliceras eller tas inte bort automatiskt.",
+            "sockellösning. Välj sockel enbart på golvraden för att fortsätta.",
+        )
+    if stacked_plinth:
+        requirements.append(
+            _requirement(
+                "FLOOR_PLINTH_SUPPORT_REQUIRED",
+                "Sockeln finns enbart på golvradens moduler. Kontrollera sockelns upplag "
+                "för hela den staplade möbelns vikt och last.",
+            )
         )
     if sum(grid.shelf_count_per_row) < intent.shelf_count:
         return unavailable(
@@ -249,8 +268,12 @@ def plan_furniture_modules(
         else int(intent.back_panel == BackPanelType.SURFACE_MOUNTED)
     )
     estimated_parts = grid.columns * sum(
-        4 + dividers + count * (dividers + 1) + back_count + bool(intent.plinth_height_um)
-        for count in grid.shelf_count_per_row
+        4
+        + dividers
+        + count * (dividers + 1)
+        + back_count
+        + (row == 0 and bool(intent.plinth_height_um))
+        for row, count in enumerate(grid.shelf_count_per_row)
     )
     if estimated_parts > MAX_MODULE_PARTS:
         return unavailable(
@@ -266,7 +289,8 @@ def plan_furniture_modules(
     net_width = sum(widths)
     source_load = intent.resolved_shelf_load_n
     if intent.shelf_load_basis == "per_metre":
-        loads = [(width * intent.shelf_load_per_metre_n + 999_999) // 1_000_000 for width in widths]
+        linear_load = intent.shelf_load_per_metre_n or 0
+        loads = [(width * linear_load + 999_999) // 1_000_000 for width in widths]
     else:
         loads = [(source_load * width + net_width - 1) // net_width for width in widths]
     if sum(loads) < source_load:
@@ -290,6 +314,8 @@ def plan_furniture_modules(
                 shelf_count=grid.shelf_count_per_row[row],
                 divider_count=dividers,
             )
+            if row > 0 and grid.plinth_placement == "floor_row_only":
+                document["design"]["intent"]["plinth_height_um"] = 0
             if intent.shelf_load_basis == "per_row":
                 document["design"]["intent"]["shelf_load_n"] = loads[column]
             try:
@@ -348,6 +374,7 @@ def plan_furniture_modules(
         message=f"{len(modules)} nya stommoduler är beräknade som separata utkast. "
         "Granska modulmått, last, råformat, installation och förband före fortsatt beredning.",
         modules=modules,
+        review_cut_list_csv=module_cut_list_csv(plan_hash, modules),
         layout={
             "column_widths_um": widths,
             "row_heights_um": heights,

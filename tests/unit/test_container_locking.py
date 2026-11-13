@@ -7,6 +7,14 @@ import pytest
 import yaml
 
 
+def test_web_builder_includes_the_walnut_customer_example() -> None:
+    dockerfile = Path("apps/web/Dockerfile").read_text(encoding="utf-8")
+    before_build = dockerfile.split("FROM dependencies AS builder", 1)[1].split("pnpm --dir", 1)[0]
+    example = Path("examples/furniture/walnut-shelving-4340x2540x280.json")
+    assert f"COPY {example.as_posix()} examples/furniture/" in before_build.splitlines()
+    assert example.is_file()
+
+
 def test_docker_context_excludes_generated_typescript_build_state() -> None:
     dockerignore = Path(".dockerignore").read_text(encoding="utf-8")
 
@@ -27,8 +35,8 @@ def test_python_images_install_the_exact_uv_lock(dockerfile: str) -> None:
     assert "COPY pyproject.toml uv.lock ./" in source
     assert "uv==0.12.0" in source
     assert (
-        "python:3.13.15-slim-trixie@sha256:"
-        "7e3a6aca9d74f93cca21a91d86a8dad8c34749afd5b4a98ee481c9c47b9f5ed4"
+        "python:3.13.18-slim-trixie@sha256:"
+        "09a17cad02668ae61ece136b4fd36ac3849e14f670ebedb637ea3e15580525bc"
     ) in source
     assert "pip==26.2.1" in source
     assert "uv sync --locked" in source
@@ -191,7 +199,9 @@ def test_compose_sets_resource_limits_and_passes_release_identity() -> None:
     assert compose.count("mem_limit:") == 13
     assert compose.count("cpus:") == 13
     assert compose.count("*python-release-build-args") == 8
-    assert compose.count("*release-build-args") == 2
+    assert compose.count("*release-build-args") == 4
+    assert "POSTGRES_RECIPE_SHA256:-unknown" in compose
+    assert "REDIS_RECIPE_SHA256:-unknown" in compose
 
 
 def test_one_image_tag_never_has_conflicting_build_definitions() -> None:
@@ -232,32 +242,32 @@ def test_all_external_container_images_are_digest_pinned() -> None:
     assert external_images
     assert all("@sha256:" in image for image in external_images)
     assert web.count("@sha256:") == 3
-    assert "ARG NODE_VERSION=24.19.0" in web
+    assert "ARG NODE_VERSION=24.22.2" in web
     assert (
-        "node:24.19.0-trixie-slim@sha256:"
-        "ab3eebe934147fee049b5eb83c570f68c849a13c930bdfa482de99fcdfa3b3de"
+        "node:24.22.2-trixie-slim@sha256:"
+        "0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d"
     ) in web
     assert (
         "cgr.dev/chainguard/glibc-dynamic:latest@sha256:"
-        "205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b"
+        "aab5cd0b4cc5edd9c87b6e7aa9ddaa3fb6ffcec559b9e5473c55bbc937b65399"
     ) in web
     assert (
         "cgr.dev/chainguard/python:latest-dev@sha256:"
-        "f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd"
+        "64f414bffa25ca9ff518f35975ad153a921b2e4850c4a84c31a96885fdb86a02"
     ) in web
     for package in (
-        "c-ares=1.34.8-r1",
-        "libbrotlicommon1=1.2.0-r3",
-        "libbrotlidec1=1.2.0-r3",
-        "libbrotlienc1=1.2.0-r3",
-        "libcrypto3=3.6.4-r0",
-        "icu78-data-full=78.3-r2",
-        "libicu78=78.3-r2",
-        "libnghttp2-14=1.70.0-r2",
-        "libssl3=3.6.4-r0",
-        "libuv=1.52.1-r1",
-        "zlib=1.3.2-r4",
-        "nodejs-24=24.19.0-r0",
+        "c-ares=1.34.9-r0",
+        "libbrotlicommon1=1.2.1-r3",
+        "libbrotlidec1=1.2.1-r3",
+        "libbrotlienc1=1.2.1-r3",
+        "openssl-4.0-libcrypto=4.0.3-r8",
+        "icu79-data-full=79.1-r1",
+        "libicu79=79.1-r1",
+        "libnghttp2-14=1.71.0-r0",
+        "openssl-4.0-libssl=4.0.3-r8",
+        "libuv=1.53.0-r0",
+        "zlib=1.3.2.1_rc20260921-r2",
+        "nodejs-24=24.22.2-r2",
     ):
         assert package in web
     assert "COPY --from=base /usr/local/bin/node" not in web
@@ -265,8 +275,34 @@ def test_all_external_container_images_are_digest_pinned() -> None:
     assert 'ENTRYPOINT ["/usr/bin/node"]' in web
     assert 'CMD ["/usr/bin/node", "-e"' in web
     assert "require('node:inspector')" in web
-    assert "process.version !== 'v24.19.0'" in web
+    assert "process.version !== 'v24.22.2'" in web
     assert "apt-get" not in web
+
+
+def test_external_runtime_pins_match_scans_backups_and_release_descriptors() -> None:
+    from scripts.compose_backup import VOLUME_INIT_IMAGE
+    from scripts.deploy_descriptor import (
+        PINNED_RUNTIME_IMAGES,
+        PINNED_RUNTIME_SCAN_REFERENCES,
+    )
+    from scripts.release_evidence_gate import EXTERNAL_IMAGE_REFERENCES
+
+    compose = yaml.safe_load(Path("compose.yml").read_text(encoding="utf-8"))
+    registry = yaml.safe_load(Path("compose.registry.yml").read_text(encoding="utf-8"))
+    workflow_path = Path(".github/workflows/supply-chain.yml")
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    scan_matrix = workflow["jobs"]["pinned-runtime-images"]["strategy"]["matrix"]["include"]
+    scan_images = {entry["component"]: entry["image"] for entry in scan_matrix}
+
+    assert scan_images == PINNED_RUNTIME_SCAN_REFERENCES == EXTERNAL_IMAGE_REFERENCES
+    assert compose["services"]["postgres"]["build"]["dockerfile"] == "infra/postgres/Dockerfile"
+    assert scan_images["volume-init"] == VOLUME_INIT_IMAGE
+    for component, scan_reference in scan_images.items():
+        service = "object-storage-init" if component == "volume-init" else component
+        assert compose["services"][service]["image"] == scan_reference
+        assert registry["services"][service]["image"] == PINNED_RUNTIME_IMAGES[component]
+        release_digest = PINNED_RUNTIME_IMAGES[component].partition("@")[2]
+        assert scan_reference.partition("@")[2] == release_digest
 
 
 def test_web_runtime_uid_owns_its_only_writable_application_cache() -> None:
@@ -286,30 +322,30 @@ def test_python_runtimes_are_minimal_pinned_and_keep_python_313(dockerfile: str)
 
     assert (
         "cgr.dev/chainguard/glibc-dynamic:latest@sha256:"
-        "205572d5e48117e14b44b42627890fa8d3e8e65bb37a80abb3317e5151e7f35b"
+        "aab5cd0b4cc5edd9c87b6e7aa9ddaa3fb6ffcec559b9e5473c55bbc937b65399"
     ) in source
     assert (
         "cgr.dev/chainguard/python:latest-dev@sha256:"
-        "f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd"
+        "64f414bffa25ca9ff518f35975ad153a921b2e4850c4a84c31a96885fdb86a02"
     ) in source
     for package in (
-        "py3-pip-wheel=26.2.1-r0",
-        "libbz2-1=1.0.8-r23",
-        "libcrypto3=3.6.4-r0",
-        "libexpat1=2.8.3-r0",
-        "libffi=3.8.0-r0",
-        "gdbm=1.26-r5",
-        "xz=5.8.3-r2",
-        "mpdecimal=4.0.1-r3",
-        "ncurses-terminfo-base=6.6.20260822-r0",
-        "ncurses=6.6.20260822-r0",
-        "readline=8.3-r2",
-        "sqlite-libs=3.53.4-r0",
-        "libssl3=3.6.4-r0",
-        "libuuid=2.42.2-r3",
-        "zlib=1.3.2-r4",
-        "python-3.13-base=3.13.15-r2",
-        "python-3.13=3.13.15-r2",
+        "py3-pip-wheel=26.2.2-r2",
+        "libbz2-1=1.0.8-r30",
+        "openssl-4.0-libcrypto=4.0.3-r8",
+        "libexpat1=2.10.0-r1",
+        "libffi=3.8.0-r2",
+        "gdbm=1.26-r9",
+        "xz=5.8.4-r1",
+        "mpdecimal=4.0.1-r6",
+        "ncurses-terminfo-base=6.6.20261031-r0",
+        "ncurses=6.6.20261031-r0",
+        "readline=8.3-r3",
+        "sqlite-libs=3.54.1-r0",
+        "openssl-4.0-libssl=4.0.3-r8",
+        "libuuid=2.42.4-r2",
+        "zlib=1.3.2.1_rc20260921-r2",
+        "python-3.13-base=3.13.18_git20261030-r0",
+        "python-3.13=3.13.18_git20261030-r0",
     ):
         assert package in source
     builder_copy_lines = [
@@ -326,10 +362,10 @@ def test_python_runtimes_are_minimal_pinned_and_keep_python_313(dockerfile: str)
     assert "COPY --link --from=runtime-assembler /base-chroot /" in source
     assert "FROM scratch AS runtime" in source
     assert "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt" in source
-    assert 'io.custombuild.python.version="3.13.15"' in source
+    assert 'io.custombuild.python.version="3.13.18"' in source
     assert "ENTRYPOINT []" in source
     assert "USER 65532:65532" in source
-    assert "assert sys.version_info[:3] == (3, 13, 15)" in source
+    assert "assert sys.version_info[:3] == (3, 13, 18)" in source
     assert "assert ssl.create_default_context().get_ca_certs()" in source
     assert "assert importlib.util.find_spec('pip') is None" in source
     assert "assert importlib.util.find_spec('uv') is None" in source
@@ -359,18 +395,18 @@ def test_python_runtime_build_probes_import_the_real_entrypoint_dependencies() -
     (
         (
             "apps/web/Dockerfile",
-            19,
-            "f44e2ee8aacd1d2fbe9c51b2e354973ef3d1ef1b82a202be483c3bedab17879f",
+            20,
+            "c63f4ad041b38a0f30df9f4a18e8dfac4ad2411840ff114d32dc57ce2d8ce4ec",
         ),
         (
             "services/api/Dockerfile",
-            24,
-            "b877ad764a4b02b376bf61c2b62ebfc5044c1b1b70fb4a3a5ffca089be06bffb",
+            28,
+            "7c3ee343ab7b5ce429bf3e4261742aee04b8e80151a459ed76dd30cc25ea6dc2",
         ),
         (
             "services/worker/Dockerfile",
-            49,
-            "7d48b979148c77fbd4383671b6f0a79156fd85518840f217ef564091230f596e",
+            53,
+            "aefade11386262b51c3f6b9a2f7129b2ba0a3e6cc04ee8b2a0a9828cbfa226b7",
         ),
     ),
 )
@@ -391,44 +427,44 @@ def test_worker_runtime_packages_are_scanner_visible_and_exact() -> None:
 
     assert (
         "cgr.dev/chainguard/python:latest-dev@sha256:"
-        "f6d6485f11a65ca81d8a2d01eae564fa88937e7d19c1cf216cdb1142980c51bd"
+        "64f414bffa25ca9ff518f35975ad153a921b2e4850c4a84c31a96885fdb86a02"
     ) in worker
     assert "COPY --from=runtime-base / /base-chroot" in worker
     assert "apk add --no-cache --no-scripts --root /base-chroot" in worker
     assert "COPY --link --from=runtime-assembler /base-chroot /" in worker
     for package in (
-        "mesa-gl=26.2.1-r0",
-        "libx11=1.8.13-r5",
-        "libxau=1.0.12-r7",
-        "libxdmcp=1.1.5-r9",
-        "libbsd=0.12.2-r7",
-        "libmd=1.2.0-r2",
-        "libgomp=16.2.0-r1",
-        "libxcb=1.17.0-r15",
-        "libglvnd=1.7.0-r10",
+        "mesa-gl=26.2.6-r0",
+        "libx11=1.8.14-r3",
+        "libxau=1.0.12-r11",
+        "libxdmcp=1.1.5-r14",
+        "libbsd=0.12.2-r11",
+        "libmd=1.3.0-r2",
+        "libgomp=16.2.0-r2",
+        "libxcb=1.17.0-r19",
+        "libglvnd=1.7.0-r12",
         "libxml2=2.15.0-r0",
-        "libLLVM-22=22.1.8-r2",
-        "libpciaccess=0.19-r2",
+        "libLLVM-23=23.1.5-r0",
+        "libpciaccess=0.19-r4",
         "libdrm=2.4.134-r0",
-        "libzstd1=1.5.7-r8",
-        "libelf=0.195-r2",
-        "libxshmfence=1.3.3-r2",
-        "mesa-libgallium=26.2.1-r0",
-        "mesa-gbm=26.2.1-r0",
-        "libudev=261.2-r1",
-        "wayland-libs-client=1.26.0-r0",
-        "wayland-protocols=1.49-r0",
-        "mesa=26.2.1-r0",
-        "libxext=1.3.7-r0",
-        "libxxf86vm=1.1.7-r2",
-        "mesa-glx=26.2.1-r0",
+        "libzstd1=1.5.7-r13",
+        "libelf=0.197-r0",
+        "libxshmfence=1.3.3-r7",
+        "mesa-libgallium=26.2.6-r0",
+        "mesa-gbm=26.2.6-r0",
+        "libudev=262.2-r1",
+        "wayland-libs-client=1.26.0-r3",
+        "wayland-protocols=1.50-r0",
+        "mesa=26.2.6-r0",
+        "libxext=1.3.7-r4",
+        "libxxf86vm=1.1.7-r5",
+        "mesa-glx=26.2.6-r0",
     ):
         assert package in worker
 
 
 def test_ci_uses_the_same_node_release_as_the_web_image() -> None:
     web = Path("apps/web/Dockerfile").read_text(encoding="utf-8")
-    expected = "24.19.0"
+    expected = "24.22.2"
 
     assert f"ARG NODE_VERSION={expected}" in web
     for workflow in (".github/workflows/ci.yml", ".github/workflows/prod-ci.yml"):
@@ -455,27 +491,27 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
     workflow = Path(".github/workflows/supply-chain.yml").read_text(encoding="utf-8")
 
     assert (
-        "golang:1.26.6-alpine3.24@sha256:"
-        "3889b425f035be855a72fb4755265311293b6d414521f0a519d819df32222d83"
+        "golang:1.26.9-alpine3.24@sha256:"
+        "3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade"
     ) in dockerfile
     assert "ENV GOTOOLCHAIN=local" in dockerfile
     assert (
         "ADD --checksum=sha256:800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
     ) in dockerfile
     overrides_sha256 = hashlib.sha256(overrides).hexdigest()
-    assert overrides_sha256 == "4b25078bdc80af5a2ed724eb8f8c86724cee26fb75d861d1603bfa28e294509f"
+    assert overrides_sha256 == "b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1"
     assert f"ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256={overrides_sha256}" in dockerfile
     assert "github.com/apache/thrift@v0.24.0" in dockerfile
     assert "go.etcd.io/etcd/client/pkg/v3@v3.7.1" in dockerfile
-    assert "golang.org/x/crypto@v0.56.0" in dockerfile
+    assert "golang.org/x/crypto@v0.58.0" in dockerfile
     assert "golang.org/x/image@v0.45.0" in dockerfile
-    assert "golang.org/x/text@v0.41.0" in dockerfile
+    assert "golang.org/x/text@v0.43.0" in dockerfile
     assert "google.golang.org/grpc@v1.85.0-dev.0.20260825072537-93e31b48545e" in dockerfile
     assert "go mod edit -dropreplace=github.com/apache/thrift" in dockerfile
     assert 'go.etcd.io/etcd/client/pkg/v3)" = "v3.7.1"' in dockerfile
     assert 'golang.org/x/crypto)" = "v0.55.0"' in dockerfile
     assert 'golang.org/x/image)" = "v0.44.0"' in dockerfile
-    assert dockerfile.count("-mod=readonly") == 12
+    assert dockerfile.count("-mod=readonly") == 14
     assert "go mod verify" in dockerfile
     assert "FROM scratch AS runtime" in dockerfile
     assert "USER 1000:1000" in dockerfile
@@ -488,12 +524,12 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
         f"{runtime_tmp}:size=64m,mode=1777" in compose_config["services"]["object-storage"]["tmpfs"]
     )
     for expected in (
-        'test "$go_version" = "1.26.6"',
+        'test "$go_version" = "1.26.9"',
         'test "$apache_thrift_version" = "0.24.0"',
         'test "$etcd_client_pkg_version" = "3.7.1"',
-        'test "$x_crypto_version" = "0.56.0"',
+        'test "$x_crypto_version" = "0.58.0"',
         'test "$x_image_version" = "0.45.0"',
-        'test "$x_text_version" = "0.41.0"',
+        'test "$x_text_version" = "0.43.0"',
         'test "$grpc_version" = "v1.85.0-dev.0.20260825072537-93e31b48545e"',
         f'test "$security_overrides_sha256" = "{overrides_sha256}"',
         "custombuild.seaweedfs-release.v2",
@@ -512,8 +548,8 @@ def test_apt_layers_use_a_dated_debian_snapshot(dockerfile: str, snapshot: str) 
     source = Path(dockerfile).read_text(encoding="utf-8")
 
     assert f"ARG DEBIAN_SNAPSHOT={snapshot}" in source
-    assert "snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" in source
-    assert "snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" in source
+    assert "https://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}" in source
+    assert "https://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}" in source
     assert "Acquire::Check-Valid-Until" in source
     assert "Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg" in source
     assert "apt-get update" in source

@@ -1,0 +1,180 @@
+.register {
+  color: #233b32;
+  background: #f8f7f3;
+  font:
+    15px/1.5 system-ui,
+    sans-serif;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.register * {
+  box-sizing: border-box;
+}
+.source {
+  margin: 0 0 0.8rem;
+  color: #425b4e;
+}
+.stats,
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.stats span {
+  padding: 0.4rem 0.65rem;
+  border: 1px solid #c8d3c9;
+  background: #eef3ec;
+  border-radius: 0.35rem;
+}
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 1.2rem;
+  margin-top: 1rem;
+}
+.scene {
+  width: 100%;
+  height: clamp(240px, 47vh, 480px);
+  background: linear-gradient(#e5ece4, #efece2);
+  border: 1px solid #bfc9bc;
+  border-radius: 8px;
+}
+.scene polygon {
+  cursor: pointer;
+}
+.register button,
+.register select,
+.register input {
+  font: inherit;
+  color: inherit;
+}
+.register button,
+.register select {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid #aab8ac;
+  background: white;
+  border-radius: 5px;
+}
+.register button {
+  cursor: pointer;
+}
+.register button[aria-pressed="true"] {
+  background: #265442;
+  color: white;
+}
+.register label {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0.5rem 0;
+}
+.controls label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.register select {
+  max-width: 100%;
+  min-width: 0;
+}
+.sheet {
+  padding: 0.9rem;
+  background: #fffefa;
+  border: 1px solid #cdd5cc;
+  border-radius: 6px;
+  overflow-wrap: anywhere;
+  display: grid;
+  gap: 0.55rem;
+}
+.sheet h2,
+.sheet p {
+  margin: 0.24rem 0;
+}
+.sheet dl {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr;
+  gap: 0.3rem;
+  margin: 0;
+}
+.sheet dd {
+  margin: 0;
+}
+.drawing {
+  width: 100%;
+  height: 195px;
+  background: #fff;
+}
+.row {
+  display: grid;
+  gap: 0.18rem;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid #dfdfd4;
+}
+.row button {
+  justify-self: start;
+}
+.attention {
+  padding: 0.7rem;
+  background: #fff4dc;
+  border-left: 3px solid #9c6f25;
+}
+.register details {
+  margin: 0.75rem 0;
+}
+.register summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+.register code {
+  overflow-wrap: anywhere;
+}
+.workbench {
+  max-width: 1440px;
+  padding: 1.5rem clamp(15px, 4vw, 60px);
+  margin: auto;
+  color: #233b32;
+}
+.workbench header {
+  border-bottom: 1px solid #c7cfc5;
+  margin-bottom: 1rem;
+}
+.workbench header h1 {
+  font:
+    500 clamp(1.8rem, 4vw, 3rem) Georgia,
+    serif;
+}
+.workbench label {
+  display: block;
+  margin: 0.7rem 0;
+}
+.workbench input,
+.workbench button {
+  font: inherit;
+}
+.workbench .toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+@media (max-width: 800px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .scene {
+    height: 320px;
+  }
+  .controls input {
+    max-width: 90px;
+  }
+}
+
+.hash { overflow-wrap: anywhere; }
+
+.planning { min-width: 0; overflow-wrap: anywhere; }
+.planning table { width: 100%; border-collapse: collapse; table-layout: fixed; white-space: normal; font-size: .875rem; }
+.planning th { position: static; font-size: .75rem; }
+.planning th, .planning td { text-align: left; vertical-align: top; padding: .35rem; border-bottom: 1px solid #c8d3c9; }
+.planning fieldset { min-width: 0; }
+.planning input, .planning select { max-width: 100%; box-sizing: border-box; }

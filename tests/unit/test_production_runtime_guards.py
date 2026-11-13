@@ -396,22 +396,44 @@ def test_postgres_init_accepts_replaced_production_passwords(tmp_path: Path) -> 
     assert completed.returncode == 0, completed.stderr
 
 
-def test_postgres_init_rejects_reused_capacity_attestor_password(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        ("POSTGRES_PASSWORD", "MIGRATOR_DATABASE_PASSWORD"),
+        ("POSTGRES_PASSWORD", "API_DATABASE_PASSWORD"),
+        ("POSTGRES_PASSWORD", "WORKER_DATABASE_PASSWORD"),
+        ("POSTGRES_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+        ("MIGRATOR_DATABASE_PASSWORD", "API_DATABASE_PASSWORD"),
+        ("MIGRATOR_DATABASE_PASSWORD", "WORKER_DATABASE_PASSWORD"),
+        ("MIGRATOR_DATABASE_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+        ("API_DATABASE_PASSWORD", "WORKER_DATABASE_PASSWORD"),
+        ("API_DATABASE_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+        ("WORKER_DATABASE_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+    ),
+)
+def test_postgres_init_rejects_every_reused_database_role_password(
+    tmp_path: Path,
+    first: str,
+    second: str,
+) -> None:
     shared = "strong-but-shared-database-password"
+    passwords = {
+        "POSTGRES_PASSWORD": "strong-bootstrap-db-password",
+        "MIGRATOR_DATABASE_PASSWORD": "strong-migrator-db-password",
+        "API_DATABASE_PASSWORD": "strong-api-database-password",
+        "WORKER_DATABASE_PASSWORD": "strong-worker-db-password",
+        "CAPACITY_ATTESTOR_DATABASE_PASSWORD": "strong-capacity-attestor-db-password",
+    }
+    passwords[first] = shared
+    passwords[second] = shared
     completed = _run_postgres_init(
         tmp_path,
         app_env="production",
-        overrides={
-            "POSTGRES_PASSWORD": "strong-bootstrap-db-password",
-            "MIGRATOR_DATABASE_PASSWORD": shared,
-            "API_DATABASE_PASSWORD": "strong-api-database-password",
-            "WORKER_DATABASE_PASSWORD": "strong-worker-db-password",
-            "CAPACITY_ATTESTOR_DATABASE_PASSWORD": shared,
-        },
+        overrides=passwords,
     )
 
     assert completed.returncode == 64
-    assert "must be unique" in completed.stderr
+    assert "must be pairwise distinct" in completed.stderr
 
 
 @pytest.mark.parametrize(

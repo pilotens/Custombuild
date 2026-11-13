@@ -18,6 +18,11 @@ from custombuild_domain import (
     build_bookcase,
     stable_id,
 )
+from custombuild_domain.models import (
+    TRIAL_ANGLE_SET_MASS_G,
+    TRIAL_EDGE_TOLERANCE_UM,
+    TRIAL_FACE_TOLERANCE_UM,
+)
 
 from .models import (
     ActionType,
@@ -263,7 +268,11 @@ class RuleEngine:
         representative_row = sorted(shelves, key=lambda part: part.instance_index)[:bay_count]
         row_width = sum(part.finished_size.width_um for part in representative_row)
         widest = max(part.finished_size.width_um for part in shelves)
-        dead_weight_n = _ceil(Fraction(max(part.weight_g for part in shelves) * 981, 100_000))
+        shelf_mass_g = max(part.weight_g for part in shelves)
+        if design.trial_angles:
+            # Conservatively place both end fittings in the distributed shelf load.
+            shelf_mass_g += 2 * TRIAL_ANGLE_SET_MASS_G
+        dead_weight_n = _ceil(Fraction(shelf_mass_g * 981, 100_000))
         return Fraction(widest, row_width), dead_weight_n
 
     @staticmethod
@@ -642,8 +651,13 @@ class RuleEngine:
             assumptions=(
                 "Radlasten fördelas efter fackbredd och ger halva "
                 "facklasten inklusive hyllans egenvikt som reaktion i vardera stödfogen.",
-                "Bärande area härleds från den kanoniska fogens verkliga spårdjup gånger "
-                "hyllans överlappande djup; nominell materialtjocklek används inte som instick.",
+                (
+                    "Bärande area använder minsta instick efter spårbottenmån och provets "
+                    "kant- och datumtoleranser."
+                    if p.trial_angle
+                    else "Bärande area härleds från den kanoniska fogens verkliga spårdjup gånger "
+                    "hyllans överlappande djup; nominell materialtjocklek används inte som instick."
+                ),
                 "Versionspostens skjuvhållfasthet används konservativt som screening för "
                 "lokal bärning/skjuvning och reduceras för osäkerhet, krypning och "
                 "strukturell säkerhetsfaktor.",
@@ -740,7 +754,9 @@ class RuleEngine:
             )
             if not in_plane_lengths:
                 continue
-            engagement_um = feature.dimensions.depth_um
+            engagement_um = feature.dimensions.depth_um - feature.groove_bottom_clearance_um
+            if feature.groove_bottom_clearance_um:
+                engagement_um -= TRIAL_EDGE_TOLERANCE_UM + TRIAL_FACE_TOLERANCE_UM
             bearing_length_um = min(
                 shelf.finished_size.depth_um,
                 max(in_plane_lengths),

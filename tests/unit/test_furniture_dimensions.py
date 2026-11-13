@@ -114,7 +114,7 @@ def test_old_workspaces_keep_their_canonical_schema_and_hash_when_extensions_are
     assert FurnitureProductionSource.model_validate(source).model_dump(mode="json") == source
 
 
-def test_new_customer_dimensions_replace_the_old_dimensions_without_selecting_trim_width():
+def test_reference_preserves_outer_dimensions_and_reserves_the_three_measured_walls():
     import json
     from pathlib import Path
 
@@ -130,10 +130,15 @@ def test_new_customer_dimensions_replace_the_old_dimensions_without_selecting_tr
     assert measurement["installation"]["trim_profile"] == {
         "height_um": 90_000,
         "width_um": 20_000,
-        "use": "unassigned",
-        "walls": [],
+        "use": "existing_room_trim",
+        "walls": ["left", "right", "rear"],
     }
-    assert measurement["required_carcass_dimensions_um"] is None
+    assert measurement["state"] == "reconciled"
+    assert measurement["required_carcass_dimensions_um"] == {
+        "width_um": 4_300_000,
+        "height_um": 2_540_000,
+        "depth_um": 260_000,
+    }
     assert result["manufacturing"]["state"] == "not_selected"
     with pytest.raises(ValueError):
         furniture_production_source(selected)
@@ -220,3 +225,30 @@ def test_trim_schema_rejects_inexact_or_inconsistent_measurements(patch):
 
     with pytest.raises(ValueError):
         TrimProfile.model_validate({"height_um": 90_000, "width_um": 20_000, **patch})
+
+
+@pytest.mark.parametrize(
+    ("height", "width", "expected"),
+    [
+        (None, None, "höjd ej angiven, utstick ej angivet."),
+        (90_000, None, "höjd 90 mm, utstick ej angivet."),
+        (None, 20_000, "höjd ej angiven, utstick 20 mm."),
+    ],
+)
+def test_workshop_protocol_keeps_missing_trim_dimensions_open(height, width, expected):
+    from custombuild_worker.shelving_trial import shelving_trial_protocol
+
+    doc = installed(trim=True).model_dump(mode="json")
+    doc["design"]["installation"]["trim_profile"] = {
+        "height_um": height,
+        "width_um": width,
+        "use": "existing_room_trim",
+        "walls": ["left"],
+    }
+    selected = FurnitureWorkspace.model_validate(doc)
+    preview = preview_furniture(selected)
+    issues = preview["workshop_handoff"]["dimensions"]["issues"]
+    assert issues
+    report = shelving_trial_protocol(build_furniture(selected.design), preview).decode()
+    assert expected in report
+    assert all(i["message"] in report for i in issues)

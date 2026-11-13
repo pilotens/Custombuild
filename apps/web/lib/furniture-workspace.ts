@@ -1,6 +1,8 @@
 import type { ResolvedPart } from "./design-types";
+import { domainFeatureSummary } from "./part-inspection";
+import type { components, paths } from "./api-schema";
 
-export type FurnitureFamily = "shelving" | "table" | "chest_of_drawers";
+export type FurnitureFamily = "shelving" | "table" | "chest_of_drawers" | "dining_table" | "chair";
 export interface FurnitureIntent {
   family: FurnitureFamily;
   width_um: number;
@@ -14,11 +16,22 @@ export interface FurnitureIntent {
   shelf_height_ratios_ppm?: number[];
   bay_width_ratios_ppm?: number[];
   back_panel?: "none" | "surface_mounted" | "inset_groove";
+  base_doors?: "J95-C24/0T-NI" | null;
+  trial_angle?: "GN-970-ALM-30-30-30-B" | null;
   shelf_mount?: "fixed" | "adjustable";
   plinth_height_um?: number;
   end_inset_um?: number;
   stretcher_height_um?: number;
   top_load_n?: number;
+  top_shape?: "rectangle" | "round";
+  leg_section_um?: number;
+  seat_height_um?: number;
+  seat_depth_um?: number;
+  back_angle_mdeg?: number;
+  seat_load_n?: number;
+  drawer_columns?: 1 | 2;
+  gap_basis?: "clear_reveal" | "per_edge";
+  row_front_heights_um?: number[];
   drawer_count?: number;
   drawer_load_n?: number;
   front_gap_um?: number;
@@ -63,7 +76,17 @@ export interface FurnitureTrimProfile {
   use: "unassigned" | "existing_room_trim" | "furniture_trim";
   walls: ("left" | "right" | "rear")[];
 }
+export type SurveyField = "left_wall" | "right_wall" | "rear_wall" | "front_space" | "ceiling_height";
 export interface FurnitureInstallation {
+  surveyed_fields?: SurveyField[];
+  qualified_site_ref?: string | null;
+  measured_left_wall_um?: number | null;
+  measured_right_wall_um?: number | null;
+  measured_rear_wall_um?: number | null;
+  remaining_walls_unmeasured?: boolean | null;
+  additional_bounded_walls?: FurnitureTrimProfile["walls"] | null;
+  measured_front_space_um?: number | null;
+  measured_ceiling_height_um?: number | null;
   width_um: number;
   height_um: number;
   depth_um: number;
@@ -91,11 +114,15 @@ export interface FurnitureWorkspace {
   manufacturing: FurnitureManufacturingSelection | null;
 }
 export interface FurniturePart {
+  features?: components["schemas"]["ManufacturingFeature"][];
+  a_side?: string;
+  b_side?: string;
   part_id: string;
   semantic_key: string;
   role: string;
   finished_size: { width_um: number; depth_um: number; height_um: number };
-  placement: { x_um: number; y_um: number; z_um: number };
+  placement: { x_um: number; y_um: number; z_um: number; rotation_x_mdeg?: number };
+  circular_outline?: boolean;
   actual_thickness_um: number;
   material_id: string;
   weight_g: number;
@@ -107,6 +134,7 @@ export interface FurniturePreview {
     design_hash: string;
     intent_hash: string;
     parts: FurniturePart[];
+    trial_angles?: components["schemas"]["TrialAngle"][];
     moving_groups: { group_id: string; part_ids: string[]; travel_um: number }[];
     total_weight_g: number;
   };
@@ -130,6 +158,7 @@ export interface FurniturePreview {
     shelf_load?: { basis: "per_row" | "per_metre"; total_row_load_n: number;
       load_per_metre_n: number | null; width_um: number } | null;
     dimensions: {
+      standing_assembly?: components["schemas"]["StandingSiteReview"] | null;
       state: string;
       carcass_dimensions_um: { width_um: number; height_um: number; depth_um: number };
       required_carcass_dimensions_um: { width_um: number; height_um: number; depth_um: number } | null;
@@ -197,14 +226,13 @@ export interface FurnitureCatalog {
     production_qualified: false }[];
   machines: { profile_id: string; version: string; name: string; production_qualified: false }[];
 }
-export interface FurnitureExportResult {
-  state: "queued" | "running" | "failed" | "expired" | "succeeded";
-  message?: string;
-  file_name?: string;
-  content_base64?: string;
-  sha256?: string;
-  design_hash?: string;
-}
+export type FurnitureExportResult = paths[
+  "/v1/furniture/projects/{project_id}/exports/{job_id}"
+]["get"]["responses"][200]["content"]["application/json"];
+export type FurnitureExportAccepted = paths[
+  "/v1/furniture/projects/{project_id}/exports"
+]["post"]["responses"][202]["content"]["application/json"];
+export type FurnitureExportReady = Extract<FurnitureExportResult, { state: "succeeded" }>;
 
 export interface FurnitureProductionSource {
   schema_version: "custombuild.furniture-production-source.v1";
@@ -221,18 +249,39 @@ export interface FurnitureProductionPreview {
 }
 
 export const FURNITURE_FAMILY_LABELS: Record<FurnitureFamily, string> = {
-  shelving: "Hyllsystem", table: "Bord med gavlar", chest_of_drawers: "Byrå",
+  dining_table: "Matbord med fyra ben",
+  chair: "Matstol",
+  shelving: "Hyllsystem",
+  table: "Bord med gavlar",
+  chest_of_drawers: "Byrå",
+};
+
+const familyDefaults: Record<FurnitureFamily, Omit<FurnitureIntent, "family">> = {
+  dining_table: {
+    width_um: 1_800_000, height_um: 750_000, depth_um: 900_000, top_shape: "rectangle",
+    end_inset_um: 90_000, leg_section_um: 55_000, stretcher_height_um: 95_000, top_load_n: 300,
+  },
+  chair: {
+    width_um: 460_000, height_um: 850_000, depth_um: 500_000, seat_height_um: 450_000,
+    seat_depth_um: 450_000, back_angle_mdeg: 10_000, leg_section_um: 50_000, seat_load_n: 900,
+  },
+  table: {
+    width_um: 1_000_000, height_um: 740_000, depth_um: 600_000,
+    end_inset_um: 60_000, stretcher_height_um: 100_000, top_load_n: 300,
+  },
+  chest_of_drawers: {
+    width_um: 550_000, height_um: 900_000, depth_um: 500_000, drawer_count: 3,
+    drawer_load_n: 100, front_gap_um: 3_000, gap_basis: "clear_reveal",
+  },
+  shelving: {
+    width_um: 900_000, height_um: 1_800_000, depth_um: 320_000,
+    shelf_count: 4, divider_count: 1, shelf_load_n: 200,
+  },
 };
 
 export function newFurnitureWorkspace(family: FurnitureFamily): FurnitureWorkspace {
-  const intent: FurnitureIntent = family === "table"
-    ? { family, width_um: 1_000_000, height_um: 740_000, depth_um: 600_000,
-        end_inset_um: 60_000, stretcher_height_um: 100_000, top_load_n: 300 }
-    : family === "chest_of_drawers"
-      ? { family, width_um: 800_000, height_um: 900_000, depth_um: 500_000,
-          drawer_count: 3, drawer_load_n: 100, front_gap_um: 3_000 }
-      : { family, width_um: 900_000, height_um: 1_800_000, depth_um: 320_000,
-          shelf_count: 4, divider_count: 1, shelf_load_n: 200, shelf_height_ratios_ppm: [] };
+  const intent: FurnitureIntent = { family, ...familyDefaults[family] };
+  if (family === "shelving") intent.shelf_height_ratios_ppm = [];
   return {
     schema_version: "custombuild.furniture-workspace.v1",
     design: {
@@ -242,8 +291,8 @@ export function newFurnitureWorkspace(family: FurnitureFamily): FurnitureWorkspa
         measured_thickness_um: 18_000, batch_id: null },
       back_material: { material_id: "birch-plywood-6", version: "screening-2026.1",
         measured_thickness_um: 6_000, batch_id: null },
-      hardware: family === "shelving" ? null : {
-        catalog_id: family === "table" ? "panel-table-connectors-layout" : "drawer-side-mount-450-layout",
+      hardware: !["chest_of_drawers","table"].includes(family) ? null : {
+        catalog_id: family === "table" ? "panel-table-connectors-layout" : "hettich-ka4532-9114275",
         version: "layout-1.0.0",
       },
     },
@@ -257,10 +306,13 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
   if (drawersOpen) for (const group of preview.design.moving_groups) {
     for (const id of group.part_ids) movements.set(id, group.travel_um);
   }
-  const yz = new Set(["left_side", "right_side", "divider", "table_end", "drawer_side"]);
-  const xz = new Set(["back", "plinth", "table_stretcher", "drawer_front", "drawer_back"]);
-  return preview.design.parts.map((part): ResolvedPart => {
+  const yz = new Set(["left_side", "right_side", "base_side", "divider", "table_end", "drawer_side", "frame_leg", "frame_rail_y"]);
+  const xz = new Set(["back", "plinth", "cabinet_front", "table_stretcher", "drawer_front", "drawer_back", "frame_rail_x", "chair_back"]);
+  const timber = preview.design.parts.map((part): ResolvedPart => {
     const size = part.finished_size;
+    const angle = (part.placement.rotation_x_mdeg ?? 0)*Math.PI/180_000;
+    const centreY = (size.depth_um*Math.cos(angle)-size.height_um*Math.sin(angle))/2;
+    const centreZ = (size.depth_um*Math.sin(angle)+size.height_um*Math.cos(angle))/2;
     const orientation = yz.has(part.role) ? "YZ" : xz.has(part.role) ? "XZ" : "XY";
     // The viewer's YZ board width runs vertically (world Z); its depth runs along world Y.
     const width = orientation === "YZ" ? size.height_um : size.width_um;
@@ -272,13 +324,30 @@ export function furnitureViewerParts(preview: FurniturePreview, drawersOpen = fa
       orientation, width_mm: width/1_000, depth_mm: depth/1_000, thickness_mm: thickness/1_000,
       position_mm: {
         x: (part.placement.x_um+size.width_um/2)/1_000,
-        y: (part.placement.y_um+size.depth_um/2-(movements.get(part.part_id) ?? 0))/1_000,
-        z: (part.placement.z_um+size.height_um/2)/1_000,
+        y: (part.placement.y_um+centreY-(movements.get(part.part_id) ?? 0))/1_000,
+        z: (part.placement.z_um+centreZ)/1_000,
       },
+      ...(angle ? {rotation_x_rad:angle} : {}), ...(part.circular_outline ? {circular_outline:true}:{}),
       material_id: part.material_id, weight_kg: part.weight_g/1_000,
-      color: part.material_id.startsWith("mdf") ? "#b7a587" : "#d8c4a0", features: [],
+      color: part.material_id === "solid-walnut" ? "#79553f" : part.material_id.startsWith("mdf") ? "#b7a587" : "#d8c4a0",
+      features: (part.features ?? []).map(f => domainFeatureSummary(f, part.a_side, part.b_side)),
     };
   });
+  const metal = (preview.design.trial_angles ?? []).flatMap((a): ResolvedPart[] => {
+    const leg = a.leg_um / 1000, wall = a.wall_um / 1000;
+    const x = a.corner.x_um / 1000, y = a.corner.y_um / 1000, z = a.corner.z_um / 1000;
+    const common = { name: a.article, material_id: "aluminium", weight_kg: 0,
+      color: "#85929c", features: [], fitting_part_ids: [a.upright_id, a.horizontal_id] };
+    return [
+      { ...common, part_id: a.joint_id + "-horizontal", kind: "shelf", orientation: "XY",
+        width_mm: leg, depth_mm: leg, thickness_mm: wall,
+        position_mm: { x: x + a.x_sign*leg/2, y, z: z + a.z_sign*wall/2 } },
+      { ...common, part_id: a.joint_id + "-upright", kind: "side", orientation: "YZ",
+        width_mm: leg-wall, depth_mm: leg, thickness_mm: wall,
+        position_mm: { x: x + a.x_sign*wall/2, y, z: z + a.z_sign*(leg+wall)/2 } },
+    ];
+  });
+  return [...timber, ...metal];
 }
 
 export function assertFurniturePreview(value: FurniturePreview): FurniturePreview {
@@ -307,15 +376,4 @@ export function assertFurniturePreview(value: FurniturePreview): FurniturePrevie
       || !group.part_ids.every(id => ids.has(id))) throw new Error("Lådrörelsen saknar giltiga delar.");
   }
   return value;
-}
-
-export async function verifiedFurnitureDownload(result: FurnitureExportResult): Promise<Uint8Array<ArrayBuffer>> {
-  if (result.state !== "succeeded" || !result.content_base64 || !/^[a-f0-9]{64}$/.test(result.sha256 ?? "")) {
-    throw new Error("Exporten är inte klar för nedladdning.");
-  }
-  const bytes = Uint8Array.from(atob(result.content_base64), char => char.charCodeAt(0));
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  const hash = [...new Uint8Array(digest)].map(n => n.toString(16).padStart(2, "0")).join("");
-  if (hash !== result.sha256) throw new Error("Exportens kontrollsumma stämmer inte.");
-  return bytes;
 }

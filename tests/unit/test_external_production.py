@@ -677,8 +677,37 @@ def test_rejects_migrator_or_mismatched_secret_for_capacity_attestor() -> None:
     )
 
     assert (
-        "postgres.CAPACITY_ATTESTOR_DATABASE_PASSWORD must be unique to the storage-attestor role"
-    ) in external_production_issues(config)
+        "postgres database role passwords must be pairwise distinct"
+        in external_production_issues(config)
+    )
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    (
+        ("POSTGRES_PASSWORD", "MIGRATOR_DATABASE_PASSWORD"),
+        ("POSTGRES_PASSWORD", "API_DATABASE_PASSWORD"),
+        ("POSTGRES_PASSWORD", "WORKER_DATABASE_PASSWORD"),
+        ("POSTGRES_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+        ("MIGRATOR_DATABASE_PASSWORD", "API_DATABASE_PASSWORD"),
+        ("MIGRATOR_DATABASE_PASSWORD", "WORKER_DATABASE_PASSWORD"),
+        ("MIGRATOR_DATABASE_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+        ("API_DATABASE_PASSWORD", "WORKER_DATABASE_PASSWORD"),
+        ("API_DATABASE_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+        ("WORKER_DATABASE_PASSWORD", "CAPACITY_ATTESTOR_DATABASE_PASSWORD"),
+    ),
+)
+def test_rejects_every_reused_database_role_password(first: str, second: str) -> None:
+    config = deepcopy(valid_config())
+    shared = "strong-but-shared-database-password"
+    postgres = config["services"]["postgres"]["environment"]
+    postgres[first] = shared
+    postgres[second] = shared
+
+    assert (
+        "postgres database role passwords must be pairwise distinct"
+        in external_production_issues(config)
+    )
 
 
 def test_rejects_demo_auth_insecure_origins_and_public_datastores() -> None:

@@ -17,6 +17,7 @@ export interface FurnitureTemplate {
   archetypeLabel: string;
   productionLevel: "screened" | "concept";
   limitation?: string;
+  designUnavailableReason?: string;
   preview: "shelf" | "library" | "low" | "divider" | "hanging" | "cupboard";
   patch: Partial<DesignSpec>;
 }
@@ -69,7 +70,7 @@ export const FURNITURE_TEMPLATES: readonly FurnitureTemplate[] = [
     preview: "library",
     patch: {
       furniture_type: "wall_library",
-      width_mm: 4_200,
+      width_mm: 2_400,
       height_mm: 2_400,
       depth_mm: 320,
       shelf_count: 5,
@@ -117,6 +118,7 @@ export const FURNITURE_TEMPLATES: readonly FurnitureTemplate[] = [
     archetypeLabel: "Bokhyllestomme · koncept",
     productionLevel: "concept",
     limitation: "Fristående stabilitet och förankring måste verifieras för rumsavdelaren.",
+    designUnavailableReason: "Rumsavdelare utan bakstycke blir tillgängliga när alternativ stagning stöds.",
     preview: "divider",
     patch: {
       furniture_type: "bookcase",
@@ -156,6 +158,7 @@ export const FURNITURE_TEMPLATES: readonly FurnitureTemplate[] = [
       base_cabinet_count: 0,
       back_panel: true,
       plinth: false,
+      plinth_height_mm: 0,
       load_per_shelf_kg: 15,
       reinforcement_mode: "auto",
     },

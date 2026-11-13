@@ -7,11 +7,14 @@ import io
 from collections import defaultdict
 from typing import Any
 
+from custombuild_domain.bookcase_fit import trial_groove_fits
 from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
+from custombuild_domain.models import TRIAL_EDGE_TOLERANCE_UM, TRIAL_FACE_TOLERANCE_UM
 
 from .adapters import adapt_design_result
+from .furniture_faces import drawing_faces
 from .model import FeatureKind
 
 HANDOFF_VERSION = "furniture-workshop-handoff-1.1.0"
@@ -64,7 +67,7 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         "version": HANDOFF_VERSION,
         "design_hash": result.design_hash,
         "family": result.spec.intent.family,
-        "dimensions": review_furniture_dimensions(result.spec),
+        "dimensions": review_furniture_dimensions(result.spec, result.shelving_result),
         "stock_requirements": furniture_stock_requirements(result),
         "shelf_load": {
             "basis": intent.shelf_load_basis,
@@ -76,16 +79,37 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         }
         if isinstance(intent, ShelvingIntent)
         else None,
-        "hardware_requirements": list(hardware.required_evidence) if hardware else [],
+        "hardware_requirements": list(hardware.required_evidence)
+        if hardware
+        else (
+            [
+                "screw_and_pilot_fit_in_actual_stock",
+                "fastener_withdrawal_and_racking_test",
+                "assembled_stability",
+            ]
+            if intent.family in {"dining_table", "chair"}
+            else []
+        ),
         "required_workshop_inputs": [
             "material_batches_and_actual_thickness",
             "available_stock_formats_and_grain",
-            "machine_axes_work_area_and_controller",
-            "tools_holders_and_reach",
-            "workholding_and_face_registration",
+            *(
+                []
+                if isinstance(intent, ShelvingIntent)
+                else [
+                    "machine_axes_work_area_and_controller",
+                    "tools_holders_and_reach",
+                    "workholding_and_face_registration",
+                    "postprocessor_and_simulation",
+                ]
+            ),
             "qualified_adhesive_free_retention",
-            "postprocessor_and_simulation",
             "physical_joint_coupon_and_first_article_measurements",
+            *(
+                ["timber_moisture_content", "cross_grain_movement_and_fixings"]
+                if result.spec.material.material_id == "solid-walnut"
+                else []
+            ),
         ],
         "scope": "Raw-blank dimensions exclude sheet margins, tool clearance and nesting waste. "
         "Area is not an order quantity. Oversized parts require a different stock/setup or an "
@@ -154,52 +178,100 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
             )
         )
 
+    sources = {p.part_id: p for p in result.parts}
     for part in adapt_design_result(result).parts:
-        row(part.part_id, "", "finished_local_U", part.width_um)
-        row(part.part_id, "", "finished_local_V", part.height_um)
-        row(part.part_id, "", "actual_thickness", part.thickness_um)
-        for feature in part.features:
-            semantics = (
-                "FIRST_CENTRE"
-                if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}
-                else "LOWER_LEFT"
-            )
-            row(
-                part.part_id,
-                feature.feature_id,
-                "pattern_count",
-                feature.pattern_count,
-                unit="count",
-                side=feature.side.value,
-                origin_semantics=semantics,
-            )
-            for check, value in (("origin_U", feature.x_um), ("origin_V", feature.y_um)):
+        source = sources[part.part_id]
+        row(part.part_id, "", "finished_local_U", part.width_um, source.profile_tolerance_um)
+        row(part.part_id, "", "finished_local_V", part.height_um, source.profile_tolerance_um)
+        row(part.part_id, "", "actual_thickness", part.thickness_um, source.stock_tolerance_um)
+        for view in drawing_faces(sources[part.part_id], part):
+            for feature in view.part.features:
+                if feature.side != view.side:
+                    continue
+                semantics = (
+                    "FIRST_CENTRE"
+                    if feature.kind in {FeatureKind.DRILL, FeatureKind.DRILL_PATTERN}
+                    else "LOWER_LEFT"
+                )
                 row(
                     part.part_id,
                     feature.feature_id,
-                    check,
-                    value,
-                    feature.tolerance_um,
-                    side=feature.side.value,
+                    "pattern_count",
+                    feature.pattern_count,
+                    unit="count",
+                    side=view.name,
                     origin_semantics=semantics,
                 )
-            for field in (
-                "diameter_um",
-                "depth_um",
-                "width_um",
-                "length_um",
-                "radius_um",
-                "pitch_um",
-            ):
-                value = getattr(feature, field)
-                if value is not None:
+                for check, value in (("origin_U", feature.x_um), ("origin_V", feature.y_um)):
                     row(
                         part.part_id,
                         feature.feature_id,
-                        field.removesuffix("_um"),
+                        check,
                         value,
                         feature.tolerance_um,
-                        side=feature.side.value,
+                        side=view.name,
                         origin_semantics=semantics,
                     )
+                for field in (
+                    "diameter_um",
+                    "depth_um",
+                    "width_um",
+                    "length_um",
+                    "radius_um",
+                    "pitch_um",
+                ):
+                    value = getattr(feature, field)
+                    if value is not None:
+                        row(
+                            part.part_id,
+                            feature.feature_id,
+                            field.removesuffix("_um"),
+                            value,
+                            feature.tolerance_um,
+                            side=view.name,
+                            origin_semantics=semantics,
+                        )
+    if result.trial_angles:
+        for fit in trial_groove_fits(result.parts, result.joints):
+            axis = fit.normal_axis.upper()
+            if fit.minimum_front_stop_gap_um is not None:
+                mate = sources[fit.inserted_part_id]
+                row(
+                    fit.inserted_part_id,
+                    "",
+                    f"front_alignment_Y_{fit.joint_id}",
+                    mate.placement.y_um,
+                    TRIAL_FACE_TOLERANCE_UM,
+                    origin_semantics="INSTALLED_FRONT_DATUM",
+                )
+                row(
+                    fit.host_id,
+                    fit.groove_id,
+                    "front_entry_stop_gap_minimum",
+                    fit.minimum_front_stop_gap_um,
+                    origin_semantics="LOWER_ACCEPTANCE_LIMIT",
+                )
+            row(
+                fit.host_id,
+                fit.groove_id,
+                f"entry_face_{axis}",
+                fit.entry_face_world_um,
+                TRIAL_FACE_TOLERANCE_UM,
+                origin_semantics="INSTALLED_WORLD_DATUM",
+            )
+            row(
+                fit.inserted_part_id,
+                "",
+                f"inserted_edge_{axis}_{fit.joint_id}",
+                fit.inserted_end_world_um,
+                TRIAL_EDGE_TOLERANCE_UM,
+                origin_semantics="INSTALLED_WORLD_DATUM",
+            )
+            row(
+                fit.host_id,
+                fit.groove_id,
+                "assembled_bottom_gap_minimum",
+                fit.minimum_bottom_gap_um,
+                origin_semantics="LOWER_ACCEPTANCE_LIMIT",
+            )
     return output.getvalue().encode("utf-8-sig")

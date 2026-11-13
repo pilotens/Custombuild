@@ -285,7 +285,7 @@ export interface DimensionInputProps {
   error?: ReactNode;
   disabled?: boolean;
   onPreview?: (value: number) => void;
-  onCommit?: (value: number) => void;
+  onCommit?: (value: number) => boolean | void;
   className?: string;
 }
 
@@ -380,8 +380,10 @@ export function DimensionInput({
       const nextError = rejectedValueMessage(draft);
       setValidationError(nextError);
       if (nextError) return;
-      setDraft(String(parsed));
-      onCommit?.(parsed);
+      if (onCommit?.(parsed) === false) {
+        setDraft(String(value));
+        setValidationError("Ändringen kunde inte genomföras. Det tidigare måttet behålls.");
+      } else setDraft(String(parsed));
       return;
     }
     if (!Number.isFinite(parsed) || draft.trim() === "") {
@@ -389,8 +391,13 @@ export function DimensionInput({
       return;
     }
     const next = clampAndSnap(parsed, min, max, step);
-    setDraft(String(next));
-    onCommit?.(next);
+    if (onCommit?.(next) === false) {
+      setDraft(String(value));
+      setValidationError("Ändringen kunde inte genomföras. Det tidigare måttet behålls.");
+    } else {
+      setDraft(String(next));
+      setValidationError(undefined);
+    }
   };
 
   const renderedError = error ?? validationError;
