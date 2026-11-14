@@ -242,10 +242,10 @@ def test_all_external_container_images_are_digest_pinned() -> None:
     assert external_images
     assert all("@sha256:" in image for image in external_images)
     assert web.count("@sha256:") == 3
-    assert "ARG NODE_VERSION=24.22.2" in web
+    assert "ARG NODE_VERSION=24.22.3" in web
     assert (
-        "node:24.22.2-trixie-slim@sha256:"
-        "0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d"
+        "node:24.22.3-trixie-slim@sha256:"
+        "af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0"
     ) in web
     assert (
         "cgr.dev/chainguard/glibc-dynamic:latest@sha256:"
@@ -267,7 +267,7 @@ def test_all_external_container_images_are_digest_pinned() -> None:
         "openssl-4.0-libssl=4.0.3-r8",
         "libuv=1.53.0-r0",
         "zlib=1.3.2.1_rc20260921-r2",
-        "nodejs-24=24.22.2-r2",
+        "nodejs-24=24.22.3-r0",
     ):
         assert package in web
     assert "COPY --from=base /usr/local/bin/node" not in web
@@ -275,7 +275,7 @@ def test_all_external_container_images_are_digest_pinned() -> None:
     assert 'ENTRYPOINT ["/usr/bin/node"]' in web
     assert 'CMD ["/usr/bin/node", "-e"' in web
     assert "require('node:inspector')" in web
-    assert "process.version !== 'v24.22.2'" in web
+    assert "process.version !== 'v24.22.3'" in web
     assert "apt-get" not in web
 
 
@@ -464,7 +464,7 @@ def test_worker_runtime_packages_are_scanner_visible_and_exact() -> None:
 
 def test_ci_uses_the_same_node_release_as_the_web_image() -> None:
     web = Path("apps/web/Dockerfile").read_text(encoding="utf-8")
-    expected = "24.22.2"
+    expected = "24.22.3"
 
     assert f"ARG NODE_VERSION={expected}" in web
     for workflow in (".github/workflows/ci.yml", ".github/workflows/prod-ci.yml"):
@@ -499,9 +499,9 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
         "ADD --checksum=sha256:800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30"
     ) in dockerfile
     overrides_sha256 = hashlib.sha256(overrides).hexdigest()
-    assert overrides_sha256 == "b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1"
+    assert overrides_sha256 == "a6738e72cd1a9d3b739d191979a2283d015c20220b973fe75affba343b89b57b"
     assert f"ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256={overrides_sha256}" in dockerfile
-    assert "github.com/apache/thrift@v0.24.0" in dockerfile
+    assert "github.com/apache/thrift@v0.25.0" in dockerfile
     assert "go.etcd.io/etcd/client/pkg/v3@v3.7.1" in dockerfile
     assert "golang.org/x/crypto@v0.58.0" in dockerfile
     assert "golang.org/x/image@v0.45.0" in dockerfile
@@ -525,7 +525,7 @@ def test_seaweedfs_runtime_is_source_verified_and_shell_free() -> None:
     )
     for expected in (
         'test "$go_version" = "1.26.9"',
-        'test "$apache_thrift_version" = "0.24.0"',
+        'test "$apache_thrift_version" = "0.25.0"',
         'test "$etcd_client_pkg_version" = "3.7.1"',
         'test "$x_crypto_version" = "0.58.0"',
         'test "$x_image_version" = "0.45.0"',

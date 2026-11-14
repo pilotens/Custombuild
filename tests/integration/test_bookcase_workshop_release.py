@@ -171,6 +171,86 @@ def create(client, order):
     )
 
 
+def test_workshop_width_interval_binds_both_endpoints_site_and_lots(tmp_path, monkeypatch):
+    """Only the test registry contains range evidence; the actual order still passes CAD."""
+
+    def order(width):
+        data = measured_order().model_dump(mode="json")
+        data["design"]["intent"].update(
+            width_um=width, base_doors="J95-C24/0T-NI", divider_count=1, height_um=1_200_000
+        )
+        data["design"]["material"]["material_id"] = "solid-walnut"
+        data["design"]["installation"].update(
+            width_um=width + 100_000, height_um=1_400_000, measured_ceiling_height_um=1_400_000
+        )
+        return FurnitureWorkspace.model_validate(data)
+
+    low, mid, high = order(880_000), order(889_123), order(900_000)
+    profile = _install_test_profile(tmp_path, monkeypatch, high)
+    registry = tmp_path / "profiles.json"
+    profile["width_range"] = {
+        "minimum_um": low.design.intent.width_um,
+        "maximum_um": high.design.intent.width_um,
+        "minimum_scope_sha256": qualifications.bookcase_scope(low),
+    }
+    registry.write_text(json.dumps([profile]))
+    with pytest.raises(ValueError, match="giltiga rapporter"):
+        qualifications.qualified_bookcase(mid, TENANT)
+    interval_report = tmp_path / profile["profile_id"] / "width-range.pdf"
+    canvas = Canvas(str(interval_report))
+    canvas.drawString(30, 780, "SYNTHETIC WORKFLOW TEST - entire width interval")
+    canvas.save()
+    profile["evidence"].append(
+        dict(
+            category="width_range",
+            file=interval_report.name,
+            sha256=hashlib.sha256(interval_report.read_bytes()).hexdigest(),
+        )
+    )
+    registry.write_text(json.dumps([profile]))
+    # The original maximum-width fixture has too much deflection for the minimum span.
+    with pytest.raises(ValueError, match="Nedböjning"):
+        qualifications.qualified_bookcase(high, TENANT)
+    profile["physical_results"]["measured_shelf_deflection_um"] = 900
+    registry.write_text(json.dumps([profile]))
+    for bound in [low, high]:
+        assert qualifications.qualified_bookcase(bound, TENANT).width_range is not None
+    for outside in [order(879_999), order(900_001)]:
+        with pytest.raises(ValueError, match="utanför registrerat intervall.*880–900 mm"):
+            qualifications.qualified_bookcase(outside, TENANT)
+    for key, field, value in [
+        ("material", "batch_id", "other-lot"),
+        ("installation", "qualified_site_ref", "other-site"),
+    ]:
+        data = mid.model_dump(mode="json")
+        data["design"][key][field] = value
+        with pytest.raises(ValueError, match="Ingen entydigt"):
+            qualifications.qualified_bookcase(FurnitureWorkspace.model_validate(data), TENANT)
+    install_review_storage(monkeypatch)
+    with TestClient(app) as client:
+        path, bound = create(client, mid)
+        eligibility = path + "/workshop-eligibility"
+        assert client.get(eligibility, headers=OTHER).status_code == 404
+        check = client.get(eligibility, headers=HEADERS).json()
+        assert check["available"] and check["design_hash"] == bound["expected_design_hash"]
+        assert "880" in check["detail"] and "900" in check["detail"]
+        res = client.post(
+            path + "/exports", headers=HEADERS, json={**bound, "purpose": "workshop_drawings"}
+        )
+        assert res.status_code == 202, res.text
+        job = res.json()["job_id"]
+        assert tasks.generate_furniture_review.run(job, TENANT)["state"] == "succeeded"
+        download = path + f"/exports/{job}/download"
+        with ZipFile(io.BytesIO(client.get(download, headers=HEADERS).content)) as z:
+            assert z.read("documents/breddintervall.pdf") == interval_report.read_bytes()
+            assert (
+                json.loads(z.read("design/resolved.json"))["spec"]["intent"]["width_um"] == 889_123
+            )
+        interval_report.unlink()
+        assert not client.get(eligibility, headers=HEADERS).json()["available"]
+        assert client.get(download, headers=HEADERS).status_code == 409
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     [

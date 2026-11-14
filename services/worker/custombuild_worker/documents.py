@@ -750,7 +750,13 @@ def assembly_manual_pdf(
         return _finish(buffer, canvas)
 
     group_by_step = {group.step_id: group for group in manual_plan.groups}
+    has_angles = bool(getattr(design, "trial_angles", ()))
+    angle_pages_drawn = False
     for index, step in enumerate(steps or (None,), start=1):
+        mounts = _assembly_step_door_mounts(design, step) if step is not None else ()
+        if mounts and has_angles and not angle_pages_drawn:
+            _draw_trial_angle_pages(canvas, design, identity, part_by_id, workshop_profile)
+            angle_pages_drawn = True
         chunks = (
             ((),) if step is None else _assembly_part_chunks(step.part_ids, ASSEMBLY_PARTS_PER_PAGE)
         )
@@ -769,13 +775,12 @@ def assembly_manual_pdf(
                 continue
             chunk_parts = tuple(part_by_id[part_id] for part_id in part_ids)
             moving_part_ids = frozenset(step.moving_part_ids) & frozenset(part_ids)
-            mounts = _assembly_step_door_mounts(design, step)
             canvas.setFillColor(INK)
             canvas.setFont("Helvetica-Bold", 10)
             canvas.drawString(
                 MARGIN,
                 y,
-                "Haka på luckan i öppet läge. Bilden visar luckans stängda slutläge."
+                "Haka på luckan i öppet läge. Passa ihop gångjärn och platta på samma höjd."
                 if mounts
                 else "Monteringsbana: "
                 + " -> ".join(segment.value for segment in step.motion_path)
@@ -850,22 +855,34 @@ def assembly_manual_pdf(
             canvas.drawString(
                 MARGIN,
                 y,
-                "Lucka och gavel i stommen. Påhakning och lucksvep ingår inte i rörelseprovet."
+                "Para ihop borrbilderna rad för rad. Se tillverkarens anvisning för påhakningen."
                 if mounts
                 else "IN = inkommande grupp, gemensamt förskjuten motsatt monteringsriktningen; "
                 "FIX = befintlig delgrupp.",
             )
             y -= 8
-            _draw_exploded_parts(
-                canvas,
-                chunk_parts,
-                frozenset() if mounts else moving_part_ids,
-                step.motion_path,
-                show_motion=not bool(mounts),
-                top=y,
-                height=245,
-            )
+            if mounts:
+                _draw_door_hinge_pairs(canvas, mounts[0], y)
+            else:
+                _draw_exploded_parts(
+                    canvas,
+                    chunk_parts,
+                    moving_part_ids,
+                    step.motion_path,
+                    show_motion=True,
+                    top=y,
+                    height=245,
+                )
             y -= 258
+            if mounts:
+                link = "https://shop.sugatsune.eu/product/j95-c24-0t/"
+                label = "Sugatsunes monteringsbilder och filmer för J95-C24/0T"
+                canvas.setFont("Helvetica", 8)
+                canvas.setFillColor(ACCENT)
+                canvas.drawString(MARGIN, y, label)
+                right = MARGIN + canvas.stringWidth(label, "Helvetica", 8)
+                canvas.linkURL(link, (MARGIN, y - 2, right, y + 9))
+                y -= 16
             canvas.setFillColor(ACCENT)
             canvas.setFont("Helvetica-Bold", 8)
             canvas.drawString(MARGIN, y, "Kontrollpunkt")
@@ -900,50 +917,100 @@ def assembly_manual_pdf(
                     leading=10,
                 )
             _footer(canvas, "Följ alltid arbetsplatsens lyft-, kläm- och verktygsinstruktioner")
-    if getattr(design, "trial_angles", ()):
-        # Fit the angles after all captured panels are positioned; none obstruct panel entry.
-        for start in range(0, len(design.trial_angles), 8):
-            canvas.showPage()
-            y = _header(canvas, "Fäst låsvinklarna efter stommonteringen", identity)
-            canvas.setFont("Helvetica", 8)
-            y = _draw_wrapped_text(
-                canvas,
-                (
-                    "Stöd stommen i monteringsjiggen. Varje listad GN 970-ALM-30-30-30-B "
-                    "monteras inne i facket mot de två markerade ytorna. Rikta vinkelns hål "
-                    "mot pilothålen. Montera två DIN 96 A4 5 x 16 mm, en i varje skänkel. "
-                    "Dra först båda löst, kontrollera fullt instick och anliggning innan "
-                    "åtdragning. "
-                    + (
-                        "Använd föreskrivet moment i documents/installation.pdf."
-                        if workshop_profile
-                        else "Slutmoment, pilotdiameter och utdragskapacitet kräver prov."
-                    )
-                ),
+    if has_angles and not angle_pages_drawn:
+        _draw_trial_angle_pages(canvas, design, identity, part_by_id, workshop_profile)
+    return _finish(buffer, canvas)
+
+
+def _draw_door_hinge_pairs(canvas: Canvas, mount: DoorMount, top: float) -> None:
+    """Show each real cup and its mating plate from the order's own drilling coordinates."""
+    canvas.saveState()
+    for i, (part, heading) in enumerate(
+        ((mount.door, "Luckans baksida"), (mount.support, "Gavelns insida"))
+    ):
+        left = MARGIN + i * 245
+        canvas.setFillColor(INK)
+        canvas.setFont("Helvetica-Bold", 10)
+        canvas.drawString(left, top - 14, heading)
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(left, top - 28, part.semantic_key)
+        for position, label, cy in ((2, "Övre", top - 87), (1, "Nedre", top - 184)):
+            prefix = f"J95-{mount.door.instance_index + 1}-{position}-"
+            holes = [
+                h
+                for h in mount.holes
+                if h.part_id == part.part_id and h.feature_id.startswith(prefix)
+            ]
+            coords = [(h.origin.x_um if i == 0 else h.origin.y_um, h.origin.z_um) for h in holes]
+            center_z = (max(z for _, z in coords) + min(z for _, z in coords)) / 2
+            start_u = min(u for u, _ in coords)
+            canvas.setStrokeColor(MUTED)
+            canvas.setFillColor(INK)
+            canvas.setFont("Helvetica-Bold", 8)
+            canvas.drawString(left, cy + 27, f"{label} · {prefix[:-1]}")
+            canvas.setStrokeColor(ACCENT)
+            canvas.setLineWidth(1.3)
+            for h, (u, z) in zip(holes, coords, strict=True):
+                # Local detail magnified equally on both axes (one point per millimetre).
+                assert h.dimensions.diameter_um is not None
+                canvas.circle(
+                    left + 58 + (u - start_u) / 1000,
+                    cy + (z - center_z) / 1000,
+                    h.dimensions.diameter_um / 2000,
+                    fill=0,
+                    stroke=1,
+                )
+    canvas.restoreState()
+
+
+def _draw_trial_angle_pages(
+    canvas: Canvas,
+    design: Any,
+    identity: str,
+    part_by_id: dict[str, Any],
+    workshop_profile: str | None,
+) -> None:
+    for start in range(0, len(design.trial_angles), 8):
+        canvas.showPage()
+        y = _header(canvas, "Fäst låsvinklarna efter stommonteringen", identity)
+        canvas.setFont("Helvetica", 8)
+        y = _draw_wrapped_text(
+            canvas,
+            (
+                "Stöd stommen i monteringsjiggen. Varje listad GN 970-ALM-30-30-30-B "
+                "monteras inne i facket mot de två markerade ytorna. Rikta vinkelns hål "
+                "mot pilothålen. Montera två DIN 96 A4 5 x 16 mm, en i varje skänkel. "
+                "Dra först båda löst, kontrollera fullt instick och anliggning innan "
+                "åtdragning. "
+                + (
+                    "Använd föreskrivet moment i documents/installation.pdf."
+                    if workshop_profile
+                    else "Slutmoment, pilotdiameter och utdragskapacitet kräver prov."
+                )
+            ),
+            MARGIN,
+            y,
+            max_chars=106,
+        )
+        for a in design.trial_angles[start : start + 8]:
+            y -= 20
+            canvas.setFont("Helvetica-Bold", 8)
+            canvas.drawString(
                 MARGIN,
                 y,
-                max_chars=106,
+                f"{part_by_id[a.upright_id].semantic_key} + "
+                f"{part_by_id[a.horizontal_id].semantic_key} · {a.joint_id}",
             )
-            for a in design.trial_angles[start : start + 8]:
-                y -= 20
-                canvas.setFont("Helvetica-Bold", 8)
-                canvas.drawString(
-                    MARGIN,
-                    y,
-                    f"{part_by_id[a.upright_id].semantic_key} + "
-                    f"{part_by_id[a.horizontal_id].semantic_key} · {a.joint_id}",
-                )
-                canvas.setFont("Helvetica", 7)
-                canvas.drawString(MARGIN, y - 12, f"Stående del: {a.upright_hole}")
-                canvas.drawString(MARGIN, y - 23, f"Liggande del: {a.horizontal_hole}")
-                y -= 25
-            _footer(
-                canvas,
-                "Montering enligt documents/installation.pdf"
-                if workshop_profile
-                else "Provmontage · kontrollera åtkomst innan låsning och belastning",
-            )
-    return _finish(buffer, canvas)
+            canvas.setFont("Helvetica", 7)
+            canvas.drawString(MARGIN, y - 12, f"Stående del: {a.upright_hole}")
+            canvas.drawString(MARGIN, y - 23, f"Liggande del: {a.horizontal_hole}")
+            y -= 25
+        _footer(
+            canvas,
+            "Montering enligt documents/installation.pdf"
+            if workshop_profile
+            else "Provmontage · kontrollera åtkomst innan låsning och belastning",
+        )
 
 
 def assembly_readiness_json(

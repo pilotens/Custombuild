@@ -1888,6 +1888,20 @@ export class CustombuildApiClient {
     return result;
   }
 
+  async workshopEligibility(projectId: string, revision: number, designHash: string, signal: AbortSignal) {
+    const result = await this.request<components["schemas"]["WorkshopEligibility"]>(
+      `/v1/furniture/projects/${encodeURIComponent(projectId)}/workshop-eligibility`,
+      { method: "GET", cache: "no-store", signal },
+    );
+    if (result?.revision !== revision || result.design_hash !== designHash) {
+      throw new ApiError("Den sparade revisionen har ändrats. Öppna projektet igen.");
+    }
+    if (typeof result.available !== "boolean" || typeof result.detail !== "string" || !result.detail.trim()) {
+      throw new ApiError("Verkstadsorderns status kunde inte bekräftas.");
+    }
+    return result;
+  }
+
   async requestFurnitureExport(projectId: string, revision: number, designHash: string,
     purpose: "review" | "workshop_drawings" = "review"): Promise<FurnitureExportAccepted> {
     const result = await this.request<FurnitureExportAccepted>(`/v1/furniture/projects/${encodeURIComponent(projectId)}/exports`, {

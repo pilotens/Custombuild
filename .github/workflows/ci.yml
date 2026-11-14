@@ -213,7 +213,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Generated API client drift
@@ -358,7 +358,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install live-browser matrix

@@ -25,6 +25,8 @@ function preview(workspace: FurnitureWorkspace, parts = 5): FurniturePreview {
 function setup() {
   const api = new CustombuildApiClient("https://api.example.test");
   vi.spyOn(api, "listProjects").mockResolvedValue([]);
+  vi.spyOn(api, "workshopEligibility").mockImplementation(async (_id, revision, design_hash) =>
+    ({revision, design_hash, available: true, detail: "Provprofilen täcker den här testordern."}));
   vi.spyOn(api,"createFurnitureProject").mockImplementation(async(name,workspace)=>{
     // Model the single create response using the project's and draft's shared fixtures.
     const project=await api.createProject(name);
@@ -100,6 +102,7 @@ describe("durable furniture export downloads", () => {
     const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:current-workshop");
     vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const saveFile = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await waitFor(() => expect(screen.getByRole("button", {name: "Beställ verkstadsritningar"})).toBeEnabled());
     fireEvent.click(screen.getByRole("button", {name: "Beställ verkstadsritningar"}));
     const download = await screen.findByRole("button", {name:/Hämta frisläppta verkstadsritningar/});
     expect(fetchFile).not.toHaveBeenCalled();
@@ -118,6 +121,7 @@ describe("durable furniture export downloads", () => {
     let finish!: (blob: Blob) => void;
     const get = vi.spyOn(api, "downloadFurnitureExport").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
     const saveFile = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await waitFor(() => expect(screen.getByRole("button", {name:"Beställ verkstadsritningar"})).toBeEnabled());
     fireEvent.click(screen.getByRole("button", {name:"Beställ verkstadsritningar"}));
     fireEvent.click(await screen.findByRole("button", {name:/Hämta frisläppta verkstadsritningar/}));
     await waitFor(() => expect(get).toHaveBeenCalledOnce());

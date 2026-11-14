@@ -1,4 +1,4 @@
-"""Machine-neutral workshop release for an exactly tested fixed bookcase and site.
+"""Machine-neutral release of tested fixed bookcases at a qualified site.
 
 The registry is part of the deployed, reviewed source. Orders cannot supply a
 profile, report, exemption or approval. Removing an entry revokes future downloads.
@@ -7,8 +7,9 @@ profile, report, exemption or approval. Removing an entry revokes future downloa
 import hashlib
 import json
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from custombuild_domain.bookcase_site import WALL_NAMES, review_standing_site
 from custombuild_domain.enums import MaterialType, PartRole
@@ -20,8 +21,9 @@ from custombuild_domain.furniture import (
 )
 from custombuild_domain.furniture_catalog import CATALOG_VERSION, resolve_material
 from custombuild_domain.furniture_dimensions import DIMENSION_REVIEW_VERSION
-from custombuild_domain.furniture_engine import build_furniture
+from custombuild_domain.furniture_engine import FurnitureResult, build_furniture
 from custombuild_domain.identity import content_hash
+from custombuild_domain.models import BookcaseWidthUm
 from custombuild_rules.engine import RULES_VERSION
 from custombuild_rules.furniture import FURNITURE_RULES_VERSION, evaluate_furniture
 from pydantic import (
@@ -29,17 +31,23 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
-    TypeAdapter,
     ValidationError,
     model_validator,
 )
 
 from .bookcase_test_results import BookcaseTestResults, bookcase_test_limits
+from .model import um_to_mm
 
 REGISTRY = Path(__file__).with_name("bookcase_qualifications")
 READBACK_SCHEMA = "custombuild.fixed-bookcase-readback.v2"
 Category = Literal[
-    "materials", "connection", "service_load", "stability", "installation", "door_service"
+    "materials",
+    "connection",
+    "service_load",
+    "stability",
+    "installation",
+    "door_service",
+    "width_range",
 ]
 REQUIRED_REPORTS = {"materials", "connection", "service_load", "stability", "installation"}
 
@@ -51,6 +59,21 @@ class EvidenceFile(BaseModel):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class TestedWidthRange(BaseModel):
+    """The width-range report covers the entire interval at the specified site and lots."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    minimum_um: BookcaseWidthUm
+    maximum_um: BookcaseWidthUm
+    minimum_scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def ordered(self) -> "TestedWidthRange":
+        if self.minimum_um >= self.maximum_um:
+            raise ValueError("Breddintervallet behöver två skilda gränser i stigande ordning.")
+        return self
+
+
 class BookcaseProfile(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
     profile_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
@@ -60,12 +83,15 @@ class BookcaseProfile(BaseModel):
     valid_until: AwareDatetime
     evidence: tuple[EvidenceFile, ...]
     physical_results: BookcaseTestResults
+    width_range: TestedWidthRange | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def complete(self) -> "BookcaseProfile":
         required = REQUIRED_REPORTS | (
             {"door_service"} if self.physical_results.door_service else set()
         )
+        if self.width_range:
+            required = required | {"width_range"}
         if (
             self.valid_until <= self.valid_from
             or self.physical_results.tested_on > self.valid_from.date()
@@ -123,7 +149,58 @@ def bookcase_scope(workspace: FurnitureWorkspace) -> str:
     )
 
 
-def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> BookcaseProfile:
+def _at_width(workspace: FurnitureWorkspace, width: int) -> FurnitureWorkspace:
+    data = workspace.model_dump(mode="json")
+    data["design"]["intent"]["width_um"] = width
+    data["design"]["installation"]["width_um"] += width - workspace.design.intent.width_um
+    return FurnitureWorkspace.model_validate(data)
+
+
+def _matching_profiles(
+    workspace: FurnitureWorkspace, records: list[Any], organization_id: str, now: datetime
+) -> tuple[list[BookcaseProfile], list[TestedWidthRange]]:
+    design = workspace.design
+    actual_width = design.intent.width_um
+
+    @cache
+    def scope_at(width: int) -> str | None:
+        if width == actual_width:
+            return bookcase_scope(workspace)
+        # Preserve every other design and survey input, including all clearances,
+        # both actual lots and the site ID. Rebuild both endpoint constructions.
+        try:
+            return bookcase_scope(_at_width(workspace, width))
+        except ValueError:
+            return None
+
+    matches = []
+    outside = []
+    for record in records:
+        if not isinstance(record, dict) or record.get("organization_id") != organization_id:
+            continue
+        bounds = None
+        interval = record.get("width_range")
+        if interval is None:
+            if record.get("scope_sha256") != scope_at(actual_width):
+                continue
+        else:
+            bounds = TestedWidthRange.model_validate(interval)
+            if (
+                record.get("scope_sha256") is None
+                or scope_at(bounds.maximum_um) != record.get("scope_sha256")
+                or scope_at(bounds.minimum_um) != bounds.minimum_scope_sha256
+            ):
+                continue
+        profile = BookcaseProfile.model_validate(record)
+        if profile.valid_from <= now < profile.valid_until:
+            if bounds and not bounds.minimum_um <= actual_width <= bounds.maximum_um:
+                outside.append(bounds)
+            else:
+                matches.append(profile)
+    return matches, outside
+
+
+def _checked_order(workspace: FurnitureWorkspace) -> tuple[FurnitureResult, list[dict[str, Any]]]:
     spec = workspace.design
     if (
         isinstance(spec.intent, ShelvingIntent)
@@ -176,26 +253,31 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
         raise ValueError("Ange plats-ID för provad vägginfästning, golv, fixturer och bruksmiljö.")
     if not spec.material.batch_id or not spec.back_material.batch_id:
         raise ValueError("Ange provad materialbatch för både stomme och rygg.")
+    return design, evaluations
+
+
+def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> BookcaseProfile:
+    design, evaluations = _checked_order(workspace)
     now = datetime.now(UTC)
     records = json.loads((REGISTRY / "profiles.json").read_bytes())
     if not isinstance(records, list):
         raise ValueError("Förteckningen över typkvalificeringar har ogiltigt format.")
-    scope = bookcase_scope(workspace)
-    candidates = [
-        r
-        for r in records
-        if isinstance(r, dict)
-        and r.get("organization_id") == organization_id
-        and r.get("scope_sha256") == scope
-    ]
     try:
-        profiles = TypeAdapter(list[BookcaseProfile]).validate_python(candidates)
+        matches, outside = _matching_profiles(workspace, records, organization_id, now)
     except ValidationError as exc:
         raise ValueError(
             "Typunderlaget för ordern behöver giltiga rapporter och mätresultat "
             "för materialbatcher, förband, brukslast, stabilitet och monteringssteg."
         ) from exc
-    matches = [p for p in profiles if p.valid_from <= now < p.valid_until]
+    if not matches and outside:
+        ranges = ", ".join(
+            f"{um_to_mm(lo)}–{um_to_mm(hi)} mm"
+            for lo, hi in sorted({(r.minimum_um, r.maximum_um) for r in outside})
+        )
+        raise ValueError(
+            f"Stombredden {um_to_mm(workspace.design.intent.width_um)} mm ligger "
+            f"utanför registrerat intervall för denna konstruktion och plats: {ranges}."
+        )
     if len(matches) != 1:
         raise ValueError(
             "Ingen entydigt kvalificerad profil för dessa mått, materialbatcher, "
@@ -203,6 +285,21 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
         )
     profile = matches[0]
     profile.reports()
+    _check_test_results(profile, design, evaluations)
+    if profile.width_range:
+        # An interval with an invalid endpoint is invalid for interior orders as well.
+        for width in (profile.width_range.minimum_um, profile.width_range.maximum_um):
+            if width != workspace.design.intent.width_um:
+                endpoint, rules = _checked_order(_at_width(workspace, width))
+                _check_test_results(profile, endpoint, rules)
+    return profile
+
+
+def _check_test_results(
+    profile: BookcaseProfile, design: FurnitureResult, evaluations: list[dict[str, Any]]
+) -> None:
+    spec = design.spec
+    assert isinstance(spec.intent, ShelvingIntent) and design.shelving_result is not None
     if resolve_material(spec.material).material_type == MaterialType.SOLID_WOOD:
         movement = profile.physical_results.wood_movement
         if movement is None:
@@ -226,7 +323,6 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
     profile.physical_results.require_capacity(
         bookcase_test_limits(design.shelving_result, evaluations)
     )
-    return profile
 
 
 def workshop_filename(revision: int, qualification: object) -> str:

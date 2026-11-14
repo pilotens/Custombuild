@@ -154,6 +154,7 @@ export interface FurniturePreview {
   physical_cutting_authorized: false;
   production_qualified: false;
   workshop_handoff?: {
+    rear_openings?: components["schemas"]["RearOpening"][];
     stock_plan?: FurniturePreview["manufacturing"];
     shelf_load?: { basis: "per_row" | "per_metre"; total_row_load_n: number;
       load_per_metre_n: number | null; width_um: number } | null;

@@ -26,6 +26,7 @@ import { FurnitureShelfSuggestionPanel } from "./furniture-shelf-suggestion";
 import { FurnitureModulePlanningPanel } from "./furniture-module-planning";
 import { FurnitureStockEditor, FurnitureStockPlan } from "./furniture-stock-planning";
 import { WorkshopDrawingsDownload } from "./workshop-drawings-download";
+import { BookcaseWorkshopOrder } from "./bookcase-workshop-order";
 
 const Viewer = dynamic(() => import("./furniture-viewer"), {
   ssr: false, loading: () => <p>Öppnar 3D-vyn…</p>,
@@ -113,6 +114,12 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
   const mayEdit = ["owner", "admin", "designer"].includes(principal.role);
   const intent = workspace.design.intent;
   const solidWood = workspace.design.material.material_id === "solid-walnut";
+  const carcassStock = preview?.workshop_handoff?.stock_requirements.find(group =>
+    group.material_id === workspace.design.material.material_id &&
+    group.measured_thickness_um === workspace.design.material.measured_thickness_um);
+  const rearOpenings = preview?.workshop_handoff?.rear_openings;
+  const longestBlanks = carcassStock?.parts.filter(part =>
+    part.along_grain_um && part.along_grain_um === carcassStock.minimum_along_grain_um);
   const exceedsExportLimit = (preview?.design.parts.length ?? 0) > 128;
   const linearShelfLoad = intent.family === "shelving" && intent.shelf_load_basis === "per_metre";
   const update = (next: FurnitureWorkspace) => {
@@ -306,7 +313,8 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       if (epoch !== mutationEpoch.current) return;
       resetInputDrafts(); update(checked.workspace); setBaseline(""); setProjectId(undefined); setRevision(0);
       setPreview(checked); setHistory({ items: [], next_offset: null });
-      setName(file ? file.name.replace(/\.json$/i, "").slice(0, 180) : example.design.design_id === customerBookcase.design.design_id ? "Kundbokhylla i massiv valnöt" : "Hyllstomme i valnöt");
+      setName(file ? file.name.replace(/\.json$/i, "").slice(0, 180) : example.design.design_id === cabinetExample.design.design_id
+        ? "Valnötsbokhylla med sex luckor" : example.design.design_id === customerBookcase.design.design_id ? "Öppen kundbokhylla i valnöt" : "Hyllstomme i valnöt");
       setSelectedPart(undefined); setDrawersOpen(false);
       setNotice("Arbetsfilen har kontrollerats. Spara som ett nytt projekt för att skapa underlag.");
     } catch (reason) { setError(errorText(reason)); }
@@ -336,11 +344,11 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
             if (file) navigate(() => { void importWorkspace(file); }); }} /></label>
         {intent.family === "shelving" ? <button disabled={busy || !mayEdit}
           onClick={() => navigate(() => { void importWorkspace(undefined, customerBookcase as FurnitureWorkspace); })}>
-          Öppna kundbokhylla 4340 × 2540 × 280
+          Öppna kundbokhylla 4340 × 2540 × 280 · öppna hyllor
         </button> : null}
         {intent.family === "shelving" && <button disabled={busy || !mayEdit}
           onClick={() => navigate(() => { void importWorkspace(undefined, cabinetExample as FurnitureWorkspace); })}>
-          Öppna valnötsbokhylla med sex gångjärnsluckor
+          Öppna valnötsbokhylla med sex gångjärnsluckor · J95 och GN 970
         </button>}
         <button disabled={busy || !mayEdit} onClick={() => navigate(() => { void importWorkspace(); })}>
           Öppna valnötsexempel
@@ -481,9 +489,28 @@ export function FurnitureStudio({ api, principal, initialFamily = "table", initi
       {exceedsExportLimit ? <p role="status">Granskningspaketet stöder högst 128 delar. Dela upp designen före export.</p> : null}
       <button className={styles.primary} disabled={mode === "without" || !mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
         onClick={() => { void exportDrawings(); }}>Skapa granskningspaket</button>
-      {intent.family === "shelving" && intent.trial_angle ? <button
-        disabled={mode === "without" || !mayEdit || busy || dirty || !projectId || !preview || exceedsExportLimit}
-        onClick={() => { void exportDrawings(true); }}>Beställ verkstadsritningar</button> : null}
+      {intent.family === "shelving" && !!rearOpenings?.length && <div>
+        <h3>Ryggens täckning</h3>
+        {(["upper", "base"] as const).map(zone => {
+          const bays = rearOpenings.filter(opening => opening.zone === zone);
+          if (!bays.length) return null;
+          const labels = {covered: "helt täckta", partial: "delvis täckta", open: "öppna bakåt"};
+          const summary = (Object.keys(labels) as (keyof typeof labels)[]).map(state => {
+            const count = bays.filter(bay => bay.state === state).length;
+            return count ? `${count} ${labels[state]}` : null;
+          }).filter(Boolean).join(", ");
+          return <p key={zone}>{zone === "upper" ? "Hyllfacken" : "Underskåpen"} · {summary}</p>;
+        })}
+      </div>}
+      {solidWood && intent.family === "shelving" && !!longestBlanks?.length && carcassStock && <p>
+        För de längsta delarna behövs {longestBlanks.length} obrutna ämnen på {micrometresToMillimetreText(carcassStock.minimum_along_grain_um)} mm längs fibern.
+        Kontrollera tillgången i vald batch.
+      </p>}
+      {intent.family === "shelving" && (intent.trial_angle || intent.base_doors)
+        && !dirty && projectId && preview && revision > 0 && mode !== "without" ?
+        <BookcaseWorkshopOrder key={`${projectId}:${revision}:${preview.design.design_hash}`} api={api}
+          project={projectId} revision={revision} hash={preview.design.design_hash}
+          disabled={!mayEdit || busy || exceedsExportLimit} onOrder={() => { void exportDrawings(true); }} /> : null}
       {exportMessage ? <p role="status">{exportMessage}</p> : null}
       {preview?.workshop_handoff?.dimensions.standing_assembly ? <div>
         <h3>Stående montering på plats</h3>
@@ -606,7 +633,7 @@ function ProfileEditor({ api, workspace, catalog, disabled, onApply, onDirtyChan
           <input type="number" min="1" step="0.001" value={inputDrafts[`${key}.thickness`] ?? proposed.design[key].measured_thickness_um/1_000}
             onChange={e => withMillimetres(`${key}.thickness`, e.target.value, value => ({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
               measured_thickness_um: value } } }))} /></label>
-        <label>Batch-ID <span>(valfritt)</span><input maxLength={80} value={proposed.design[key].batch_id ?? ""}
+        <label>Batch-ID <span>{proposed.design.intent.family === "shelving" ? "(krävs för verkstadsritningar)" : "(valfritt)"}</span><input maxLength={80} value={proposed.design[key].batch_id ?? ""}
           onChange={e => change({ ...proposed, design: { ...proposed.design, [key]: { ...proposed.design[key],
             batch_id: e.target.value || null } } })} /></label>
       </div>)}

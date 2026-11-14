@@ -69,9 +69,9 @@ COPY --from=runtime-base / /base-chroot
 RUN apk add --no-cache --no-scripts --root /base-chroot \
       ca-certificates-bundle=20261020-r0 \
       gdbm=1.26-r9 \
-      glibc-2.44-locale-posix=2.44-r14 \
-      glibc-2.44=2.44-r14 \
-      ld-linux-2.44=2.44-r14 \
+      glibc-2.44-locale-posix=2.44-r16 \
+      glibc-2.44=2.44-r16 \
+      ld-linux-2.44=2.44-r16 \
       libbrotlicommon1=1.2.1-r3 \
       libbrotlidec1=1.2.1-r3 \
       libbrotlienc1=1.2.1-r3 \

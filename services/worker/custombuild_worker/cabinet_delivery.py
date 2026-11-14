@@ -141,6 +141,21 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
         p.extract_text() for p in PdfReader(io.BytesIO(files["documents/assembly.pdf"])).pages
     ]
     manual = "\n".join(manual_pages)
+    if result.trial_angles:
+        angles = [
+            i
+            for i, page in enumerate(manual_pages)
+            if "Fäst låsvinklarna efter stommonteringen" in page
+        ]
+        hanging = [
+            i for i, page in enumerate(manual_pages) if "Haka på luckan i öppet läge" in page
+        ]
+        if (
+            not hanging
+            or len(angles) != (len(result.trial_angles) + 7) // 8
+            or max(angles) >= min(hanging)
+        ):
+            raise ValueError("Monteringsmanualens vinkelblad måste föregå påhakning av luckorna.")
     x = 0
     for i, width in enumerate(widths):
         door = by_key[f"cabinet-front-{i}"]
@@ -158,6 +173,8 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
             not in door_pages[0]
             or f"Beslag: 2 × {HINGE}, 2 × {PLATE}, 12 × {SCREW}." not in door_pages[0]
             or "Haka på luckan i öppet läge" not in door_pages[0]
+            or any(label not in door_pages[0] for label in ("Luckans baksida", "Gavelns insida"))
+            or any(f"J95-{i + 1}-{pos}" not in door_pages[0] for pos in (1, 2))
             or "Monteringsbana" in door_pages[0]
             or "AssemblyGraph-förband i steget: 0" in door_pages[0]
         ):

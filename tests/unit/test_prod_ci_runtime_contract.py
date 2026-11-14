@@ -120,7 +120,7 @@ def test_prod_ci_probes_the_exact_executed_native_runtimes() -> None:
 
     for required in (
         "exec -T web /usr/bin/node --version",
-        '"v24.22.2"',
+        '"v24.22.3"',
         "process.execPath !== '/usr/bin/node'",
         "exec -T api /opt/custombuild-venv/bin/python -",
         "exec -T worker /opt/custombuild-venv/bin/python -",
@@ -157,7 +157,7 @@ def test_prod_ci_sboms_prove_native_interpreter_package_versions() -> None:
         "require_exact_package",
         "reject_package_prefix",
         "sbom-web.spdx.json",
-        "nodejs-24 24.22.2-r2",
+        "nodejs-24 24.22.3-r0",
         "nodejs-26",
         "sbom-${component}.spdx.json",
         "python-3.14",

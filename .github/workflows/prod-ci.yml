@@ -35,7 +35,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Install production-candidate dependencies
@@ -200,7 +200,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Install prod web dependencies
@@ -223,7 +223,7 @@ jobs:
       - name: Verify exact native runtimes and excluded tooling
         run: |
           set -euo pipefail
-          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.22.2"
+          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.22.3"
           docker compose --file compose.yml exec -T web /usr/bin/node -e \
             "if (process.execPath !== '/usr/bin/node' || process.getuid() !== 65532) throw new Error(process.execPath + ':' + process.getuid())"
           docker compose --file compose.yml exec -T api /opt/custombuild-venv/bin/python - <<'PY'
@@ -390,8 +390,13 @@ jobs:
               "$sbom" >/dev/null
           }
           require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" \
-            nodejs-24 24.22.2-r2
+            nodejs-24 24.22.3-r0
           reject_package_prefix "$RELEASE_EVIDENCE_DIR/sbom-web.spdx.json" nodejs-26
+          for component in web api worker; do
+            require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" glibc-2.44 2.44-r16
+            require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" glibc-2.44-locale-posix 2.44-r16
+            require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" ld-linux-2.44 2.44-r16
+          done
           for component in api worker; do
             require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-${component}.spdx.json" \
               python-3.13 3.13.18_git20261030-r0
@@ -403,6 +408,8 @@ jobs:
           require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-redis.spdx.json" setpriv 2.42.3-r1
           require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" zlib 1.4-r0
           require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" gosu 1.19-r6
+          require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" libxslt 1.1.43-r4
+          require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-postgres.spdx.json" krb5-libs 1.22.3-r0
           while read -r package version; do
             require_exact_package "$RELEASE_EVIDENCE_DIR/sbom-worker.spdx.json" \
               "$package" "$version"

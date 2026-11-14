@@ -180,11 +180,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     expect(exported.dimensions.standing_assembly.minimum_height_from_base_um).toBe(2_558_000);
     expect(exported.dimensions.standing_assembly.walls.map((wall: {margin_um: number}) => wall.margin_um))
       .toEqual([-6_000, -6_000, 0]);
-    const originalDenied = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/exports"));
-    await page.getByRole("button", {name: "Beställ verkstadsritningar"}).click();
-    const blocked = await originalDenied;
-    expect(blocked.status()).toBe(409);
-    expect((await blocked.json()).detail).toMatch(/26 mm/);
+    await expect(page.getByRole("button", {name: "Beställ verkstadsritningar"})).toBeDisabled();
+    await expect(page.getByRole("status").filter({hasText: /26 mm/})).toBeVisible();
     await attachView(page, info, "customer-bookcase-dimensions");
     const width = page.getByLabel("Bredd (mm)", { exact: true });
     await width.fill("6000.001");

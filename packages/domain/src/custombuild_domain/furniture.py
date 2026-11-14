@@ -32,9 +32,12 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 
 def furniture_review_schema(family: str | None) -> str:
+    if family is None:
+        # The separate S1 and trestle jobs keep their original construction envelope.
+        return "custombuild.furniture-review.v1"
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v20"
-    return "custombuild.furniture-review.v1"
+        return "custombuild.shelving-workshop-review.v21"
+    return "custombuild.furniture-review.v2"
 
 
 class MaterialSelection(FrozenModel):

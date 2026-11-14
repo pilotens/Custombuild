@@ -23,6 +23,32 @@ HEADERS = {"Authorization": "Bearer demo-nordic-owner"}
 TENANT = "11111111-1111-4111-8111-111111111111"
 
 
+def test_previous_cabinet_without_angles_keeps_its_original_joints():
+    workspace = json.loads(Path("examples/furniture/bookcase-walnut-base-700.json").read_bytes())
+    workspace["design"]["intent"].pop("trial_angle")
+    with TestClient(app) as client:
+        saved = client.post(
+            "/v1/furniture/projects",
+            headers=HEADERS,
+            json={"name": str(uuid4()), "workspace": workspace},
+        )
+        assert saved.status_code == 201, saved.text
+        body = saved.json()
+        path = f"/v1/furniture/projects/{body['project']['id']}"
+        eligibility = client.get(path + "/workshop-eligibility", headers=HEADERS).json()
+        assert not eligibility["available"] and "91 bärande stomfogar" in eligibility["detail"]
+        order = client.post(
+            path + "/exports",
+            headers=HEADERS,
+            json={
+                "expected_revision": body["draft"]["revision"],
+                "expected_design_hash": eligibility["design_hash"],
+                "purpose": "workshop_drawings",
+            },
+        )
+        assert order.status_code == 409 and order.json()["detail"] == eligibility["detail"]
+
+
 def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch, tmp_path):
     storage = install_review_storage(monkeypatch)
     workspace = json.loads(Path("examples/furniture/bookcase-walnut-base-700.json").read_bytes())
@@ -46,8 +72,7 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
         blocked = client.post(
             route + "/exports", headers=HEADERS, json={**body, "purpose": "workshop_drawings"}
         )
-        assert blocked.status_code == 409 and "J95" in blocked.text
-        assert "91 bärande stomfogar" in blocked.json()["detail"]
+        assert blocked.status_code == 409 and "uppmätt" in blocked.json()["detail"]
         queued = client.post(route + "/exports", headers=HEADERS, json=body)
         assert queued.status_code == 202, queued.text
         job = queued.json()["job_id"]
@@ -66,6 +91,11 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
         assert "Provning av öppningsrörelse" in rule["detail"]
         handoff = json.loads(files["manufacturing/workshop-handoff.json"])
         assert handoff == preview["workshop_handoff"]
+        assert [(o["bay"], o["zone"], o["state"]) for o in handoff["rear_openings"]] == [
+            (bay, zone, state)
+            for zone, state in (("upper", "covered"), ("base", "open"))
+            for bay in range(1, 7)
+        ]
         assert set(handoff["hardware_requirements"]) == {
             "hinge_and_plate_fit_in_actual_stock",
             "door_opening_clearance_with_neighbour_and_wall",
@@ -93,7 +123,16 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
         assert proof["design_hash"] == body["expected_design_hash"]
         assert json.loads(files["manifest.json"])["production_qualified"] is False
         result = build_furniture(FurnitureWorkspace.model_validate(draft["workspace"]).design)
-        assert len(set(proof["carcass_joints_without_retention"])) == 91
+        assert proof["carcass_joints_without_retention"] == []
+        assert (proof["trial_retention_angles"], proof["trial_retention_pilots"]) == (91, 182)
+        pages = [
+            p.extract_text() for p in PdfReader(io.BytesIO(files["documents/assembly.pdf"])).pages
+        ]
+        brackets = [
+            i for i, p in enumerate(pages) if "Fäst låsvinklarna efter stommonteringen" in p
+        ]
+        doors = [i for i, p in enumerate(pages) if "Haka på luckan i öppet läge" in p]
+        assert len(doors) == 6 and len(brackets) == 12 and max(brackets) < min(doors)
         space = json.loads(files["assembly/required-space.json"])
         assert (space["world_min_um"], space["world_max_um"]) == (
             [-6000, -248000, 0],

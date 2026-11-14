@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
-ARG NODE_VERSION=24.22.2
+ARG NODE_VERSION=24.22.3
 ARG PNPM_VERSION=11.7.0
 
-FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS base
+FROM node:24.22.3-trixie-slim@sha256:af02d57b57719b9657a45199a79264a9437940cd55b3c7b3fc99615654f124a0 AS base
 
 ARG NODE_VERSION
 ARG PNPM_VERSION
@@ -11,7 +11,7 @@ ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:${PATH} \
     NEXT_TELEMETRY_DISABLED=1
 
-RUN test "${NODE_VERSION}" = "24.22.2" \
+RUN test "${NODE_VERSION}" = "24.22.3" \
     && corepack enable \
     && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 WORKDIR /workspace
@@ -54,10 +54,10 @@ COPY --from=runtime-base / /base-chroot
 RUN apk add --no-cache --no-scripts --root /base-chroot \
       c-ares=1.34.9-r0 \
       ca-certificates-bundle=20261020-r0 \
-      glibc-2.44-locale-posix=2.44-r14 \
-      glibc-2.44=2.44-r14 \
+      glibc-2.44-locale-posix=2.44-r16 \
+      glibc-2.44=2.44-r16 \
       icu79-data-full=79.1-r1 \
-      ld-linux-2.44=2.44-r14 \
+      ld-linux-2.44=2.44-r16 \
       libbrotlicommon1=1.2.1-r3 \
       libbrotlidec1=1.2.1-r3 \
       libbrotlienc1=1.2.1-r3 \
@@ -66,7 +66,7 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
       libnghttp2-14=1.71.0-r0 \
       libstdc++=16.2.0-r2 \
       libuv=1.53.0-r0 \
-      nodejs-24=24.22.2-r2 \
+      nodejs-24=24.22.3-r0 \
       openssl-4.0-libcrypto=4.0.3-r8 \
       openssl-4.0-libssl=4.0.3-r8 \
       openssl-provider-legacy-allowed=4.1.0-r0 \
@@ -79,7 +79,7 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
     && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "c63f4ad041b38a0f30df9f4a18e8dfac4ad2411840ff114d32dc57ce2d8ce4ec" \
     && PATH=/usr/bin:/usr/sbin:/sbin:/bin \
       chroot /base-chroot /usr/bin/node -e \
-      "const fs = require('node:fs'); require('node:inspector'); if (process.version !== 'v24.22.2') process.exit(1); for (const path of ['/usr/local/bin/node', '/usr/bin/npm', '/usr/bin/pnpm', '/usr/bin/corepack']) if (fs.existsSync(path)) process.exit(1)"
+      "const fs = require('node:fs'); require('node:inspector'); if (process.version !== 'v24.22.3') process.exit(1); for (const path of ['/usr/local/bin/node', '/usr/bin/npm', '/usr/bin/pnpm', '/usr/bin/corepack']) if (fs.existsSync(path)) process.exit(1)"
 
 
 FROM runtime-base AS runner

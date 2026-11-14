@@ -11,6 +11,7 @@ from custombuild_domain.furniture import (
 from custombuild_domain.furniture_catalog import HardwareProfile
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.models import MaterialVersion
+from custombuild_domain.rear_coverage import RearOpening
 from pydantic import BaseModel, ConfigDict, Field
 
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -185,6 +186,7 @@ class FurnitureHandoffRead(FurnitureResponse):
     family: Family
     dimensions: FurnitureDimensionsRead
     stock_requirements: list[FurnitureStockRequirementRead]
+    rear_openings: list[RearOpening]
     shelf_load: FurnitureShelfLoadRead | None
     hardware_requirements: list[str]
     required_workshop_inputs: list[str]

@@ -15,6 +15,7 @@ from custombuild_domain.furniture import ChairIntent, ChestIntent, DiningTableIn
 from custombuild_domain.furniture_catalog import RUNNER_FIXING_SKU
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.furniture_frames import rotated_yz
+from custombuild_manufacturing.model import um_to_mm
 from PIL import Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
@@ -396,8 +397,8 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
         para(header),
         para("Design " + result.design_hash),
         para(
-            f"Yttermått B × D × H: {intent.width_um / 1000:g} × "
-            f"{intent.depth_um / 1000:g} × {intent.height_um / 1000:g} mm."
+            f"Yttermått B × D × H: {um_to_mm(intent.width_um)} × "
+            f"{um_to_mm(intent.depth_um)} × {um_to_mm(intent.height_um)} mm."
         ),
         AssemblyView(result),
         para("Monteringsföljd för provpassning", "Heading2"),
@@ -443,7 +444,7 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
             [
                 f"{idx}. {p.semantic_key}",
                 p.material_id,
-                f"{size.width_um / 1000:g} × {size.depth_um / 1000:g} × {size.height_um / 1000:g}",
+                " × ".join(um_to_mm(v) for v in (size.width_um, size.depth_um, size.height_um)),
             ]
         )
     story.append(table(rows, [165, 110, 201]))

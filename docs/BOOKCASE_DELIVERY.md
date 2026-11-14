@@ -1,5 +1,30 @@
 # Slutleveranslogg · bokhylla
 
+## 14 november 2026 · sexluckorsordern från möbelstudion, v21
+
+Välj **Öppna valnötsbokhylla med sex gångjärnsluckor · J95 och GN 970** i
+`/furniture`. Det ger stommen 4280 × 2500 × 260 mm för rummet
+4340 × 2540 × 280 mm. Den sparade referensordern ger 62 trädelar, sex
+luckor, tolv J95-gångjärn och 91 GN 970-vinklar. Ryggens täckning visas per
+sektion. Sex övre fack har rygg, sex underskåp är öppna bakåt. De två längsta ämnena måste vardera
+rymma 4256 mm längs fibern i den valda valnötsbatchen.
+
+I modulplanen följer skåpen golvraden och behåller beställt antal.
+Ett rutnät som ändrar antalet fack returnerar varken modulutkast eller
+kaplista. Stapling och förband mellan separata moduler behöver egen prövning.
+Monteringsöversikten återger samma mikrometermått som kaplistan.
+Manualen placerar vinkelbladen före luckorna. Varje luckblad visar
+borrbilderna parvis för gavel och lucka samt hänvisar till Sugatsunes anvisning.
+
+Beställningsstatus beräknas för sparad revision och visar orsaken vid avslag.
+En betrodd profil kan ange `width_range` med två provgränser och en separat,
+kontrollsummerad rapport som täcker hela breddintervallet. Systemet jämför
+ändpunkternas konstruktionsidentiteter, kontrollerar båda ändpunkterna och
+prövar den faktiska orderns last, spann, materialbatcher, beslag och plats.
+Giltigheten kontrolleras även vid körning och hämtning. Utan intervall är
+profilen bunden till exakt konstruktion. Produktregistret saknar verkliga
+provrapporter. Exemplet kan hämtas som granskningspaket.
+
 ## Sexluckorsbokhyllan med provmonterade GN 970-vinklar, v20
 
 Sexluckorsordern på 4280 × 2500 × 260 mm har prövats mot den exporterade STEP-modellen.

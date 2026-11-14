@@ -252,6 +252,8 @@ def build_furniture_review(
         files["documents/installation.pdf"] = documents["installation"]
         if cabinet:
             files["documents/luckprov.pdf"] = documents["door_service"]
+        if workshop_profile.width_range:
+            files["documents/breddintervall.pdf"] = documents["width_range"]
         files["inspection/qualification.json"] = _json(workshop_profile.model_dump(mode="json"))
         files["README.txt"] = (
             f"Verkstadsritningar · revision {workspace.design.revision} · {result.design_hash}\n"

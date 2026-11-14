@@ -12,12 +12,13 @@ from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.models import TRIAL_EDGE_TOLERANCE_UM, TRIAL_FACE_TOLERANCE_UM
+from custombuild_domain.rear_coverage import rear_openings
 
 from .adapters import adapt_design_result
 from .furniture_faces import drawing_faces
 from .model import FeatureKind
 
-HANDOFF_VERSION = "furniture-workshop-handoff-1.1.0"
+HANDOFF_VERSION = "furniture-workshop-handoff-1.2.0"
 
 
 def furniture_stock_requirements(result: FurnitureResult) -> list[dict[str, Any]]:
@@ -86,6 +87,11 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         "family": result.spec.intent.family,
         "dimensions": review_furniture_dimensions(result.spec, result.shelving_result),
         "stock_requirements": furniture_stock_requirements(result),
+        "rear_openings": (
+            [o.model_dump(mode="json") for o in rear_openings(result.shelving_result)]
+            if result.shelving_result
+            else []
+        ),
         "shelf_load": {
             "basis": intent.shelf_load_basis,
             "total_row_load_n": intent.resolved_shelf_load_n,
