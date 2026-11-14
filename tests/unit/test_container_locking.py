@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 import pytest
@@ -396,17 +397,17 @@ def test_python_runtime_build_probes_import_the_real_entrypoint_dependencies() -
         (
             "apps/web/Dockerfile",
             20,
-            "c63f4ad041b38a0f30df9f4a18e8dfac4ad2411840ff114d32dc57ce2d8ce4ec",
+            "b9b0be6b222df1db8bc127f0b152b53e8e103a96a32ba666af848ab6deeb4743",
         ),
         (
             "services/api/Dockerfile",
             28,
-            "7c3ee343ab7b5ce429bf3e4261742aee04b8e80151a459ed76dd30cc25ea6dc2",
+            "f79854b1d696f4b7b52c710c0a1f538bf03083a34d0a7e00184e0f0eed5facdc",
         ),
         (
             "services/worker/Dockerfile",
             53,
-            "aefade11386262b51c3f6b9a2f7129b2ba0a3e6cc04ee8b2a0a9828cbfa226b7",
+            "1d61a6aee4a39b6c9fb8ce91f0611bdc322ed5bd205bc5f622ecd489443b5e36",
         ),
     ),
 )
@@ -420,6 +421,10 @@ def test_wolfi_runtime_rejects_unreviewed_transitive_package_changes(
     assert "/base-chroot/lib/apk/db/installed | sort" in source
     assert f'wc -l < /tmp/runtime-package-closure)" = "{package_count}"' in source
     assert closure_sha256 in source
+    selection = source.split("apk add --no-cache --no-scripts --root /base-chroot", 1)[1]
+    pins = sorted(re.findall(r"([\w.+-]+=[\w.+~-]+)", selection.split("&&", 1)[0]))
+    assert len(pins) == package_count
+    assert hashlib.sha256(("\n".join(pins) + "\n").encode()).hexdigest() == closure_sha256
 
 
 def test_worker_runtime_packages_are_scanner_visible_and_exact() -> None:

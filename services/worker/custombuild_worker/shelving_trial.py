@@ -235,8 +235,14 @@ def shelving_trial_protocol(
         if p.door_hinge and rule["rule_id"] == "CB-HARDWARE-001":
             reading = f" {rule['detail']} Se inspection/gangjarnsprov.txt."
         lines.append(f"{rule['status']} · {rule['rule_id']} · {rule['title']}.{reading}")
-    lines.append(
-        "Verkstaden väljer maskin, verktyg, uppspänning och CAM. "
-        "Konstruktören behöver lösa öppna förband innan en tillverkningsorder läggs."
-    )
+    lines.append("Verkstaden väljer maskin, verktyg, uppspänning och CAM.")
+    if design.trial_angles:
+        lines.append(
+            "Skjuvkravet per fog ovan omfattar stommens tyngd och samtliga belastade rader. "
+            "Modellen tillgodoräknar ingen lastdelning mellan fogarna. "
+            "Ange dokumenterad dimensionerande kapacitet för den ritade fogen och batchen. "
+            "Om gränsen inte klaras krävs omkonstruktion eller styrkt lastfördelning."
+        )
+    elif design.unretained_carcass_joints:
+        lines.append("Bärande stomfogar utan låsning behöver en konstruktionslösning före order.")
     return ("\n".join(lines) + "\n").encode()

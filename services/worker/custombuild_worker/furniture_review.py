@@ -211,19 +211,23 @@ def build_furniture_review(
         ).encode()
     if cabinet:
         from .cabinet_delivery import (
+            DOOR_TRIAL_CSV,
+            cabinet_trial_rows,
             cabinet_trial_sheet,
             installation_register,
             verify_cabinet_delivery,
         )
 
         files["assembly/door-hardware.json"] = _json(installation_register(result))
+        files[DOOR_TRIAL_CSV] = cabinet_trial_rows(result)
         files["inspection/gangjarnsprov.txt"] = cabinet_trial_sheet(result)
         files["inspection/door-hardware.json"] = _json(verify_cabinet_delivery(result, files))
         files["README.txt"] += (
             "\nUNDERSKÅP – Se documents/assembly.pdf och assembly/door-hardware.json. "
             "Varje lucka och dess gavel har en märkt DXF för respektive sida. "
             "Ø3,5 × 15 mm är provmått för SPAX YELLOX 5x16 i 18 mm valnöt. "
-            "Beslagets fulla rörelse och infästning i virket återstår att prova.\n"
+            "Prova alla öppningar enligt inspection/gangjarnsprov.txt. Orderns mätblad finns i "
+            "inspection/luckprov-per-fack.csv.\n"
         ).encode()
     elif identity:
         report, joint_sheet = verify_bookcase_delivery(result, files)
@@ -252,6 +256,7 @@ def build_furniture_review(
         files["documents/installation.pdf"] = documents["installation"]
         if cabinet:
             files["documents/luckprov.pdf"] = documents["door_service"]
+            del files["inspection/gangjarnsprov.txt"], files[DOOR_TRIAL_CSV]
         if workshop_profile.width_range:
             files["documents/breddintervall.pdf"] = documents["width_range"]
         files["inspection/qualification.json"] = _json(workshop_profile.model_dump(mode="json"))

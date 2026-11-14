@@ -49,6 +49,7 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     const canvas = page.getByTestId("furniture-viewer").locator("canvas");
     await expect(canvas).toHaveAttribute("data-custombuild-model-root", /.+/);
     const firstView = await canvas.screenshot();
+    let previousHash: string | undefined;
     for (const [revision, bays] of [[1, 6], [2, 7]] as const) {
       if (revision === 2) {
         await page.getByLabel("Avdelare", {exact:true}).fill("6");
@@ -67,13 +68,21 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       const path = info.outputPath(`Custombuild-Valnot-Gangjarn-Rev${revision}.zip`);
       await download.saveAs(path);
       const report = JSON.parse(execFileSync("python3", ["-c", [
-        "import json,sys,zipfile",
+        "import csv,io,json,sys,zipfile",
         "with zipfile.ZipFile(sys.argv[1]) as z:",
         " m=json.loads(z.read('manifest.json'))",
         " r=json.loads(z.read('inspection/door-hardware.json'))",
+        " samples=list(csv.DictReader(io.StringIO(z.read('inspection/luckprov-per-fack.csv').decode('utf-8-sig'))))",
+        " n=int(sys.argv[2]); rev=int(sys.argv[3])",
+        " assert m['schema_version']=='custombuild.shelving-workshop-review.v22'",
         " assert r['design_hash']==m['design_hash'] and not m['production_qualified']",
+        " assert [s['leaf'] for s in samples]==[f'cabinet-front-{i}' for i in range(n)]",
+        " assert all(s['revision']==str(rev) and s['design_hash']==m['design_hash'] for s in samples)",
+        " assert all(s['cycles_completed']==s['tested_mass_g']=='' for s in samples)",
         " print(json.dumps(r))",
-      ].join("\n"), path], {encoding:"utf8"}));
+      ].join("\n"), path, String(bays), String(revision)], {encoding:"utf8"}));
+      expect(report.design_hash).not.toEqual(previousHash);
+      previousHash = report.design_hash;
       expect(report).toMatchObject({revision, doors:bays, hinges:bays*2, plates:bays*2,
         screws:bays*12, door_and_plate_bores:bays*15});
     }

@@ -724,6 +724,8 @@ def test_combined_cabinet_needs_door_trials_for_every_opening_and_rechecks_downl
         response = client.get(download, headers=HEADERS)
         assert response.status_code == 200 and len(storage.put_calls) == 1
         with ZipFile(io.BytesIO(response.content)) as z:
+            assert "inspection/gangjarnsprov.txt" not in z.namelist()
+            assert "inspection/luckprov-per-fack.csv" not in z.namelist()
             proof = json.loads(z.read("inspection/door-hardware.json"))
             assert not proof["carcass_joints_without_retention"]
             assert proof["trial_retention_pilots"] == 2 * proof["trial_retention_angles"]

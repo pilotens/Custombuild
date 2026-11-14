@@ -623,6 +623,9 @@ jobs:
           for name in Custombuild-Bokhylla-Valnot-{Konstruktionsprov,Platsalternativ}.zip; do
             install -m 644 apps/web/test-results/chromium-live/furniture-live-*/"$name" "$downloads/$name"
           done
+          for name in Custombuild-Valnot-Gangjarn-Rev{1,2}.zip; do
+            install -m 644 apps/web/test-results/chromium-live/furniture-live-*/"$name" "$downloads/$name"
+          done
           docker run --rm --network none --read-only --tmpfs /tmp:rw,size=512m -e HOME=/tmp \
             -v "$PWD/scripts/verify_bookcase_reference_downloads.py:/reference.py:ro" \
             -v "$downloads:/downloads:ro" "custombuild-worker:$GITHUB_SHA" \

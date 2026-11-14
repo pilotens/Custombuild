@@ -1,5 +1,6 @@
 """Verify the delivered door set against the saved order and the J95 wood drilling diagram."""
 
+import csv
 import io
 import json
 from typing import Any
@@ -9,6 +10,7 @@ from custombuild_domain.cabinet_doors import CATALOGUE, HINGE, PLATE, SCREW, doo
 from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.models import PartInstance
+from custombuild_manufacturing.bookcase_test_results import DoorCycleTest
 from pypdf import PdfReader
 
 from .bookcase_drawings import verify_panel_dxf
@@ -156,11 +158,31 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
             or max(angles) >= min(hanging)
         ):
             raise ValueError("Monteringsmanualens vinkelblad måste föregå påhakning av luckorna.")
+    samples = indexed_csv_rows(files, DOOR_TRIAL_CSV, "leaf")
+    if set(samples) != {f"cabinet-front-{i}" for i in range(n)}:
+        raise ValueError("Luckprovets mätblad ska innehålla varje beställt fack exakt en gång.")
     x = 0
     for i, width in enumerate(widths):
         door = by_key[f"cabinet-front-{i}"]
         left = by_key["left-side" if i == 0 else f"base-side-{i}"]
         right = by_key["right-side" if i == n - 1 else f"base-side-{i + 1}"]
+        row = samples[door.semantic_key]
+        nominal_sample = {
+            "revision": str(result.spec.revision),
+            "design_hash": result.design_hash,
+            "part_id": door.part_id,
+            "support_id": left.part_id,
+            "width_um": str(width - 4000),
+            "height_um": str(700_000 - 2 * t - 4000),
+            "thickness_um": str(t),
+            "minimum_test_mass_g": str(door.weight_g),
+        }
+        if any(row.get(k) != v for k, v in nominal_sample.items()) or any(
+            row.get(k) != "" for k in DOOR_MEASUREMENTS
+        ):
+            raise ValueError(
+                f"Mätraden för {door.semantic_key} avviker från ordern eller innehåller provvärden."
+            )
         _check_opening(door, left, right, x, width, t)
         door_pages = [
             " ".join(page.split())
@@ -251,19 +273,62 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
     }
 
 
-def cabinet_trial_sheet(result: FurnitureResult) -> bytes:
+# The lab returns one DoorCycleTest per opening; blank cells are not evidence.
+DOOR_MEASUREMENTS = tuple(k for k in DoorCycleTest.model_fields if k != "leaf")
+DOOR_TRIAL_CSV = "inspection/luckprov-per-fack.csv"
+
+
+def cabinet_trial_rows(result: FurnitureResult) -> bytes:
     assert result.shelving_result is not None
-    mounts = door_mounts(result.parts, result.shelving_result.spec.parameters)
-    mount = max(mounts, key=lambda m: m.door.finished_size.width_um)
-    door = mount.door
+    stream = io.StringIO(newline="")
+    writer = csv.writer(stream)
+    writer.writerow(
+        (
+            "revision",
+            "design_hash",
+            "leaf",
+            "part_id",
+            "support_id",
+            "width_um",
+            "height_um",
+            "thickness_um",
+            "minimum_test_mass_g",
+            *DOOR_MEASUREMENTS,
+        )
+    )
+    for m in door_mounts(result.parts, result.shelving_result.spec.parameters):
+        size = m.door.finished_size
+        writer.writerow(
+            (
+                result.spec.revision,
+                result.design_hash,
+                m.door.semantic_key,
+                m.door.part_id,
+                m.support.part_id,
+                size.width_um,
+                size.height_um,
+                m.door.actual_thickness_um,
+                m.door.weight_g,
+                *("" for _ in DOOR_MEASUREMENTS),
+            )
+        )
+    return stream.getvalue().encode("utf-8-sig")
+
+
+def cabinet_trial_sheet(result: FurnitureResult) -> bytes:
     return (
         f"TYPPROV J95 · revision {result.spec.revision} · {result.design_hash}\n"
-        f"Montera den bredaste luckan {door.semantic_key} ({door.part_id}) med "
-        f"{mount.support.semantic_key} ({mount.support.part_id}) i en komplett öppning. "
-        "Ta med nästa lucka på gemensam mellanvägg och en väggmall på ritningens avstånd.\n"
-        f"Luckans B × H × T är {door.finished_size.width_um / 1000:g} × 660 × 18 mm. "
-        f"Beräknad ämnesvikt {door.weight_g / 1000:g} kg. Väg provluckan. Dokumentera "
-        "virkesparti, fuktkvot, uppmätt tjocklek, beslagsartikel och verklig skruv.\n"
+        f"Använd {DOOR_TRIAL_CSV}. Prova varje angivet fack med rätt lucka, gavel och "
+        "grannluckor på delad mellanvägg. Ta med väggmall där väggen gränsar till facket. "
+        "Dokumentera om grannluckan är öppen eller stängd och registrera sämsta fallet.\n"
+        "Raden anger ordermått i µm och minsta provmassa i gram. Väg varje provlucka och "
+        "redovisa faktisk massa under provet. Ange batch, fuktkvot och beslag i rapporten. "
+        "Fastställ brukskategori, erforderliga cykler och skruvkapacitet före provet. "
+        "Registrera uppnådd öppningsvinkel och osäkerhet i tusendels grad, minsta frigång "
+        "och osäkerhet i µm, genomförda cykler och kvarvarande skruvkapacitet i N. "
+        "Krav per fack: provmassa minst modellmassan, vinkel minus osäkerhet minst 93°, "
+        "frigång minus osäkerhet större än noll, samt cykler och skruvkapacitet minst "
+        "provspecifikationens krav. Tomma mätfält ska fyllas från verkligt prov.\n"
         f"Beslag per lucka: 2 × {HINGE}, 2 × {PLATE}, 12 × {SCREW}.\n"
         "1. Mät hålcentrum på båda bearbetningssidorna från respektive U/V-datum. "
         "Jämför med PDF och DXF. Hålens projekterade läges- och måttolerans är ±0,10 mm. "

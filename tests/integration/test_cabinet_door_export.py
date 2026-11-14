@@ -133,6 +133,15 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
         ]
         doors = [i for i, p in enumerate(pages) if "Haka på luckan i öppet läge" in p]
         assert len(doors) == 6 and len(brackets) == 12 and max(brackets) < min(doors)
+        sheet = "inspection/luckprov-per-fack.csv"
+        rows = list(csv.DictReader(io.StringIO(files[sheet].decode("utf-8-sig"))))
+        assert [r["leaf"] for r in rows] == [f"cabinet-front-{i}" for i in range(6)]
+        assert all(r["tested_mass_g"] == "" and r["cycles_completed"] == "" for r in rows)
+        assert {r["width_um"] for r in rows} == {"688333", "688334"}
+        assert "Prova varje angivet fack" in files["inspection/gangjarnsprov.txt"].decode()
+        missing = b"\r\n".join(files[sheet].splitlines()[:-1]) + b"\r\n"
+        with pytest.raises(ValueError, match="varje beställt fack"):
+            verify_cabinet_delivery(result, {**files, sheet: missing})
         space = json.loads(files["assembly/required-space.json"])
         assert (space["world_min_um"], space["world_max_um"]) == (
             [-6000, -248000, 0],

@@ -76,7 +76,7 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
     && test "$(wc -l < /tmp/runtime-package-closure)" = "20" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "c63f4ad041b38a0f30df9f4a18e8dfac4ad2411840ff114d32dc57ce2d8ce4ec" \
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "b9b0be6b222df1db8bc127f0b152b53e8e103a96a32ba666af848ab6deeb4743" \
     && PATH=/usr/bin:/usr/sbin:/sbin:/bin \
       chroot /base-chroot /usr/bin/node -e \
       "const fs = require('node:fs'); require('node:inspector'); if (process.version !== 'v24.22.3') process.exit(1); for (const path of ['/usr/local/bin/node', '/usr/bin/npm', '/usr/bin/pnpm', '/usr/bin/corepack']) if (fs.existsSync(path)) process.exit(1)"

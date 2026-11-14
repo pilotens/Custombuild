@@ -126,7 +126,7 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
     && test "$(wc -l < /tmp/runtime-package-closure)" = "53" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "aefade11386262b51c3f6b9a2f7129b2ba0a3e6cc04ee8b2a0a9828cbfa226b7"
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "1d61a6aee4a39b6c9fb8ce91f0611bdc322ed5bd205bc5f622ecd489443b5e36"
 
 COPY --from=builder /opt/custombuild-venv /base-chroot/opt/custombuild-venv
 COPY --from=builder /app/packages /base-chroot/app/packages
