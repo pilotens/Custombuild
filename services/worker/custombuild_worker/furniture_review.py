@@ -88,8 +88,11 @@ def build_furniture_review(
     }
     files.update(assembly_documents(result))
     shelving = result.shelving_result
+    cabinet = shelving is not None and bool(shelving.spec.parameters.door_hinge)
     if shelving is not None:
-        space = verify_assembly_space(shelving, cad.step) if shelving.trial_angles else None
+        space = (
+            verify_assembly_space(shelving, cad.step) if shelving.trial_angles or cabinet else None
+        )
         site_data = preview["workshop_handoff"]["dimensions"]["standing_assembly"]
         site = StandingSiteReview.model_validate(site_data) if site_data else None
         if space:
@@ -103,7 +106,12 @@ def build_furniture_review(
                     "design_hash": result.design_hash,
                     "revision": workspace.design.revision,
                     "units": "integer_micrometres",
-                    "scope": "Rigid timber, straight translations, no fixtures or human clearance.",
+                    "scope": (
+                        "Carcass timber only. Hinged door clipping and swing, fixtures and "
+                        "operator clearance are outside this straight-translation check."
+                        if cabinet
+                        else "Rigid timber, straight translations, no fixtures or human clearance."
+                    ),
                     **asdict(space),
                     "standing_site": site_data,
                 }
@@ -162,7 +170,6 @@ def build_furniture_review(
                 }
             )
     identity = None
-    cabinet = shelving is not None and bool(shelving.spec.parameters.door_hinge)
     if result.trial_angles or cabinet:
         from .bookcase_readback import order_identity, verify_bookcase_delivery
 
@@ -222,6 +229,7 @@ def build_furniture_review(
         report, joint_sheet = verify_bookcase_delivery(result, files)
         files["inspection/geometry-readback.json"] = _json(report)
         files["inspection/fogprov.csv"] = joint_sheet
+    if result.trial_angles:
         assert shelving is not None
         limits = bookcase_test_limits(shelving, preview["rules"]["evaluations"])
         files["inspection/kvalificeringsprov.json"] = _json(
@@ -242,6 +250,8 @@ def build_furniture_review(
         # Supply the actual qualified site method together with revision-specific steps.
         documents = workshop_profile.reports()
         files["documents/installation.pdf"] = documents["installation"]
+        if cabinet:
+            files["documents/luckprov.pdf"] = documents["door_service"]
         files["inspection/qualification.json"] = _json(workshop_profile.model_dump(mode="json"))
         files["README.txt"] = (
             f"Verkstadsritningar · revision {workspace.design.revision} · {result.design_hash}\n"

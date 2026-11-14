@@ -615,7 +615,15 @@ def assembly_manual_pdf(
         y = (
             _draw_wrapped_text(
                 canvas,
-                "Börja med botten på plan yta. "
+                "Stöd underskåpen från första steget. Utrymmesmåtten gäller stommens trädelar. "
+                "Montera eventuella vinklar före luckorna. Behåll stöden tills stommen är säkrad. "
+                + (
+                    "Se documents/luckprov.pdf för luckorna."
+                    if workshop_profile
+                    else "Se inspection/gangjarnsprov.txt för luckorna."
+                )
+                if getattr(design.spec.parameters, "door_hinge", None)
+                else "Börja med botten på plan yta. "
                 "Säkra varje lös rygg, avdelare och gavel mot tippning. "
                 "Behåll stöden tills vinklarna är monterade och stommen är säkrad. "
                 "Håll hjälputrustningen utanför de redovisade införingsbanorna.",
@@ -689,7 +697,9 @@ def assembly_manual_pdf(
                 f"Marginal inom kundens angivna höjdmått: "
                 f"{um_to_mm(standing_site.envelope_top_margin_um)} mm. "
                 "Värdet är beräknat från monteringsrörelsen.",
-                MARGIN, y - 4, max_chars=88,
+                MARGIN,
+                y - 4,
+                max_chars=88,
             )
         for label, value in (
             ("Minsta takhöjd från golv enligt geometrin", standing_site.minimum_ceiling_height_um),
@@ -759,15 +769,22 @@ def assembly_manual_pdf(
                 continue
             chunk_parts = tuple(part_by_id[part_id] for part_id in part_ids)
             moving_part_ids = frozenset(step.moving_part_ids) & frozenset(part_ids)
+            mounts = _assembly_step_door_mounts(design, step)
             canvas.setFillColor(INK)
             canvas.setFont("Helvetica-Bold", 10)
             canvas.drawString(
                 MARGIN,
                 y,
-                "Monteringsbana: "
+                "Haka på luckan i öppet läge. Bilden visar luckans stängda slutläge."
+                if mounts
+                else "Monteringsbana: "
                 + " -> ".join(segment.value for segment in step.motion_path)
                 + " (högerhänt X/Y/Z-system)"
-                + (f" · Slaglängd {um_to_mm(travel[step.step_number])} mm" if travel else ""),
+                + (
+                    f" · Slaglängd {um_to_mm(travel[step.step_number])} mm"
+                    if step.step_number in travel
+                    else ""
+                ),
             )
             y -= 18
             canvas.setFont("Helvetica", 8)
@@ -783,7 +800,6 @@ def assembly_manual_pdf(
                 y,
             )
             canvas.setFont("Helvetica", 7)
-            mounts = _assembly_step_door_mounts(design, step)
             if mounts:
                 for mount in mounts:
                     canvas.drawString(
@@ -834,15 +850,18 @@ def assembly_manual_pdf(
             canvas.drawString(
                 MARGIN,
                 y,
-                "IN = inkommande grupp, gemensamt förskjuten motsatt monteringsriktningen; "
+                "Lucka och gavel i stommen. Påhakning och lucksvep ingår inte i rörelseprovet."
+                if mounts
+                else "IN = inkommande grupp, gemensamt förskjuten motsatt monteringsriktningen; "
                 "FIX = befintlig delgrupp.",
             )
             y -= 8
             _draw_exploded_parts(
                 canvas,
                 chunk_parts,
-                moving_part_ids,
+                frozenset() if mounts else moving_part_ids,
                 step.motion_path,
+                show_motion=not bool(mounts),
                 top=y,
                 height=245,
             )
@@ -1298,6 +1317,7 @@ def _draw_exploded_parts(
     *,
     top: float,
     height: float,
+    show_motion: bool = True,
 ) -> None:
     boxes = _exploded_boxes(parts, moving_part_ids, motion_path)
     if not boxes:
@@ -1356,7 +1376,9 @@ def _draw_exploded_parts(
         PAGE_WIDTH - MARGIN,
         bottom,
         "Monteringsbana "
-        + " -> ".join(str(getattr(direction, "value", direction)) for direction in motion_path),
+        + " -> ".join(str(getattr(direction, "value", direction)) for direction in motion_path)
+        if show_motion
+        else "Placering vid stängd lucka",
     )
     canvas.restoreState()
 

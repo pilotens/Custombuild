@@ -100,7 +100,9 @@ def review_furniture_dimensions(
                 }
             )
     assembly = None
-    if isinstance(design.intent, ShelvingIntent) and design.intent.trial_angle:
+    if isinstance(design.intent, ShelvingIntent) and (
+        design.intent.trial_angle or design.intent.base_doors
+    ):
         shelving = shelving or build_furniture(design).shelving_result
         assert shelving is not None
         assembly = review_standing_site(shelving, installation)

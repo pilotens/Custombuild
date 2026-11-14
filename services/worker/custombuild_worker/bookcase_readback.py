@@ -13,8 +13,9 @@ from custombuild_cad.bookcase_readback import (
     size,
     verify_bookcase_steps,
 )
-from custombuild_domain.enums import FeatureKind
+from custombuild_domain.enums import FeatureKind, GrainDirection, PartRole
 from custombuild_domain.furniture import ShelvingIntent
+from custombuild_domain.furniture_catalog import resolve_material
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_manufacturing.bookcase_qualification import READBACK_SCHEMA
 from pypdf import PdfReader
@@ -31,7 +32,7 @@ def order_identity(result: FurnitureResult) -> dict[str, object]:
     }
 
 
-def _panels_from_order(result: FurnitureResult) -> None:
+def verify_panels_from_order(result: FurnitureResult) -> None:
     spec = result.spec
     i = spec.intent
     assert isinstance(i, ShelvingIntent)
@@ -48,31 +49,55 @@ def _panels_from_order(result: FurnitureResult) -> None:
     widths = [q for q, _ in shares]
     for b in sorted(range(bays), key=lambda b: -shares[b][1])[: total - sum(widths)]:
         widths[b] += 1
+    deck_top = 700_000 if i.base_doors else t
+    clear_height = h - t - deck_top
     heights = i.shelf_height_ratios_ppm
     if heights:
-        rows = [t + ((h - 2 * t) * r + 500000) // 1000000 - t // 2 for r in heights]
+        rows = [deck_top + (clear_height * r + 500000) // 1000000 - t // 2 for r in heights]
     else:
-        opening, extra = divmod(h - (i.shelf_count + 2) * t, i.shelf_count + 1)
-        rows = [(r + 1) * (t + opening) + min(r + 1, extra) for r in range(i.shelf_count)]
-    inside = h - 2 * (t - bite)
+        opening, extra = divmod(clear_height - i.shelf_count * t, i.shelf_count + 1)
+        rows = [
+            deck_top + r * t + (r + 1) * opening + min(r + 1, extra) for r in range(i.shelf_count)
+        ]
+    inside = clear_height + 2 * bite
+    shelf_depth = d - back - (16_350 if i.trial_angle else 16_000)
     # Origin and finished X/Y/Z of each blank, calculated directly from the order.
     wanted = {
         "left-side": (0, 0, 0, t, d, h),
         "right-side": (w - t, 0, 0, t, d, h),
-        "bottom": (t - bite, 0, 0, w - 2 * (t - bite), d, t),
+        "bottom": (t - bite, 0, deck_top - t, w - 2 * (t - bite), d, t),
         "top": (t - bite, 0, h - t, w - 2 * (t - bite), d, t),
     }
     x = t
     for bay, clear in enumerate(widths):
         for row, z in enumerate(rows):
-            wanted[f"shelf-r{row}-b{bay}"] = (x - bite, 0, z, clear + 2 * bite, d - back - 16350, t)
+            wanted[f"shelf-r{row}-b{bay}"] = (x - bite, 0, z, clear + 2 * bite, shelf_depth, t)
         left = bite if bay == 0 else divider_bite
         right = bite if bay == bays - 1 else divider_bite
         name = "back" if bays == 1 else f"back-b{bay}"
-        wanted[name] = (x - left, d - back - 12000, t - bite, clear + left + right, back, inside)
+        wanted[name] = (
+            x - left,
+            d - back - 12000,
+            deck_top - bite,
+            clear + left + right,
+            back,
+            inside,
+        )
+        if i.base_doors:
+            wanted[f"cabinet-front-{bay}"] = (
+                x + 2000,
+                0,
+                t + 2000,
+                clear - 4000,
+                t,
+                deck_top - 2 * t - 4000,
+            )
+            wanted[f"base-bottom-{bay}"] = (x - bite, t, 0, clear + 2 * bite, d - t, t)
         x += clear
         if bay < bays - 1:
-            wanted[f"divider-{bay}"] = (x, 0, t - bite, t, d - 12000, inside)
+            if i.base_doors:
+                wanted[f"base-side-{bay + 1}"] = (x, 0, 0, t, d, deck_top - t + bite)
+            wanted[f"divider-{bay}"] = (x, 0, deck_top - bite, t, d - 12000, inside)
             x += t
     if set(wanted) != {p.semantic_key for p in result.parts}:
         raise ValueError("Delantal eller fackindelning avviker från kundens order.")
@@ -101,7 +126,19 @@ def verify_panel_documents(result: FurnitureResult, files: dict[str, bytes]) -> 
     cut = indexed_csv_rows(files, "bom/cut-list.csv", "part_id")
     assembly = indexed_csv_rows(files, "assembly/parts.csv", "part_id")
     parts = {p.part_id: p for p in result.parts}
-    if any(rows.keys() != parts.keys() for rows in (bom, cut, assembly)):
+    manifest = json.loads(files["manufacturing/manufacturing-intent.json"])
+    ordered_parts = manifest["parts"]
+    doc = manifest["document_identity"]
+    if (doc["design_hash"], doc["revision"], doc["project_id"]) != (
+        result.design_hash,
+        str(result.spec.revision),
+        result.spec.design_id,
+    ):
+        raise ValueError("Bearbetningsunderlaget tillhör inte orderrevisionen.")
+    operations = {row["part_id"]: row for row in ordered_parts}
+    if len(ordered_parts) != len(operations) or any(
+        rows.keys() != parts.keys() for rows in (bom, cut, assembly, operations)
+    ):
         raise ValueError("Del-ID avviker mellan kaplista, dellista och montering.")
     drawings = PdfReader(io.BytesIO(files["documents/part-drawings.pdf"]), strict=True)
     pages: dict[tuple[str, str], list[str]] = {}
@@ -144,7 +181,42 @@ def verify_panel_documents(result: FurnitureResult, files: dict[str, bytes]) -> 
             != (pos.x_um, pos.y_um, pos.z_um)
         ):
             raise ValueError(f"Kaplista eller monteringslista avviker från ordern: {pid}")
-        world_grain = p.grain_direction.value.upper()
+        stock = result.spec.back_material if p.role == PartRole.BACK else result.spec.material
+        broad_horizontal = {PartRole.TOP, PartRole.BOTTOM, PartRole.SHELF, PartRole.BASE_BOTTOM}
+        expected_grain = (
+            GrainDirection.NONE
+            if resolve_material(stock).grain_direction == GrainDirection.NONE
+            else GrainDirection.X
+            if p.role in broad_horizontal
+            else GrainDirection.Z
+        )
+        world_grain = expected_grain.value.upper()
+        local_grain = "X" if world_grain == "XYZ"[a] else "Y" if world_grain == "XYZ"[b] else "NONE"
+        op = operations[pid]
+        finished = size(p)
+        if (
+            (p.material_id, p.material_version, p.actual_thickness_um, p.grain_direction)
+            != (stock.material_id, stock.version, stock.measured_thickness_um, expected_grain)
+            or (
+                assembly[pid]["material"],
+                assembly[pid]["material_version"],
+                assembly[pid]["material_batch_id"],
+                assembly[pid]["grain"],
+            )
+            != (stock.material_id, stock.version, stock.batch_id or "", expected_grain.value)
+            or bom[pid]["grain_direction"] != local_grain
+            or op["material"] != {"id": stock.material_id, "version": stock.version}
+            or op["grain_direction"] != local_grain
+            or op["quantity"] != 1
+            or op["axis_mapping"]
+            != {"u_axis": "xyz"[a], "v_axis": "xyz"[b], "thickness_axis": "xyz"[n]}
+            or op["finished_dimensions_um"]
+            != {"u": finished[a], "v": finished[b], "thickness": finished[n]}
+            or op["raw_blank_dimensions_um"] != {"u": raw[a], "v": raw[b], "thickness": raw[n]}
+        ):
+            raise ValueError(
+                f"Material, batch, fiber eller ämnesmått avviker från ordern: {p.semantic_key}"
+            )
         grain_text = (
             f"Fiber längs U (stomaxel {world_grain})"
             if world_grain == "XYZ"[a]
@@ -226,15 +298,24 @@ def verify_panel_documents(result: FurnitureResult, files: dict[str, bytes]) -> 
         raise ValueError("Monteringsmanualen saknar rätt revision, del eller steg.")
 
 
-def _verify_angle_register(result: FurnitureResult, files: dict[str, bytes]) -> None:
+def verify_angle_register(result: FurnitureResult, files: dict[str, bytes]) -> None:
     parts = {p.part_id: p for p in result.parts}
     fittings = indexed_csv_rows(files, "bom/hardware.csv", "item")
     joints = indexed_csv_rows(files, "assembly/connections.csv", "joint_id")
     angles = {a.joint_id: a for a in result.trial_angles}
     expected_fittings = {"GN-970-ALM-30-30-30-B": len(angles), "DIN-96-A4-5x16": len(angles) * 2}
-    if {k: int(v["quantity"]) for k, v in fittings.items()} != expected_fittings or set(joints) != {
-        j.joint_id for j in result.joints
-    }:
+    actual_angles = {
+        key: int(fittings[key]["quantity"]) for key in expected_fittings if key in fittings
+    }
+    expected_joints = {j.joint_id for j in result.joints}
+    intent = result.spec.intent
+    if isinstance(intent, ShelvingIntent) and intent.base_doors:
+        expected_joints.update(
+            f"J95-{bay + 1}-{pos}" for bay in range(intent.divider_count + 1) for pos in (1, 2)
+        )
+    elif fittings.keys() != expected_fittings.keys():
+        raise ValueError("Beslagslistan avviker från ordern.")
+    if actual_angles != expected_fittings or joints.keys() != expected_joints:
         raise ValueError("Beslagslistan eller förbandsregistret avviker från ordern.")
     for joint in result.joints:
         record = joints[joint.joint_id]
@@ -264,7 +345,7 @@ def verify_bookcase_delivery(
 ) -> tuple[dict[str, Any], bytes]:
     assert result.shelving_result is not None
     identity = order_identity(result)
-    _panels_from_order(result)
+    verify_panels_from_order(result)
     expected = {f"parts/{p.part_id}/{s}.dxf" for p in result.parts for s in ("A", "B")}
     if {p for p in files if p.endswith(".dxf")} != expected:
         raise ValueError("DXF-inventariet avviker från beställningen.")
@@ -273,7 +354,7 @@ def verify_bookcase_delivery(
         for s in ("A", "B"):
             pilots.extend(verify_panel_dxf(files[f"parts/{p.part_id}/{s}.dxf"], p, s, identity))
     verify_panel_documents(result, files)
-    _verify_angle_register(result, files)
+    verify_angle_register(result, files)
     verify_bookcase_steps(
         result, files["design/model.step"], files["design/with-mounted-angles.step"]
     )

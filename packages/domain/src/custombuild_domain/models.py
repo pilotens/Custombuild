@@ -279,11 +279,11 @@ class BookcaseParameters(FrozenModel):
             self.shelf_mount != ShelfMount.FIXED
             or self.back_panel != BackPanelType.INSET_GROOVE
             or self.plinth_height_um
-            or self.base_cabinet_count
+            or (self.base_cabinet_count and not self.door_hinge)
         ):
             raise ValueError(
                 "Vinkelprov kräver fasta hyllor, spårmonterad rygg och stomme utan sockel "
-                "eller underskåp. Ändra dessa val eller avmarkera vinkelprovet."
+                "samt J95 vid underskåp. Ändra dessa val eller avmarkera vinkelprovet."
             )
         if self.joint_system not in SUPPORTED_BOOKCASE_PRIMARY_JOINTS:
             supported = ", ".join(
@@ -1039,6 +1039,18 @@ class DesignResult(FrozenModel):
     trial_angles: tuple[TrialAngle, ...] = Field(default=(), exclude_if=lambda v: not v)
 
     @property
+    def unretained_carcass_joints(self) -> tuple[Joint, ...]:
+        candidate_angles = {angle.joint_id for angle in self.trial_angles}
+        structural = JointRetentionApplicationClass.LOAD_BEARING_CARCASS_DADO
+        return tuple(
+            joint
+            for joint in self.joints
+            if joint.retention_application_class == structural
+            and joint.retention is None
+            and joint.joint_id not in candidate_angles
+        )
+
+    @property
     def minimum_retention_shear_load_n(self) -> int:
         """Conservative gravity envelope for the shared carcass contract.
 
@@ -1057,10 +1069,24 @@ class DesignResult(FrozenModel):
         part_by_id = {part.part_id: part for part in self.parts}
         from .bookcase_angles import check_trial_angles
         from .bookcase_fit import trial_groove_fits
+        from .cabinet_doors import door_mounts
 
         validate_part_connections(self.parts, self.joints, self.assembly_graph)
+        mounts = (
+            door_mounts(self.parts, self.spec.parameters) if self.spec.parameters.door_hinge else []
+        )
+        expected_door_bores = {f.feature_id: f for mount in mounts for f in mount.holes}
+        actual_door_bores = {
+            f.feature_id: f
+            for part in self.parts
+            for f in part.features
+            if f.feature_id.startswith("J95-")
+        }
+        if actual_door_bores != expected_door_bores:
+            raise ValueError("En luckas hål eller monteringsplatta avviker från J95-profilen.")
         check_trial_angles(
-            self.spec.parameters.trial_angle, self.parts, self.joints, self.trial_angles
+            self.spec.parameters.trial_angle, self.parts, self.joints, self.trial_angles,
+            door_bores=frozenset(expected_door_bores),
         )
         if self.spec.parameters.trial_angle:
             trial_groove_fits(self.parts, self.joints)
@@ -1070,15 +1096,6 @@ class DesignResult(FrozenModel):
             for f in p.features
         ):
             raise ValueError("Extra spårbottenmån kräver vinkelprovets toleransmodell.")
-        if self.spec.parameters.door_hinge:
-            from .cabinet_doors import door_mounts
-
-            expected = {f.feature_id: f for mount in door_mounts(self.parts, self.spec.parameters)
-                        for f in mount.holes}
-            actual = {f.feature_id: f for part in self.parts for f in part.features
-                      if f.feature_id.startswith("J95-")}
-            if actual != expected:
-                raise ValueError("En luckas hål eller monteringsplatta avviker från J95-profilen.")
         for joint in self.joints:
             if joint.joint_type == JointType.DADO:
                 if (

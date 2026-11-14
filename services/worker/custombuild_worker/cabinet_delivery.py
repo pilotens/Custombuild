@@ -4,7 +4,7 @@ import io
 import json
 from typing import Any
 
-from custombuild_cad.bookcase_readback import verify_cabinet_step
+from custombuild_cad.bookcase_readback import verify_bookcase_steps, verify_cabinet_step
 from custombuild_domain.cabinet_doors import CATALOGUE, HINGE, PLATE, SCREW, door_mounts
 from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_engine import FurnitureResult
@@ -12,7 +12,14 @@ from custombuild_domain.models import PartInstance
 from pypdf import PdfReader
 
 from .bookcase_drawings import verify_panel_dxf
-from .bookcase_readback import indexed_csv_rows, order_identity, verify_panel_documents
+from .bookcase_joint_sheet import joint_measurement_sheet
+from .bookcase_readback import (
+    indexed_csv_rows,
+    order_identity,
+    verify_angle_register,
+    verify_panel_documents,
+    verify_panels_from_order,
+)
 
 
 def installation_register(result: FurnitureResult) -> dict[str, Any]:
@@ -101,6 +108,8 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
     ]:
         widths[i] += 1
     by_key = {p.semantic_key: p for p in result.parts}
+    assert result.shelving_result is not None
+    verify_panels_from_order(result)
     identity = order_identity(result)
     dxfs = {f"parts/{p.part_id}/{face}.dxf" for p in result.parts for face in ("A", "B")}
     if {name for name in files if name.endswith(".dxf")} != dxfs:
@@ -111,6 +120,14 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
             holes.extend(
                 verify_panel_dxf(files[f"parts/{part.part_id}/{side}.dxf"], part, side, identity)
             )
+    angle_bores = {fid for a in result.trial_angles for fid in (a.horizontal_hole, a.upright_hole)}
+    read_angle_bores = [h for h in holes if h.feature_id in angle_bores]
+    if (
+        len(read_angle_bores) != len(angle_bores)
+        or {h.feature_id for h in read_angle_bores} != angle_bores
+    ):
+        raise ValueError("Fel pilothål i vinkelregistret.")
+    holes = [h for h in holes if h.feature_id not in angle_bores]
     actual = {(h.part_id, h.face, h.u_um, h.v_um, h.diameter_um, h.depth_um): h for h in holes}
     expected = set()
     connections = indexed_csv_rows(files, "assembly/connections.csv", "joint_id")
@@ -140,6 +157,8 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
             or f"Luckinfästning: 2 gångjärn mellan {door.semantic_key} och {left.semantic_key}."
             not in door_pages[0]
             or f"Beslag: 2 × {HINGE}, 2 × {PLATE}, 12 × {SCREW}." not in door_pages[0]
+            or "Haka på luckan i öppet läge" not in door_pages[0]
+            or "Monteringsbana" in door_pages[0]
             or "AssemblyGraph-förband i steget: 0" in door_pages[0]
         ):
             raise ValueError("Monteringsmanualen saknar rätt luckinfästning och motdel i steget.")
@@ -169,6 +188,14 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
         HINGE: 2 * n,
         PLATE: 2 * n,
         SCREW: 12 * n,
+        **(
+            {
+                result.trial_angles[0].article: len(result.trial_angles),
+                result.trial_angles[0].screw: 2 * len(result.trial_angles),
+            }
+            if result.trial_angles
+            else {}
+        ),
     }:
         raise ValueError("Fel artikel eller antal för underskåpsluckorna.")
     if (
@@ -178,7 +205,14 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
     ):
         raise ValueError("Monteringsmanualen saknar rätt gångjärn, platta eller skruv.")
     verify_panel_documents(result, files)
-    verify_cabinet_step(result, files["design/model.step"])
+    if result.trial_angles:
+        verify_angle_register(result, files)
+        files["inspection/fogprov.csv"] = joint_measurement_sheet(result, read_angle_bores)
+        verify_bookcase_steps(
+            result, files["design/model.step"], files["design/with-mounted-angles.step"]
+        )
+    else:
+        verify_cabinet_step(result, files["design/model.step"])
     return {
         **identity,
         "doors": n,
@@ -187,6 +221,11 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
         "screws": 12 * n,
         "door_and_plate_bores": len(holes),
         "hinge_connections": len(hinge_ids),
+        "carcass_joints_without_retention": [
+            j.joint_id for j in result.shelving_result.unretained_carcass_joints
+        ],
+        "trial_retention_angles": len(result.trial_angles),
+        "trial_retention_pilots": len(read_angle_bores),
         "step_wood_parts": len(result.parts),
         "dxf_faces": len(dxfs),
         "physical_cutting_authorized": False,

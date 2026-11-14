@@ -6,6 +6,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import product
 
+from .enums import PartRole
 from .models import DesignResult, PartInstance
 from .units import to_mm
 
@@ -71,8 +72,23 @@ class AssemblyStroke:
 
 def assembly_strokes(design: DesignResult) -> Iterator[AssemblyStroke]:
     boxes = {p.part_id: part_bounds(p) for p in design.parts}
+    # An open hinge approaches its plate along a linkage, outside the straight
+    # timber insertion model. The carcase and all its joints are still required.
+    fronts = {
+        p.part_id
+        for p in design.parts
+        if design.spec.parameters.door_hinge and p.role == PartRole.CABINET_FRONT
+    }
     present: set[str] = set()
+    if fronts and design.spec.parameters.vertical_divider_count == 0:
+        present.update(
+            p.part_id for p in design.parts if p.role in {PartRole.BASE_BOTTOM, PartRole.BOTTOM}
+        )
     for step in design.assembly_graph.steps:
+        if fronts and set(step.moving_part_ids) <= fronts:
+            if step.joint_ids:
+                raise ValueError("Ett lucksteg får inte utelämna någon stomfog från rörelseprovet.")
+            continue
         if step.motion_path != (step.direction,):
             raise ValueError("Provprofilen kräver en verifierbar rak monteringsrörelse per steg.")
         direction = step.direction.value
@@ -110,5 +126,5 @@ def assembly_strokes(design: DesignResult) -> Iterator[AssemblyStroke]:
             pairs,
             sweeps,
         )
-    if present != set(boxes):
+    if present != boxes.keys() - fronts:
         raise ValueError("Monteringsrörelserna omfattar inte alla trädelar i modellen.")

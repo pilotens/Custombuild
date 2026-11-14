@@ -7,9 +7,12 @@ from uuid import uuid4
 
 import pytest
 from app.main import app
+from custombuild_cad.bookcase_motion import verify_assembly_space
+from custombuild_domain.enums import AssemblyDirection
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_worker import tasks
+from custombuild_worker.bookcase_readback import verify_panel_documents, verify_panels_from_order
 from custombuild_worker.cabinet_delivery import verify_cabinet_delivery
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
@@ -44,6 +47,7 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
             route + "/exports", headers=HEADERS, json={**body, "purpose": "workshop_drawings"}
         )
         assert blocked.status_code == 409 and "J95" in blocked.text
+        assert "91 bärande stomfogar" in blocked.json()["detail"]
         queued = client.post(route + "/exports", headers=HEADERS, json=body)
         assert queued.status_code == 202, queued.text
         job = queued.json()["job_id"]
@@ -89,6 +93,53 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
         assert proof["design_hash"] == body["expected_design_hash"]
         assert json.loads(files["manifest.json"])["production_qualified"] is False
         result = build_furniture(FurnitureWorkspace.model_validate(draft["workspace"]).design)
+        assert len(set(proof["carcass_joints_without_retention"])) == 91
+        space = json.loads(files["assembly/required-space.json"])
+        assert (space["world_min_um"], space["world_max_um"]) == (
+            [-6000, -248000, 0],
+            [4286000, 260000, 2518000],
+        )
+        carcass = result.shelving_result
+        steps = carcass.assembly_graph.steps
+        assert [s["step_number"] for s in space["steps"]] == [s.step_number for s in steps[:-6]]
+        assert all(s.joint_ids == () for s in steps[-6:])
+        # Lowering a shelf from above after the top is fitted crosses the upper panel.
+        shelf = next(p for p in result.parts if p.semantic_key == "shelf-r0-b0")
+        modified = tuple(
+            step.model_copy(
+                update={
+                    "direction": AssemblyDirection.NEG_Z,
+                    "motion_path": (AssemblyDirection.NEG_Z,),
+                }
+            )
+            if shelf.part_id in step.moving_part_ids
+            else step
+            for step in steps
+        )
+        wrong_plan = carcass.model_copy(
+            update={"assembly_graph": carcass.assembly_graph.model_copy(update={"steps": modified})}
+        )
+        with pytest.raises(ValueError, match="fri införingsväg"):
+            verify_assembly_space(wrong_plan, files["design/model.step"])
+        # Detect a consistent model/drawing error that would pass comparison with the model alone.
+        altered = shelf.model_copy(
+            update={
+                "placement": shelf.placement.model_copy(
+                    update={"z_um": shelf.placement.z_um + 1000}
+                )
+            }
+        )
+        with pytest.raises(ValueError, match="placering avviker"):
+            verify_panels_from_order(
+                result.model_copy(
+                    update={"parts": tuple(altered if p == shelf else p for p in result.parts)}
+                )
+            )
+        intent_path = "manufacturing/manufacturing-intent.json"
+        intent = json.loads(files[intent_path])
+        intent["parts"][0]["axis_mapping"]["thickness_axis"] = "wrong"
+        with pytest.raises(ValueError, match="ämnesmått"):
+            verify_panel_documents(result, {**files, intent_path: json.dumps(intent).encode()})
         connections = files["assembly/connections.csv"]
         hinges = {
             r["joint_id"]: r
@@ -138,7 +189,15 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
 
 
 @pytest.mark.parametrize(
-    "damage", ["missing", "duplicate", "wrong_support", "wrong_bores", "wrong_screws"]
+    "damage",
+    [
+        "missing",
+        "duplicate",
+        "wrong_support",
+        "wrong_bores",
+        "wrong_screws",
+        "wrong_material_batch",
+    ],
 )
 def test_hinge_map_damage_is_rejected_before_storage(monkeypatch, damage):
     from custombuild_worker import furniture_review
@@ -157,6 +216,16 @@ def test_hinge_map_damage_is_rejected_before_storage(monkeypatch, damage):
 
     def damaged_register(result):
         files = original(result)
+        if damage == "wrong_material_batch":
+            name = "assembly/parts.csv"
+            rows = list(csv.DictReader(io.StringIO(files[name].decode("utf-8-sig"))))
+            rows[0]["material_batch_id"] = "unrelated-lot"
+            buffer = io.StringIO()
+            writer = csv.DictWriter(buffer, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+            files[name] = buffer.getvalue().encode("utf-8-sig")
+            return files
         name = "assembly/connections.csv"
         lines = files[name].splitlines(keepends=True)
         index = next(i for i, line in enumerate(lines) if line.startswith(b"J95-2-1,"))
@@ -190,7 +259,7 @@ def test_hinge_map_damage_is_rejected_before_storage(monkeypatch, damage):
         )
         assert queued.status_code == 202, queued.text
         job = queued.json()["job_id"]
-        with pytest.raises(ValueError, match="förbindels|Dubblerade"):
+        with pytest.raises(ValueError, match="förbindels|Dubblerade|batch"):
             tasks.generate_furniture_review.run(job, TENANT)
         assert not storage.put_calls
         assert client.get(route + f"/exports/{job}", headers=HEADERS).json()["state"] == "failed"

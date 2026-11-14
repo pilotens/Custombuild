@@ -64,7 +64,10 @@ def _install_test_profile(tmp_path, monkeypatch, workspace):
     folder = tmp_path / slug
     folder.mkdir()
     docs = []
-    for category in sorted(qualifications.REQUIRED_REPORTS):
+    is_cabinet = bool(workspace.design.intent.base_doors)
+    for category in sorted(
+        qualifications.REQUIRED_REPORTS | ({"door_service"} if is_cabinet else set())
+    ):
         file = category + ".pdf"
         canvas = Canvas(str(folder / file))
         canvas.drawString(30, 780, "SYNTHETIC FIXTURE ONLY - " + category)
@@ -79,13 +82,27 @@ def _install_test_profile(tmp_path, monkeypatch, workspace):
     now = datetime.now(UTC)
     model = build_furniture(workspace.design)
     limits = bookcase_test_limits(model.shelving_result, evaluate_furniture(model)["evaluations"])
+
+    def measured_lot(stock):
+        return dict(
+            material_id=stock.material_id,
+            material_version=stock.version,
+            batch_id=stock.batch_id,
+            usable_formats=[dict(along_grain_um=3000000, across_grain_um=1500000)],
+            minimum_thickness_um=stock.measured_thickness_um - 80,
+            maximum_thickness_um=stock.measured_thickness_um + 80,
+            uncertainty_um=20,
+        )
+
     profile = dict(
         profile_id=slug,
         organization_id=TENANT,
         scope_sha256=qualifications.bookcase_scope(workspace),
         evidence=docs,
         physical_results=dict(
-            schema_version="custombuild.bookcase-physical-results.v1",
+            schema_version="custombuild.bookcase-physical-results.v2",
+            carcass_lot=measured_lot(workspace.design.material),
+            back_lot=measured_lot(workspace.design.back_material),
             issuer="Test fixture only",
             report_reference="Synthetic physical case A",
             tested_on=(now - timedelta(days=3)).date().isoformat(),
@@ -102,6 +119,36 @@ def _install_test_profile(tmp_path, monkeypatch, workspace):
         valid_from=(now - timedelta(days=1)).isoformat(),
         valid_until=(now + timedelta(days=1)).isoformat(),
     )
+    if workspace.design.material.material_id == "solid-walnut":
+        profile["physical_results"]["wood_movement"] = dict(
+            use_min_permille=65,
+            use_max_permille=115,
+            tested_dry_permille=63,
+            tested_wet_permille=117,
+            moisture_uncertainty_permille=2,
+            minimum_remaining_movement_um=80,
+            clearance_uncertainty_um=10,
+        )
+    if is_cabinet:
+        profile["physical_results"]["door_service"] = dict(
+            duty_specification="SYNTHETIC-ONLY",
+            required_cycles=12500,
+            required_screw_capacity_n=140,
+            tested_openings=[
+                dict(
+                    leaf=p.semantic_key,
+                    tested_mass_g=p.weight_g,
+                    achieved_opening_mdeg=93000,
+                    angle_uncertainty_mdeg=0,
+                    minimum_clearance_um=1000,
+                    clearance_uncertainty_um=50,
+                    cycles_completed=12500,
+                    retained_screw_capacity_n=140,
+                )
+                for p in model.parts
+                if p.role.value == "cabinet_front"
+            ],
+        )
     (tmp_path / "profiles.json").write_text(json.dumps([profile]))
     return profile
 
@@ -526,3 +573,114 @@ def test_scope_is_shared_between_customer_ids_but_changes_with_material_or_desig
         }
     )
     assert qualifications.bookcase_scope(changed) != reference
+
+
+@pytest.mark.parametrize(
+    ("role", "field", "value", "reason"),
+    [
+        ("carcass_lot", "batch_id", "different-stock", "Stomme"),
+        ("back_lot", "material_id", "other-plywood", "Rygg"),
+        ("back_lot", "material_version", "other-version", "Rygg"),
+        (
+            "carcass_lot",
+            "usable_formats",
+            [
+                {"along_grain_um": 3000000, "across_grain_um": 100},
+                {"along_grain_um": 100, "across_grain_um": 3000000},
+            ],
+            "råformat",
+        ),
+        (
+            "back_lot",
+            "usable_formats",
+            [{"along_grain_um": 100, "across_grain_um": 3000000}],
+            "råformat",
+        ),
+        ("carcass_lot", "uncertainty_um", 21, "mätosäkerhet"),
+        ("back_lot", "minimum_thickness_um", 6200, "omvänt"),
+        ("back_lot", "batch_id", None, "mätresultat"),
+    ],
+)
+def test_material_lots_gate_workshop_export(tmp_path, monkeypatch, role, field, value, reason):
+    workspace = measured_order()
+    profile = _install_test_profile(tmp_path, monkeypatch, workspace)
+    with TestClient(app) as client:
+        path, bound = create(client, workspace)
+        profile["physical_results"][role][field] = value
+        (tmp_path / "profiles.json").write_text(json.dumps([profile]))
+        refused = client.post(
+            path + "/exports", headers=HEADERS, json={**bound, "purpose": "workshop_drawings"}
+        )
+        assert refused.status_code == 409 and reason in refused.json()["detail"]
+
+
+@pytest.mark.cad
+def test_combined_cabinet_needs_door_trials_for_every_opening_and_rechecks_download(
+    tmp_path, monkeypatch
+):
+    source = measured_order().model_dump(mode="json")
+    d = source["design"]
+    d["intent"].update(base_doors="J95-C24/0T-NI", divider_count=1, height_um=1200000)
+    d["installation"].update(height_um=1400000, measured_ceiling_height_um=1400000)
+    d["material"]["material_id"] = "solid-walnut"
+    w = FurnitureWorkspace.model_validate(source)
+    storage = install_review_storage(monkeypatch)
+    profile = _install_test_profile(tmp_path, monkeypatch, w)
+    with TestClient(app) as client:
+        path, bound = create(client, w)
+        req = {**bound, "purpose": "workshop_drawings"}
+        valid = json.dumps([profile])
+        results = profile["physical_results"]["door_service"]["tested_openings"]
+        results[1]["cycles_completed"] -= 1
+        (tmp_path / "profiles.json").write_text(json.dumps([profile]))
+        bad = client.post(path + "/exports", headers=HEADERS, json=req)
+        assert bad.status_code == 409 and "luckprovet" in bad.json()["detail"], bad.text
+        (tmp_path / "profiles.json").write_text(valid)
+        ok = client.post(path + "/exports", headers=HEADERS, json=req)
+        assert ok.status_code == 202, ok.text
+        job = ok.json()["job_id"]
+        assert tasks.generate_furniture_review.run(job, TENANT)["state"] == "succeeded"
+        download = f"{path}/exports/{job}/download"
+        response = client.get(download, headers=HEADERS)
+        assert response.status_code == 200 and len(storage.put_calls) == 1
+        with ZipFile(io.BytesIO(response.content)) as z:
+            proof = json.loads(z.read("inspection/door-hardware.json"))
+            assert not proof["carcass_joints_without_retention"]
+            assert proof["trial_retention_pilots"] == 2 * proof["trial_retention_angles"]
+            assert (
+                len(z.read("inspection/fogprov.csv").splitlines())
+                == 1 + proof["trial_retention_pilots"]
+            )
+            assert (
+                z.read("documents/luckprov.pdf")
+                == (tmp_path / profile["profile_id"] / "door_service.pdf").read_bytes()
+            )
+        for key, value in [
+            ("leaf", results[0]["leaf"]),
+            ("angle_uncertainty_mdeg", 1),
+            ("clearance_uncertainty_um", 1000),
+            ("tested_mass_g", 1),
+            ("retained_screw_capacity_n", 139),
+        ]:
+            damaged = json.loads(valid)
+            damaged[0]["physical_results"]["door_service"]["tested_openings"][1][key] = value
+            (tmp_path / "profiles.json").write_text(json.dumps(damaged))
+            with pytest.raises(ValueError, match="uckprov"):
+                qualifications.qualified_bookcase(w, TENANT)
+            assert client.get(download, headers=HEADERS).status_code == 409
+        for key, value in [
+            ("tested_dry_permille", 64),
+            ("tested_wet_permille", 116),
+            ("clearance_uncertainty_um", 80),
+        ]:
+            bad = json.loads(valid)
+            bad[0]["physical_results"]["wood_movement"][key] = value
+            (tmp_path / "profiles.json").write_text(json.dumps(bad))
+            with pytest.raises(ValueError, match="Fuktprovet"):
+                qualifications.qualified_bookcase(w, TENANT)
+        repaired = json.loads(valid)
+        repaired[0]["evidence"] = [
+            e for e in repaired[0]["evidence"] if e["category"] != "door_service"
+        ]
+        (tmp_path / "profiles.json").write_text(json.dumps(repaired))
+        assert client.get(download, headers=HEADERS).status_code == 409

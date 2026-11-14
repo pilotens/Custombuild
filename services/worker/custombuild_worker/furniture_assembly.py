@@ -10,6 +10,7 @@ from math import ceil, cos, floor, pi, sin
 from xml.sax.saxutils import escape
 
 from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, door_mounts
+from custombuild_domain.enums import PartRole
 from custombuild_domain.furniture import ChairIntent, ChestIntent, DiningTableIntent, ShelvingIntent
 from custombuild_domain.furniture_catalog import RUNNER_FIXING_SKU
 from custombuild_domain.furniture_engine import FurnitureResult
@@ -195,6 +196,9 @@ class AssemblyView(Flowable):  # type: ignore[misc]  # ReportLab lacks class stu
 
 def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
     intent = result.spec.intent
+    trace_lots = isinstance(intent, ShelvingIntent) and bool(
+        intent.trial_angle or intent.base_doors
+    )
     hardware = result.hardware_profile
     names = {p.part_id: p.semantic_key for p in result.parts}
     counts: Counter[str] = Counter()
@@ -219,7 +223,16 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
         if (shelving and shelving.spec.parameters.door_hinge)
         else []
     )
-    if angles:
+    if angles and mounts:
+        joint_rows[0] += (
+            "trial_angle",
+            "angle_quantity",
+            "plate",
+            "plate_quantity",
+            "screw",
+            "screw_quantity",
+        )
+    elif angles:
         joint_rows[0] += ("trial_angle", "angle_quantity", "screw", "screw_quantity")
     elif mounts:
         joint_rows[0] += ("plate", "plate_quantity", "screw", "screw_quantity")
@@ -231,7 +244,13 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
         trial_hardware: tuple[object, ...] = ()
         if angles:
             trial = angles.get(joint.joint_id)
-            trial_hardware = (trial.article, 1, trial.screw, 2) if trial else ("", 0, "", 0)
+            trial_hardware = (
+                trial.article if trial else "",
+                int(trial is not None),
+                *(("", 0) if mounts else ()),
+                trial.screw if trial else "",
+                2 if trial else 0,
+            )
         elif mounts:
             trial_hardware = ("", 0, "", 0)
         joint_rows.append(
@@ -268,6 +287,7 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                     " ".join(f.feature_id for f in bores if f.part_id == support.part_id),
                     HINGE,
                     1,
+                    *(("", 0) if angles else ()),
                     PLATE,
                     1,
                     SCREW,
@@ -479,6 +499,7 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                     "y_um",
                     "z_um",
                     "rotation_x_mdeg",
+                    *(("material_batch_id",) if trace_lots else ()),
                 ),
                 *(
                     (
@@ -491,6 +512,15 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                         p.placement.y_um,
                         p.placement.z_um,
                         p.placement.rotation_x_mdeg,
+                        *(
+                            (
+                                result.spec.back_material.batch_id
+                                if p.role == PartRole.BACK
+                                else result.spec.material.batch_id,
+                            )
+                            if trace_lots
+                            else ()
+                        ),
                     )
                     for p in result.parts
                 ),

@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Literal
 
 from custombuild_domain.bookcase_site import WALL_NAMES, review_standing_site
+from custombuild_domain.enums import MaterialType, PartRole
 from custombuild_domain.furniture import (
     FURNITURE_ENGINE_VERSION,
     FurnitureWorkspace,
     ShelvingIntent,
     furniture_review_schema,
 )
-from custombuild_domain.furniture_catalog import CATALOG_VERSION
+from custombuild_domain.furniture_catalog import CATALOG_VERSION, resolve_material
 from custombuild_domain.furniture_dimensions import DIMENSION_REVIEW_VERSION
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_domain.identity import content_hash
@@ -37,7 +38,9 @@ from .bookcase_test_results import BookcaseTestResults, bookcase_test_limits
 
 REGISTRY = Path(__file__).with_name("bookcase_qualifications")
 READBACK_SCHEMA = "custombuild.fixed-bookcase-readback.v2"
-Category = Literal["materials", "connection", "service_load", "stability", "installation"]
+Category = Literal[
+    "materials", "connection", "service_load", "stability", "installation", "door_service"
+]
 REQUIRED_REPORTS = {"materials", "connection", "service_load", "stability", "installation"}
 
 
@@ -60,14 +63,19 @@ class BookcaseProfile(BaseModel):
 
     @model_validator(mode="after")
     def complete(self) -> "BookcaseProfile":
+        required = REQUIRED_REPORTS | (
+            {"door_service"} if self.physical_results.door_service else set()
+        )
         if (
             self.valid_until <= self.valid_from
             or self.physical_results.tested_on > self.valid_from.date()
-            or len(self.evidence) != len(REQUIRED_REPORTS)
-            or {r.category for r in self.evidence} != REQUIRED_REPORTS
-            or len({r.file for r in self.evidence}) != len(REQUIRED_REPORTS)
+            or len(self.evidence) != len(required)
+            or {r.category for r in self.evidence} != required
+            or len({r.file for r in self.evidence}) != len(required)
         ):
-            raise ValueError("Provprofilen behöver giltighetstid och fem spårbara provunderlag.")
+            raise ValueError(
+                "Provprofilen behöver giltighetstid och spårbara underlag för varje provkategori."
+            )
         return self
 
     @property
@@ -103,7 +111,7 @@ def bookcase_scope(workspace: FurnitureWorkspace) -> str:
             "design": workspace.design.model_dump(mode="json", exclude={"design_id", "revision"}),
             "resolved_model": reference.design_hash,
             "assembly_graph": reference.shelving_result.assembly_graph,
-            "physical_results": "custombuild.bookcase-physical-results.v1",
+            "physical_results": "custombuild.bookcase-physical-results.v2",
             "engine": FURNITURE_ENGINE_VERSION,
             "calculation_rules": RULES_VERSION,
             "family_rules": FURNITURE_RULES_VERSION,
@@ -117,10 +125,19 @@ def bookcase_scope(workspace: FurnitureWorkspace) -> str:
 
 def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> BookcaseProfile:
     spec = workspace.design
-    if isinstance(spec.intent, ShelvingIntent) and spec.intent.base_doors:
+    if (
+        isinstance(spec.intent, ShelvingIntent)
+        and spec.intent.base_doors
+        and not spec.intent.trial_angle
+    ):
+        cabinet = build_furniture(spec).shelving_result
+        assert cabinet is not None
+        count = len(cabinet.unretained_carcass_joints)
+
         raise ValueError(
             "Underskåpens J95-infästning i valnöt och luckornas öppningsrörelse "
-            "saknar typkvalificering. Granskningspaket med borrbilder är tillgängligt."
+            "saknar typkvalificering. "
+            f"{count} bärande stomfogar saknar specificerad permanent låsning."
         )
     if not isinstance(spec.intent, ShelvingIntent) or not spec.intent.trial_angle:
         raise ValueError("Välj fast bokhylla med GN 970-vinklar för verkstadsritningar.")
@@ -133,6 +150,8 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
         "CB-JOINT-001": {"WARNING"},
         "CB-TIP-001": {"WARNING"},
     }
+    if spec.intent.base_doors:
+        permitted["CB-HARDWARE-001"] = {"WARNING"}
     evaluations = evaluate_furniture(design)["evaluations"]
     problems = [
         r["detail"]
@@ -174,7 +193,7 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
     except ValidationError as exc:
         raise ValueError(
             "Typunderlaget för ordern behöver giltiga rapporter och mätresultat "
-            "för förband, brukslast, stabilitet och monteringssteg."
+            "för materialbatcher, förband, brukslast, stabilitet och monteringssteg."
         ) from exc
     matches = [p for p in profiles if p.valid_from <= now < p.valid_until]
     if len(matches) != 1:
@@ -184,6 +203,26 @@ def qualified_bookcase(workspace: FurnitureWorkspace, organization_id: str) -> B
         )
     profile = matches[0]
     profile.reports()
+    if resolve_material(spec.material).material_type == MaterialType.SOLID_WOOD:
+        movement = profile.physical_results.wood_movement
+        if movement is None:
+            raise ValueError("Massivträ kräver uppmätt rörelsemån över platsens fuktintervall.")
+        movement.require_clearance()
+    door_service = profile.physical_results.door_service
+    if spec.intent.base_doors:
+        if door_service is None:
+            raise ValueError(
+                "J95 kräver luckprov för varje fack med skruvfäste, frigång och livslängd."
+            )
+        door_service.require_openings(design.shelving_result)
+    elif door_service is not None:
+        raise ValueError("Luckprovet gäller inte den öppna bokhyllan.")
+    profile.physical_results.carcass_lot.require_match(
+        spec.material, "Stomme", tuple(p for p in design.parts if p.role != PartRole.BACK)
+    )
+    profile.physical_results.back_lot.require_match(
+        spec.back_material, "Rygg", tuple(p for p in design.parts if p.role == PartRole.BACK)
+    )
     profile.physical_results.require_capacity(
         bookcase_test_limits(design.shelving_result, evaluations)
     )

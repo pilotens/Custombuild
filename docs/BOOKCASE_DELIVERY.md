@@ -1,5 +1,36 @@
 # Slutleveranslogg · bokhylla
 
+## Sexluckorsbokhyllan med provmonterade GN 970-vinklar, v20
+
+Sexluckorsordern på 4280 × 2500 × 260 mm har prövats mot den exporterade STEP-modellen.
+I v19 kunde monteringssteg 14 inte föra in en avdelare utan kollision. Den gamla
+följden krävde 4282 mm höjd. V20 monterar de nedre facken först, placerar ryggarna
+före avdelarna och för in avdelare och hyllor framifrån. De 55 raka stomrörelserna
+ryms nominellt inom 2518 mm höjd och 248 mm framför stommen. Det återstår 22 mm
+höjdmarginal mot kundens angivna 2540 mm. Kontroll av lucksvep och fixturer ingår
+i det fysiska provet. Faktiska platsmått och väggens infästning saknas i referensen.
+
+Kombinationen J95 och GN 970 är ett val i möbelredigeraren. Referensens revision 2
+använder en GN 970-ALM-30-30-30-B med två DIN 96 A4 5×16 per bärande stomfog.
+Alla 91 vinklars 182 pilothål är knutna till respektive motdel och måttkontrolleras
+i DXF och STEP. Skruvaxlarna vid mellanbotten ligger på skilda djupstationer.
+Den limfria konstruktionen har 24 separata ryggspår. Montera vinklarna när
+stommen är sammanfogad och stödd, innan luckorna hakas på. En vinkel med rätt
+hålbild saknar fortfarande uppmätt brukskapacitet i referensens virke.
+
+Verkstadsordern verifierar levererade material, råformat i fiberriktning, tjocklek
+och batch mot en kvalificerad profil. Massivträ kräver mätvärden för rörelsemån
+över installationsplatsens fuktintervall. För J95 tillkommer en spårbar sjätte
+rapport och mätresultat för varje fack avseende massa, minst 93 graders öppning,
+positiv frigång inklusive osäkerhet, antal cykler enligt avsedd användning samt skruvfäste.
+Trösklarna för cykler och skruvlast kommer från den betrodda provspecifikationen.
+En order kan inte lägga till en profil. Ny order, arbetskö och hämtning av en äldre
+fil använder samma kontroll av den exakta konstruktionen, platsen, batcherna och
+rapporternas giltighet. Produktregistret är tomt. Ett godkänt automatiskt test
+med temporära provdata visar att flödet fungerar. En verklig verkstadsorder för
+referensen är spärrad tills användningsmiljön och egenskaperna har verifierats.
+
+
 **14 november 2026 · beslagskontrollen för valnötsbokhyllan, v19.** Vid
 återläsning av sexluckorsordern från `13a62b8` angav förhandsvisningen att
 gångjärn återstod att välja. Samtidigt angav monteringsmanualen J95 och

@@ -55,12 +55,15 @@ def shelving_trial_protocol(
             "Stöd botten på plan yta. Håll varje ryggfält, avdelare och gavel lodrätt med "
             "separata stöd "
             "mot tippning tills stommen är säkrad. Avsätt plats utanför införingsbanorna för "
-            "fixturer och lyfthjälp. "
-            "Provpassa frontöppningen i varje frontmatat spår. Med framkanterna inriktade "
-            "(±0,10 mm) ska "
-            "hyllan eller avdelaren ha minst 0,05 mm kvar till det bakre stoppet. Mät mot "
-            "inspection/groove-fits.json."
+            "fixturer och lyfthjälp."
         )
+        if result.trial_angles:
+            lines.append(
+                "Provpassa frontöppningen i varje frontmatat spår. Med framkanterna inriktade "
+                "(±0,10 mm) ska "
+                "hyllan eller avdelaren ha minst 0,05 mm kvar till det bakre stoppet. Mät mot "
+                "inspection/groove-fits.json."
+            )
         lines.extend(
             [
                 space.description(),
@@ -135,6 +138,11 @@ def shelving_trial_protocol(
             "Öppna konstruktionskontroller",
         ]
     )
+    if p.door_hinge and design.unretained_carcass_joints:
+        lines.append(
+            f"{len(design.unretained_carcass_joints)} bärande stomfogar saknar specificerad "
+            "permanent låsning. Fog-ID finns i inspection/door-hardware.json."
+        )
     if design.trial_angles:
         lines.extend(
             [
