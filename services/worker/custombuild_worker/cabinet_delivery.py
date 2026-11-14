@@ -1,6 +1,5 @@
 """Verify the delivered door set against the saved order and the J95 wood drilling diagram."""
 
-import csv
 import io
 import json
 from typing import Any
@@ -13,7 +12,7 @@ from custombuild_domain.models import PartInstance
 from pypdf import PdfReader
 
 from .bookcase_drawings import verify_panel_dxf
-from .bookcase_readback import order_identity, verify_panel_documents
+from .bookcase_readback import indexed_csv_rows, order_identity, verify_panel_documents
 
 
 def installation_register(result: FurnitureResult) -> dict[str, Any]:
@@ -57,6 +56,34 @@ def _check_opening(
         raise ValueError(f"Lucka och gångjärnsgavel avviker från orderfacket: {door.semantic_key}")
 
 
+def _verify_hinge_connection(
+    row: dict[str, str],
+    door: PartInstance,
+    support: PartInstance,
+    door_bores: set[str],
+    support_bores: set[str],
+) -> None:
+    if (
+        row["part_1"] != door.semantic_key
+        or row["mating_face_1"] != "back"
+        or row["part_2"] != support.semantic_key
+        or row["mating_face_2"] != "right"
+        or sorted(row["feature_ids_1"].split()) != sorted(door_bores)
+        or sorted(row["feature_ids_2"].split()) != sorted(support_bores)
+        or (len(door_bores), len(support_bores)) != (3, 4)
+        or (
+            row["hardware"],
+            row["quantity"],
+            row["plate"],
+            row["plate_quantity"],
+            row["screw"],
+            row["screw_quantity"],
+        )
+        != (HINGE, "1", PLATE, "1", SCREW, "6")
+    ):
+        raise ValueError(f"Fel gångjärnsförbindelse i monteringslistan: {row['joint_id']}")
+
+
 def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) -> dict[str, Any]:
     intent = result.spec.intent
     assert isinstance(intent, ShelvingIntent) and intent.base_doors
@@ -84,8 +111,12 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
             holes.extend(
                 verify_panel_dxf(files[f"parts/{part.part_id}/{side}.dxf"], part, side, identity)
             )
-    actual = {(h.part_id, h.face, h.u_um, h.v_um, h.diameter_um, h.depth_um) for h in holes}
+    actual = {(h.part_id, h.face, h.u_um, h.v_um, h.diameter_um, h.depth_um): h for h in holes}
     expected = set()
+    connections = indexed_csv_rows(files, "assembly/connections.csv", "joint_id")
+    hinge_ids = {f"J95-{bay + 1}-{pos}" for bay in range(n) for pos in (1, 2)}
+    if connections.keys() != hinge_ids | {j.joint_id for j in result.joints}:
+        raise ValueError("Fel förbindelser i underskåpets monteringslista.")
     register = json.loads(files["assembly/door-hardware.json"])
     if register != installation_register(result):
         raise ValueError("Luckornas beslagsregister avviker från beställningen.")
@@ -100,31 +131,45 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
         right = by_key["right-side" if i == n - 1 else f"base-side-{i + 1}"]
         _check_opening(door, left, right, x, width, t)
         door_pages = [
-            " ".join(page.split()) for page in manual_pages
+            " ".join(page.split())
+            for page in manual_pages
             if f"IN {door.semantic_key} · {door.part_id}" in page
         ]
         if (
             len(door_pages) != 1
             or f"Luckinfästning: 2 gångjärn mellan {door.semantic_key} och {left.semantic_key}."
             not in door_pages[0]
+            or f"Beslag: 2 × {HINGE}, 2 × {PLATE}, 12 × {SCREW}." not in door_pages[0]
             or "AssemblyGraph-förband i steget: 0" in door_pages[0]
         ):
             raise ValueError("Monteringsmanualen saknar rätt luckinfästning och motdel i steget.")
         leaf_width, leaf_height = width - 4000, 700_000 - 2 * t - 4000
-        for z in (80_000, leaf_height - 80_000):
-            expected.add((door.part_id, "back", 27_000, z, 40_000, 15_000))
+        for position, z in enumerate((80_000, leaf_height - 80_000), 1):
+            door_bores = {(door.part_id, "back", 27_000, z, 40_000, 15_000)}
             for dz in (-24_000, 24_000):
-                expected.add((door.part_id, "back", 39_500, z + dz, 3500, 15_000))
+                door_bores.add((door.part_id, "back", 39_500, z + dz, 3500, 15_000))
+            support_bores = set()
             for y in (t + 42_000, t + 68_000):
                 for dz in (-16_000, 16_000):
-                    expected.add((left.part_id, "right", y, t + 2000 + z + dz, 3500, 15_000))
+                    support_bores.add((left.part_id, "right", y, t + 2000 + z + dz, 3500, 15_000))
+            expected.update(door_bores | support_bores)
+            _verify_hinge_connection(
+                connections[f"J95-{i + 1}-{position}"],
+                door,
+                left,
+                {actual[key].feature_id for key in door_bores if key in actual},
+                {actual[key].feature_id for key in support_bores if key in actual},
+            )
         expected.add((door.part_id, "back", leaf_width - 45_000, leaf_height - 65_000, 30_000, t))
         x += t + width
-    if actual != expected or len(actual) != len(holes):
+    if actual.keys() != expected or len(actual) != len(holes):
         raise ValueError("Hålbilden passar inte J95 i båda mötande delar.")
-    rows = list(csv.DictReader(io.StringIO(files["bom/hardware.csv"].decode("utf-8-sig"))))
-    counts = {r["item"]: int(r["quantity"]) for r in rows}
-    if len(rows) != 3 or counts != {HINGE: 2 * n, PLATE: 2 * n, SCREW: 12 * n}:
+    rows = indexed_csv_rows(files, "bom/hardware.csv", "item")
+    if {k: int(r["quantity"]) for k, r in rows.items()} != {
+        HINGE: 2 * n,
+        PLATE: 2 * n,
+        SCREW: 12 * n,
+    }:
         raise ValueError("Fel artikel eller antal för underskåpsluckorna.")
     if (
         manual.count(f"Beslag: 2 × {HINGE}, 2 × {PLATE}, 12 ×") != n
@@ -141,6 +186,7 @@ def verify_cabinet_delivery(result: FurnitureResult, files: dict[str, bytes]) ->
         "plates": 2 * n,
         "screws": 12 * n,
         "door_and_plate_bores": len(holes),
+        "hinge_connections": len(hinge_ids),
         "step_wood_parts": len(result.parts),
         "dxf_faces": len(dxfs),
         "physical_cutting_authorized": False,

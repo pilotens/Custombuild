@@ -822,7 +822,7 @@ async function verifyMobileComponentPalette(page: Page): Promise<void> {
   expect(statusStripIsExposed).toBe(true);
 }
 
-test("font settling and page/locator capture do not wait for an unrelated pending image", async ({ page }) => {
+test("font settling and page/locator capture do not wait for an unrelated pending image", async ({ page, browserName }) => {
   let observeImage!: (route: Route) => void;
   const imageRequested = new Promise<Route>((resolve) => { observeImage = resolve; });
   await page.route("**/visual-font-gate-image.png", observeImage);
@@ -835,6 +835,11 @@ test("font settling and page/locator capture do not wait for an unrelated pendin
   try {
     await waitForVisualFonts(page);
     await expect(page.getByText("Ready text")).toBeVisible();
+    // Chromium can report a visible layout before its first frame is available
+    // to Page.captureScreenshot. The text can paint while the image is held.
+    if (browserName === "chromium") {
+      await page.waitForFunction(() => performance.getEntriesByName("first-contentful-paint", "paint").length > 0);
+    }
     expect(await page.evaluate(() => document.readyState)).toBe("interactive");
     expect(await page.locator("img").evaluate((image) => (
       image instanceof HTMLImageElement && !image.complete

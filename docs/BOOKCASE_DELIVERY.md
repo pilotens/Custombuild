@@ -1,5 +1,22 @@
 # Slutleveranslogg · bokhylla
 
+**14 november 2026 · gångjärnen i verkstadens förbindelselista.** Utgångspunkt
+`4977f05` på main. På referensordern angav PDF-manualen tolv gångjärn,
+men `assembly/connections.csv` saknade alla tolv. Exportformatet
+`custombuild.shelving-workshop-review.v18` ger en rad per gångjärn.
+Varje rad anger lucka, gavel, fysiska sidor, tre hål på luckan, fyra på gaveln,
+en monteringsplatta och sex skruvar. Monteringsöversiktens delparstabell anger
+två gångjärn per lucka. Varje luckas genomgående fingergrepp redovisas i
+delritningen. Det ingår inte i gångjärnets infästning.
+
+Workern matchar förbindelserna mot hålens återlästa DXF-lägen och mot
+beslagsraden på rätt luckas monteringsblad. Testet för sex luckor går från
+sparad order till nedladdad ZIP. En separat order med två olika breda fack
+provar fem avsiktliga fel i listan. Utebliven eller dubblerad rad, fel gavel,
+fel borrhänvisning och fel skruvantal ska stoppa utlämningen före lagring.
+Omprov: `pytest tests/integration/test_cabinet_door_export.py -q`.
+Fysisk typkvalificering av luckrörelse, skruvfäste och stomme återstår.
+
 **13 november 2026 · återupptaget bygge och luckornas monteringsblad, v18.**
 Fortsättningen utgår från `3a7b8fe` på PR #27 och behåller samma bokhyllefamilj och
 kundmått. Den tidigare CI-körningen hade två konkreta regressionsfel: webbens

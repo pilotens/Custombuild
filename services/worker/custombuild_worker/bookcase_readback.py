@@ -88,7 +88,7 @@ def _panels_from_order(result: FurnitureResult) -> None:
             )
 
 
-def _rows(files: dict[str, bytes], path: str, key: str) -> dict[str, dict[str, str]]:
+def indexed_csv_rows(files: dict[str, bytes], path: str, key: str) -> dict[str, dict[str, str]]:
     records = list(csv.DictReader(io.StringIO(files[path].decode("utf-8-sig"))))
     indexed = {r[key]: r for r in records}
     if len(indexed) != len(records):
@@ -97,9 +97,9 @@ def _rows(files: dict[str, bytes], path: str, key: str) -> dict[str, dict[str, s
 
 
 def verify_panel_documents(result: FurnitureResult, files: dict[str, bytes]) -> None:
-    bom = _rows(files, "bom/parts.csv", "part_id")
-    cut = _rows(files, "bom/cut-list.csv", "part_id")
-    assembly = _rows(files, "assembly/parts.csv", "part_id")
+    bom = indexed_csv_rows(files, "bom/parts.csv", "part_id")
+    cut = indexed_csv_rows(files, "bom/cut-list.csv", "part_id")
+    assembly = indexed_csv_rows(files, "assembly/parts.csv", "part_id")
     parts = {p.part_id: p for p in result.parts}
     if any(rows.keys() != parts.keys() for rows in (bom, cut, assembly)):
         raise ValueError("Del-ID avviker mellan kaplista, dellista och montering.")
@@ -228,8 +228,8 @@ def verify_panel_documents(result: FurnitureResult, files: dict[str, bytes]) -> 
 
 def _verify_angle_register(result: FurnitureResult, files: dict[str, bytes]) -> None:
     parts = {p.part_id: p for p in result.parts}
-    fittings = _rows(files, "bom/hardware.csv", "item")
-    joints = _rows(files, "assembly/connections.csv", "joint_id")
+    fittings = indexed_csv_rows(files, "bom/hardware.csv", "item")
+    joints = indexed_csv_rows(files, "assembly/connections.csv", "joint_id")
     angles = {a.joint_id: a for a in result.trial_angles}
     expected_fittings = {"GN-970-ALM-30-30-30-B": len(angles), "DIN-96-A4-5x16": len(angles) * 2}
     if {k: int(v["quantity"]) for k, v in fittings.items()} != expected_fittings or set(joints) != {

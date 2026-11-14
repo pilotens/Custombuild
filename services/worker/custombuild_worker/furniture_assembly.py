@@ -9,6 +9,7 @@ from collections import Counter
 from math import ceil, cos, floor, pi, sin
 from xml.sax.saxutils import escape
 
+from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, door_mounts
 from custombuild_domain.furniture import ChairIntent, ChestIntent, DiningTableIntent, ShelvingIntent
 from custombuild_domain.furniture_catalog import RUNNER_FIXING_SKU
 from custombuild_domain.furniture_engine import FurnitureResult
@@ -197,6 +198,7 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
     hardware = result.hardware_profile
     names = {p.part_id: p.semantic_key for p in result.parts}
     counts: Counter[str] = Counter()
+    pairs: Counter[tuple[str, str, str]] = Counter()
     joint_rows: list[tuple[object, ...]] = [
         (
             "joint_id",
@@ -211,16 +213,27 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
         )
     ]
     angles = {a.joint_id: a for a in result.trial_angles}
+    shelving = result.shelving_result
+    mounts = (
+        door_mounts(result.parts, shelving.spec.parameters)
+        if (shelving and shelving.spec.parameters.door_hinge)
+        else []
+    )
     if angles:
         joint_rows[0] += ("trial_angle", "angle_quantity", "screw", "screw_quantity")
+    elif mounts:
+        joint_rows[0] += ("plate", "plate_quantity", "screw", "screw_quantity")
     for joint in result.joints:
         a, b = joint.members
+        pairs[names[a.part_id], names[b.part_id], joint.hardware_sku or joint.joint_type.value] += 1
         if joint.hardware_sku:
             counts[joint.hardware_sku] += joint.hardware_count
         trial_hardware: tuple[object, ...] = ()
         if angles:
             trial = angles.get(joint.joint_id)
             trial_hardware = (trial.article, 1, trial.screw, 2) if trial else ("", 0, "", 0)
+        elif mounts:
+            trial_hardware = ("", 0, "", 0)
         joint_rows.append(
             (
                 joint.joint_id,
@@ -239,13 +252,32 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
         for angle in result.trial_angles:
             counts[angle.article] += 1
             counts[angle.screw] += 2
-    if result.shelving_result and result.shelving_result.spec.parameters.door_hinge:
-        from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW, door_mounts
-
-        mounts = door_mounts(result.parts, result.shelving_result.spec.parameters)
-        counts[HINGE] += 2 * len(mounts)
-        counts[PLATE] += 2 * len(mounts)
-        counts[SCREW] += 12 * len(mounts)
+    for mount in mounts:
+        door, support = mount.door, mount.support
+        for position in (1, 2):
+            hinge_id = f"J95-{door.instance_index + 1}-{position}"
+            bores = [f for f in mount.holes if f.feature_id.startswith(hinge_id + "-")]
+            joint_rows.append(
+                (
+                    hinge_id,
+                    door.semantic_key,
+                    "back",
+                    " ".join(f.feature_id for f in bores if f.part_id == door.part_id),
+                    support.semantic_key,
+                    "right",
+                    " ".join(f.feature_id for f in bores if f.part_id == support.part_id),
+                    HINGE,
+                    1,
+                    PLATE,
+                    1,
+                    SCREW,
+                    6,
+                )
+            )
+            pairs[door.semantic_key, support.semantic_key, HINGE] += 1
+            counts[HINGE] += 1
+            counts[PLATE] += 1
+            counts[SCREW] += 6
     instructions = []
     if isinstance(intent, ChairIntent | DiningTableIntent):
         leg_wood = (
@@ -408,7 +440,7 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                 ),
             ]
         )
-    if result.joints:
+    if pairs:
         story.extend(
             [
                 para("Förband per delpar", "Heading2"),
@@ -417,14 +449,6 @@ def assembly_documents(result: FurnitureResult) -> dict[str, bytes]:
                     "assembly/connections.csv och i delritningarna."
                 ),
             ]
-        )
-        pairs = Counter(
-            (
-                names[j.members[0].part_id],
-                names[j.members[1].part_id],
-                j.hardware_sku or j.joint_type.value,
-            )
-            for j in result.joints
         )
         story.append(
             table(
