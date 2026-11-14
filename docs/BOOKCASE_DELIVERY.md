@@ -1,5 +1,21 @@
 # Slutleveranslogg · bokhylla
 
+**14 november 2026 · beslagskontrollen för valnötsbokhyllan, v19.** Vid
+återläsning av sexluckorsordern från `13a62b8` angav förhandsvisningen att
+gångjärn återstod att välja. Samtidigt angav monteringsmanualen J95 och
+verkstadsfilen hade en tom lista över beslagsprov. Regel CB-HARDWARE-001
+anger nu valt gångjärn, platta och skruv samt 2 mm nominellt spel.
+Verkstadsfilen anger återstående prov av passning, frigång mot grannlucka
+och vägg, skruvfäste samt beständighet vid belastning och ändrad fuktkvot.
+Provprotokollet länkar till den orderspecifika gångjärnsprovningen.
+Beslagsvalet har en egen kontrollsumma i förhandsvisningen. En ny export
+av en tidigare sparad order använder paketversion v19.
+
+Omprov: `pytest tests/unit/test_cabinet_doors.py tests/unit/test_rule_engine.py
+tests/integration/test_cabinet_door_export.py -q`. Testerna omfattar äldre
+underskåp utan valt gångjärn, öppna hyllor, ändrat antal fack och överensstämmelse
+mellan sparad order, förhandsvisning och nedladdad ZIP.
+
 **14 november 2026 · gångjärnen i verkstadens förbindelselista.** Utgångspunkt
 `4977f05` på main. På referensordern angav PDF-manualen tolv gångjärn,
 men `assembly/connections.csv` saknade alla tolv. Exportformatet

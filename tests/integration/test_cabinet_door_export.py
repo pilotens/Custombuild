@@ -54,6 +54,25 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
         (tmp_path / "Custombuild-Valnot-Sex-Gangjarnsluckor.zip").write_bytes(downloaded.content)
         with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
             files = {p: archive.read(p) for p in archive.namelist()}
+        preview = draft["preview"]
+        rule = next(r for r in preview["rules"]["evaluations"] if r["rule_id"] == "CB-HARDWARE-001")
+        assert rule["status"] == "WARNING"
+        assert rule["values"]["unit"] == "fysiskt oprövade beslagssystem"
+        assert all(sku in rule["detail"] for sku in ("J95-C24/0T-NI", "J95-P6T-NI", "SPAX"))
+        assert "Provning av öppningsrörelse" in rule["detail"]
+        handoff = json.loads(files["manufacturing/workshop-handoff.json"])
+        assert handoff == preview["workshop_handoff"]
+        assert set(handoff["hardware_requirements"]) == {
+            "hinge_and_plate_fit_in_actual_stock",
+            "door_opening_clearance_with_neighbour_and_wall",
+            "screw_withdrawal_in_actual_walnut",
+            "loaded_door_cycles_and_moisture_movement",
+        }
+        report = json.loads(files["validation/review.json"])
+        assert report["rules"] == preview["rules"]
+        assert report["dependencies"]["hardware"] == preview["dependencies"]["hardware"]
+        protocol = files["inspection/provprotokoll.txt"].decode()
+        assert rule["detail"] in protocol and "inspection/gangjarnsprov.txt" in protocol
         proof = json.loads(files["inspection/door-hardware.json"])
         assert proof["hinge_connections"] == 12
         assert (proof["doors"], proof["hinges"], proof["plates"], proof["screws"]) == (

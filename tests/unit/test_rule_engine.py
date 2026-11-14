@@ -138,6 +138,8 @@ class StructuralRuleTests(unittest.TestCase):
         )
 
         self.assertEqual(result.status, RuleStatus.WARNING)
+        self.assertIn("inte valda", " ".join(result.assumptions))
+        self.assertIn("Välj och verifiera", result.suggested_actions[0].description)
         self.assertTrue(result.suggested_actions[0].requires_user_evidence)
 
     def test_default_loaded_shelf_blocks_on_deflection(self) -> None:
@@ -498,7 +500,7 @@ class StabilityAndTipTests(unittest.TestCase):
 
     def test_rule_report_exposes_version_trace_and_disclaimer(self) -> None:
         report = evaluate_design(build_bookcase(make_spec()))
-        self.assertEqual(report.rules_version, "1.5.0")
+        self.assertEqual(report.rules_version, "1.5.1")
         self.assertIn("inte produktcertifiering", report.disclaimer)
         self.assertTrue(
             all(item.trace and item.inputs and item.assumptions for item in report.evaluations)

@@ -12,6 +12,7 @@ from .models import (
     Point3D,
 )
 
+PROFILE = "J95-inset-walnut-v1"
 HINGE = "J95-C24/0T-NI"
 PLATE = "J95-P6T-NI"
 SCREW = "SPAX YELLOX 5x16 countersunk full thread"

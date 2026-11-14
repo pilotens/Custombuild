@@ -224,6 +224,8 @@ def shelving_trial_protocol(
             if values.get("calculated") is not None and values.get("allowed") is not None
             else ""
         )
+        if p.door_hinge and rule["rule_id"] == "CB-HARDWARE-001":
+            reading = f" {rule['detail']} Se inspection/gangjarnsprov.txt."
         lines.append(f"{rule['status']} · {rule['rule_id']} · {rule['title']}.{reading}")
     lines.append(
         "Verkstaden väljer maskin, verktyg, uppspänning och CAM. "

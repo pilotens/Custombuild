@@ -62,6 +62,23 @@ def furniture_stock_requirements(result: FurnitureResult) -> list[dict[str, Any]
 def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
     hardware = result.hardware_profile
     intent = result.spec.intent
+    if hardware:
+        hardware_requirements = list(hardware.required_evidence)
+    elif isinstance(intent, ShelvingIntent) and intent.base_doors:
+        hardware_requirements = [
+            "hinge_and_plate_fit_in_actual_stock",
+            "door_opening_clearance_with_neighbour_and_wall",
+            "screw_withdrawal_in_actual_walnut",
+            "loaded_door_cycles_and_moisture_movement",
+        ]
+    elif intent.family in {"dining_table", "chair"}:
+        hardware_requirements = [
+            "screw_and_pilot_fit_in_actual_stock",
+            "fastener_withdrawal_and_racking_test",
+            "assembled_stability",
+        ]
+    else:
+        hardware_requirements = []
     return {
         "schema_version": "custombuild.furniture-workshop-handoff.v1",
         "version": HANDOFF_VERSION,
@@ -79,17 +96,7 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         }
         if isinstance(intent, ShelvingIntent)
         else None,
-        "hardware_requirements": list(hardware.required_evidence)
-        if hardware
-        else (
-            [
-                "screw_and_pilot_fit_in_actual_stock",
-                "fastener_withdrawal_and_racking_test",
-                "assembled_stability",
-            ]
-            if intent.family in {"dining_table", "chair"}
-            else []
-        ),
+        "hardware_requirements": hardware_requirements,
         "required_workshop_inputs": [
             "material_batches_and_actual_thickness",
             "available_stock_formats_and_grain",
