@@ -1,6 +1,19 @@
 # Slutleveranslogg · bokhylla
 
-## Fortsättningspunkt · fast bokhylla v22 · PR #28
+## Fortsättningspunkt · fast bokhylla v23 · PR #28
+
+V22 på `69d52eb` klarade [samtliga CI-flöden](https://github.com/pilotens/Custombuild/pull/28/checks).
+I v22 visade order-API:t en order med avklippt installations-PDF som tillgänglig när
+rapportens kontrollsumma stämde. Verkstadens mätblad saknade också ett fält för
+mätosäkerhet, trots provanvisningen. V23 läser provrapporternas sidor före frisläppning.
+Förstagångskontrollens CSV anger revision, konstruktionsgränser och plats för mätosäkerhet.
+Prova felaktig och inskannad rapport med `test_customer_can_open_the_qualified_installation_report`.
+Webbprovet kontrollerar bladet i de två faktiskt hämtade revisionerna.
+[Verifiering och ZIP-filer för aktuellt PR-huvud](https://github.com/pilotens/Custombuild/pull/28).
+Nästa externa steg är kodgranskning av PR-huvudet och de fysiska proven nedan.
+Tillåtna variationer och de mekaniska provkraven följer samma regler som i v22.
+
+## Fast bokhylla v22
 
 Utgå från v21 på GitHub (`affd6a3`). V22 lägger till orderbundna mätblad för samtliga
 J95-luckor. I kvalificerade order levereras den verifierade provrapporten.

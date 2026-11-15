@@ -470,6 +470,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyjwt", extra = ["crypto"] },
+    { name = "pypdf" },
     { name = "python-multipart" },
     { name = "redis" },
     { name = "reportlab" },
@@ -482,7 +483,6 @@ dependencies = [
 cad = [
     { name = "cadquery" },
     { name = "ezdxf" },
-    { name = "pypdf" },
 ]
 dev = [
     { name = "coverage" },
@@ -504,6 +504,7 @@ requires-dist = [
     { name = "pydantic", specifier = "==2.13.4" },
     { name = "pydantic-settings", specifier = "==2.10.1" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.14.0" },
+    { name = "pypdf", specifier = "==7.0.0" },
     { name = "python-multipart", specifier = "==0.0.32" },
     { name = "redis", specifier = "==6.2.0" },
     { name = "reportlab", specifier = "==4.4.9" },
@@ -516,7 +517,6 @@ requires-dist = [
 cad = [
     { name = "cadquery", specifier = "==2.8.0" },
     { name = "ezdxf", specifier = "==1.4.4" },
-    { name = "pypdf", specifier = "==7.0.0" },
 ]
 dev = [
     { name = "coverage", specifier = "==7.10.1" },

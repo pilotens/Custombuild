@@ -19,10 +19,15 @@ from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_domain.identity import content_hash
 from custombuild_manufacturing.bookcase_test_results import bookcase_test_limits
+from custombuild_manufacturing.errors import ProductionBlockedError
 from custombuild_manufacturing.model import um_to_mm
 from custombuild_rules.furniture import evaluate_furniture
 from custombuild_worker import tasks
 from fastapi.testclient import TestClient
+from PIL import Image
+from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NameObject, NumberObject
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen.canvas import Canvas
 
 from tests.furniture_review_storage import install_review_storage
@@ -169,6 +174,80 @@ def create(client, order):
             "expected_design_hash": draft["preview"]["design"]["design_hash"],
         },
     )
+
+
+@pytest.mark.cad
+def test_customer_can_open_the_qualified_installation_report(tmp_path, monkeypatch):
+    order = measured_order()
+    profile = _install_test_profile(tmp_path, monkeypatch, order)
+    report = next(row for row in profile["evidence"] if row["category"] == "installation")
+    report_path = tmp_path / profile["profile_id"] / report["file"]
+
+    def register_pdf(payload):
+        report_path.write_bytes(payload)
+        report["sha256"] = hashlib.sha256(payload).hexdigest()
+        (tmp_path / "profiles.json").write_text(json.dumps([profile]))
+
+    # A scan may have no extractable text. The original bytes must reach the customer.
+    scanned = io.BytesIO()
+    canvas = Canvas(scanned)
+    canvas.drawImage(ImageReader(Image.new("RGB", (4, 4), "blue")), 10, 20, width=30, height=30)
+    canvas.save()
+    scan_bytes = scanned.getvalue()
+    assert not PdfReader(io.BytesIO(scan_bytes)).pages[0].extract_text().strip()
+    register_pdf(scan_bytes)
+
+    storage = install_review_storage(monkeypatch)
+    with TestClient(app) as client:
+        path, body = create(client, order)
+        request = {**body, "purpose": "workshop_drawings"}
+        response = client.post(path + "/exports", headers=HEADERS, json=request)
+        assert response.status_code == 202, response.text
+        job = response.json()["job_id"]
+        assert tasks.generate_furniture_review.run(job, TENANT)["state"] == "succeeded"
+        download = f"{path}/exports/{job}/download"
+        response = client.get(download, headers=HEADERS)
+        assert response.status_code == 200, response.text[:200]
+        with ZipFile(io.BytesIO(response.content)) as archive:
+            assert archive.read("documents/installation.pdf") == scan_bytes
+
+        other_path, other_body = create(client, order)
+        queued = client.post(
+            other_path + "/exports",
+            headers=HEADERS,
+            json={**other_body, "purpose": "workshop_drawings"},
+        )
+        assert queued.status_code == 202, queued.text
+        empty = io.BytesIO()
+        PdfWriter().write(empty)
+        locked = io.BytesIO()
+        writer = PdfWriter(clone_from=io.BytesIO(scan_bytes))
+        writer.encrypt("test-password")
+        writer.write(locked)
+        # All cases have the expected digest, including a valid first page followed
+        # by a second page whose content stream cannot be read.
+        broken_page = io.BytesIO()
+        writer = PdfWriter(clone_from=io.BytesIO(scan_bytes))
+        page = writer.add_blank_page(width=200, height=200)
+        page[NameObject("/Contents")] = NumberObject(1)
+        writer.write(broken_page)
+        for invalid in (
+            scan_bytes[:60],
+            empty.getvalue(),
+            locked.getvalue(),
+            broken_page.getvalue(),
+        ):
+            register_pdf(invalid)
+            status = client.get(path + "/workshop-eligibility", headers=HEADERS).json()
+            assert status["available"] is False
+            assert "installation.pdf" in status["detail"]
+            assert client.post(path + "/exports", headers=HEADERS, json=request).status_code == 409
+            assert client.get(download, headers=HEADERS).status_code == 409
+        with pytest.raises(ProductionBlockedError, match=r"installation\.pdf"):
+            tasks.generate_furniture_review.run(queued.json()["job_id"], TENANT)
+        assert len(storage.put_calls) == 1
+        register_pdf(scan_bytes)
+        assert client.get(download, headers=HEADERS).content == response.content
 
 
 def test_workshop_width_interval_binds_both_endpoints_site_and_lots(tmp_path, monkeypatch):

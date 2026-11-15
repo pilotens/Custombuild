@@ -36,7 +36,7 @@ def furniture_review_schema(family: str | None) -> str:
         # The separate S1 and trestle jobs keep their original construction envelope.
         return "custombuild.furniture-review.v1"
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v22"
+        return "custombuild.shelving-workshop-review.v23"
     return "custombuild.furniture-review.v2"
 
 

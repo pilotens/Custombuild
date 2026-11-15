@@ -8,6 +8,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from functools import cache
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
@@ -34,6 +35,7 @@ from pydantic import (
     ValidationError,
     model_validator,
 )
+from pypdf import PdfReader
 
 from .bookcase_test_results import BookcaseTestResults, bookcase_test_limits
 from .model import um_to_mm
@@ -57,6 +59,25 @@ class EvidenceFile(BaseModel):
     category: Category
     file: str = Field(pattern=r"^[A-Za-z0-9_-]{1,96}\.pdf$")
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+def _check_report_pdf(raw: bytes, name: str) -> None:
+    # A matching digest identifies the file, but cannot establish that its pages
+    # can be opened. Scanned instructions need no OCR or extractable text.
+    try:
+        reader = PdfReader(BytesIO(raw))
+        if not reader.pages:
+            raise ValueError("PDF saknar sidor")
+        for page in reader.pages:
+            if page.mediabox.width <= 0 or page.mediabox.height <= 0:
+                raise ValueError("ogiltigt sidformat")
+            page.get_contents()
+    except Exception as exc:
+        # The PDF reader may raise different parser/codec errors for a bad
+        # page. Give the same actionable outcome at order, job and download.
+        raise ValueError(
+            f"Registrera en PDF för {name} där alla sidor kan öppnas utan lösenord."
+        ) from exc
 
 
 class TestedWidthRange(BaseModel):
@@ -115,6 +136,7 @@ class BookcaseProfile(BaseModel):
             raw = path.read_bytes() if path.is_file() and path.stat().st_size <= 2_000_000 else b""
             if not raw.startswith(b"%PDF-") or hashlib.sha256(raw).hexdigest() != report.sha256:
                 raise ValueError(f"Provunderlaget för {report.category} saknas eller har ändrats.")
+            _check_report_pdf(raw, report.file)
             documents[report.category] = raw
         return documents
 

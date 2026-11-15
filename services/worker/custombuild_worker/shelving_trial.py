@@ -112,9 +112,12 @@ def shelving_trial_protocol(
             "del-ID, bearbetningssida och feature-ID i inspection/first-article-checks.csv. "
             "Mät tjocklek, spårbredd och spårdjup på flera ställen. Lägg in mätosäkerhet "
             "och avtalad tolerans innan resultatet bedöms. Tom ruta är öppen.",
-            "3. Jämför uppmätta värden med operationens nominella mått och deklarerade tolerans. "
-            "Kräv att hela mätintervallet ryms inom den avtalade gränsen. Saknas en tolerans "
-            "måste konstruktören fastställa den innan detaljen kan godkännas.",
+            "3. Ange mätvärde i measured och mätosäkerhet i measurement_uncertainty i radens "
+            "enhet. Hela intervallet från mätvärde minus osäkerhet till mätvärde plus "
+            "osäkerhet ska rymmas inom model_min och model_max samt eventuell snävare "
+            "avtalad tolerans. LOWER_ACCEPTANCE_LIMIT har endast en nedre gräns. För count "
+            "kontrolleras exakt antal. Saknas båda modellgränserna behöver konstruktören "
+            "fastställa kravet före godkännande.",
         ]
     )
     dado = next((j for j in design.joints if j.joint_type == JointType.DADO), None)

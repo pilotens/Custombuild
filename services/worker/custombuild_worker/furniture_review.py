@@ -265,6 +265,9 @@ def build_furniture_review(
             f"Provprofil {workshop_profile.profile_id}. Läs documents/installation.pdf och "
             "documents/assembly.pdf. STEP och delarnas A/B-DXF använder mm. "
             "Verkstaden väljer maskin och bereder CAM. Hämta kaplista och beslag i bom/.\n"
+            "I inspection/first-article-checks.csv anges mätvärde och measurement_uncertainty "
+            "i radens enhet. Hela mätintervallet ska rymmas inom angivna model_min och "
+            "model_max. LOWER_ACCEPTANCE_LIMIT har endast en nedre gräns.\n"
         ).encode()
         for name in (
             "documents/assembly-overview.pdf",

@@ -136,6 +136,10 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
     """An unfilled measurement worksheet, not a manufactured or approved result."""
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
+    bookcase = isinstance(result.spec.intent, ShelvingIntent)
+    extra_columns = (
+        ("revision", "model_min", "model_max", "measurement_uncertainty") if bookcase else ()
+    )
     writer.writerow(
         (
             "design_hash",
@@ -153,6 +157,7 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
             "result",
             "inspector",
             "notes",
+            *extra_columns,
         )
     )
     names = {part.part_id: part.semantic_key for part in result.parts}
@@ -171,6 +176,16 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
         side: str = "",
         origin_semantics: str = "",
     ) -> None:
+        evidence: tuple[object, ...] = ()
+        if bookcase:
+            lower = upper = ""
+            if unit == "count":
+                lower = upper = str(value)
+            elif origin_semantics == "LOWER_ACCEPTANCE_LIMIT":
+                lower = mm_text(value)
+            elif tolerance is not None and tolerance > 0:
+                lower, upper = mm_text(value - tolerance), mm_text(value + tolerance)
+            evidence = (result.spec.revision, lower, upper, "")
         writer.writerow(
             (
                 result.design_hash,
@@ -188,6 +203,7 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
                 "",
                 "",
                 "",
+                *evidence,
             )
         )
 
