@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from . import cabinet_doors
 from .engine import build_bookcase
 from .enums import BackPanelType, FaceName, FeatureKind, GrainDirection, PartRole, ShelfMount
 from .furniture import (
@@ -507,7 +508,7 @@ def build_furniture(design: FurnitureDesign) -> FurnitureResult:
                 ),
                 **(
                     {
-                        "cabinet_rule": "J95-inset-walnut-v1",
+                        "cabinet_rule": cabinet_doors.PROFILE,
                         "cabinet_assembly": carcass.assembly_graph,
                     }
                     if carcass and carcass.spec.parameters.door_hinge

@@ -46,9 +46,15 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.getByRole("button", {name: "Öppna valnötsbokhylla med sex gångjärnsluckor"}).click();
     await expect(page.getByText(/Arbetsfilen har kontrollerats/)).toBeVisible();
     await page.getByLabel("Projektnamn", {exact: true}).fill(project.project.name + "-luckor");
+    await page.getByText("Kundens yttermått och listutrymme", {exact: true}).click();
+    await page.getByRole("button", {name: "Använd lika fack i hela millimeter"}).click();
+    await expect(page.getByLabel("Bredd (mm)", {exact: true})).toHaveValue("4278");
+    await expect(page.getByLabel("Vänster · reserverat (mm)", {exact: true})).toHaveValue("31");
+    await expect(page.getByLabel("Höger · reserverat (mm)", {exact: true})).toHaveValue("31");
     const canvas = page.getByTestId("furniture-viewer").locator("canvas");
     await expect(canvas).toHaveAttribute("data-custombuild-model-root", /.+/);
     const firstView = await canvas.screenshot();
+    let previousHash: string | undefined;
     for (const [revision, bays] of [[1, 6], [2, 7]] as const) {
       if (revision === 2) {
         await page.getByLabel("Avdelare", {exact:true}).fill("6");
@@ -67,13 +73,31 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
       const path = info.outputPath(`Custombuild-Valnot-Gangjarn-Rev${revision}.zip`);
       await download.saveAs(path);
       const report = JSON.parse(execFileSync("python3", ["-c", [
-        "import json,sys,zipfile",
+        "import csv,io,json,sys,zipfile",
         "with zipfile.ZipFile(sys.argv[1]) as z:",
         " m=json.loads(z.read('manifest.json'))",
         " r=json.loads(z.read('inspection/door-hardware.json'))",
+        " samples=list(csv.DictReader(io.StringIO(z.read('inspection/luckprov-per-fack.csv').decode('utf-8-sig'))))",
+        " n=int(sys.argv[2]); rev=int(sys.argv[3])",
+        " assert m['schema_version']=='custombuild.shelving-workshop-review.v24'",
         " assert r['design_hash']==m['design_hash'] and not m['production_qualified']",
+        " checks=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
+        " assert checks and all(c['revision']==str(rev) and c['design_hash']==m['design_hash'] and c['measurement_uncertainty']=='' for c in checks)",
+        " door_stock=[c for c in checks if c['part_name'].startswith('cabinet-front-') and c['check']=='actual_thickness']",
+        " assert len(door_stock)==n and all((c['model_min'],c['model_max'])==('18.000','18.100') for c in door_stock)",
+        " assert [s['leaf'] for s in samples]==[f'cabinet-front-{i}' for i in range(n)]",
+        " if rev==1: assert {s['width_um'] for s in samples}=={'688000'}",
+        " with zipfile.ZipFile(io.BytesIO(z.read('inspection/fackprov.zip'))) as sample:",
+        "  kit=json.loads(sample.read('manifest.json'))",
+        "  assert kit['revision']==rev and kit['design_hash']==m['design_hash'] and kit['bay_count']==n",
+        "  if rev==1: assert kit['bay']==3 and kit['clear_width_um']==692000 and len(kit['part_ids'])==7",
+        "  for pid in kit['part_ids']: assert sample.read(f'parts/{pid}/A.dxf')==z.read(f'parts/{pid}/A.dxf')",
+        " assert all(s['revision']==str(rev) and s['design_hash']==m['design_hash'] for s in samples)",
+        " assert all(s['cycles_completed']==s['tested_mass_g']=='' for s in samples)",
         " print(json.dumps(r))",
-      ].join("\n"), path], {encoding:"utf8"}));
+      ].join("\n"), path, String(bays), String(revision)], {encoding:"utf8"}));
+      expect(report.design_hash).not.toEqual(previousHash);
+      previousHash = report.design_hash;
       expect(report).toMatchObject({revision, doors:bays, hinges:bays*2, plates:bays*2,
         screws:bays*12, door_and_plate_bores:bays*15});
     }
@@ -180,11 +204,8 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     expect(exported.dimensions.standing_assembly.minimum_height_from_base_um).toBe(2_558_000);
     expect(exported.dimensions.standing_assembly.walls.map((wall: {margin_um: number}) => wall.margin_um))
       .toEqual([-6_000, -6_000, 0]);
-    const originalDenied = page.waitForResponse(r => r.request().method() === "POST" && r.url().endsWith("/exports"));
-    await page.getByRole("button", {name: "Beställ verkstadsritningar"}).click();
-    const blocked = await originalDenied;
-    expect(blocked.status()).toBe(409);
-    expect((await blocked.json()).detail).toMatch(/26 mm/);
+    await expect(page.getByRole("button", {name: "Beställ verkstadsritningar"})).toBeDisabled();
+    await expect(page.getByRole("status").filter({hasText: /26 mm/})).toBeVisible();
     await attachView(page, info, "customer-bookcase-dimensions");
     const width = page.getByLabel("Bredd (mm)", { exact: true });
     await width.fill("6000.001");

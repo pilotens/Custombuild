@@ -213,7 +213,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Generated API client drift
@@ -358,7 +358,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Install live-browser matrix
@@ -621,6 +621,9 @@ jobs:
           downloads="$RUNNER_TEMP/bookcase-downloads"
           install -d -m 755 "$downloads"
           for name in Custombuild-Bokhylla-Valnot-{Konstruktionsprov,Platsalternativ}.zip; do
+            install -m 644 apps/web/test-results/chromium-live/furniture-live-*/"$name" "$downloads/$name"
+          done
+          for name in Custombuild-Valnot-Gangjarn-Rev{1,2}.zip; do
             install -m 644 apps/web/test-results/chromium-live/furniture-live-*/"$name" "$downloads/$name"
           done
           docker run --rm --network none --read-only --tmpfs /tmp:rw,size=512m -e HOME=/tmp \

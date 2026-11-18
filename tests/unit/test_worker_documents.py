@@ -20,6 +20,8 @@ from custombuild_domain.cabinet_doors import door_mounts
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_manufacturing import canonical_json_bytes
+from custombuild_manufacturing.adapters import adapt_design_result
+from custombuild_manufacturing.exporters import cut_list_csv
 from custombuild_rules import evaluate_design
 from custombuild_worker.documents import (
     ASSEMBLY_PARTS_PER_PAGE,
@@ -43,6 +45,7 @@ from custombuild_worker.documents import (
     qa_protocol_pdf,
     validation_report_pdf,
 )
+from custombuild_worker.furniture_assembly import assembly_documents
 from pypdf import PdfReader
 
 
@@ -208,6 +211,21 @@ def test_manual_hardware_text_never_claims_unsecured_geometry_is_complete() -> N
     assert "inte verifierad som permanent låsning" in _assembly_step_hardware_text(
         design, dado_step
     )
+
+
+def test_assembly_overview_and_cut_list_preserve_ordered_micrometres() -> None:
+    source = json.loads(Path("examples/furniture/bookcase-walnut-base-700.json").read_bytes())
+    source["design"]["intent"]["width_um"] = 4_281_123
+    source["design"]["installation"]["width_um"] = 4_341_123
+    result = build_furniture(FurnitureWorkspace.model_validate(source).design)
+    pdf = PdfReader(io.BytesIO(assembly_documents(result)["documents/assembly.pdf"]))
+    text = "\n".join(page.extract_text() for page in pdf.pages)
+    assert "4281.123 × 260 × 2500 mm" in text
+    top = next(p for p in result.parts if p.semantic_key == "top")
+    cut = csv.DictReader(io.StringIO(cut_list_csv(adapt_design_result(result).parts).decode()))
+    row = next(r for r in cut if r["part_id"] == top.part_id)
+    assert row["finished_width_mm"] == "4257.123"
+    assert row["finished_width_mm"] + " × 260 × 18" in text
 
 
 def test_each_door_manual_page_names_its_hinges_and_matching_support() -> None:

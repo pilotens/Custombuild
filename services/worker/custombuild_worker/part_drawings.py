@@ -248,7 +248,11 @@ def _geometry(
 
 
 def part_drawings_pdf(
-    design: Any, *, qualification_note: str | None = None, workshop: bool = False
+    design: Any,
+    *,
+    qualification_note: str | None = None,
+    workshop: bool = False,
+    part_ids: set[str] | None = None,
 ) -> bytes:
     """Draw every part and face, retaining the exact SVG geometry and feature data."""
 
@@ -264,6 +268,8 @@ def part_drawings_pdf(
     page_number = 0
     sources = {p.part_id: p for p in design.parts} if isinstance(design, FurnitureResult) else {}
     for original in sorted(adapted.parts, key=lambda value: value.part_id):
+        if part_ids is not None and original.part_id not in part_ids:
+            continue
         views = (
             drawing_faces(sources[original.part_id], original)
             if isinstance(design, FurnitureResult)

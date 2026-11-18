@@ -48,7 +48,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Install exact release dependencies
@@ -368,7 +368,7 @@ jobs:
           version: 11.7.0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 24.22.2
+          node-version: 24.22.3
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Download the exact build-once image archives
@@ -576,7 +576,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.22.2"
+          test "$(docker compose --file compose.yml exec -T web /usr/bin/node --version)" = "v24.22.3"
           docker compose --file compose.yml exec -T web /usr/bin/node -e \
             "if (process.execPath !== '/usr/bin/node' || process.getuid() !== 65532) throw new Error(process.execPath + ':' + process.getuid())"
           docker compose --file compose.yml exec -T api /opt/custombuild-venv/bin/python - <<'PY'

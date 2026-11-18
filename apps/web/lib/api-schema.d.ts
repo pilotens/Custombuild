@@ -456,6 +456,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/furniture/projects/{project_id}/workshop-eligibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Workshop Eligibility */
+        get: operations["workshop_eligibility_v1_furniture_projects__project_id__workshop_eligibility_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/furniture/shelf-bay-suggestion": {
         parameters: {
             query?: never;
@@ -1770,6 +1787,19 @@ export interface components {
             /** Thickness Um */
             thickness_um: number;
         };
+        /** EqualBayLayout */
+        EqualBayLayout: {
+            /** Carcass Width Um */
+            carcass_width_um: number;
+            /** Clear Width Um */
+            clear_width_um: number;
+            /** Left Allowance Um */
+            left_allowance_um: number;
+            /** Right Allowance Um */
+            right_allowance_um: number;
+            /** Step Um */
+            step_um: number;
+        };
         /** ExecutableCAMReceipt */
         ExecutableCAMReceipt: {
             cam_approval: components["schemas"]["CAMApprovalReleaseBinding"];
@@ -1996,6 +2026,8 @@ export interface components {
             carcass_dimensions_um: {
                 [key: string]: number;
             };
+            /** Equal Bay Layouts */
+            equal_bay_layouts?: components["schemas"]["EqualBayLayout"][];
             installation: components["schemas"]["InstallationSpace"] | null;
             /** Issues */
             issues: components["schemas"]["FurnitureIssueRead"][];
@@ -2152,6 +2184,8 @@ export interface components {
              * @constant
              */
             production_qualified: false;
+            /** Rear Openings */
+            rear_openings: components["schemas"]["RearOpening"][];
             /** Required Workshop Inputs */
             required_workshop_inputs: string[];
             /**
@@ -5141,6 +5175,17 @@ export interface components {
             /** Rule Id */
             rule_id: string;
         };
+        /** WorkshopEligibility */
+        WorkshopEligibility: {
+            /** Available */
+            available: boolean;
+            /** Design Hash */
+            design_hash: string;
+            /** Detail */
+            detail: string;
+            /** Revision */
+            revision: number;
+        };
         /** WorkshopRegistrationPin */
         WorkshopRegistrationPin: {
             /** X Um */
@@ -6274,6 +6319,37 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workshop_eligibility_v1_furniture_projects__project_id__workshop_eligibility_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkshopEligibility"];
                 };
             };
             /** @description Validation Error */

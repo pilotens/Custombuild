@@ -1,5 +1,179 @@
 # Slutleveranslogg · bokhylla
 
+## 18 november 2026 · hela fackmått och fysiskt delprov · v24
+
+Utgångspunkt är v23 på `73a696b` i [PR 28](https://github.com/pilotens/Custombuild/pull/28).
+På `/furniture`, öppna sexluckorsbokhyllan och välj **Kundens yttermått och listutrymme → Använd lika fack i hela millimeter**.
+Förslaget gäller jämnt uppdelade fack med känd sidmån och samstämmig installationsbredd.
+Servern visar alternativ i hela och halva mm när de ger olika mindre stommar. Vid användning
+fördelas överskottet mellan sidmarginalerna. Ändringen sparas som en vanlig designrevision.
+Mätningar med flyttade väggreferenser måste göras om. Befintliga kundproportioner bevaras.
+
+Prov B behåller utrymmet 4340 × 2540 × 280 mm och listen 90 × 20 mm. Sidmånen blir 31 mm
+på vardera sidan och stommen 4278 × 2500 × 260 mm. Sex fria fack på 692 mm ger
+30 hyllplan på 704 mm och sex luckor på 688 mm. Toppen och mellanbotten blir 4254 mm.
+
+För fast bokhylla med J95, GN 970, infälld rygg och minst ett hyllplan ingår
+`inspection/fackprov.zip` i granskningspaketet. Börja med `Provprotokoll.pdf`.
+Prov B väljer fack 3 och ger sju fullstora orderdelar, 14 DXF, separat STEP samt tomt mätblad.
+Utgångsordern utan måttändring väljer fack 2, en av de två bredaste luckorna.
+Det numeriska orderprovet kontrollerar även att batchens minsta lucktjocklek efter avdrag
+för osäkerhet uppfyller J95-kravet 18,00 mm. Övre gränsen för detta 18-mm-prov är 18,10 mm.
+
+Kör `pytest tests/unit/test_furniture_dimensions.py tests/integration/test_bookcase_workshop_release.py tests/integration/test_cabinet_door_export.py`.
+Webbprovet `sex underskåpsluckor` tillämpar B, hämtar paketet och kontrollerar en ändrad revision.
+Aktuell commit och Linux-/webbkörningar finns i [PR-kontrollerna](https://github.com/pilotens/Custombuild/pull/28/checks).
+Nästa fysiska åtgärd är att provmontera detta fack i en fixtur i faktisk batch, mäta spårspel,
+ryggens sidoinfångning och lucksvep samt återföra mätosäkerhet och klimat i mätbladet.
+Glappbudget, fullhöjdsstabilitet och kvalificeringsregister för hela möbeln kräver fortsatt provning.
+
+Uppföljning av v24 (`53f6322`): provdelen väljs nu genom delroll och fackindex även när en
+enda rygg delar båda yttergavlarna med luckan. Verifiera med `test_bench_sample_from_an_outer_bay`
+för ett fack på 664 mm och en asymmetrisk tvåfackshylla med bredaste facket på höger sida.
+I prov B:s kontrollblad har hyllplansdjupet 237,65 mm intervallet 237,55–237,75 mm.
+Topp och mellanbotten har längd 4 254 mm med modellkrav ±0,10 mm.
+Hela delarnas längdtolerans behöver styrkas separat från fackprovet på högst 1 794 mm.
+
+## Fortsättningspunkt · fast bokhylla v23 · PR #28
+
+V22 på `69d52eb` klarade [samtliga CI-flöden](https://github.com/pilotens/Custombuild/pull/28/checks).
+I v22 visade order-API:t en order med avklippt installations-PDF som tillgänglig när
+rapportens kontrollsumma stämde. Verkstadens mätblad saknade också ett fält för
+mätosäkerhet, trots provanvisningen. V23 läser provrapporternas sidor före frisläppning.
+Förstagångskontrollens CSV anger revision, konstruktionsgränser och plats för mätosäkerhet.
+Prova felaktig och inskannad rapport med `test_customer_can_open_the_qualified_installation_report`.
+Webbprovet kontrollerar bladet i de två faktiskt hämtade revisionerna.
+[Verifiering och ZIP-filer för aktuellt PR-huvud](https://github.com/pilotens/Custombuild/pull/28).
+Nästa externa steg är kodgranskning av PR-huvudet och de fysiska proven nedan.
+Tillåtna variationer och de mekaniska provkraven följer samma regler som i v22.
+
+## Fast bokhylla v22
+
+Utgå från v21 på GitHub (`affd6a3`). V22 lägger till orderbundna mätblad för samtliga
+J95-luckor. I kvalificerade order levereras den verifierade provrapporten.
+Kontrollera PR-huvudets [körningar](https://github.com/pilotens/Custombuild/pull/28/checks)
+före leverans. Liveprovet i `furniture-live.spec.ts` sparar sexluckorsordern, ändrar
+till sju fack och hämtar båda revisionerna från samma kundprojekt. Båda filerna
+bevaras i CI-artefakten `bookcase-workshop-trial-packages`. Om ett jobb faller,
+öppna första felsteget på aktuell SHA. Starta där vid nästa pass.
+
+**Första leveransens omfattning.** Stående, fast bokhylla med infälld plywoodrygg
+och GN 970-låsning. Referensutförandet har 18 mm massiv valnöt, 6 mm björkplywood,
+ingen sockel och 700 mm hög underskåpsrad. En vänsterhängd J95-lucka per fack,
+660 × 18 mm i höjd/tjocklek, projekterat 2 mm spel, högst 800 mm bredd och
+25 kg per lucka enligt den implementerade beslagsprofilen. Familjen kan också
+generera öppna hyllor. Kundmått inklusive list är 4340 × 2540 × 280 mm (B/H/D).
+Reservationerna är 30 mm per sida, 40 mm upptill och 20 mm bakåt. Dessa
+är konstruktionsval. Den befintliga listen 90 × 20 mm ligger på tre väggar.
+Det faktiska montagerummet och bärande underlaget bakom gipset återstår att mäta.
+
+| Acceptansfall | Förväntat beteende och prov |
+| --- | --- |
+| Ändrad bredd, höjd, djup och layout | Editorns yttre inmatningsgränser är 250–6000, 300–4000 respektive 100–1200 mm, 0–40 hyllrader, 0–16 avdelare. Tillverkbar geometri, spann, beslag, last och max 128 exporterade delar begränsar kombinationerna ytterligare. Dessa gränser ger inget fysiskt kvalificerat intervall. |
+| Kundens valnöt, sex till sju fack | Ny 3D-visning, ritningsrevision och nya borr- och mätrader per lucka. Sex resp. sju luckor, tolv resp. fjorton gångjärn. Historiska revisioner förblir identifierbara. |
+| Kortare råämnen och uppdelning | Varje del kontrolleras mot vald fiber och format. Staplad 6 × 2-plan behåller sex luckor på golvraden. Separata modulförband och staplingslast ingår inte i denna leverans. |
+| Breddintervall, batch och plats | Med isolerade provdata prövas båda ändpunkter, ett mellanvärde och en mikrometer utanför. Ändrad batch/plats, saknad rapport och återkallelse ska spärra verkstadsorder och hämtning. Se `test_bookcase_workshop_release.py`. |
+| Montering och geometri | Ordinarie worker återläser STEP, DXF och dokument, kontrollerar fogar, måttkedjor och monteringsbana. `test_cabinet_door_export.py` provar även en skadad fil och en saknad mätrad. |
+
+**Till extern provning.** Kunden anger platsmått och väggens uppbyggnad. Verkstaden
+bekräftar tillgänglig batch, två obrutna råämnen om minst 4256 mm längs fibern samt
+resterande delar i kaplistan. Provansvarig fastställer bruksfukt, cykelkrav,
+infästningslast och verklig provfixtur. Använd orderns `inspection/provprotokoll.txt`,
+`inspection/kvalificeringsprov.json`, `inspection/fogprov.csv` och för J95 även
+`inspection/gangjarnsprov.txt` samt `inspection/luckprov-per-fack.csv`.
+Råformatet och det längsta fria spannet ändras med ordern. Registret för verkliga
+typunderlag är tomt. A kräver godkänt kundflöde och bygg/drift för samma revision.
+B kräver dessutom verkligt provunderlag för de kombinationer som ska frisläppas.
+
+## 14 november 2026 · sexluckorsordern från möbelstudion, v21
+
+Välj **Öppna valnötsbokhylla med sex gångjärnsluckor · J95 och GN 970** i
+`/furniture`. Det ger stommen 4280 × 2500 × 260 mm för rummet
+4340 × 2540 × 280 mm. Den sparade referensordern ger 62 trädelar, sex
+luckor, tolv J95-gångjärn och 91 GN 970-vinklar. Ryggens täckning visas per
+sektion. Sex övre fack har rygg, sex underskåp är öppna bakåt. De två längsta ämnena måste vardera
+rymma 4256 mm längs fibern i den valda valnötsbatchen.
+
+I modulplanen följer skåpen golvraden och behåller beställt antal.
+Ett rutnät som ändrar antalet fack returnerar varken modulutkast eller
+kaplista. Stapling och förband mellan separata moduler behöver egen prövning.
+Monteringsöversikten återger samma mikrometermått som kaplistan.
+Manualen placerar vinkelbladen före luckorna. Varje luckblad visar
+borrbilderna parvis för gavel och lucka samt hänvisar till Sugatsunes anvisning.
+
+Beställningsstatus beräknas för sparad revision och visar orsaken vid avslag.
+En betrodd profil kan ange `width_range` med två provgränser och en separat,
+kontrollsummerad rapport som täcker hela breddintervallet. Systemet jämför
+ändpunkternas konstruktionsidentiteter, kontrollerar båda ändpunkterna och
+prövar den faktiska orderns last, spann, materialbatcher, beslag och plats.
+Giltigheten kontrolleras även vid körning och hämtning. Utan intervall är
+profilen bunden till exakt konstruktion. Produktregistret saknar verkliga
+provrapporter. Exemplet kan hämtas som granskningspaket.
+
+## Sexluckorsbokhyllan med provmonterade GN 970-vinklar, v20
+
+Sexluckorsordern på 4280 × 2500 × 260 mm har prövats mot den exporterade STEP-modellen.
+I v19 kunde monteringssteg 14 inte föra in en avdelare utan kollision. Den gamla
+följden krävde 4282 mm höjd. V20 monterar de nedre facken först, placerar ryggarna
+före avdelarna och för in avdelare och hyllor framifrån. De 55 raka stomrörelserna
+ryms nominellt inom 2518 mm höjd och 248 mm framför stommen. Det återstår 22 mm
+höjdmarginal mot kundens angivna 2540 mm. Kontroll av lucksvep och fixturer ingår
+i det fysiska provet. Faktiska platsmått och väggens infästning saknas i referensen.
+
+Kombinationen J95 och GN 970 är ett val i möbelredigeraren. Referensens revision 2
+använder en GN 970-ALM-30-30-30-B med två DIN 96 A4 5×16 per bärande stomfog.
+Alla 91 vinklars 182 pilothål är knutna till respektive motdel och måttkontrolleras
+i DXF och STEP. Skruvaxlarna vid mellanbotten ligger på skilda djupstationer.
+Den limfria konstruktionen har 24 separata ryggspår. Montera vinklarna när
+stommen är sammanfogad och stödd, innan luckorna hakas på. En vinkel med rätt
+hålbild saknar fortfarande uppmätt brukskapacitet i referensens virke.
+
+Verkstadsordern verifierar levererade material, råformat i fiberriktning, tjocklek
+och batch mot en kvalificerad profil. Massivträ kräver mätvärden för rörelsemån
+över installationsplatsens fuktintervall. För J95 tillkommer en spårbar sjätte
+rapport och mätresultat för varje fack avseende massa, minst 93 graders öppning,
+positiv frigång inklusive osäkerhet, antal cykler enligt avsedd användning samt skruvfäste.
+Trösklarna för cykler och skruvlast kommer från den betrodda provspecifikationen.
+En order kan inte lägga till en profil. Ny order, arbetskö och hämtning av en äldre
+fil använder samma kontroll av den exakta konstruktionen, platsen, batcherna och
+rapporternas giltighet. Produktregistret är tomt. Ett godkänt automatiskt test
+med temporära provdata visar att flödet fungerar. En verklig verkstadsorder för
+referensen är spärrad tills användningsmiljön och egenskaperna har verifierats.
+
+
+**14 november 2026 · beslagskontrollen för valnötsbokhyllan, v19.** Vid
+återläsning av sexluckorsordern från `13a62b8` angav förhandsvisningen att
+gångjärn återstod att välja. Samtidigt angav monteringsmanualen J95 och
+verkstadsfilen hade en tom lista över beslagsprov. Regel CB-HARDWARE-001
+anger nu valt gångjärn, platta och skruv samt 2 mm nominellt spel.
+Verkstadsfilen anger återstående prov av passning, frigång mot grannlucka
+och vägg, skruvfäste samt beständighet vid belastning och ändrad fuktkvot.
+Provprotokollet länkar till den orderspecifika gångjärnsprovningen.
+Beslagsvalet har en egen kontrollsumma i förhandsvisningen. En ny export
+av en tidigare sparad order använder paketversion v19.
+
+Omprov: `pytest tests/unit/test_cabinet_doors.py tests/unit/test_rule_engine.py
+tests/integration/test_cabinet_door_export.py -q`. Testerna omfattar äldre
+underskåp utan valt gångjärn, öppna hyllor, ändrat antal fack och överensstämmelse
+mellan sparad order, förhandsvisning och nedladdad ZIP.
+
+**14 november 2026 · gångjärnen i verkstadens förbindelselista.** Utgångspunkt
+`4977f05` på main. På referensordern angav PDF-manualen tolv gångjärn,
+men `assembly/connections.csv` saknade alla tolv. Exportformatet
+`custombuild.shelving-workshop-review.v18` ger en rad per gångjärn.
+Varje rad anger lucka, gavel, fysiska sidor, tre hål på luckan, fyra på gaveln,
+en monteringsplatta och sex skruvar. Monteringsöversiktens delparstabell anger
+två gångjärn per lucka. Varje luckas genomgående fingergrepp redovisas i
+delritningen. Det ingår inte i gångjärnets infästning.
+
+Workern matchar förbindelserna mot hålens återlästa DXF-lägen och mot
+beslagsraden på rätt luckas monteringsblad. Testet för sex luckor går från
+sparad order till nedladdad ZIP. En separat order med två olika breda fack
+provar fem avsiktliga fel i listan. Utebliven eller dubblerad rad, fel gavel,
+fel borrhänvisning och fel skruvantal ska stoppa utlämningen före lagring.
+Omprov: `pytest tests/integration/test_cabinet_door_export.py -q`.
+Fysisk typkvalificering av luckrörelse, skruvfäste och stomme återstår.
+
 **13 november 2026 · återupptaget bygge och luckornas monteringsblad, v18.**
 Fortsättningen utgår från `3a7b8fe` på PR #27 och behåller samma bokhyllefamilj och
 kundmått. Den tidigare CI-körningen hade två konkreta regressionsfel: webbens

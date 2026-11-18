@@ -87,6 +87,10 @@ def _remaining_web(p: PartInstance) -> dict[str, int]:
             - f.tolerance_um
             - other
         )
+        if f.through and f.kind == FeatureKind.DRILL and other == 0:
+            # An intentional through finger pull has no residual web requirement
+            # of its own. Intersecting opposing machining must still be rejected.
+            continue
         if web <= 0:
             raise ValueError(
                 f"{p.semantic_key}: spår eller pilothål kan bryta igenom. "

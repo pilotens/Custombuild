@@ -4,7 +4,9 @@ import pytest
 from custombuild_domain.cabinet_doors import door_mounts
 from custombuild_domain.furniture import FurnitureWorkspace
 from custombuild_domain.furniture_engine import build_furniture
+from custombuild_domain.identity import content_hash
 from custombuild_domain.models import DesignResult
+from custombuild_manufacturing.furniture_profiles import preview_furniture
 
 EXAMPLE = Path("examples/furniture/bookcase-walnut-base-700.json")
 
@@ -60,3 +62,20 @@ def test_unsupported_stock_and_door_system_are_rejected():
     data["design"]["intent"]["base_doors"] = "sliding"
     with pytest.raises(ValueError, match="J95"):
         FurnitureWorkspace.model_validate(data)
+
+
+def test_hardware_dependency_tracks_the_j95_selection_independently_of_bay_count():
+    workspace = FurnitureWorkspace.model_validate_json(EXAMPLE.read_bytes())
+    preview = preview_furniture(workspace)
+
+    def edited(**changes):
+        data = workspace.model_dump(mode="json")
+        data["design"]["intent"].update(changes)
+        return preview_furniture(FurnitureWorkspace.model_validate(data))
+
+    open_shelves = edited(base_doors=None)
+    assert open_shelves["dependencies"]["hardware"] == content_hash(None)
+    assert open_shelves["workshop_handoff"]["hardware_requirements"] == []
+    hinge_hash = preview["dependencies"]["hardware"]
+    assert hinge_hash != open_shelves["dependencies"]["hardware"]
+    assert edited(divider_count=6)["dependencies"]["hardware"] == hinge_hash

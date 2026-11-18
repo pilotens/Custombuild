@@ -28,13 +28,17 @@ export function gridFromBlankLength(workspace: FurnitureWorkspace, gapUm: number
   const length = (axis === "x" ? stock.stock_width_um : stock.stock_height_um) - margin;
   const breadth = (axis === "x" ? stock.stock_height_um : stock.stock_width_um) - margin;
   if (length <= 0 || intent.depth_um > breadth) return;
-  const columns = Math.ceil((intent.width_um + gapUm) / (length + gapUm));
+  const minimumColumns = Math.ceil((intent.width_um + gapUm) / (length + gapUm));
+  const bays = (intent.divider_count ?? 1) + 1;
+  const columns = intent.base_doors
+    ? Array.from({length: 8}, (_, i) => i + 1).find(n => n >= minimumColumns && bays % n === 0)
+    : minimumColumns;
   const rows = Math.ceil((intent.height_um + gapUm) / (length + gapUm));
-  if (rows > 4 || columns > 8 || rows * columns < 2 || rows * columns > 16) return;
+  if (!columns || rows > 4 || columns > 8 || rows * columns < 2 || rows * columns > 16) return;
   const shelves = intent.shelf_count ?? 4;
   return { columns, rows, gap_um: gapUm,
     shelf_count_per_row: Array.from({ length: rows }, (_, i) => Math.floor(shelves / rows) + Number(i < shelves % rows)),
-    divider_count_per_module: Math.ceil(((intent.divider_count ?? 1) + 1) / columns) - 1,
+    divider_count_per_module: Math.ceil(bays / columns) - 1,
   };
 }
 
@@ -104,6 +108,7 @@ function workspaceIdentity(workspace: FurnitureWorkspace): string {
         ...(workspace.design.intent.family === "shelving" ? {
           shelf_load_basis: "per_row", shelf_load_per_metre_n: 0,
           bay_width_ratios_ppm: [], back_panel: "inset_groove", shelf_mount: "fixed", plinth_height_um: 0,
+          base_doors: null, trial_angle: null,
         } : {}),
         ...workspace.design.intent,
       },
@@ -161,6 +166,8 @@ export function assertMatchingFurnitureModulePlan(
     || plan.modules.length > 16 || layout.column_widths_um.length !== grid.columns
     || layout.row_heights_um.length !== grid.rows) return invalid();
   const widths = layout.column_widths_um, heights = layout.row_heights_um;
+  const baseDoors = workspace.design.intent.base_doors ?? null;
+  if (baseDoors && grid.columns * (grid.divider_count_per_module + 1) !== (workspace.design.intent.divider_count ?? 1) + 1) invalid();
   const equalAllocation = (values: number[], total: number) => {
     const usable = total - grid.gap_um * (values.length - 1);
     return values.every((value, index) => value === Math.floor(usable / values.length) + (index < usable % values.length ? 1 : 0));
@@ -200,6 +207,7 @@ export function assertMatchingFurnitureModulePlan(
       || draft.workspace.design.intent.depth_um !== dimensions.depth_um
       || draft.workspace.design.intent.shelf_count !== grid.shelf_count_per_row[draft.row]
       || draft.workspace.design.intent.divider_count !== grid.divider_count_per_module
+      || (draft.workspace.design.intent.base_doors ?? null) !== (draft.row === 0 ? baseDoors : null)
       || (draft.workspace.design.intent.plinth_height_um ?? 0) !==
         (grid.plinth_placement === "floor_row_only" && draft.row > 0 ? 0 : workspace.design.intent.plinth_height_um ?? 0)
       || (workspace.design.intent.shelf_load_basis !== "per_metre" && draft.workspace.design.intent.shelf_load_n
@@ -215,6 +223,7 @@ export function assertMatchingFurnitureModulePlan(
       intent: { ...draft.workspace.design.intent, width_um: workspace.design.intent.width_um,
         height_um: workspace.design.intent.height_um, shelf_count: workspace.design.intent.shelf_count ?? 4,
         divider_count: workspace.design.intent.divider_count ?? 1,
+        base_doors: baseDoors,
         ...(grid.plinth_placement ? { plinth_height_um: workspace.design.intent.plinth_height_um } : {}),
         ...(workspace.design.intent.shelf_load_basis !== "per_metre"
           ? { shelf_load_n: workspace.design.intent.shelf_load_n ?? 200 } : {}),

@@ -69,6 +69,8 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
     validation = "Ange 1–8 kolumner, 1–4 rader och 0–16 avdelare per modul.";
   } else if (rowCount * columnCount < 2 || rowCount * columnCount > 16) {
     validation = "Välj sammanlagt 2–16 moduler.";
+  } else if (workspace.design.intent.base_doors && columnCount * (dividerCount + 1) !== (workspace.design.intent.divider_count ?? 1) + 1) {
+    validation = `Välj kolumner och avdelare som behåller ${(workspace.design.intent.divider_count ?? 1) + 1} underskåpsluckor på golvraden.`;
   } else if (!gap.trim()) {
     validation = "Ange mellanrummet i millimeter. Skriv 0 om modulerna ska stå direkt intill varandra.";
   } else if (shelfCounts.some(value => value === null)) {
@@ -85,6 +87,7 @@ export function FurnitureModulePlanningPanel({ api, workspace, designHash, disab
       ...(needsPlinthChoice && floorPlinth ? { plinth_placement: "floor_row_only" as const } : {}),
     };
     validation = `${rowCount * columnCount} moduler. Bredd och höjd fördelas jämnt efter valt mellanrum.`;
+    if (workspace.design.intent.base_doors) validation += " Underskåpen placeras på golvraden.";
   }
 
   // Bind both pending and completed state to all input values. A change hides

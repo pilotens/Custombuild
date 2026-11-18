@@ -2,11 +2,15 @@
 FROM alpine:3.24.4@sha256:3f4d6b32e26703c6082839234f43769d5046b3ac7c910033911d1e71d8cd630a AS packages
 ADD --checksum=sha256:7b05bc778b8b25cd880835b40114182bd4d1581717504d0129c810c0a14291cb https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/zlib-1.4-r0.apk /packages/zlib.apk
 ADD --checksum=sha256:16469f2246465aae50489adabd6c5f1fbd5e0f02f75b1ca0be9feaefd7a8dd3e https://dl-cdn.alpinelinux.org/alpine/v3.24/community/x86_64/gosu-1.19-r6.apk /packages/gosu.apk
+ADD --checksum=sha256:40e6cc7d09ce1e69421c2b37e1da4e9afef486843f21c3a79339cd6d93c1c617 https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/libxslt-1.1.43-r4.apk /packages/libxslt.apk
+ADD --checksum=sha256:fad5b46a953e6a37a1bb61a84538fa08ecb6a07816f439eb06f2735aebfcbfbf https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/krb5-libs-1.22.3-r0.apk /packages/krb5-libs.apk
 
 FROM postgres:18-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395 AS prepared
 RUN --mount=type=bind,from=packages,source=/packages,target=/packages \
     apk --no-network add /packages/*.apk \
     && test "$(apk list --installed zlib | cut -d' ' -f1)" = "zlib-1.4-r0" \
+    && test "$(apk list --installed libxslt | cut -d' ' -f1)" = "libxslt-1.1.43-r4" \
+    && test "$(apk list --installed krb5-libs | cut -d' ' -f1)" = "krb5-libs-1.22.3-r0" \
     && test "$(apk list --installed gosu | cut -d' ' -f1)" = "gosu-1.19-r6" \
     && rm /usr/local/bin/gosu && ln -s /usr/bin/gosu /usr/local/bin/gosu \
     && gosu postgres sh -ec 'test "$(id -un)" = postgres' \

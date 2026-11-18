@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from custombuild_domain import cabinet_doors
 from custombuild_domain.furniture import FurnitureWorkspace, ProfileChange
 from custombuild_domain.furniture_catalog import resolve_material
 from custombuild_domain.furniture_engine import FurnitureResult, build_furniture
@@ -77,7 +78,16 @@ def _dependencies(
         "material": content_hash(
             [{"selection": m, "profile": resolve_material(m)} for m in materials]
         ),
-        "hardware": content_hash(result.hardware_profile),
+        "hardware": content_hash(
+            {
+                "profile": cabinet_doors.PROFILE,
+                "hinge": cabinet_doors.HINGE,
+                "plate": cabinet_doors.PLATE,
+                "screw": cabinet_doors.SCREW,
+            }
+            if result.shelving_result and result.shelving_result.spec.parameters.door_hinge
+            else result.hardware_profile
+        ),
         "geometry": content_hash(
             [p.model_dump(mode="json", exclude={"revision"}) for p in result.parts]
         ),

@@ -88,8 +88,11 @@ def build_furniture_review(
     }
     files.update(assembly_documents(result))
     shelving = result.shelving_result
+    cabinet = shelving is not None and bool(shelving.spec.parameters.door_hinge)
     if shelving is not None:
-        space = verify_assembly_space(shelving, cad.step) if shelving.trial_angles else None
+        space = (
+            verify_assembly_space(shelving, cad.step) if shelving.trial_angles or cabinet else None
+        )
         site_data = preview["workshop_handoff"]["dimensions"]["standing_assembly"]
         site = StandingSiteReview.model_validate(site_data) if site_data else None
         if space:
@@ -103,7 +106,12 @@ def build_furniture_review(
                     "design_hash": result.design_hash,
                     "revision": workspace.design.revision,
                     "units": "integer_micrometres",
-                    "scope": "Rigid timber, straight translations, no fixtures or human clearance.",
+                    "scope": (
+                        "Carcass timber only. Hinged door clipping and swing, fixtures and "
+                        "operator clearance are outside this straight-translation check."
+                        if cabinet
+                        else "Rigid timber, straight translations, no fixtures or human clearance."
+                    ),
                     **asdict(space),
                     "standing_site": site_data,
                 }
@@ -162,7 +170,6 @@ def build_furniture_review(
                 }
             )
     identity = None
-    cabinet = shelving is not None and bool(shelving.spec.parameters.door_hinge)
     if result.trial_angles or cabinet:
         from .bookcase_readback import order_identity, verify_bookcase_delivery
 
@@ -204,24 +211,42 @@ def build_furniture_review(
         ).encode()
     if cabinet:
         from .cabinet_delivery import (
+            DOOR_TRIAL_CSV,
+            cabinet_trial_rows,
             cabinet_trial_sheet,
             installation_register,
             verify_cabinet_delivery,
         )
 
         files["assembly/door-hardware.json"] = _json(installation_register(result))
+        files[DOOR_TRIAL_CSV] = cabinet_trial_rows(result)
         files["inspection/gangjarnsprov.txt"] = cabinet_trial_sheet(result)
         files["inspection/door-hardware.json"] = _json(verify_cabinet_delivery(result, files))
         files["README.txt"] += (
             "\nUNDERSKÅP – Se documents/assembly.pdf och assembly/door-hardware.json. "
             "Varje lucka och dess gavel har en märkt DXF för respektive sida. "
             "Ø3,5 × 15 mm är provmått för SPAX YELLOX 5x16 i 18 mm valnöt. "
-            "Beslagets fulla rörelse och infästning i virket återstår att prova.\n"
+            "Prova alla öppningar enligt inspection/gangjarnsprov.txt. Orderns mätblad finns i "
+            "inspection/luckprov-per-fack.csv.\n"
         ).encode()
+        if (
+            result.trial_angles
+            and shelving
+            and shelving.spec.parameters.shelf_count
+            and not workshop_profile
+        ):
+            from .bookcase_sample import SAMPLE_PATH, bay_sample
+
+            files[SAMPLE_PATH] = bay_sample(result, files)
+            files["README.txt"] += (
+                "Öppna inspection/fackprov.zip för ett fristående prov av hyllfog, infälld rygg "
+                "och en lucka på fixtur. Börja med LAS-MIG.txt i provpaketet.\n"
+            ).encode()
     elif identity:
         report, joint_sheet = verify_bookcase_delivery(result, files)
         files["inspection/geometry-readback.json"] = _json(report)
         files["inspection/fogprov.csv"] = joint_sheet
+    if result.trial_angles:
         assert shelving is not None
         limits = bookcase_test_limits(shelving, preview["rules"]["evaluations"])
         files["inspection/kvalificeringsprov.json"] = _json(
@@ -242,12 +267,20 @@ def build_furniture_review(
         # Supply the actual qualified site method together with revision-specific steps.
         documents = workshop_profile.reports()
         files["documents/installation.pdf"] = documents["installation"]
+        if cabinet:
+            files["documents/luckprov.pdf"] = documents["door_service"]
+            del files["inspection/gangjarnsprov.txt"], files[DOOR_TRIAL_CSV]
+        if workshop_profile.width_range:
+            files["documents/breddintervall.pdf"] = documents["width_range"]
         files["inspection/qualification.json"] = _json(workshop_profile.model_dump(mode="json"))
         files["README.txt"] = (
             f"Verkstadsritningar · revision {workspace.design.revision} · {result.design_hash}\n"
             f"Provprofil {workshop_profile.profile_id}. Läs documents/installation.pdf och "
             "documents/assembly.pdf. STEP och delarnas A/B-DXF använder mm. "
             "Verkstaden väljer maskin och bereder CAM. Hämta kaplista och beslag i bom/.\n"
+            "I inspection/first-article-checks.csv anges mätvärde och measurement_uncertainty "
+            "i radens enhet. Hela mätintervallet ska rymmas inom angivna model_min och "
+            "model_max. LOWER_ACCEPTANCE_LIMIT har endast en nedre gräns.\n"
         ).encode()
         for name in (
             "documents/assembly-overview.pdf",

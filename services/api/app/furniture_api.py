@@ -14,7 +14,11 @@ from custombuild_domain.furniture import (
 )
 from custombuild_domain.furniture_catalog import furniture_catalog
 from custombuild_domain.identity import content_hash
-from custombuild_manufacturing.bookcase_qualification import qualified_bookcase, workshop_filename
+from custombuild_manufacturing.bookcase_qualification import (
+    BookcaseProfile,
+    qualified_bookcase,
+    workshop_filename,
+)
 from custombuild_manufacturing.furniture_module_planning import (
     FurnitureModuleGrid,
     plan_furniture_modules,
@@ -25,6 +29,7 @@ from custombuild_manufacturing.furniture_profiles import (
     preview_furniture,
 )
 from custombuild_manufacturing.furniture_suggestions import suggest_shelf_bays
+from custombuild_manufacturing.model import um_to_mm
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -440,6 +445,65 @@ def history(
     }
 
 
+class WorkshopEligibility(BaseModel):
+    available: bool
+    revision: int
+    design_hash: str
+    detail: str
+
+
+def _order_profile(
+    project: Project, workspace: FurnitureWorkspace, workspace_sha256: str
+) -> BookcaseProfile:
+    try:
+        profile = qualified_bookcase(workspace, project.organization_id)
+    except OSError as exc:
+        raise HTTPException(
+            409, detail="Provregistret eller en provrapport kan inte läsas."
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(409, detail=str(exc)) from exc
+    require_bookcase_input_receipt(project, workspace_sha256)
+    return profile
+
+
+@router.get("/projects/{project_id}/workshop-eligibility")
+def workshop_eligibility(
+    project_id: str, principal: ReaderDep, session: SessionDep
+) -> WorkshopEligibility:
+    project = tenant_project(session, principal, project_id)
+    workspace = _workspace(project)
+    if not workspace or not project.draft_design_hash:
+        raise HTTPException(409, detail="Spara bokhyllan först.")
+    current = _preview(workspace)["design"]
+    available = False
+    if current["design_hash"] != project.draft_design_hash:
+        detail = "Modellmotorn har ändrats. Spara en ny revision före export."
+    elif len(current["parts"]) > 128:
+        detail = "Granskningspaketet stöder högst 128 delar."
+    else:
+        try:
+            profile = _order_profile(project, workspace, content_hash(workspace))
+        except HTTPException as exc:
+            detail = str(exc.detail)
+        else:
+            available = True
+            bounds = profile.width_range
+            if bounds:
+                detail = (
+                    f"Provad stombredd {um_to_mm(bounds.minimum_um)}–"
+                    f"{um_to_mm(bounds.maximum_um)} mm för den sparade konstruktionen och platsen."
+                )
+            else:
+                detail = "Provprofilen täcker den sparade konstruktionen och platsen."
+    return WorkshopEligibility(
+        available=available,
+        detail=detail,
+        revision=project.draft_revision,
+        design_hash=project.draft_design_hash,
+    )
+
+
 def _accepted_export(job: GenerationJob) -> FurnitureExportAccepted:
     state = job.status.value
     if state not in {"queued", "running", "succeeded"}:
@@ -482,11 +546,7 @@ def request_export(
         "review_schema_version": furniture_review_schema(workspace.design.intent.family),
     }
     if payload.purpose == "workshop_drawings":
-        try:
-            profile = qualified_bookcase(workspace, project.organization_id)
-        except (OSError, ValueError) as exc:
-            raise HTTPException(409, detail=str(exc)) from exc
-        require_bookcase_input_receipt(project, workspace_sha256)
+        profile = _order_profile(project, workspace, workspace_sha256)
         engine_context["workshop_qualification"] = profile.fingerprint
         engine_context["bookcase_order_sha256"] = workspace_sha256
     # The project row lock serializes duplicate requests across API replicas.

@@ -55,12 +55,15 @@ def shelving_trial_protocol(
             "Stöd botten på plan yta. Håll varje ryggfält, avdelare och gavel lodrätt med "
             "separata stöd "
             "mot tippning tills stommen är säkrad. Avsätt plats utanför införingsbanorna för "
-            "fixturer och lyfthjälp. "
-            "Provpassa frontöppningen i varje frontmatat spår. Med framkanterna inriktade "
-            "(±0,10 mm) ska "
-            "hyllan eller avdelaren ha minst 0,05 mm kvar till det bakre stoppet. Mät mot "
-            "inspection/groove-fits.json."
+            "fixturer och lyfthjälp."
         )
+        if result.trial_angles:
+            lines.append(
+                "Provpassa frontöppningen i varje frontmatat spår. Med framkanterna inriktade "
+                "(±0,10 mm) ska "
+                "hyllan eller avdelaren ha minst 0,05 mm kvar till det bakre stoppet. Mät mot "
+                "inspection/groove-fits.json."
+            )
         lines.extend(
             [
                 space.description(),
@@ -109,9 +112,12 @@ def shelving_trial_protocol(
             "del-ID, bearbetningssida och feature-ID i inspection/first-article-checks.csv. "
             "Mät tjocklek, spårbredd och spårdjup på flera ställen. Lägg in mätosäkerhet "
             "och avtalad tolerans innan resultatet bedöms. Tom ruta är öppen.",
-            "3. Jämför uppmätta värden med operationens nominella mått och deklarerade tolerans. "
-            "Kräv att hela mätintervallet ryms inom den avtalade gränsen. Saknas en tolerans "
-            "måste konstruktören fastställa den innan detaljen kan godkännas.",
+            "3. Ange mätvärde i measured och mätosäkerhet i measurement_uncertainty i radens "
+            "enhet. Hela intervallet från mätvärde minus osäkerhet till mätvärde plus "
+            "osäkerhet ska rymmas inom model_min och model_max samt eventuell snävare "
+            "avtalad tolerans. LOWER_ACCEPTANCE_LIMIT har endast en nedre gräns. För count "
+            "kontrolleras exakt antal. Saknas båda modellgränserna behöver konstruktören "
+            "fastställa kravet före godkännande.",
         ]
     )
     dado = next((j for j in design.joints if j.joint_type == JointType.DADO), None)
@@ -135,6 +141,11 @@ def shelving_trial_protocol(
             "Öppna konstruktionskontroller",
         ]
     )
+    if p.door_hinge and design.unretained_carcass_joints:
+        lines.append(
+            f"{len(design.unretained_carcass_joints)} bärande stomfogar saknar specificerad "
+            "permanent låsning. Fog-ID finns i inspection/door-hardware.json."
+        )
     if design.trial_angles:
         lines.extend(
             [
@@ -224,9 +235,17 @@ def shelving_trial_protocol(
             if values.get("calculated") is not None and values.get("allowed") is not None
             else ""
         )
+        if p.door_hinge and rule["rule_id"] == "CB-HARDWARE-001":
+            reading = f" {rule['detail']} Se inspection/gangjarnsprov.txt."
         lines.append(f"{rule['status']} · {rule['rule_id']} · {rule['title']}.{reading}")
-    lines.append(
-        "Verkstaden väljer maskin, verktyg, uppspänning och CAM. "
-        "Konstruktören behöver lösa öppna förband innan en tillverkningsorder läggs."
-    )
+    lines.append("Verkstaden väljer maskin, verktyg, uppspänning och CAM.")
+    if design.trial_angles:
+        lines.append(
+            "Skjuvkravet per fog ovan omfattar stommens tyngd och samtliga belastade rader. "
+            "Modellen tillgodoräknar ingen lastdelning mellan fogarna. "
+            "Ange dokumenterad dimensionerande kapacitet för den ritade fogen och batchen. "
+            "Om gränsen inte klaras krävs omkonstruktion eller styrkt lastfördelning."
+        )
+    elif design.unretained_carcass_joints:
+        lines.append("Bärande stomfogar utan låsning behöver en konstruktionslösning före order.")
     return ("\n".join(lines) + "\n").encode()

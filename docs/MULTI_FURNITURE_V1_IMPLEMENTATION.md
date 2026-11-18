@@ -68,7 +68,7 @@ aldrig utan en ny modellerad konstruktion med verifierade förband.
 Det nya kundfallet och kvarvarande konstruktionsbeslut dokumenteras i
 [Kundmått 4340 × 2540 × 280](CUSTOMER_BOOKCASE_4340_2540_280.md).
 
-Paketet har formatet `custombuild.furniture-review.v1`. Det innehåller ingen
+Paketet har formatet `custombuild.furniture-review.v2`. Det innehåller ingen
 skärande CAM och kan inte användas som en godkänd produktionsversion. Bordets och
 byråns delritningar markerar att beslag/hålbilder/infästningar inte är verifierade.
 Den befintliga separat verifierade CAM-kandidatkedjan för Hyllsystem behåller sina

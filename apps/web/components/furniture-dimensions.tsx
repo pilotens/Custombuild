@@ -42,7 +42,7 @@ export function InstallationEditor({ workspace, onChange, onError, preview }: Ed
       {([['width_um', 'Kundlängd inklusive reserverat utrymme'], ['height_um', 'Kundhöjd'], ['depth_um', 'Kunddjup']] as const).map(([key, label]) =>
         <label key={key}>{label} (mm)<input type="number" min="1" max="6000" step="0.001"
           value={installation[key]/1_000} onChange={e => changeMm(key, e.target.value)} /></label>)}
-      {workspace.design.intent.family === "shelving" && workspace.design.intent.trial_angle ? <>
+      {workspace.design.intent.family === "shelving" && (workspace.design.intent.trial_angle || workspace.design.intent.base_doors) ? <>
         <label>Uppmätt fri takhöjd från golv (mm)
           <input type="number" min="0.001" step="0.001" placeholder="Ej uppmätt"
           value={!installation.surveyed_fields?.includes("ceiling_height") || installation.measured_ceiling_height_um == null ? "" : installation.measured_ceiling_height_um / 1_000}
@@ -78,6 +78,15 @@ export function InstallationEditor({ workspace, onChange, onError, preview }: Ed
         if (dimensions) onChange({ ...workspace, design: { ...workspace.design,
           intent: { ...workspace.design.intent, ...dimensions } } }, "carcass");
       }}>Räkna om stommen från kundmåtten</button>
+      {preview?.workshop_handoff?.dimensions.equal_bay_layouts?.map(option => <div key={option.step_um}>
+        <p>Lika fack med {option.clear_width_um / 1000} mm fri bredd ger en stomme på {option.carcass_width_um / 1000} mm.
+          Sidmån vänster/höger blir {option.left_allowance_um / 1000} / {option.right_allowance_um / 1000} mm inom kundens bredd.</p>
+        <button type="button" onClick={() => onChange({ ...workspace, design: { ...workspace.design,
+          installation: invalidateMovedDatums(installation, { ...installation,
+            left_allowance_um: option.left_allowance_um, right_allowance_um: option.right_allowance_um }),
+          intent: { ...workspace.design.intent, width_um: option.carcass_width_um },
+        } }, "carcass")}>Använd lika fack i {option.step_um === 1000 ? "hela" : "halva"} millimeter</button>
+      </div>)}
       {alternative && proposed ? <div>
         <p>Platsalternativ inom kundmåtten: stomme {proposed.width_um/1000} × {proposed.height_um/1000} × {proposed.depth_um/1000} mm.
           Sidornas reservation avrundas uppåt vid gavelrörelse. Upptill ingår minst 20 mm planeringsmån över trädelarnas rörelse.</p>
@@ -193,15 +202,15 @@ export function ShelvingLayoutEditor({ workspace, onChange, onError }: EditorPro
       onChange={e => patch({ shelf_mount: e.target.value as "fixed" | "adjustable" }, "layout.mount")}>
       <option value="fixed">Fasta hyllor</option><option value="adjustable">Flyttbara hyllor med hyllbärare</option>
     </select></label>
-    <label><input type="checkbox" checked={Boolean(intent.base_doors)} disabled={Boolean(intent.trial_angle)}
+    <label><input type="checkbox" checked={Boolean(intent.base_doors)}
       onChange={e => patch({ base_doors: e.target.checked ? "J95-C24/0T-NI" : null }, "layout.baseDoors")} />
       Underskåp 700 mm med vänsterhängd lucka i varje fack</label>
     {intent.base_doors && <p>Varje lucka får två J95-gångjärn, två monteringsplattor och ett fingergrepp.
       Borrbilden på luckan och gaveln följer fackindelningen. Välj 18 mm massiv valnöt och högst 800 mm luckbredd.</p>}
-    <label><input type="checkbox" disabled={Boolean(intent.base_doors)} checked={Boolean(intent.trial_angle)}
+    <label><input type="checkbox" checked={Boolean(intent.trial_angle)}
       onChange={e => patch({ trial_angle: e.target.checked ? "GN-970-ALM-30-30-30-B" : null }, "layout.angle")} />
       Prova mekanisk låsning med GN 970-vinkel</label>
-    {intent.trial_angle ? <p>Öppen bokhylla med fasta hyllor och infälld rygg. Den här konstruktionen saknar underskåp och luckor. Vinklar och pilothål ingår i underlaget. Hållfasthet och fuktrörelse återstår att prova.</p> : null}
+    {intent.trial_angle ? <p>En vinkel och två pilothål per bärande stomfog ingår i underlaget. Hållfasthet och fuktrörelse återstår att prova.</p> : null}
     <label>Ryggkonstruktion<select value={intent.back_panel ?? "inset_groove"}
       onChange={e => patch({ back_panel: e.target.value as "none" | "surface_mounted" | "inset_groove" }, "layout.back")}>
       <option value="inset_groove">Rygg i spår</option><option value="none">Utan rygg</option>

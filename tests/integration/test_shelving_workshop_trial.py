@@ -158,6 +158,28 @@ def test_package_matches_independent_corner_geometry_and_hardware_inventory(tmp_
                 io.StringIO(z.read("inspection/first-article-checks.csv").decode("utf-8-sig"))
             )
         )
+        assert all(
+            row["revision"] == str(manifest["revision"])
+            and row["design_hash"] == manifest["design_hash"]
+            and not any(row[key] for key in ("measurement_uncertainty", "measured", "result"))
+            for row in datum_rows
+        )
+        thickness = next(
+            row
+            for row in datum_rows
+            if row["part_name"] == "left-side" and row["check"] == "actual_thickness"
+        )
+        assert (thickness["expected"], thickness["model_min"], thickness["model_max"]) == (
+            "18.000",
+            "17.900",
+            "18.100",
+        )
+        gaps = [row for row in datum_rows if row["origin_semantics"] == "LOWER_ACCEPTANCE_LIMIT"]
+        assert gaps and all((row["model_min"], row["model_max"]) == ("0.050", "") for row in gaps)
+        counts = [row for row in datum_rows if row["unit"] == "count"]
+        assert counts and all(
+            row["model_min"] == row["expected"] == row["model_max"] for row in counts
+        )
         alignment_rows = [r for r in datum_rows if r["origin_semantics"] == "INSTALLED_FRONT_DATUM"]
         assert len(alignment_rows) == 2 and all(
             r["model_tolerance"] == "0.100" for r in alignment_rows

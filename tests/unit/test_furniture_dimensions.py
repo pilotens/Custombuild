@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 from custombuild_domain.furniture import FurnitureWorkspace, InstallationSpace, ProfileChange
-from custombuild_domain.furniture_dimensions import review_furniture_dimensions
+from custombuild_domain.furniture_dimensions import equal_bay_layouts, review_furniture_dimensions
 from custombuild_domain.furniture_engine import build_furniture
 from custombuild_domain.furniture_production import (
     FurnitureProductionSource,
@@ -252,3 +252,36 @@ def test_workshop_protocol_keeps_missing_trim_dimensions_open(height, width, exp
     report = shelving_trial_protocol(build_furniture(selected.design), preview).decode()
     assert expected in report
     assert all(i["message"] in report for i in issues)
+
+
+@pytest.mark.parametrize(
+    ("width", "expected"),
+    [
+        (4_280_000, [(692000, 4278000, 31000, 31000)]),
+        (4_283_000, [(692000, 4278000, 32500, 32500), (692500, 4281000, 31000, 31000)]),
+        (4_278_000, []),
+        (4_278_001, [(692000, 4278000, 30000, 30001)]),
+    ],
+)
+def test_fabrication_choices_conserve_room_and_symmetric_reservations(width, expected):
+    data = installed().model_dump(mode="json")
+    design = data["design"]
+    design["intent"].update(width_um=width, divider_count=5)
+    design["installation"].update(
+        width_um=width + 60000, left_allowance_um=30000, right_allowance_um=30000
+    )
+    design["material"]["measured_thickness_um"] = 18000
+    frozen = FurnitureWorkspace.model_validate(data)
+    options = equal_bay_layouts(frozen.design)
+    assert [
+        (o.clear_width_um, o.carcass_width_um, o.left_allowance_um, o.right_allowance_um)
+        for o in options
+    ] == expected
+    for o in options:
+        assert o.clear_width_um * 6 + 7 * 18000 == o.carcass_width_um
+        assert o.carcass_width_um + o.left_allowance_um + o.right_allowance_um == width + 60000
+    design["intent"]["bay_width_ratios_ppm"] = [100000, 200000, 200000, 200000, 200000, 100000]
+    assert not equal_bay_layouts(FurnitureWorkspace.model_validate(data).design)
+    design["intent"]["bay_width_ratios_ppm"] = []
+    design["installation"]["left_allowance_um"] = None
+    assert not equal_bay_layouts(FurnitureWorkspace.model_validate(data).design)

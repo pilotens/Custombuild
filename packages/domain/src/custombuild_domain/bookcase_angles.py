@@ -84,7 +84,8 @@ def fit_trial_angles(
         upright = next(
             p
             for p in members
-            if p.role in {PartRole.LEFT_SIDE, PartRole.RIGHT_SIDE, PartRole.DIVIDER}
+            if p.role
+            in {PartRole.LEFT_SIDE, PartRole.RIGHT_SIDE, PartRole.DIVIDER, PartRole.BASE_SIDE}
         )
         horizontal = next(p for p in members if p is not upright)
         # A shelf meeting the left face of a divider ends to its left. For a full-width
@@ -95,20 +96,32 @@ def fit_trial_angles(
             if (
                 upright.role == PartRole.RIGHT_SIDE
                 or (
-                    horizontal.role == PartRole.SHELF
+                    horizontal.role in {PartRole.SHELF, PartRole.BASE_BOTTOM}
                     and horizontal.placement.x_um < upright.placement.x_um
                 )
             )
             else 1
         )
-        zs: Literal[-1, 1] = 1 if horizontal.role == PartRole.BOTTOM else -1
+        above = horizontal.role == PartRole.BASE_BOTTOM or (
+            horizontal.role == PartRole.BOTTOM and upright.role != PartRole.BASE_SIDE
+        )
+        zs: Literal[-1, 1] = 1 if above else -1
         vx, vy, _, vx2, vy2, _ = _box(upright)
         hx, hy, hz, hx2, hy2, hz2 = _box(horizontal)
         x = vx2 if xs == 1 else vx
         z = hz2 if zs == 1 else hz
         # Set the near edge 5 mm behind the later front. Offset opposite brackets by one
         # complete bracket plus 5 mm to separate screws from opposite divider faces.
-        y = max(vy, hy) + LEG // 2 + 5_000 + (LEG + 5_000 if xs == -1 else 0)
+        # Separate lower fittings from the closed door and hinge plate and from
+        # the upper divider screws entering the opposite face of the deck.
+        lower = upright.role == PartRole.BASE_SIDE or horizontal.role == PartRole.BASE_BOTTOM
+        y = (
+            max(vy, hy)
+            + (100_000 if lower else 0)
+            + LEG // 2
+            + 5_000
+            + (LEG + 5_000 if xs == -1 else 0)
+        )
         angle = TrialAngle(
             joint_id=j.joint_id,
             upright_id=upright.part_id,
@@ -167,6 +180,8 @@ def check_trial_angles(
     parts: tuple[PartInstance, ...],
     joints: tuple[Joint, ...],
     angles: tuple[TrialAngle, ...],
+    *,
+    door_bores: frozenset[str] = frozenset(),
 ) -> None:
     """Check a serialized result, including deleted fittings and detached pilot holes."""
     if article is None and not angles:
@@ -217,7 +232,7 @@ def check_trial_angles(
         if f.kind == FeatureKind.DRILL and f.joint_id is None
     }
     screw_access(parts, angles)
-    if unbound_drills != bound_holes:
+    if bound_holes & door_bores or unbound_drills != bound_holes | door_bores:
         raise ValueError("En obunden borrning saknas i vinkelregistret.")
 
 

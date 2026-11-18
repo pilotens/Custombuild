@@ -21,7 +21,7 @@ from .furniture_module_cut_list import module_cut_list_csv
 from .furniture_profiles import preview_furniture
 from .furniture_suggestions import _passes, _screening_checks
 
-MODULE_PLANNING_VERSION = "furniture-module-planning-1.1.0"
+MODULE_PLANNING_VERSION = "furniture-module-planning-1.2.0"
 MAX_MODULE_COUNT = 16
 MAX_MODULE_PARTS = 512
 
@@ -258,6 +258,12 @@ def plan_furniture_modules(
             "En mindre förvaringskapacitet och last får inte döljas av moduluppdelningen.",
         )
     dividers = grid.divider_count_per_module
+    if intent.base_doors and grid.columns * (dividers + 1) != intent.divider_count + 1:
+        return unavailable(
+            "BASE_DOOR_COUNT_CHANGED",
+            f"Golvraden behöver behålla {intent.divider_count + 1} underskåpsluckor. "
+            "Välj kolumner och avdelare som ger samma antal fack.",
+        )
     # Count the canonical shelving parts before compiling candidates. Captured
     # backs have one field per bay; a surface-mounted back is one whole panel.
     # The generated count is checked again below so a compiler change cannot
@@ -273,6 +279,7 @@ def plan_furniture_modules(
         + count * (dividers + 1)
         + back_count
         + (row == 0 and bool(intent.plinth_height_um))
+        + ((3 * dividers + 2) if row == 0 and intent.base_doors else 0)
         for row, count in enumerate(grid.shelf_count_per_row)
     )
     if estimated_parts > MAX_MODULE_PARTS:
@@ -314,6 +321,8 @@ def plan_furniture_modules(
                 shelf_count=grid.shelf_count_per_row[row],
                 divider_count=dividers,
             )
+            if row > 0:
+                document["design"]["intent"].pop("base_doors", None)
             if row > 0 and grid.plinth_placement == "floor_row_only":
                 document["design"]["intent"]["plinth_height_um"] = 0
             if intent.shelf_load_basis == "per_row":

@@ -132,6 +132,20 @@ describe("planering av separata stommoduler", () => {
     expect(() => assertMatchingFurnitureModulePlan(response, source, designHash, grid)).toThrow();
   });
 
+  it("hanterar luckor enbart på golvraden och stoppar ett äldre svar med dubblerade luckor", () => {
+    const source = sourceWorkspace();
+    source.design.intent.base_doors = "J95-C24/0T-NI";
+    source.design.intent.divider_count = 1;
+    const grid = {...initialGrid, rows: 2, shelf_count_per_row: [2, 2]};
+    const response = plan(source, grid);
+    expect(() => assertMatchingFurnitureModulePlan(response, source, designHash, grid)).toThrow();
+    for (const upper of response.modules.filter(m => m.row === 1)) {
+      delete upper.workspace.design.intent.base_doors;
+      delete upper.preview.workspace.design.intent.base_doors;
+    }
+    expect(() => assertMatchingFurnitureModulePlan(response, source, designHash, grid)).not.toThrow();
+  });
+
   it("kräver uttryckligt mellanrum och hyllantal innan någon beräkning skickas", () => {
     const api = client();
     render(panel(api));

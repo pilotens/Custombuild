@@ -32,9 +32,12 @@ FURNITURE_ENGINE_VERSION = "furniture-families-2.1.0"
 
 
 def furniture_review_schema(family: str | None) -> str:
+    if family is None:
+        # The separate S1 and trestle jobs keep their original construction envelope.
+        return "custombuild.furniture-review.v1"
     if family == "shelving":
-        return "custombuild.shelving-workshop-review.v17"
-    return "custombuild.furniture-review.v1"
+        return "custombuild.shelving-workshop-review.v24"
+    return "custombuild.furniture-review.v2"
 
 
 class MaterialSelection(FrozenModel):
@@ -210,10 +213,9 @@ class ShelvingIntent(FrozenModel):
     def canonical_bay_proportions(self) -> ShelvingIntent:
         if self.bay_width_ratios_ppm and sum(self.bay_width_ratios_ppm) != 1_000_000:
             raise ValueError("bay width proportions must sum to exactly 100 percent")
-        if self.base_doors and (self.trial_angle or self.back_panel != BackPanelType.INSET_GROOVE
+        if self.base_doors and (self.back_panel != BackPanelType.INSET_GROOVE
                                 or self.shelf_mount != ShelfMount.FIXED or self.plinth_height_um):
-            raise ValueError("700 mm underskåp kräver fasta hyllor, infälld rygg och ingen sockel. "
-                             "GN 970 gäller endast den öppna bokhyllan.")
+            raise ValueError("700 mm underskåp kräver fasta hyllor, infälld rygg och ingen sockel.")
         if self.resolved_shelf_load_n > 5_000:
             raise ValueError("lasten per hel hyllrad överskrider modellens gräns på 5000 N")
         return self

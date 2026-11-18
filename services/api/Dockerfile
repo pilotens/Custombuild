@@ -69,9 +69,9 @@ COPY --from=runtime-base / /base-chroot
 RUN apk add --no-cache --no-scripts --root /base-chroot \
       ca-certificates-bundle=20261020-r0 \
       gdbm=1.26-r9 \
-      glibc-2.44-locale-posix=2.44-r14 \
-      glibc-2.44=2.44-r14 \
-      ld-linux-2.44=2.44-r14 \
+      glibc-2.44-locale-posix=2.44-r16 \
+      glibc-2.44=2.44-r16 \
+      ld-linux-2.44=2.44-r16 \
       libbrotlicommon1=1.2.1-r3 \
       libbrotlidec1=1.2.1-r3 \
       libbrotlienc1=1.2.1-r3 \
@@ -99,7 +99,7 @@ RUN apk add --no-cache --no-scripts --root /base-chroot \
     && awk 'BEGIN { RS=""; FS="\n" } { name=""; version=""; for (i=1; i<=NF; i++) { if ($i ~ /^P:/) name=substr($i,3); if ($i ~ /^V:/) version=substr($i,3) } if (name != "") print name "=" version }' \
       /base-chroot/lib/apk/db/installed | sort > /tmp/runtime-package-closure \
     && test "$(wc -l < /tmp/runtime-package-closure)" = "28" \
-    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "7c3ee343ab7b5ce429bf3e4261742aee04b8e80151a459ed76dd30cc25ea6dc2"
+    && test "$(sha256sum /tmp/runtime-package-closure | cut -d ' ' -f 1)" = "f79854b1d696f4b7b52c710c0a1f538bf03083a34d0a7e00184e0f0eed5facdc"
 
 COPY --from=builder /opt/custombuild-venv /base-chroot/opt/custombuild-venv
 COPY --from=builder /app/packages /base-chroot/app/packages

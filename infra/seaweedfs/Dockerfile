@@ -7,7 +7,7 @@ FROM golang:1.26.9-alpine3.24@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a6
 
 ARG SEAWEEDFS_VERSION=4.45
 ARG SEAWEEDFS_SOURCE_SHA256=800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30
-ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1
+ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=a6738e72cd1a9d3b739d191979a2283d015c20220b973fe75affba343b89b57b
 ENV GOTOOLCHAIN=local \
     GOSUMDB=sum.golang.org
 
@@ -28,7 +28,7 @@ RUN tar --extract --gzip --file=/tmp/seaweedfs.tar.gz --strip-components=1 \
     && go mod edit \
       -require=github.com/andybalholm/brotli@v1.2.7 \
       -require=github.com/klauspost/compress@v1.20.2 \
-      -require=github.com/apache/thrift@v0.24.0 \
+      -require=github.com/apache/thrift@v0.25.0 \
       -require=github.com/go-jose/go-jose/v4@v4.1.6 \
       -require=golang.org/x/mod@v0.41.0 \
       -require=golang.org/x/sync@v0.24.0 \
@@ -59,7 +59,7 @@ RUN tar --extract --gzip --file=/tmp/seaweedfs.tar.gz --strip-components=1 \
       github.com/klauspost/compress@v1.20.2 \
       github.com/go-jose/go-jose/v4@v4.1.6 \
       golang.org/x/net@v0.62.0 \
-      github.com/apache/thrift@v0.24.0 \
+      github.com/apache/thrift@v0.25.0 \
       go.etcd.io/etcd/client/pkg/v3@v3.7.1 \
       golang.org/x/crypto@v0.58.0 \
       golang.org/x/image@v0.45.0 \
@@ -78,7 +78,7 @@ RUN tar --extract --gzip --file=/tmp/seaweedfs.tar.gz --strip-components=1 \
       go.opentelemetry.io/otel/sdk/metric@v1.45.0 \
       go.opentelemetry.io/otel/trace@v1.45.0 \
       google.golang.org/genproto/googleapis/api@v0.0.0-20260817212433-ac3dfec99bb1 \
-    && test "$(go list -m -mod=readonly -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' github.com/apache/thrift)" = "v0.24.0" \
+    && test "$(go list -m -mod=readonly -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' github.com/apache/thrift)" = "v0.25.0" \
     && test "$(go list -m -mod=readonly -f '{{.Version}}' go.etcd.io/etcd/client/pkg/v3)" = "v3.7.1" \
     && test "$(go list -m -mod=readonly -f '{{.Version}}' github.com/go-jose/go-jose/v4)" = "v4.1.6" \
     && test "$(go list -m -mod=readonly -f '{{.Version}}' golang.org/x/net)" = "v0.62.0" \
@@ -111,7 +111,7 @@ FROM scratch AS runtime
 
 ARG SEAWEEDFS_VERSION=4.45
 ARG SEAWEEDFS_SOURCE_SHA256=800a91693e2a4e974ef0e2a157b6a04eff9f4df507303b1cff31b0601081fc30
-ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=b03ac9c9a2b22047f2bc0ed6d2a8a6945af8118cca0bf5237740b3e11609cac1
+ARG SEAWEEDFS_SECURITY_OVERRIDES_SHA256=a6738e72cd1a9d3b739d191979a2283d015c20220b973fe75affba343b89b57b
 LABEL org.opencontainers.image.title="Custombuild SeaweedFS" \
       org.opencontainers.image.description="Minimal source-verified SeaweedFS S3 runtime" \
       org.opencontainers.image.version="${SEAWEEDFS_VERSION}" \
@@ -120,7 +120,7 @@ LABEL org.opencontainers.image.title="Custombuild SeaweedFS" \
       io.custombuild.upstream-source.sha256="${SEAWEEDFS_SOURCE_SHA256}" \
       io.custombuild.security-overrides.sha256="${SEAWEEDFS_SECURITY_OVERRIDES_SHA256}" \
       io.custombuild.go.version="1.26.9" \
-      io.custombuild.go-apache-thrift.version="0.24.0" \
+      io.custombuild.go-apache-thrift.version="0.25.0" \
       io.custombuild.go-etcd-client-pkg.version="3.7.1" \
       io.custombuild.go-x-crypto.version="0.58.0" \
       io.custombuild.go-x-image.version="0.45.0" \

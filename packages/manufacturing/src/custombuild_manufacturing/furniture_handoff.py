@@ -8,16 +8,19 @@ from collections import defaultdict
 from typing import Any
 
 from custombuild_domain.bookcase_fit import trial_groove_fits
+from custombuild_domain.cabinet_doors import MIN_DOOR_THICKNESS_UM
+from custombuild_domain.enums import PartRole
 from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.models import TRIAL_EDGE_TOLERANCE_UM, TRIAL_FACE_TOLERANCE_UM
+from custombuild_domain.rear_coverage import rear_openings
 
 from .adapters import adapt_design_result
 from .furniture_faces import drawing_faces
 from .model import FeatureKind
 
-HANDOFF_VERSION = "furniture-workshop-handoff-1.1.0"
+HANDOFF_VERSION = "furniture-workshop-handoff-1.2.0"
 
 
 def furniture_stock_requirements(result: FurnitureResult) -> list[dict[str, Any]]:
@@ -62,6 +65,23 @@ def furniture_stock_requirements(result: FurnitureResult) -> list[dict[str, Any]
 def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
     hardware = result.hardware_profile
     intent = result.spec.intent
+    if hardware:
+        hardware_requirements = list(hardware.required_evidence)
+    elif isinstance(intent, ShelvingIntent) and intent.base_doors:
+        hardware_requirements = [
+            "hinge_and_plate_fit_in_actual_stock",
+            "door_opening_clearance_with_neighbour_and_wall",
+            "screw_withdrawal_in_actual_walnut",
+            "loaded_door_cycles_and_moisture_movement",
+        ]
+    elif intent.family in {"dining_table", "chair"}:
+        hardware_requirements = [
+            "screw_and_pilot_fit_in_actual_stock",
+            "fastener_withdrawal_and_racking_test",
+            "assembled_stability",
+        ]
+    else:
+        hardware_requirements = []
     return {
         "schema_version": "custombuild.furniture-workshop-handoff.v1",
         "version": HANDOFF_VERSION,
@@ -69,6 +89,11 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         "family": result.spec.intent.family,
         "dimensions": review_furniture_dimensions(result.spec, result.shelving_result),
         "stock_requirements": furniture_stock_requirements(result),
+        "rear_openings": (
+            [o.model_dump(mode="json") for o in rear_openings(result.shelving_result)]
+            if result.shelving_result
+            else []
+        ),
         "shelf_load": {
             "basis": intent.shelf_load_basis,
             "total_row_load_n": intent.resolved_shelf_load_n,
@@ -79,17 +104,7 @@ def furniture_workshop_handoff(result: FurnitureResult) -> dict[str, Any]:
         }
         if isinstance(intent, ShelvingIntent)
         else None,
-        "hardware_requirements": list(hardware.required_evidence)
-        if hardware
-        else (
-            [
-                "screw_and_pilot_fit_in_actual_stock",
-                "fastener_withdrawal_and_racking_test",
-                "assembled_stability",
-            ]
-            if intent.family in {"dining_table", "chair"}
-            else []
-        ),
+        "hardware_requirements": hardware_requirements,
         "required_workshop_inputs": [
             "material_batches_and_actual_thickness",
             "available_stock_formats_and_grain",
@@ -123,6 +138,10 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
     """An unfilled measurement worksheet, not a manufactured or approved result."""
     output = io.StringIO(newline="")
     writer = csv.writer(output, lineterminator="\n")
+    bookcase = isinstance(result.spec.intent, ShelvingIntent)
+    extra_columns = (
+        ("revision", "model_min", "model_max", "measurement_uncertainty") if bookcase else ()
+    )
     writer.writerow(
         (
             "design_hash",
@@ -140,6 +159,7 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
             "result",
             "inspector",
             "notes",
+            *extra_columns,
         )
     )
     names = {part.part_id: part.semantic_key for part in result.parts}
@@ -157,7 +177,23 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
         unit: str = "mm",
         side: str = "",
         origin_semantics: str = "",
+        minimum_um: int | None = None,
     ) -> None:
+        evidence: tuple[object, ...] = ()
+        if bookcase:
+            lower = upper = ""
+            if unit == "count":
+                lower = upper = str(value)
+            elif origin_semantics == "LOWER_ACCEPTANCE_LIMIT":
+                lower = mm_text(value)
+            elif tolerance is not None and tolerance > 0:
+                lower = mm_text(
+                    max(value - tolerance, minimum_um)
+                    if minimum_um is not None
+                    else value - tolerance
+                )
+                upper = mm_text(value + tolerance)
+            evidence = (result.spec.revision, lower, upper, "")
         writer.writerow(
             (
                 result.design_hash,
@@ -169,12 +205,15 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
                 check,
                 str(value) if unit == "count" else mm_text(value),
                 unit,
-                mm_text(tolerance) if tolerance is not None and tolerance > 0 else "",
+                mm_text(tolerance)
+                if tolerance is not None and tolerance > 0 and minimum_um is None
+                else "",
                 "",
                 "",
                 "",
                 "",
                 "",
+                *evidence,
             )
         )
 
@@ -183,7 +222,19 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
         source = sources[part.part_id]
         row(part.part_id, "", "finished_local_U", part.width_um, source.profile_tolerance_um)
         row(part.part_id, "", "finished_local_V", part.height_um, source.profile_tolerance_um)
-        row(part.part_id, "", "actual_thickness", part.thickness_um, source.stock_tolerance_um)
+        hinge_leaf = (
+            isinstance(result.spec.intent, ShelvingIntent)
+            and result.spec.intent.base_doors
+            and source.role == PartRole.CABINET_FRONT
+        )
+        row(
+            part.part_id,
+            "",
+            "actual_thickness",
+            part.thickness_um,
+            source.stock_tolerance_um,
+            minimum_um=MIN_DOOR_THICKNESS_UM if hinge_leaf else None,
+        )
         for view in drawing_faces(sources[part.part_id], part):
             for feature in view.part.features:
                 if feature.side != view.side:

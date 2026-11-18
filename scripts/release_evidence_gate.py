@@ -33,20 +33,26 @@ FINAL_SCHEMA = "custombuild.release-readiness-evidence.v2"
 REQUIRED_IMAGES = frozenset(
     {"api", "worker", "web", "seaweedfs", "postgres", "redis", "volume-init"}
 )
+WOLFI_LIBC = frozenset(
+    {
+        ("glibc-2.44", "2.44-r16"),
+        ("glibc-2.44-locale-posix", "2.44-r16"),
+        ("ld-linux-2.44", "2.44-r16"),
+    }
+)
 REQUIRED_NATIVE_PACKAGES = {
-    "api": frozenset(
+    "api": WOLFI_LIBC
+    | frozenset(
         {
             ("python-3.13", "3.13.18_git20261030-r0"),
             ("python-3.13-base", "3.13.18_git20261030-r0"),
         }
     ),
-    "worker": frozenset(
+    "worker": WOLFI_LIBC
+    | frozenset(
         {
             ("ca-certificates-bundle", "20261020-r0"),
             ("gdbm", "1.26-r9"),
-            ("glibc-2.44-locale-posix", "2.44-r14"),
-            ("glibc-2.44", "2.44-r14"),
-            ("ld-linux-2.44", "2.44-r14"),
             ("libLLVM-23", "23.1.5-r0"),
             ("libbrotlicommon1", "1.2.1-r3"),
             ("libbrotlidec1", "1.2.1-r3"),
@@ -98,8 +104,15 @@ REQUIRED_NATIVE_PACKAGES = {
         }
     ),
     "redis": frozenset({("zlib", "1.4-r0"), ("setpriv", "2.42.3-r1")}),
-    "postgres": frozenset({("zlib", "1.4-r0"), ("gosu", "1.19-r6")}),
-    "web": frozenset({("nodejs-24", "24.22.2-r2")}),
+    "postgres": frozenset(
+        {
+            ("zlib", "1.4-r0"),
+            ("gosu", "1.19-r6"),
+            ("libxslt", "1.1.43-r4"),
+            ("krb5-libs", "1.22.3-r0"),
+        }
+    ),
+    "web": WOLFI_LIBC | frozenset({("nodejs-24", "24.22.3-r0")}),
 }
 BUILT_IMAGE_NAMES = {
     "api": "custombuild-api",

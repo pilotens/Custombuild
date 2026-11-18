@@ -1663,77 +1663,6 @@ class BookcaseEngine:
             )
             used.update(joint_ids)
 
-        if front_entry:
-            # The bottom is supported at its final datum. Each joint is made once,
-            # when the second of its members is inserted. No joined group is lifted.
-            present = {by_key["bottom"].part_id}
-            for role, direction, instruction in (
-                (
-                    PartRole.BACK,
-                    AssemblyDirection.NEG_Z,
-                    "Ställ botten i dess slutläge. Sänk ryggfältet i bottenspåret och fixera "
-                    "det lodrätt i tillfälligt sidostöd.",
-                ),
-                (
-                    PartRole.DIVIDER,
-                    AssemblyDirection.POS_Y,
-                    "Skjut in avdelaren framifrån i bottenspåret. Fånga ryggkanterna i "
-                    "sidospåren och fixera avdelaren lodrätt.",
-                ),
-                (
-                    PartRole.LEFT_SIDE,
-                    AssemblyDirection.POS_X,
-                    "För vänster gavel från vänster över botten- och ryggkanterna. Stöd gaveln "
-                    "mot tippning.",
-                ),
-                (
-                    PartRole.RIGHT_SIDE,
-                    AssemblyDirection.NEG_X,
-                    "För höger gavel från höger över botten- och ryggkanterna. Stöd gaveln mot "
-                    "tippning.",
-                ),
-                (
-                    PartRole.TOP,
-                    AssemblyDirection.NEG_Z,
-                    "Sänk toppen över de fixerade gavlarna, avdelarna om sådana finns och "
-                    "ryggfälten. Lasta inte plywoodryggen under lyftet.",
-                ),
-                (
-                    PartRole.SHELF,
-                    AssemblyDirection.POS_Y,
-                    "Skjut in endast denna hylla framifrån i båda spåren. Rikta framkanten mot "
-                    "frontdatum och kontrollera pilothålen före låsning.",
-                ),
-            ):
-                for part in sorted(
-                    (p for p in parts if p.role == role), key=lambda p: p.instance_index
-                ):
-                    selected = tuple(
-                        j
-                        for j in joints
-                        if part.part_id in {m.part_id for m in j.members}
-                        and all(
-                            m.part_id == part.part_id or m.part_id in present for m in j.members
-                        )
-                    )
-                    if not selected:
-                        raise ValueError(
-                            f"{part.semantic_key}: inget upplag i detta monteringssteg."
-                        )
-                    add_step(
-                        selected,
-                        direction,
-                        instruction,
-                        moving_parts=(part,),
-                        required_tools=("panel-positioning-jig",) if role != PartRole.SHELF else (),
-                    )
-                    present.add(part.part_id)
-            if len(present) != len(parts) or len(used) != len(joints):
-                raise ValueError(
-                    "Monteringsordningen täcker inte alla delar och förband i bokhylleprovet."
-                )
-            return AssemblyGraph(nodes=nodes, edges=edges, steps=tuple(steps_list))
-
         # Build the internal lower-cabinet bank from left to right while both
         # full-height outer sides remain open.  Each internal side captures the
         # left bottom first; the next bottom then enters its open right groove.
@@ -1788,6 +1717,114 @@ class BookcaseEngine:
             ),
             moving_parts=(by_key["bottom"],),
         )
+
+        if front_entry or hinged:
+            # The bottom is supported at its final datum. Each joint is made once,
+            # when the second of its members is inserted. No joined group is lifted.
+            present = {pid for step in steps_list for pid in step.part_ids}
+            present.add(by_key["bottom"].part_id)
+            if hinged:
+                # In a single bay the lower floor and deck have no internal side joint.
+                # Support both at their final datums until the outer sides capture them.
+                present.add(by_key["base-bottom-0"].part_id)
+            for role, direction, instruction in (
+                (
+                    PartRole.BACK,
+                    AssemblyDirection.NEG_Z,
+                    "Stöd underskåpsbotten vid golvet och mellanbotten i sitt slutläge. "
+                    "Sänk ryggfältet i mellanbottens spår och fixera det lodrätt."
+                    if hinged
+                    else "Ställ botten i dess slutläge. Sänk ryggfältet i bottenspåret och fixera "
+                    "det lodrätt i tillfälligt sidostöd.",
+                ),
+                (
+                    PartRole.DIVIDER,
+                    AssemblyDirection.POS_Y,
+                    "Skjut in avdelaren framifrån i bottenspåret. Fånga ryggkanterna i "
+                    "sidospåren och fixera avdelaren lodrätt.",
+                ),
+                (
+                    PartRole.LEFT_SIDE,
+                    AssemblyDirection.POS_X,
+                    "För vänster gavel från vänster över botten- och ryggkanterna. Stöd gaveln "
+                    "mot tippning.",
+                ),
+                (
+                    PartRole.RIGHT_SIDE,
+                    AssemblyDirection.NEG_X,
+                    "För höger gavel från höger över botten- och ryggkanterna. Stöd gaveln mot "
+                    "tippning.",
+                ),
+                (
+                    PartRole.TOP,
+                    AssemblyDirection.NEG_Z,
+                    "Sänk toppen över de fixerade gavlarna, avdelarna om sådana finns och "
+                    "ryggfälten. Lasta inte plywoodryggen under lyftet.",
+                ),
+                (
+                    PartRole.SHELF,
+                    AssemblyDirection.POS_Y,
+                    "För hyllan framifrån i båda spåren. Rikta framkanten i liv med gavlarna."
+                    if hinged
+                    else "Skjut in endast denna hylla framifrån i båda spåren. "
+                    "Rikta framkanten mot frontdatum och kontrollera pilothålen före låsning.",
+                ),
+            ):
+                for part in sorted(
+                    (p for p in parts if p.role == role), key=lambda p: p.instance_index
+                ):
+                    selected = tuple(
+                        j
+                        for j in joints
+                        if part.part_id in {m.part_id for m in j.members}
+                        and all(
+                            m.part_id == part.part_id or m.part_id in present for m in j.members
+                        )
+                    )
+                    if not selected:
+                        raise ValueError(
+                            f"{part.semantic_key}: inget upplag i detta monteringssteg."
+                        )
+                    add_step(
+                        selected,
+                        direction,
+                        instruction,
+                        moving_parts=(part,),
+                        required_tools=("panel-positioning-jig",) if role != PartRole.SHELF else (),
+                    )
+                    present.add(part.part_id)
+            if hinged:
+                for part in sorted(
+                    (p for p in parts if p.role == PartRole.CABINET_FRONT),
+                    key=lambda p: p.instance_index,
+                ):
+                    index = part.instance_index
+                    support = "left-side" if index == 0 else f"base-side-{index}"
+                    steps_list.append(
+                        AssemblyStep(
+                            step_number=len(steps_list) + 1,
+                            step_id=stable_id("assembly-step", part.part_id, "clip-J95"),
+                            part_ids=(
+                                part.part_id,
+                                by_key[support].part_id,
+                            ),
+                            moving_part_ids=(part.part_id,),
+                            joint_ids=(),
+                            direction=AssemblyDirection.POS_Y,
+                            motion_path=(AssemblyDirection.POS_Y,),
+                            tool_ids=("screwdriver",),
+                            checkpoint=f"{part.semantic_key}: fäst två J95-C24/0T-NI på baksidan "
+                            f"och två J95-P6T-NI på höger sida av {support}. Använd 2 respektive 4 "
+                            "SPAX YELLOX 5x16 per beslag. Håll luckan öppen, haka axeln i plattans "
+                            "framkant och tryck baktill tills båda låser. Justera till 2 mm spel.",
+                        )
+                    )
+                    present.add(part.part_id)
+            if len(present) != len(parts) or len(used) != len(joints):
+                raise ValueError(
+                    "Monteringsordningen täcker inte alla delar och förband i bokhylleprovet."
+                )
+            return AssemblyGraph(nodes=nodes, edges=edges, steps=tuple(steps_list))
 
         # Build the captured-panel subassembly while both carcass sides remain
         # open.  This prevents a fixed shelf or inset back from being trapped by
@@ -2037,29 +2074,6 @@ class BookcaseEngine:
             if part.part_id in covered_part_ids:
                 continue
             is_front = part.role == PartRole.CABINET_FRONT
-            if hinged and is_front:
-                index = part.instance_index
-                support = "left-side" if index == 0 else f"base-side-{index}"
-                steps_list.append(
-                    AssemblyStep(
-                        step_number=len(steps_list) + 1,
-                        step_id=stable_id("assembly-step", part.part_id, "clip-J95"),
-                        part_ids=(
-                            part.part_id,
-                            next(p.part_id for p in parts if p.semantic_key == support),
-                        ),
-                        moving_part_ids=(part.part_id,),
-                        joint_ids=(),
-                        direction=AssemblyDirection.POS_Y,
-                        motion_path=(AssemblyDirection.POS_Y,),
-                        tool_ids=("screwdriver",),
-                        checkpoint=f"{part.semantic_key}: fäst två J95-C24/0T-NI på baksidan "
-                        f"och två J95-P6T-NI på höger sida av {support}. Använd 2 respektive 4 "
-                        "SPAX YELLOX 5x16 per beslag. Håll luckan öppen, haka axeln i plattans "
-                        "framkant och tryck baktill tills båda låser. Justera till 2 mm spel.",
-                    )
-                )
-                continue
             steps_list.append(
                 AssemblyStep(
                     step_number=len(steps_list) + 1,

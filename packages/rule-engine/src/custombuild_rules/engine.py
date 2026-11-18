@@ -18,6 +18,7 @@ from custombuild_domain import (
     build_bookcase,
     stable_id,
 )
+from custombuild_domain.cabinet_doors import HINGE, PLATE, SCREW
 from custombuild_domain.models import (
     TRIAL_ANGLE_SET_MASS_G,
     TRIAL_EDGE_TOLERANCE_UM,
@@ -38,7 +39,7 @@ from .models import (
     aggregate_status,
 )
 
-RULES_VERSION = "1.5.0"
+RULES_VERSION = "1.5.1"
 MAX_AUTO_VERTICAL_DIVIDERS = 16
 
 
@@ -98,7 +99,7 @@ class RuleEngine:
         if cabinet_parts:
             evaluations += (
                 self._base_support_alignment(design),
-                self._base_cabinet_hardware(cabinet_parts),
+                self._base_cabinet_hardware(cabinet_parts, design.spec.parameters.door_hinge),
             )
         return RuleReport(
             design_hash=design.design_hash,
@@ -199,39 +200,55 @@ class RuleEngine:
             suggested_actions=actions,
         )
 
-    def _base_cabinet_hardware(self, cabinet_parts: tuple[PartInstance, ...]) -> RuleEvaluation:
+    def _base_cabinet_hardware(
+        self, cabinet_parts: tuple[PartInstance, ...], door_hinge: str | None
+    ) -> RuleEvaluation:
         part_ids = tuple(part.part_id for part in cabinet_parts)
         front_count = sum(1 for part in cabinet_parts if part.role == PartRole.CABINET_FRONT)
+        inputs: tuple[RuleDatum, ...] = (
+            RuleDatum(name="frontantal", value=front_count, unit="st"),
+        )
+        if door_hinge == HINGE:
+            inputs += (
+                RuleDatum(name="gångjärn", value=HINGE),
+                RuleDatum(name="platta", value=PLATE),
+            )
+            assumptions = (
+                f"Varje lucka har två {HINGE}, två {PLATE} och tolv {SCREW}.",
+                "Borrbilden och 2 mm nominellt spel ingår i modellen. Provning av öppningsrörelse, "
+                "skruvfäste och beständighet i den valda valnöten återstår.",
+            )
+            expression = "fysiskt typprov av valt gångjärn, platta och skruv"
+            action = "Prova rörelse, skruvfäste och beständighet enligt gångjärnsprotokollet."
+        else:
+            assumptions = (
+                "Stom- och frontgeometri ingår i dellistan.",
+                "Gångjärn, öppningsvinkel, frontspel och infästning är ännu "
+                "inte valda från ett versionslåst beslagssystem.",
+            )
+            expression = "verifierat beslagssystem = valt och versionslåst"
+            action = (
+                "Välj och verifiera gångjärn, montageplatta, frontspel "
+                "och borrbild innan produktionsrelease."
+            )
         return RuleEvaluation(
             rule_id="CB-HARDWARE-001",
             rule_version=self.version,
             title="Beslag och borrbild för underskåp",
             status=RuleStatus.WARNING,
             applies_to_part_ids=part_ids,
-            inputs=(RuleDatum(name="frontantal", value=front_count, unit="st"),),
-            assumptions=(
-                "Stom- och frontgeometri ingår i dellistan.",
-                "Gångjärn, öppningsvinkel, frontspel och infästning är ännu "
-                "inte valda från ett versionslåst beslagssystem.",
-            ),
-            trace=(
-                CalculationStep(
-                    expression="verifierat beslagssystem = valt och versionslåst",
-                    result="nej",
-                ),
-            ),
+            inputs=inputs,
+            assumptions=assumptions,
+            trace=(CalculationStep(expression=expression, result="nej"),),
             calculated_value=1,
             allowed_value=0,
-            unit="obekräftade system",
+            unit="fysiskt oprövade beslagssystem" if door_hinge == HINGE else "obekräftade system",
             safety_margin_permille=-1_000,
             suggested_actions=(
                 SuggestedAction(
                     action_id=stable_id("rule-action", "base-cabinet-hardware"),
                     action_type=ActionType.VERIFY_HARDWARE_CAPACITY,
-                    description=(
-                        "Välj och verifiera gångjärn, montageplatta, frontspel "
-                        "och borrbild innan produktionsrelease."
-                    ),
+                    description=action,
                     requires_user_evidence=True,
                 ),
             ),

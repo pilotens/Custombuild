@@ -9,8 +9,10 @@ from custombuild_domain.furniture import (
     InstallationSpace,
 )
 from custombuild_domain.furniture_catalog import HardwareProfile
+from custombuild_domain.furniture_dimensions import EqualBayLayout
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_domain.models import MaterialVersion
+from custombuild_domain.rear_coverage import RearOpening
 from pydantic import BaseModel, ConfigDict, Field
 
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -147,6 +149,7 @@ class FurnitureTrimClearanceRead(FurnitureResponse):
 
 
 class FurnitureDimensionsRead(FurnitureResponse):
+    equal_bay_layouts: list[EqualBayLayout] = Field(default_factory=list)
     standing_assembly: StandingSiteReview | None = None
     version: str
     state: Literal["requires_resolution", "reconciled", "not_specified"]
@@ -185,6 +188,7 @@ class FurnitureHandoffRead(FurnitureResponse):
     family: Family
     dimensions: FurnitureDimensionsRead
     stock_requirements: list[FurnitureStockRequirementRead]
+    rear_openings: list[RearOpening]
     shelf_load: FurnitureShelfLoadRead | None
     hardware_requirements: list[str]
     required_workshop_inputs: list[str]

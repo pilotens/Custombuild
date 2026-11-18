@@ -2023,6 +2023,40 @@
         "title": "EdgeBand",
         "type": "object"
       },
+      "EqualBayLayout": {
+        "additionalProperties": false,
+        "properties": {
+          "carcass_width_um": {
+            "title": "Carcass Width Um",
+            "type": "integer"
+          },
+          "clear_width_um": {
+            "title": "Clear Width Um",
+            "type": "integer"
+          },
+          "left_allowance_um": {
+            "title": "Left Allowance Um",
+            "type": "integer"
+          },
+          "right_allowance_um": {
+            "title": "Right Allowance Um",
+            "type": "integer"
+          },
+          "step_um": {
+            "title": "Step Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "step_um",
+          "clear_width_um",
+          "carcass_width_um",
+          "left_allowance_um",
+          "right_allowance_um"
+        ],
+        "title": "EqualBayLayout",
+        "type": "object"
+      },
       "ExecutableCAMReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -2688,6 +2722,13 @@
             "title": "Carcass Dimensions Um",
             "type": "object"
           },
+          "equal_bay_layouts": {
+            "items": {
+              "$ref": "#/components/schemas/EqualBayLayout"
+            },
+            "title": "Equal Bay Layouts",
+            "type": "array"
+          },
           "installation": {
             "anyOf": [
               {
@@ -3094,6 +3135,13 @@
             "title": "Production Qualified",
             "type": "boolean"
           },
+          "rear_openings": {
+            "items": {
+              "$ref": "#/components/schemas/RearOpening"
+            },
+            "title": "Rear Openings",
+            "type": "array"
+          },
           "required_workshop_inputs": {
             "items": {
               "type": "string"
@@ -3142,6 +3190,7 @@
           "family",
           "dimensions",
           "stock_requirements",
+          "rear_openings",
           "shelf_load",
           "hardware_requirements",
           "required_workshop_inputs",
@@ -10930,6 +10979,34 @@
         "title": "WarningOverrideCreate",
         "type": "object"
       },
+      "WorkshopEligibility": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "design_hash": {
+            "title": "Design Hash",
+            "type": "string"
+          },
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "available",
+          "revision",
+          "design_hash",
+          "detail"
+        ],
+        "title": "WorkshopEligibility",
+        "type": "object"
+      },
       "WorkshopRegistrationPin": {
         "additionalProperties": false,
         "properties": {
@@ -13047,6 +13124,53 @@
           }
         ],
         "summary": "Preview Furniture Production"
+      }
+    },
+    "/v1/furniture/projects/{project_id}/workshop-eligibility": {
+      "get": {
+        "operationId": "workshop_eligibility_v1_furniture_projects__project_id__workshop_eligibility_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkshopEligibility"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Workshop Eligibility",
+        "tags": [
+          "furniture-design"
+        ]
       }
     },
     "/v1/furniture/shelf-bay-suggestion": {

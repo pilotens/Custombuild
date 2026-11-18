@@ -15,6 +15,7 @@
       "shelf_height_ratios_ppm": [],
       "plinth_height_um": 0,
       "base_doors": "J95-C24/0T-NI",
+      "trial_angle": "GN-970-ALM-30-30-30-B",
       "shelf_load_basis": "per_metre",
       "shelf_load_per_metre_n": 294
     },
