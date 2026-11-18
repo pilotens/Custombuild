@@ -2023,6 +2023,40 @@
         "title": "EdgeBand",
         "type": "object"
       },
+      "EqualBayLayout": {
+        "additionalProperties": false,
+        "properties": {
+          "carcass_width_um": {
+            "title": "Carcass Width Um",
+            "type": "integer"
+          },
+          "clear_width_um": {
+            "title": "Clear Width Um",
+            "type": "integer"
+          },
+          "left_allowance_um": {
+            "title": "Left Allowance Um",
+            "type": "integer"
+          },
+          "right_allowance_um": {
+            "title": "Right Allowance Um",
+            "type": "integer"
+          },
+          "step_um": {
+            "title": "Step Um",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "step_um",
+          "clear_width_um",
+          "carcass_width_um",
+          "left_allowance_um",
+          "right_allowance_um"
+        ],
+        "title": "EqualBayLayout",
+        "type": "object"
+      },
       "ExecutableCAMReceipt": {
         "additionalProperties": false,
         "properties": {
@@ -2687,6 +2721,13 @@
             },
             "title": "Carcass Dimensions Um",
             "type": "object"
+          },
+          "equal_bay_layouts": {
+            "items": {
+              "$ref": "#/components/schemas/EqualBayLayout"
+            },
+            "title": "Equal Bay Layouts",
+            "type": "array"
           },
           "installation": {
             "anyOf": [

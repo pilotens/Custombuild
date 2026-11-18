@@ -1,5 +1,32 @@
 # Slutleveranslogg · bokhylla
 
+## 18 november 2026 · hela fackmått och fysiskt delprov · v24
+
+Utgångspunkt är v23 på `73a696b` i [PR 28](https://github.com/pilotens/Custombuild/pull/28).
+På `/furniture`, öppna sexluckorsbokhyllan och välj **Kundens yttermått och listutrymme → Använd lika fack i hela millimeter**.
+Förslaget gäller jämnt uppdelade fack med känd sidmån och samstämmig installationsbredd.
+Servern visar alternativ i hela och halva mm när de ger olika mindre stommar. Vid användning
+fördelas överskottet mellan sidmarginalerna. Ändringen sparas som en vanlig designrevision.
+Mätningar med flyttade väggreferenser måste göras om. Befintliga kundproportioner bevaras.
+
+Prov B behåller utrymmet 4340 × 2540 × 280 mm och listen 90 × 20 mm. Sidmånen blir 31 mm
+på vardera sidan och stommen 4278 × 2500 × 260 mm. Sex fria fack på 692 mm ger
+30 hyllplan på 704 mm och sex luckor på 688 mm. Toppen och mellanbotten blir 4254 mm.
+
+För fast bokhylla med J95, GN 970, infälld rygg och minst ett hyllplan ingår
+`inspection/fackprov.zip` i granskningspaketet. Börja med `Provprotokoll.pdf`.
+Prov B väljer fack 3 och ger sju fullstora orderdelar, 14 DXF, separat STEP samt tomt mätblad.
+Utgångsordern utan måttändring väljer fack 2, en av de två bredaste luckorna.
+Det numeriska orderprovet kontrollerar även att batchens minsta lucktjocklek efter avdrag
+för osäkerhet uppfyller J95-kravet 18,00 mm. Övre gränsen för detta 18-mm-prov är 18,10 mm.
+
+Kör `pytest tests/unit/test_furniture_dimensions.py tests/integration/test_bookcase_workshop_release.py tests/integration/test_cabinet_door_export.py`.
+Webbprovet `sex underskåpsluckor` tillämpar B, hämtar paketet och kontrollerar en ändrad revision.
+Aktuell commit och Linux-/webbkörningar finns i [PR-kontrollerna](https://github.com/pilotens/Custombuild/pull/28/checks).
+Nästa fysiska åtgärd är att provmontera detta fack i en fixtur i faktisk batch, mäta spårspel,
+ryggens sidoinfångning och lucksvep samt återföra mätosäkerhet och klimat i mätbladet.
+Glappbudget, fullhöjdsstabilitet och kvalificeringsregister för hela möbeln kräver fortsatt provning.
+
 ## Fortsättningspunkt · fast bokhylla v23 · PR #28
 
 V22 på `69d52eb` klarade [samtliga CI-flöden](https://github.com/pilotens/Custombuild/pull/28/checks).

@@ -229,6 +229,19 @@ def build_furniture_review(
             "Prova alla öppningar enligt inspection/gangjarnsprov.txt. Orderns mätblad finns i "
             "inspection/luckprov-per-fack.csv.\n"
         ).encode()
+        if (
+            result.trial_angles
+            and shelving
+            and shelving.spec.parameters.shelf_count
+            and not workshop_profile
+        ):
+            from .bookcase_sample import SAMPLE_PATH, bay_sample
+
+            files[SAMPLE_PATH] = bay_sample(result, files)
+            files["README.txt"] += (
+                "Öppna inspection/fackprov.zip för ett fristående prov av hyllfog, infälld rygg "
+                "och en lucka på fixtur. Börja med LAS-MIG.txt i provpaketet.\n"
+            ).encode()
     elif identity:
         report, joint_sheet = verify_bookcase_delivery(result, files)
         files["inspection/geometry-readback.json"] = _json(report)

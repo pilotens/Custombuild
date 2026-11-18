@@ -7,9 +7,53 @@ from typing import Any
 from .bookcase_site import review_standing_site
 from .furniture import FurnitureDesign, ShelvingIntent
 from .furniture_engine import build_furniture
-from .models import DesignResult
+from .models import DesignResult, FrozenModel
 
-DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.5.0"
+DIMENSION_REVIEW_VERSION = "furniture-dimensions-1.6.0"
+
+
+class EqualBayLayout(FrozenModel):
+    step_um: int
+    clear_width_um: int
+    carcass_width_um: int
+    left_allowance_um: int
+    right_allowance_um: int
+
+
+def equal_bay_layouts(design: FurnitureDesign) -> list[EqualBayLayout]:
+    """Fit equal openings inside the agreed envelope, keeping other design inputs intact."""
+    intent, site = design.intent, design.installation
+    if (
+        not isinstance(intent, ShelvingIntent)
+        or len(set(intent.bay_width_ratios_ppm)) > 1
+        or site is None
+    ):
+        return []
+    left, right = site.left_allowance_um, site.right_allowance_um
+    if left is None or right is None or site.width_um - left - right != intent.width_um:
+        return []
+    bays = intent.divider_count + 1
+    thickness = design.material.measured_thickness_um
+    clear_total = intent.width_um - (bays + 1) * thickness
+    choices: list[EqualBayLayout] = []
+    for step in (1000, 500):
+        units, spare = divmod(clear_total, bays * step)
+        if units <= 0 or not spare or (choices and choices[-1].clear_width_um == units * step):
+            continue
+        width = intent.width_um - spare
+        left_new, right_new = left + spare // 2, right + spare - spare // 2
+        if width < 250_000 or max(left_new, right_new) > 500_000:
+            continue
+        choices.append(
+            EqualBayLayout(
+                step_um=step,
+                clear_width_um=units * step,
+                carcass_width_um=width,
+                left_allowance_um=left_new,
+                right_allowance_um=right_new,
+            )
+        )
+    return choices
 
 
 def review_furniture_dimensions(
@@ -115,6 +159,7 @@ def review_furniture_dimensions(
             if field not in installation.surveyed_fields:
                 site_record.pop(f"measured_{field}_um", None)
     return {
+        "equal_bay_layouts": [option.model_dump() for option in equal_bay_layouts(design)],
         "standing_assembly": assembly.model_dump(mode="json") if assembly else None,
         "version": DIMENSION_REVIEW_VERSION,
         "state": "requires_resolution"

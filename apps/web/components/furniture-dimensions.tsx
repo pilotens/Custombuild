@@ -78,6 +78,15 @@ export function InstallationEditor({ workspace, onChange, onError, preview }: Ed
         if (dimensions) onChange({ ...workspace, design: { ...workspace.design,
           intent: { ...workspace.design.intent, ...dimensions } } }, "carcass");
       }}>Räkna om stommen från kundmåtten</button>
+      {preview?.workshop_handoff?.dimensions.equal_bay_layouts?.map(option => <div key={option.step_um}>
+        <p>Lika fack med {option.clear_width_um / 1000} mm fri bredd ger en stomme på {option.carcass_width_um / 1000} mm.
+          Sidmån vänster/höger blir {option.left_allowance_um / 1000} / {option.right_allowance_um / 1000} mm inom kundens bredd.</p>
+        <button type="button" onClick={() => onChange({ ...workspace, design: { ...workspace.design,
+          installation: invalidateMovedDatums(installation, { ...installation,
+            left_allowance_um: option.left_allowance_um, right_allowance_um: option.right_allowance_um }),
+          intent: { ...workspace.design.intent, width_um: option.carcass_width_um },
+        } }, "carcass")}>Använd lika fack i {option.step_um === 1000 ? "hela" : "halva"} millimeter</button>
+      </div>)}
       {alternative && proposed ? <div>
         <p>Platsalternativ inom kundmåtten: stomme {proposed.width_um/1000} × {proposed.height_um/1000} × {proposed.depth_um/1000} mm.
           Sidornas reservation avrundas uppåt vid gavelrörelse. Upptill ingår minst 20 mm planeringsmån över trädelarnas rörelse.</p>

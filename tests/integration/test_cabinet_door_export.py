@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import io
 import json
 import zipfile
@@ -83,6 +84,43 @@ def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch,
         (tmp_path / "Custombuild-Valnot-Sex-Gangjarnsluckor.zip").write_bytes(downloaded.content)
         with zipfile.ZipFile(io.BytesIO(downloaded.content)) as archive:
             files = {p: archive.read(p) for p in archive.namelist()}
+        with zipfile.ZipFile(io.BytesIO(files["inspection/fackprov.zip"])) as kit:
+            manifest = json.loads(kit.read("manifest.json"))
+            assert manifest["design_hash"] == draft["preview"]["design"]["design_hash"]
+            assert (manifest["revision"], manifest["bay"], manifest["clear_width_um"]) == (
+                1,
+                2,
+                692334,
+            )
+            ids = set(manifest["part_ids"])
+            assert len(ids) == 7 and not manifest["production_qualified"]
+            assert set(kit.namelist()) == {"manifest.json", *manifest["files"]}
+            assert all(
+                hashlib.sha256(kit.read(path)).hexdigest() == sha
+                for path, sha in manifest["files"].items()
+            )
+            assert {p["part_id"] for p in json.loads(kit.read("bearbetning.json"))["parts"]} == ids
+            assert all(
+                kit.read(f"parts/{pid}/{side}.dxf") == files[f"parts/{pid}/{side}.dxf"]
+                for pid in ids
+                for side in ("A", "B")
+            )
+
+            def kit_rows(name):
+                return list(csv.DictReader(io.StringIO(kit.read(name).decode("utf-8-sig"))))
+
+            cuts = kit_rows("kaplista.csv")
+            assert {p["part_id"] for p in cuts} == ids
+            assert sorted(
+                r["finished_width_mm"] for r in cuts if r["finished_height_mm"] == "660"
+            ) == ["688.334"]
+            assert len(kit_rows("vinkelprov.csv")) == 4
+            assert len(kit_rows("luckprov.csv")) == 1
+            survey = kit_rows("provmatning.csv")
+            assert len(survey) == 16 and not any(r["uppmatt"] or r["resultat"] for r in survey)
+            assert sum(r["nedre_grans"] == "18" and r["ovre_grans"] == "18.1" for r in survey) == 2
+            assert len(json.loads(kit.read("sparpassning.json"))["joints"]) == 4
+            assert len(PdfReader(io.BytesIO(kit.read("Provprotokoll.pdf"))).pages) == 1
         preview = draft["preview"]
         rule = next(r for r in preview["rules"]["evaluations"] if r["rule_id"] == "CB-HARDWARE-001")
         assert rule["status"] == "WARNING"

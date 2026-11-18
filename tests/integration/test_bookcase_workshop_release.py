@@ -94,7 +94,11 @@ def _install_test_profile(tmp_path, monkeypatch, workspace):
             material_version=stock.version,
             batch_id=stock.batch_id,
             usable_formats=[dict(along_grain_um=3000000, across_grain_um=1500000)],
-            minimum_thickness_um=stock.measured_thickness_um - 80,
+            minimum_thickness_um=(
+                stock.measured_thickness_um + 20
+                if is_cabinet and stock == workspace.design.material
+                else stock.measured_thickness_um - 80
+            ),
             maximum_thickness_um=stock.measured_thickness_um + 80,
             uncertainty_um=20,
         )
@@ -789,6 +793,11 @@ def test_combined_cabinet_needs_door_trials_for_every_opening_and_rechecks_downl
         path, bound = create(client, w)
         req = {**bound, "purpose": "workshop_drawings"}
         valid = json.dumps([profile])
+        thin = json.loads(valid)
+        thin[0]["physical_results"]["carcass_lot"]["minimum_thickness_um"] -= 1
+        (tmp_path / "profiles.json").write_text(json.dumps(thin))
+        too_thin = client.post(path + "/exports", headers=HEADERS, json=req)
+        assert too_thin.status_code == 409 and "J95 kräver minst 18,00" in too_thin.json()["detail"]
         results = profile["physical_results"]["door_service"]["tested_openings"]
         results[1]["cycles_completed"] -= 1
         (tmp_path / "profiles.json").write_text(json.dumps([profile]))

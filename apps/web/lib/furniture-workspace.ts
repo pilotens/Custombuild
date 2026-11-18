@@ -159,6 +159,7 @@ export interface FurniturePreview {
     shelf_load?: { basis: "per_row" | "per_metre"; total_row_load_n: number;
       load_per_metre_n: number | null; width_um: number } | null;
     dimensions: {
+      equal_bay_layouts?: components["schemas"]["EqualBayLayout"][];
       standing_assembly?: components["schemas"]["StandingSiteReview"] | null;
       state: string;
       carcass_dimensions_um: { width_um: number; height_um: number; depth_um: number };

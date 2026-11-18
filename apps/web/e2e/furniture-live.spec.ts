@@ -46,6 +46,11 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
     await page.getByRole("button", {name: "Öppna valnötsbokhylla med sex gångjärnsluckor"}).click();
     await expect(page.getByText(/Arbetsfilen har kontrollerats/)).toBeVisible();
     await page.getByLabel("Projektnamn", {exact: true}).fill(project.project.name + "-luckor");
+    await page.getByText("Kundens yttermått och listutrymme", {exact: true}).click();
+    await page.getByRole("button", {name: "Använd lika fack i hela millimeter"}).click();
+    await expect(page.getByLabel("Bredd (mm)", {exact: true})).toHaveValue("4278");
+    await expect(page.getByLabel("Vänster · reserverat (mm)", {exact: true})).toHaveValue("31");
+    await expect(page.getByLabel("Höger · reserverat (mm)", {exact: true})).toHaveValue("31");
     const canvas = page.getByTestId("furniture-viewer").locator("canvas");
     await expect(canvas).toHaveAttribute("data-custombuild-model-root", /.+/);
     const firstView = await canvas.screenshot();
@@ -74,13 +79,19 @@ test.describe("möbelfamiljer med verklig API, databas, kö och CAD-worker", () 
         " r=json.loads(z.read('inspection/door-hardware.json'))",
         " samples=list(csv.DictReader(io.StringIO(z.read('inspection/luckprov-per-fack.csv').decode('utf-8-sig'))))",
         " n=int(sys.argv[2]); rev=int(sys.argv[3])",
-        " assert m['schema_version']=='custombuild.shelving-workshop-review.v23'",
+        " assert m['schema_version']=='custombuild.shelving-workshop-review.v24'",
         " assert r['design_hash']==m['design_hash'] and not m['production_qualified']",
         " checks=list(csv.DictReader(io.StringIO(z.read('inspection/first-article-checks.csv').decode('utf-8-sig'))))",
         " assert checks and all(c['revision']==str(rev) and c['design_hash']==m['design_hash'] and c['measurement_uncertainty']=='' for c in checks)",
         " door_stock=[c for c in checks if c['part_name'].startswith('cabinet-front-') and c['check']=='actual_thickness']",
-        " assert len(door_stock)==n and all((c['model_min'],c['model_max'])==('17.900','18.100') for c in door_stock)",
+        " assert len(door_stock)==n and all((c['model_min'],c['model_max'])==('18.000','18.100') for c in door_stock)",
         " assert [s['leaf'] for s in samples]==[f'cabinet-front-{i}' for i in range(n)]",
+        " if rev==1: assert {s['width_um'] for s in samples}=={'688000'}",
+        " with zipfile.ZipFile(io.BytesIO(z.read('inspection/fackprov.zip'))) as sample:",
+        "  kit=json.loads(sample.read('manifest.json'))",
+        "  assert kit['revision']==rev and kit['design_hash']==m['design_hash'] and kit['bay_count']==n",
+        "  if rev==1: assert kit['bay']==3 and kit['clear_width_um']==692000 and len(kit['part_ids'])==7",
+        "  for pid in kit['part_ids']: assert sample.read(f'parts/{pid}/A.dxf')==z.read(f'parts/{pid}/A.dxf')",
         " assert all(s['revision']==str(rev) and s['design_hash']==m['design_hash'] for s in samples)",
         " assert all(s['cycles_completed']==s['tested_mass_g']=='' for s in samples)",
         " print(json.dumps(r))",

@@ -1787,6 +1787,19 @@ export interface components {
             /** Thickness Um */
             thickness_um: number;
         };
+        /** EqualBayLayout */
+        EqualBayLayout: {
+            /** Carcass Width Um */
+            carcass_width_um: number;
+            /** Clear Width Um */
+            clear_width_um: number;
+            /** Left Allowance Um */
+            left_allowance_um: number;
+            /** Right Allowance Um */
+            right_allowance_um: number;
+            /** Step Um */
+            step_um: number;
+        };
         /** ExecutableCAMReceipt */
         ExecutableCAMReceipt: {
             cam_approval: components["schemas"]["CAMApprovalReleaseBinding"];
@@ -2013,6 +2026,8 @@ export interface components {
             carcass_dimensions_um: {
                 [key: string]: number;
             };
+            /** Equal Bay Layouts */
+            equal_bay_layouts?: components["schemas"]["EqualBayLayout"][];
             installation: components["schemas"]["InstallationSpace"] | null;
             /** Issues */
             issues: components["schemas"]["FurnitureIssueRead"][];

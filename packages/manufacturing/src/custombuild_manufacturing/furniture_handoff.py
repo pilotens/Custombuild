@@ -8,6 +8,8 @@ from collections import defaultdict
 from typing import Any
 
 from custombuild_domain.bookcase_fit import trial_groove_fits
+from custombuild_domain.cabinet_doors import MIN_DOOR_THICKNESS_UM
+from custombuild_domain.enums import PartRole
 from custombuild_domain.furniture import ShelvingIntent
 from custombuild_domain.furniture_dimensions import review_furniture_dimensions
 from custombuild_domain.furniture_engine import FurnitureResult
@@ -175,6 +177,7 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
         unit: str = "mm",
         side: str = "",
         origin_semantics: str = "",
+        minimum_um: int | None = None,
     ) -> None:
         evidence: tuple[object, ...] = ()
         if bookcase:
@@ -184,7 +187,12 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
             elif origin_semantics == "LOWER_ACCEPTANCE_LIMIT":
                 lower = mm_text(value)
             elif tolerance is not None and tolerance > 0:
-                lower, upper = mm_text(value - tolerance), mm_text(value + tolerance)
+                lower = mm_text(
+                    max(value - tolerance, minimum_um)
+                    if minimum_um is not None
+                    else value - tolerance
+                )
+                upper = mm_text(value + tolerance)
             evidence = (result.spec.revision, lower, upper, "")
         writer.writerow(
             (
@@ -197,7 +205,9 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
                 check,
                 str(value) if unit == "count" else mm_text(value),
                 unit,
-                mm_text(tolerance) if tolerance is not None and tolerance > 0 else "",
+                mm_text(tolerance)
+                if tolerance is not None and tolerance > 0 and minimum_um is None
+                else "",
                 "",
                 "",
                 "",
@@ -212,7 +222,19 @@ def furniture_first_article_checks(result: FurnitureResult) -> bytes:
         source = sources[part.part_id]
         row(part.part_id, "", "finished_local_U", part.width_um, source.profile_tolerance_um)
         row(part.part_id, "", "finished_local_V", part.height_um, source.profile_tolerance_um)
-        row(part.part_id, "", "actual_thickness", part.thickness_um, source.stock_tolerance_um)
+        hinge_leaf = (
+            isinstance(result.spec.intent, ShelvingIntent)
+            and result.spec.intent.base_doors
+            and source.role == PartRole.CABINET_FRONT
+        )
+        row(
+            part.part_id,
+            "",
+            "actual_thickness",
+            part.thickness_um,
+            source.stock_tolerance_um,
+            minimum_um=MIN_DOOR_THICKNESS_UM if hinge_leaf else None,
+        )
         for view in drawing_faces(sources[part.part_id], part):
             for feature in view.part.features:
                 if feature.side != view.side:

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from custombuild_domain.bookcase_site import WALL_NAMES, review_standing_site
+from custombuild_domain.cabinet_doors import MIN_DOOR_THICKNESS_UM
 from custombuild_domain.enums import MaterialType, PartRole
 from custombuild_domain.furniture import (
     FURNITURE_ENGINE_VERSION,
@@ -334,6 +335,12 @@ def _check_test_results(
                 "J95 kräver luckprov för varje fack med skruvfäste, frigång och livslängd."
             )
         door_service.require_openings(design.shelving_result)
+        lot = profile.physical_results.carcass_lot
+        if lot.minimum_thickness_um - lot.uncertainty_um < MIN_DOOR_THICKNESS_UM:
+            raise ValueError(
+                "J95 kräver minst 18,00 mm färdig lucktjocklek inklusive "
+                "mätosäkerhet. Välj ett virkesparti som uppfyller gränsen."
+            )
     elif door_service is not None:
         raise ValueError("Luckprovet gäller inte den öppna bokhyllan.")
     profile.physical_results.carcass_lot.require_match(
