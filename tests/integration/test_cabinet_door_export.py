@@ -15,6 +15,7 @@ from custombuild_domain.furniture_engine import build_furniture
 from custombuild_worker import tasks
 from custombuild_worker.bookcase_readback import verify_panel_documents, verify_panels_from_order
 from custombuild_worker.cabinet_delivery import verify_cabinet_delivery
+from custombuild_worker.furniture_review import build_furniture_review
 from fastapi.testclient import TestClient
 from pypdf import PdfReader
 
@@ -48,6 +49,40 @@ def test_previous_cabinet_without_angles_keeps_its_original_joints():
             },
         )
         assert order.status_code == 409 and order.json()["detail"] == eligibility["detail"]
+
+
+@pytest.mark.parametrize(
+    ("width", "ratios", "bay", "opening", "back", "part_count"),
+    [
+        (700, [1_000_000], 1, 664, "back", 5),
+        (1454, [450_000, 550_000], 2, 770, "back-b1", 6),
+    ],
+)
+def test_bench_sample_from_an_outer_bay(width, ratios, bay, opening, back, part_count):
+    workspace = json.loads(Path("examples/furniture/bookcase-walnut-base-700.json").read_bytes())
+    workspace["design"]["intent"].update(
+        width_um=width * 1000,
+        divider_count=len(ratios) - 1,
+        shelf_count=2,
+        bay_width_ratios_ppm=ratios,
+    )
+    workspace["design"]["installation"]["width_um"] = (width + 60) * 1000
+    payload = build_furniture_review(FurnitureWorkspace.model_validate(workspace))
+    with (
+        zipfile.ZipFile(io.BytesIO(payload)) as order,
+        zipfile.ZipFile(io.BytesIO(order.read("inspection/fackprov.zip"))) as kit,
+    ):
+        manifest = json.loads(kit.read("manifest.json"))
+        assert manifest["bay"] == bay and manifest["clear_width_um"] == opening * 1000
+        assert len(manifest["part_ids"]) == part_count
+        rows = csv.DictReader(io.StringIO(kit.read("placering.csv").decode("utf-8-sig")))
+        targets = {r["part_name"]: r["part_id"] for r in rows}
+        fits = json.loads(kit.read("sparpassning.json"))["joints"]
+        assert {f["inserted_part_id"] for f in fits} == {
+            targets[back],
+            targets[f"shelf-r0-b{bay - 1}"],
+        }
+        assert len([p for p in kit.namelist() if p.endswith(".dxf")]) == 2 * part_count
 
 
 def test_saved_cabinet_revision_download_and_direct_production_gate(monkeypatch, tmp_path):

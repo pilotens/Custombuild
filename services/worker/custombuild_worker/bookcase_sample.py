@@ -10,6 +10,7 @@ from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from custombuild_cad.bookcase_sample import sample_step
 from custombuild_domain.cabinet_doors import HINGE, MIN_DOOR_THICKNESS_UM, PLATE, SCREW, door_mounts
+from custombuild_domain.enums import PartRole
 from custombuild_domain.furniture_catalog import resolve_material
 from custombuild_domain.furniture_engine import FurnitureResult
 from custombuild_manufacturing.model import um_to_mm
@@ -181,11 +182,12 @@ def bay_sample(result: FurnitureResult, files: dict[str, bytes]) -> bytes:
         ),
     )
     bay = mount.door.instance_index
-    by_name = {p.semantic_key: p for p in result.parts}
+    # The first shelf row, back fields and cabinet bottoms share the door's bay index.
+    bay_parts = {p.role: p for p in result.parts if p.instance_index == bay}
     by_id = {p.part_id: p for p in result.parts}
-    shelf, back, floor = (
-        by_name[key] for key in (f"shelf-r0-b{bay}", f"back-b{bay}", f"base-bottom-{bay}")
-    )
+    shelf = bay_parts[PartRole.SHELF]
+    back = bay_parts[PartRole.BACK]
+    floor = bay_parts[PartRole.BASE_BOTTOM]
     fits = json.loads(files["inspection/groove-fits.json"])["joints"]
 
     def hosts(mate_id: str) -> list[str]:

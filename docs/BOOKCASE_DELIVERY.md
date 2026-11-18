@@ -27,6 +27,13 @@ Nästa fysiska åtgärd är att provmontera detta fack i en fixtur i faktisk bat
 ryggens sidoinfångning och lucksvep samt återföra mätosäkerhet och klimat i mätbladet.
 Glappbudget, fullhöjdsstabilitet och kvalificeringsregister för hela möbeln kräver fortsatt provning.
 
+Uppföljning av v24 (`53f6322`): provdelen väljs nu genom delroll och fackindex även när en
+enda rygg delar båda yttergavlarna med luckan. Verifiera med `test_bench_sample_from_an_outer_bay`
+för ett fack på 664 mm och en asymmetrisk tvåfackshylla med bredaste facket på höger sida.
+I prov B:s kontrollblad har hyllplansdjupet 237,65 mm intervallet 237,55–237,75 mm.
+Topp och mellanbotten har längd 4 254 mm med modellkrav ±0,10 mm.
+Hela delarnas längdtolerans behöver styrkas separat från fackprovet på högst 1 794 mm.
+
 ## Fortsättningspunkt · fast bokhylla v23 · PR #28
 
 V22 på `69d52eb` klarade [samtliga CI-flöden](https://github.com/pilotens/Custombuild/pull/28/checks).
